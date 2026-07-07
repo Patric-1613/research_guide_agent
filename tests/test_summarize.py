@@ -1,0 +1,78 @@
+"""Deterministic tests for summarize.py's non-LLM logic: schema construction,
+citation attachment, and skipped-paper detection. The OpenAI call itself is
+mocked (covered live instead by scripts/test_summarize.py) so these run
+without network access or billing.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from research_agent.schema import Paper
+from research_agent.summarize import _build_response_schema, generate_summary
+
+
+def _paper(paper_id: str, title: str) -> Paper:
+    return Paper(
+        title=title, authors=["A. Uthor"], year=2024, venue="arXiv preprint",
+        abstract=f"Abstract for {title}.", url=f"http://arxiv.org/abs/{paper_id}",
+        doi=None, citation_count=None, source="arxiv", paper_id=paper_id,
+    )
+
+
+def test_response_schema_rejects_unknown_paper_id():
+    schema = _build_response_schema(["a", "b"])
+    theme_cls = schema.model_fields["themes"].annotation.__args__[0]
+    summary_cls = theme_cls.model_fields["papers"].annotation.__args__[0]
+
+    summary_cls(paper_id="a", summary="fine")  # known id: should not raise
+    try:
+        summary_cls(paper_id="not-a-real-id", summary="fabricated")
+        assert False, "expected a validation error for an unknown paper_id"
+    except Exception:
+        pass
+
+
+def test_generate_summary_attaches_citations_and_flags_skipped():
+    papers = [_paper("1111", "Paper One"), _paper("2222", "Paper Two")]
+    schema = _build_response_schema([p.paper_id for p in papers])
+    theme_cls = schema.model_fields["themes"].annotation.__args__[0]
+    summary_cls = theme_cls.model_fields["papers"].annotation.__args__[0]
+
+    # Model only references Paper One — Paper Two should show up as skipped.
+    parsed = schema(
+        themes=[theme_cls(theme_name="Only Theme", papers=[summary_cls(paper_id="1111", summary="grounded summary")])],
+        gaps_and_disagreements="No notable gaps or disagreements observed among the retrieved papers.",
+    )
+    mock_message = MagicMock(parsed=parsed, refusal=None)
+    mock_usage = MagicMock(total_tokens=100, prompt_tokens=80, completion_tokens=20)
+    mock_response = MagicMock(usage=mock_usage)
+    mock_response.choices = [MagicMock(message=mock_message)]
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    result = generate_summary("some topic", papers, client=mock_client)
+
+    assert len(result["themes"]) == 1
+    entry = result["themes"][0]["papers"][0]
+    assert entry["paper"].paper_id == "1111"
+    assert "apa_citation" in entry and "bibtex" in entry
+
+    assert len(result["skipped_papers"]) == 1
+    assert result["skipped_papers"][0].paper_id == "2222"
+
+
+def test_generate_summary_returns_empty_for_no_papers():
+    result = generate_summary("topic", [], client=MagicMock())
+    assert result == {"themes": [], "gaps_and_disagreements": "", "skipped_papers": []}
+
+
+if __name__ == "__main__":
+    test_response_schema_rejects_unknown_paper_id()
+    test_generate_summary_attaches_citations_and_flags_skipped()
+    test_generate_summary_returns_empty_for_no_papers()
+    print("All summarize tests passed.")
