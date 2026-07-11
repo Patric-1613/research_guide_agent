@@ -30,7 +30,7 @@ from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from research_agent.agent import run_research_agent
+from research_agent.agent import _merge_web_articles, run_research_agent
 from research_agent.citations import CitationStyle, select_citation
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.enrichment import enrich_missing_abstracts
@@ -38,6 +38,7 @@ from research_agent.qa import ChatSession, ask
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import get_search, init_db, list_searches, save_search, update_summary, update_web_summary
 from research_agent.summarize import generate_summary, generate_web_summary
+from research_agent.web_search import search_web
 
 load_dotenv()
 
@@ -460,11 +461,21 @@ def search(req: SearchRequest) -> SearchResponse:
 
     paper_ids = [p.paper_id for p, _ in ranked]
     scores = [score for _, score in ranked]
-    # Same code-enforced-count guarantee as top_k: the agent may have
-    # accumulated more than web_max_results across multiple search_web_tool
-    # calls (deduped by URL, not by count) — truncate here so the returned
-    # count is never silently uncontrolled, same reasoning as top_k in
-    # enhancement 1.
+    if len(session.web_articles) < req.web_max_results:
+        # Whether to call search_web_tool at all is the agent's judgment
+        # call (agent.py's system prompt) — it may skip it entirely for a
+        # topic it judges purely historical/theoretical, or just not call it
+        # this run. But web_max_results is a user-set request parameter like
+        # top_k, so the user gets that many results whenever they're
+        # available, not only when the model happened to decide to look.
+        # Same code-enforced-count guarantee as top_k's server-side rerank
+        # fallback above.
+        fallback_articles = search_web(req.topic, max_results=req.web_max_results)
+        session.web_articles = _merge_web_articles(session.web_articles, fallback_articles)
+    # The agent may have accumulated more than web_max_results across
+    # multiple search_web_tool calls (deduped by URL, not by count) —
+    # truncate here so the returned count is never silently uncontrolled,
+    # same reasoning as top_k in enhancement 1.
     web_articles = session.web_articles[: req.web_max_results]
     search_id, created_at = save_search(
         _state["db"], req.topic, paper_ids, scores,

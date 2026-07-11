@@ -40,7 +40,14 @@ def _web_article(url: str, title: str) -> WebArticle:
 def _client():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
-        with patch.object(api, "init_db", lambda: real_init_db(db_path)):
+        # Default search_web to a no-op here so every test that doesn't care
+        # about web search (i.e. doesn't patch it itself) stays isolated from
+        # the network/Tavily billing, per this file's module docstring —
+        # otherwise api.py's server-side web-search fallback (added alongside
+        # the top_k-style guarantee) would fire a real call for any test
+        # whose fake session has fewer web_articles than web_max_results.
+        with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(api, "search_web", return_value=[]):
             with TestClient(api.app) as client:
                 yield client
 
@@ -97,6 +104,43 @@ def test_search_degrades_gracefully_with_no_web_articles():
 
     assert resp.status_code == 200
     assert resp.json()["web_articles"] == []
+
+
+def test_search_falls_back_to_direct_web_search_when_agent_found_none():
+    # Whether the agent calls its own search_web_tool is a per-topic
+    # judgment call (agent.py's system prompt) that it can skip entirely —
+    # but web_max_results is a user-set request parameter like top_k, so the
+    # user should still get web context whenever any exists, not only when
+    # the model happened to decide to look.
+    papers = [_paper("p1", "Paper One")]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=[])
+    fallback_articles = [_web_article("https://x.com/fallback", "Fallback Article")]
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", return_value=fake_session), \
+         patch.object(api, "search_web", return_value=fallback_articles) as mock_search_web:
+        resp = client.post("/search", json={"topic": "t", "web_max_results": 3})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["web_articles"]) == 1
+    assert body["web_articles"][0]["url"] == "https://x.com/fallback"
+    mock_search_web.assert_called_once_with("t", max_results=3)
+
+
+def test_search_skips_web_fallback_when_agent_already_met_web_max_results():
+    papers = [_paper("p1", "Paper One")]
+    web_articles = [_web_article(f"https://x.com/{i}", f"Article {i}") for i in range(3)]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=web_articles)
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", return_value=fake_session), \
+         patch.object(api, "search_web") as mock_search_web:
+        resp = client.post("/search", json={"topic": "t", "web_max_results": 3})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["web_articles"]) == 3
+    mock_search_web.assert_not_called()
 
 
 def test_search_with_no_papers_returns_404():
@@ -453,6 +497,8 @@ if __name__ == "__main__":
     test_search_returns_web_articles_as_separate_section_from_papers()
     test_search_truncates_web_articles_to_requested_web_max_results()
     test_search_degrades_gracefully_with_no_web_articles()
+    test_search_falls_back_to_direct_web_search_when_agent_found_none()
+    test_search_skips_web_fallback_when_agent_already_met_web_max_results()
     test_search_with_no_papers_returns_404()
     test_search_falls_back_to_server_side_rerank_if_agent_skipped_it()
     test_search_reranks_serverside_when_agent_ignored_requested_top_k()
