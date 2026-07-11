@@ -33,3 +33,28 @@ class Paper:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class WebArticle:
+    """A live web search result (round-2 enhancement 5) — deliberately NOT
+    a repurposed Paper. Web articles have no authors/DOI/citation_count and
+    are never peer-reviewed, so folding them into Paper would either force
+    those fields to None everywhere (misleading — implies "we checked and
+    there's no DOI" rather than "this concept doesn't apply here") or
+    require a discriminator field bolted onto Paper. A separate type keeps
+    the two corpora structurally distinct wherever they're handled, which
+    matters most in qa.py: citations must be tagged by type ([Paper N] vs
+    [Web N]) so a user can tell a peer-reviewed source from a web source at
+    a glance, and that's much harder to guarantee if both corpora share one
+    type.
+    """
+
+    title: str
+    url: str
+    snippet: str
+    published_date: str | None
+    source_domain: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)

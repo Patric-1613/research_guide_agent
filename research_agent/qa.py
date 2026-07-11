@@ -22,11 +22,25 @@ Two design decisions worth calling out:
 2. Grounding is enforced the same way as phase 5: `cited_paper_ids` is
    constrained to a dynamic Literal built from the exact papers retrieved
    for this turn, so the model cannot cite a paper it wasn't shown. The
-   answer text uses inline [1], [2] markers (in the order of
+   answer text uses inline [Paper 1], [Paper 2] markers (in the order of
    cited_paper_ids) so a claim in the answer can be traced to a specific
    paper without needing a full per-sentence structured breakdown — a
    reasonable middle ground for a conversational answer, versus phase 5's
    per-paper summaries where a full breakdown was already the natural unit.
+
+Round-2 enhancement 5 extends this to a second, independent corpus: web
+articles (web_search.py). `cited_web_urls` gets the identical Literal-
+grounding treatment, keyed on URL instead of paper_id — a web citation is
+structurally impossible unless that URL was actually retrieved this turn,
+the same guarantee level as paper citations, not a weaker one. The two
+corpora use separate marker namespaces in the answer text ([Paper N] vs
+[Web N], not a shared [N]) specifically so a user can tell a peer-reviewed
+source from a web source at a glance, per the brief. Unlike papers, the web
+article pool isn't re-ranked by embedding similarity for each question — at
+the scale this pool actually runs at (3-4 articles per session, the same
+"small enough that ranking doesn't earn its keep" scale reasoning
+summarize.py already applies to generate_web_summary()), the whole pool is
+just included in context directly.
 """
 
 from __future__ import annotations
@@ -39,7 +53,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +71,13 @@ CONDENSE_SYSTEM_PROMPT = """Given a conversation history and a follow-up questio
 If the follow-up question is already standalone (doesn't depend on the history), return it unchanged. Return ONLY the rewritten question, nothing else.
 """
 
-ANSWER_SYSTEM_PROMPT = """You are a research assistant answering questions using ONLY the abstracts of the papers provided below. Do not use outside knowledge about these papers, their authors, or the topic beyond what the abstracts state.
+ANSWER_SYSTEM_PROMPT = """You are a research assistant answering questions using ONLY the paper abstracts and/or web article snippets provided below. Do not use outside knowledge about these sources, their authors, or the topic beyond what they explicitly state.
 
-If the provided abstracts do not contain enough information to answer the question, set answerable to false and explain in your answer what's missing — do not guess or fill the gap from general knowledge.
+Two distinct kinds of sources may be provided: retrieved papers (peer-reviewed/preprint academic literature) and retrieved web articles (news, tooling, docs — current/practical context, not peer-reviewed). Always keep them clearly distinguished — never imply a web article is a paper or vice versa.
 
-If you can answer, write a clear natural-language answer. Use inline bracket markers like [1], [2] to mark which paper supports each claim, in the order you list them in cited_paper_ids. Every claim should be traceable to at least one marker.
+If the provided sources do not contain enough information to answer the question, set answerable to false and explain in your answer what's missing — do not guess or fill the gap from general knowledge.
+
+If you can answer, write a clear natural-language answer. Use inline bracket markers to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in cited_web_urls. These are two separate numbering sequences, never merged into one — a bare [1] that doesn't say "Paper" or "Web" is not acceptable. Every claim should be traceable to at least one marker.
 """
 
 
@@ -70,21 +86,40 @@ class ChatSession:
     """Grounding set + running history for one conversation. `papers` is
     normally whatever a prior search/rerank (phases 2-4) produced for a
     topic — Q&A doesn't search on its own, only answers from what's already
-    been retrieved.
+    been retrieved. `web_articles` (round-2 enhancement 5) is the same idea
+    for the separate web-context corpus.
     """
 
     papers: list[Paper] = field(default_factory=list)
+    web_articles: list[WebArticle] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)  # [{"role": "user"|"assistant", "content": str}]
 
 
-def _build_answer_schema(paper_ids: list[str]) -> type[BaseModel]:
-    paper_id_literal = Literal[tuple(paper_ids)]
-    return create_model(
-        "ChatAnswer",
-        answerable=(bool, Field(description="True if the retrieved abstracts contain enough information to answer")),
-        answer=(str, Field(description="Natural-language answer with inline [1], [2] markers matching cited_paper_ids order")),
-        cited_paper_ids=(list[paper_id_literal], Field(description="paper_ids supporting the answer, in [1],[2]... order; empty if not answerable")),
-    )
+def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None) -> type[BaseModel]:
+    """Both paper_ids and web_urls are optional-guarded the same way: a
+    Literal can't be built from an empty tuple, and a chat turn can now
+    legitimately have papers only, web articles only, or both (round-2
+    enhancement 5) — so whichever corpus is empty for this turn just has no
+    corresponding cited_* field in the schema at all, rather than a field
+    that (incorrectly) allows any value.
+    """
+    fields: dict = {
+        "answerable": (bool, Field(description="True if the retrieved sources contain enough information to answer")),
+        "answer": (str, Field(description="Natural-language answer with inline [Paper N]/[Web N] markers matching cited_paper_ids/cited_web_urls order")),
+    }
+    if paper_ids:
+        paper_id_literal = Literal[tuple(paper_ids)]
+        fields["cited_paper_ids"] = (
+            list[paper_id_literal],
+            Field(description="paper_ids supporting the answer, in [Paper 1],[Paper 2]... order; empty if not answerable"),
+        )
+    if web_urls:
+        web_url_literal = Literal[tuple(web_urls)]
+        fields["cited_web_urls"] = (
+            list[web_url_literal],
+            Field(description="web article urls supporting the answer, in [Web 1],[Web 2]... order; empty if not answerable"),
+        )
+    return create_model("ChatAnswer", **fields)
 
 
 def _condense_question(history: list[dict], question: str, client: OpenAI, model: str = CONDENSE_MODEL) -> str:
@@ -105,54 +140,80 @@ def _condense_question(history: list[dict], question: str, client: OpenAI, model
     return condensed
 
 
+def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict:
+    session.history.append({"role": "user", "content": question})
+    session.history.append({"role": "assistant", "content": answer})
+    return {
+        "answer": answer, "answerable": False,
+        "cited_papers": [], "retrieved_papers": [],
+        "cited_web_articles": [], "retrieved_web_articles": [],
+    }
+
+
 def ask(
     session: ChatSession,
     question: str,
     client: OpenAI | None = None,
     top_k: int = TOP_K_DEFAULT,
 ) -> dict:
-    """Answer a question grounded in session.papers, using session.history
-    for follow-up context. Appends the turn to session.history and returns
-    {"answer", "answerable", "cited_papers": [Paper...], "retrieved_papers": [Paper...]}.
+    """Answer a question grounded in session.papers and session.web_articles,
+    using session.history for follow-up context. Appends the turn to
+    session.history and returns {"answer", "answerable",
+    "cited_papers": [Paper...], "retrieved_papers": [Paper...],
+    "cited_web_articles": [WebArticle...], "retrieved_web_articles": [WebArticle...]}.
     """
-    if not session.papers:
-        answer = "No papers have been retrieved yet for this conversation — search a topic first."
-        session.history.append({"role": "user", "content": question})
-        session.history.append({"role": "assistant", "content": answer})
-        return {"answer": answer, "answerable": False, "cited_papers": [], "retrieved_papers": []}
+    if not session.papers and not session.web_articles:
+        return _no_sources_result(
+            session, question,
+            "No papers or web articles have been retrieved yet for this conversation — search a topic first.",
+        )
 
     client = client or OpenAI()
 
     standalone_query = _condense_question(session.history, question, client)
 
-    collection = get_chroma_collection()
-    embed_and_index_papers(session.papers, collection=collection, client=client)
-    ids = [p.paper_id for p in session.papers]
-    retrieved = semantic_search(
-        standalone_query, collection=collection, client=client, top_k=top_k,
-        where={"paper_id": {"$in": ids}},
-    )
-    retrieved_papers = [p for p, _ in retrieved]
+    retrieved_papers: list[Paper] = []
+    if session.papers:
+        collection = get_chroma_collection()
+        embed_and_index_papers(session.papers, collection=collection, client=client)
+        ids = [p.paper_id for p in session.papers]
+        retrieved = semantic_search(
+            standalone_query, collection=collection, client=client, top_k=top_k,
+            where={"paper_id": {"$in": ids}},
+        )
+        retrieved_papers = [p for p, _ in retrieved]
 
-    if not retrieved_papers:
-        answer = "No indexed papers are available to answer this question."
-        session.history.append({"role": "user", "content": question})
-        session.history.append({"role": "assistant", "content": answer})
-        return {"answer": answer, "answerable": False, "cited_papers": [], "retrieved_papers": []}
+    # Web articles aren't re-ranked per question — the pool is small enough
+    # (3-4 per session, per web_search.py's default) that including all of
+    # it is simpler and no less relevant than embedding-ranking it would be.
+    retrieved_web_articles = list(session.web_articles)
+
+    if not retrieved_papers and not retrieved_web_articles:
+        return _no_sources_result(session, question, "No indexed papers or web articles are available to answer this question.")
 
     papers_by_id = {p.paper_id: p for p in retrieved_papers}
-    schema = _build_answer_schema(list(papers_by_id))
+    web_by_url = {a.url: a for a in retrieved_web_articles}
+    schema = _build_answer_schema(list(papers_by_id), list(web_by_url) or None)
 
-    context = "\n\n".join(
-        f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
-        for p in retrieved_papers
-    )
+    context_sections = []
+    if retrieved_papers:
+        paper_context = "\n\n".join(
+            f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
+            for p in retrieved_papers
+        )
+        context_sections.append(f"Retrieved papers:\n\n{paper_context}")
+    if retrieved_web_articles:
+        web_context = "\n\n".join(
+            f"url: {a.url}\ntitle: {a.title}\nsnippet: {a.snippet or '(no snippet available)'}"
+            for a in retrieved_web_articles
+        )
+        context_sections.append(f"Retrieved web articles:\n\n{web_context}")
 
     messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
     messages.extend(session.history)
     messages.append({
         "role": "user",
-        "content": f"Retrieved papers:\n\n{context}\n\nQuestion: {question}",
+        "content": "\n\n".join(context_sections) + f"\n\nQuestion: {question}",
     })
 
     response = client.chat.completions.parse(
@@ -173,8 +234,11 @@ def ask(
     # Defensive: don't trust the model to honor "empty if not answerable" on
     # its own — enforce it, since a fabricated citation on an "I can't
     # answer this" response would be worse than the field being redundant.
-    cited_paper_ids = list(parsed.cited_paper_ids) if parsed.answerable else []
+    cited_paper_ids = list(getattr(parsed, "cited_paper_ids", [])) if parsed.answerable else []
     cited_papers = [papers_by_id[pid] for pid in cited_paper_ids]
+
+    cited_web_urls = list(getattr(parsed, "cited_web_urls", [])) if parsed.answerable else []
+    cited_web_articles = [web_by_url[url] for url in cited_web_urls]
 
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": parsed.answer})
@@ -184,4 +248,6 @@ def ask(
         "answerable": parsed.answerable,
         "cited_papers": cited_papers,
         "retrieved_papers": retrieved_papers,
+        "cited_web_articles": cited_web_articles,
+        "retrieved_web_articles": retrieved_web_articles,
     }

@@ -25,6 +25,19 @@ Grounding is enforced two ways:
      the two commonest failure modes: citing a paper that doesn't exist,
      and drawing on the model's background knowledge instead of the
      abstract actually on hand.
+
+Round-2 enhancement 5 adds generate_web_summary() below, for the separate
+web-article corpus (web_search.py). It lives here rather than in a sibling
+module: it reuses the exact same dynamic-Literal grounding technique and the
+same OpenAI-call conventions (model constant, usage logging, "refusal"
+handling) as generate_summary() above, just keyed on URL instead of
+paper_id — splitting it into its own file would either duplicate that
+technique or force an awkward shared-helper import back into this module
+anyway, for a function a fraction of the size of generate_summary(). It does
+NOT cluster into themes the way generate_summary() does: at the scale a web
+context pool actually runs at (3-4 articles, not tens of papers), a single
+short synthesis paragraph is the natural unit, not multiple themes each
+needing their own LLM-derived name.
 """
 
 from __future__ import annotations
@@ -35,8 +48,14 @@ from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
-from research_agent.citations import format_apa_citation, format_bibtex_citation
-from research_agent.schema import Paper
+from research_agent.citations import (
+    CitationStyle,
+    format_apa_citation,
+    format_bibtex_citation,
+    format_harvard_citation,
+    select_citation,
+)
+from research_agent.schema import Paper, WebArticle
 
 logger = logging.getLogger(__name__)
 
@@ -94,14 +113,24 @@ def generate_summary(
     papers: list[Paper],
     client: OpenAI | None = None,
     model: str = SUMMARY_MODEL,
+    style: CitationStyle = "apa",
 ) -> dict:
     """Cluster papers into themes and write grounded per-paper summaries.
 
     Returns {"themes": [{"theme_name", "papers": [{"paper", "summary",
-    "apa_citation", "bibtex"}]}], "gaps_and_disagreements": str,
-    "skipped_papers": [Paper]} — skipped_papers are input papers the model
-    didn't reference in any theme (logged as a warning, not an error: the
-    model may judge a paper redundant or off-topic within the retrieved set).
+    "apa_citation", "harvard_citation", "bibtex", "citation"}]}],
+    "gaps_and_disagreements": str, "skipped_papers": [Paper]} —
+    skipped_papers are input papers the model didn't reference in any theme
+    (logged as a warning, not an error: the model may judge a paper
+    redundant or off-topic within the retrieved set).
+
+    All three citation formats are always computed — they're pure/cheap
+    string formatting, not an LLM call, so there's no cost reason to skip
+    the two the caller didn't ask for. `citation` is whichever one matches
+    `style` (round-2 enhancement 3), included for callers that just want
+    "the" citation without knowing the style themselves; `apa_citation` and
+    `bibtex` are kept as their own fields for backward compatibility with
+    callers that predate `style`.
     """
     if not papers:
         return {"themes": [], "gaps_and_disagreements": "", "skipped_papers": []}
@@ -141,11 +170,16 @@ def generate_summary(
         for ps in theme.papers:
             paper = papers_by_id[ps.paper_id]  # guaranteed present: Literal enforced it structurally
             referenced_ids.add(ps.paper_id)
+            apa_citation = format_apa_citation(paper)
+            harvard_citation = format_harvard_citation(paper)
+            bibtex = format_bibtex_citation(paper)
             entries.append({
                 "paper": paper,
                 "summary": ps.summary,
-                "apa_citation": format_apa_citation(paper),
-                "bibtex": format_bibtex_citation(paper),
+                "apa_citation": apa_citation,
+                "harvard_citation": harvard_citation,
+                "bibtex": bibtex,
+                "citation": select_citation(apa_citation, harvard_citation, bibtex, style),
             })
         themes_out.append({"theme_name": theme.theme_name, "papers": entries})
 
@@ -161,3 +195,77 @@ def generate_summary(
         "gaps_and_disagreements": parsed.gaps_and_disagreements,
         "skipped_papers": skipped,
     }
+
+
+WEB_SYSTEM_PROMPT = """You are summarizing current web context (news, tooling, docs, benchmarks, industry adoption) gathered alongside academic papers for a research topic. This is a supplementary, practical-context corpus — not a replacement for the peer-reviewed literature, and you should not imply otherwise.
+
+You will be given a research topic and a list of web articles (url, title, snippet only).
+
+Write a short synthesis (2-4 sentences) of what these articles collectively indicate about the topic's current or practical state. Ground every claim STRICTLY in the given snippets — do not use outside knowledge about these specific sources, or about the topic, beyond what the snippets state.
+
+List which article URLs actually support your synthesis in cited_urls, in the order you'd reference them.
+"""
+
+
+def _build_web_response_schema(urls: list[str]) -> type[BaseModel]:
+    """Same technique as _build_response_schema above, keyed on URL instead
+    of paper_id — the model is structurally unable to cite a web article
+    that wasn't actually retrieved this run, the same guarantee level as
+    the paper citations above, not a weaker one."""
+    url_literal = Literal[tuple(urls)]
+    return create_model(
+        "WebContextSummary",
+        synthesis=(str, Field(description="2-4 sentences grounded strictly in the given article snippets")),
+        cited_urls=(list[url_literal], Field(description="URLs of articles that actually support the synthesis, in reference order")),
+    )
+
+
+def generate_web_summary(
+    topic: str,
+    articles: list[WebArticle],
+    client: OpenAI | None = None,
+    model: str = SUMMARY_MODEL,
+) -> dict:
+    """Synthesize a short, grounded summary of the web context pool.
+
+    Returns {"synthesis": str, "cited_articles": [WebArticle...]} —
+    cited_articles is the subset of `articles` the model actually
+    referenced, in the order it cited them (mirrors generate_summary()'s
+    skipped_papers idea but inverted: here the useful signal is which
+    articles WERE used, since the pool is small enough that "all of them"
+    is the common case, not the exception).
+    """
+    if not articles:
+        return {"synthesis": "", "cited_articles": []}
+
+    articles_by_url = {a.url: a for a in articles}
+    schema = _build_web_response_schema(list(articles_by_url))
+
+    listing = "\n\n".join(
+        f"url: {a.url}\ntitle: {a.title}\nsnippet: {a.snippet or '(no snippet available)'}"
+        for a in articles
+    )
+    user_message = f"Research topic: {topic}\n\nWeb articles:\n\n{listing}"
+
+    client = client or OpenAI()
+    response = client.chat.completions.parse(
+        model=model,
+        messages=[
+            {"role": "system", "content": WEB_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        response_format=schema,
+    )
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        raise RuntimeError(f"Model refused to produce a web summary: {response.choices[0].message.refusal}")
+
+    usage = response.usage
+    logger.info(
+        "generate_web_summary: %d tokens billed (prompt=%d, completion=%d)",
+        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
+    )
+
+    cited_articles = [articles_by_url[url] for url in parsed.cited_urls]  # guaranteed present: Literal enforced it structurally
+
+    return {"synthesis": parsed.synthesis, "cited_articles": cited_articles}
