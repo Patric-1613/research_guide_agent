@@ -85,10 +85,11 @@ def _error_detail(resp: requests.Response) -> str:
         return resp.text
 
 
-def _set_search_result(search_id: int, topic: str, papers: list[dict]) -> None:
+def _set_search_result(search_id: int, topic: str, papers: list[dict], web_articles: list[dict] | None = None) -> None:
     st.session_state.search_id = search_id
     st.session_state.topic = topic
     st.session_state.papers = papers
+    st.session_state.web_articles = web_articles or []
     st.session_state.summary = None
     st.session_state.chat_history = []
     st.session_state.export_md = None
@@ -99,6 +100,7 @@ for key, default in [
     ("search_id", None),
     ("topic", ""),
     ("papers", []),
+    ("web_articles", []),
     ("summary", None),
     ("chat_history", []),
     ("export_md", None),
@@ -122,13 +124,14 @@ with st.sidebar:
     else:
         for item in library:
             summary_tag = " ✓" if item["has_summary"] else ""
-            label = f"{item['topic']} · {item['paper_count']} papers{summary_tag}"
+            web_tag = f" · 🌐{item['web_article_count']}" if item.get("web_article_count") else ""
+            label = f"{item['topic']} · {item['paper_count']} papers{web_tag}{summary_tag}"
             if st.button(label, key=f"lib_{item['search_id']}", use_container_width=True):
                 ok2, detail = _api_get(f"/library/{item['search_id']}")
                 if not ok2:
                     st.error(detail["detail"])
                 else:
-                    _set_search_result(detail["search_id"], detail["topic"], detail["papers"])
+                    _set_search_result(detail["search_id"], detail["topic"], detail["papers"], detail.get("web_articles"))
                     if item["has_summary"]:
                         # Free: the backend reuses the already-persisted
                         # summary for this search_id rather than re-billing.
@@ -147,11 +150,38 @@ topic_input = st.text_input(
     "Research topic",
     placeholder="e.g. parameter-efficient fine-tuning for large language models",
 )
+top_k_input = st.number_input(
+    "Number of papers to return",
+    min_value=3, max_value=30, value=10, step=1,
+    help="Exact number of ranked results the search will return (after dedup across sources).",
+)
+
+with st.expander("Filters"):
+    doi_required_input = st.checkbox("Only show papers with a DOI")
+    min_citations_input = st.number_input(
+        "Minimum citation count", min_value=0, value=0, step=1,
+        help="0 = no filter. Papers with an unknown citation count never pass a nonzero minimum.",
+    )
+
+web_max_results_input = st.number_input(
+    "Web articles to include (current context)",
+    min_value=1, max_value=10, value=4, step=1,
+    help="A separate, independently-sized set of current web articles (news, tooling, docs) — "
+         "never counted toward the paper total above. The agent decides per-topic whether web "
+         "context is actually relevant; this only caps how many it pulls in if it does.",
+)
+
 if st.button("Search", type="primary") and topic_input.strip():
     with st.spinner("Searching arXiv + Semantic Scholar and ranking results — this can take up to a minute..."):
-        ok, data = _api_post("/search", {"topic": topic_input.strip()})
+        ok, data = _api_post("/search", {
+            "topic": topic_input.strip(),
+            "top_k": int(top_k_input),
+            "doi_required": doi_required_input,
+            "min_citation_count": int(min_citations_input),
+            "web_max_results": int(web_max_results_input),
+        })
     if ok:
-        _set_search_result(data["search_id"], data["topic"], data["papers"])
+        _set_search_result(data["search_id"], data["topic"], data["papers"], data.get("web_articles"))
         st.rerun()
     else:
         st.error(data["detail"])
@@ -176,14 +206,39 @@ if st.session_state.papers:
                 st.markdown(f"- [{src}]({url})")
             st.write(p["abstract"] or "_No abstract available._")
 
+    # ---- web context ----------------------------------------------------------------
+    # Deliberately a separate section, not interleaved with the paper list above and
+    # never counted toward the paper total — a genuinely different corpus (news,
+    # tooling, docs), not peer-reviewed literature. Absent entirely if the agent judged
+    # this topic didn't call for it, or if no web search provider is configured — the
+    # rest of the page works identically either way.
+    if st.session_state.web_articles:
+        st.divider()
+        st.subheader("🌐 Current Web Context")
+        st.caption("Supplementary web results (news, tooling, docs) — not peer-reviewed, shown separately from the papers above.")
+        for a in st.session_state.web_articles:
+            with st.expander(f"{a['title']}  —  {a['source_domain']}"):
+                if a.get("published_date"):
+                    st.caption(f"Published: {a['published_date']}")
+                st.write(a["snippet"] or "_No snippet available._")
+                st.markdown(f"[{a['url']}]({a['url']})")
+
     # ---- summary ---------------------------------------------------------------
 
     st.divider()
     st.subheader("Literature Summary")
 
+    citation_style = st.selectbox(
+        "Citation style",
+        options=["apa", "harvard", "bibtex"],
+        format_func=lambda s: {"apa": "APA", "harvard": "Harvard", "bibtex": "BibTeX"}[s],
+        key="citation_style",
+        help="Applies to the citation shown under each paper below, and to the Export References section.",
+    )
+
     if st.button("Generate Summary"):
         with st.spinner("Clustering papers into themes and writing grounded summaries..."):
-            ok, data = _api_post("/summarize", {"search_id": st.session_state.search_id})
+            ok, data = _api_post("/summarize", {"search_id": st.session_state.search_id, "style": citation_style})
         if ok:
             st.session_state.summary = data
         else:
@@ -196,11 +251,19 @@ if st.session_state.papers:
             for entry in theme["papers"]:
                 st.markdown(f"**{entry['title']}**")
                 st.write(entry["summary"])
-                st.caption(entry["apa_citation"])
+                st.caption(entry.get("citation", entry["apa_citation"]))
         st.markdown("#### Gaps & Disagreements")
         st.write(summary["gaps_and_disagreements"])
         if summary.get("skipped_paper_ids"):
             st.caption(f"{len(summary['skipped_paper_ids'])} retrieved paper(s) weren't referenced in the summary above.")
+
+        # Its own block below the paper-themes summary, never merged into it —
+        # None when this search found no web articles to summarize.
+        if summary.get("web_summary"):
+            st.markdown("#### 🌐 Web Context Summary")
+            st.write(summary["web_summary"]["synthesis"])
+            for a in summary["web_summary"]["cited_articles"]:
+                st.caption(f"[{a['title']}]({a['url']}) — {a['source_domain']}")
 
     # ---- chat --------------------------------------------------------------------
 
@@ -225,8 +288,14 @@ if st.session_state.papers:
             st.session_state.chat_history = data["history"]
             with st.chat_message("assistant"):
                 st.write(data["answer"])
+                # Kept as two separate captions (not one merged list) so a
+                # peer-reviewed paper citation and a web source stay visually
+                # distinguishable, matching the answer text's [Paper N]/[Web N]
+                # marker distinction all the way to the chat UI.
                 if data["cited_papers"]:
-                    st.caption("Cited: " + ", ".join(p["title"] for p in data["cited_papers"]))
+                    st.caption("📄 Papers: " + ", ".join(p["title"] for p in data["cited_papers"]))
+                if data.get("cited_web_articles"):
+                    st.caption("🌐 Web: " + ", ".join(a["title"] for a in data["cited_web_articles"]))
         else:
             st.error(data["detail"])
 
@@ -237,7 +306,7 @@ if st.session_state.papers:
 
     if st.button("Prepare Markdown Export"):
         with st.spinner("Preparing export..."):
-            ok, md_text = _api_get_text(f"/export/{st.session_state.search_id}")
+            ok, md_text = _api_get_text(f"/export/{st.session_state.search_id}?style={citation_style}")
         if ok:
             st.session_state.export_md = md_text
         else:

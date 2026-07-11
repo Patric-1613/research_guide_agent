@@ -225,12 +225,20 @@ def embed_and_index_papers(
     }
 
 
+def _combine_where(where: dict | None, extra: dict | None) -> dict | None:
+    if where and extra:
+        return {"$and": [where, extra]}
+    return where or extra
+
+
 def semantic_search(
     query: str,
     collection=None,
     client: OpenAI | None = None,
     top_k: int = 10,
     where: dict | None = None,
+    min_citation_count: int | None = None,
+    require_doi: bool = False,
 ) -> list[tuple[Paper, float]]:
     """Embed the query and retrieve the top_k most similar indexed papers.
 
@@ -241,6 +249,28 @@ def semantic_search(
     to scope retrieval to a subset of the persistent collection — the agent
     (phase 4) uses this so reranking a search only considers papers gathered
     in the current session, not every paper ever indexed across past runs.
+
+    min_citation_count and require_doi (round-2 enhancement 2) are two more
+    metadata filters, applied differently for a reason worth spelling out:
+    citation_count is numeric, so `{"citation_count": {"$gte": n}}` is a
+    real Chroma `where` clause — Chroma evaluates it server-side and a
+    paper missing the key entirely (no citation count known) is correctly
+    excluded, verified empirically against this chromadb version.
+    doi is a string field, and this chromadb version's `where` grammar has
+    no presence/"$exists" operator — `$ne` against a sentinel does NOT
+    require the key to exist (a paper with no `doi` key at all still
+    matches `{"doi": {"$ne": ""}}`), and `$gt`/`$gte` reject non-numeric
+    operands outright. Adding a dedicated boolean `has_doi` metadata field
+    would fix this but was ruled out: it's a schema change, and the brief
+    for this enhancement explicitly says filters must work against the
+    existing metadata without re-indexing or a schema change. So when
+    require_doi is set, this fetches the *entire* where-scoped candidate
+    pool (bounded — tens of papers per session, same scale assumption
+    dedup.py already makes) in similarity order, filters for a present DOI
+    in Python, then truncates to top_k — top_k truncation happens after
+    filtering, not before, so a paper ranked outside the naive top_k but
+    still DOI-bearing isn't wrongly dropped in favor of one that gets
+    filtered out anyway.
     """
     collection = collection or get_chroma_collection()
     client = client or OpenAI()
@@ -253,11 +283,18 @@ def semantic_search(
     cost = tokens_billed / 1_000_000 * PRICE_PER_1M_TOKENS
     logger.info("Embedded query %r: %d tokens billed (~$%.6f)", query, tokens_billed, cost)
 
-    n_results = min(top_k, collection.count())
+    combined_where = where
+    if min_citation_count:
+        combined_where = _combine_where(combined_where, {"citation_count": {"$gte": min_citation_count}})
+
+    # require_doi needs the full scoped pool (see docstring) rather than
+    # just top_k candidates, since Python-side filtering happens after
+    # retrieval.
+    n_results = collection.count() if require_doi else min(top_k, collection.count())
     results = collection.query(
         query_embeddings=query_vector,
         n_results=n_results,
-        where=where,
+        where=combined_where,
         include=["metadatas", "documents", "distances"],
     )
 
@@ -265,6 +302,10 @@ def semantic_search(
     for metadata, distance in zip(results["metadatas"][0], results["distances"][0]):
         similarity = 1.0 - distance
         papers_with_scores.append((_paper_from_metadata(metadata), similarity))
+
+    if require_doi:
+        papers_with_scores = [(p, s) for p, s in papers_with_scores if p.doi][:top_k]
+
     return papers_with_scores
 
 

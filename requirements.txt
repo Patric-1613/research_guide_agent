@@ -11,3 +11,7 @@ pydantic==2.13.4
 fastapi==0.139.0
 uvicorn[standard]==0.50.2
 streamlit==1.59.0
+langchain-tavily==0.2.18
+
+# Dev dependency — needed to run tests/ (pytest tests/ -v), not by the app itself.
+pytest==9.1.1

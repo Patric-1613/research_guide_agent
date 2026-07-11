@@ -31,10 +31,21 @@ def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             paper_ids TEXT NOT NULL,
             scores TEXT NOT NULL,
-            summary TEXT
+            summary TEXT,
+            web_articles TEXT,
+            web_summary TEXT
         )
         """
     )
+    # Round-2 enhancement 5: CREATE TABLE IF NOT EXISTS only applies the new
+    # columns to a brand-new table — a database file created before this
+    # enhancement already has a `searches` table without them. SQLite has no
+    # "ADD COLUMN IF NOT EXISTS", so check first rather than relying on
+    # catching the duplicate-column error.
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(searches)")}
+    for column in ("web_articles", "web_summary"):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE searches ADD COLUMN {column} TEXT")
     conn.commit()
     return conn
 
@@ -47,6 +58,8 @@ class SavedSearch:
     paper_ids: list[str]
     scores: list[float]
     summary: dict | None
+    web_articles: list[dict]
+    web_summary: dict | None
 
 
 def _row_to_saved_search(row: sqlite3.Row) -> SavedSearch:
@@ -57,14 +70,23 @@ def _row_to_saved_search(row: sqlite3.Row) -> SavedSearch:
         paper_ids=json.loads(row["paper_ids"]),
         scores=json.loads(row["scores"]),
         summary=json.loads(row["summary"]) if row["summary"] else None,
+        web_articles=json.loads(row["web_articles"]) if row["web_articles"] else [],
+        web_summary=json.loads(row["web_summary"]) if row["web_summary"] else None,
     )
 
 
-def save_search(conn: sqlite3.Connection, topic: str, paper_ids: list[str], scores: list[float]) -> tuple[int, str]:
+def save_search(
+    conn: sqlite3.Connection,
+    topic: str,
+    paper_ids: list[str],
+    scores: list[float],
+    web_articles: list[dict] | None = None,
+) -> tuple[int, str]:
     created_at = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
-        "INSERT INTO searches (topic, created_at, paper_ids, scores, summary) VALUES (?, ?, ?, ?, NULL)",
-        (topic, created_at, json.dumps(paper_ids), json.dumps(scores)),
+        "INSERT INTO searches (topic, created_at, paper_ids, scores, summary, web_articles, web_summary) "
+        "VALUES (?, ?, ?, ?, NULL, ?, NULL)",
+        (topic, created_at, json.dumps(paper_ids), json.dumps(scores), json.dumps(web_articles or [])),
     )
     conn.commit()
     return cur.lastrowid, created_at
@@ -72,6 +94,11 @@ def save_search(conn: sqlite3.Connection, topic: str, paper_ids: list[str], scor
 
 def update_summary(conn: sqlite3.Connection, search_id: int, summary: dict) -> None:
     conn.execute("UPDATE searches SET summary = ? WHERE id = ?", (json.dumps(summary), search_id))
+    conn.commit()
+
+
+def update_web_summary(conn: sqlite3.Connection, search_id: int, web_summary: dict) -> None:
+    conn.execute("UPDATE searches SET web_summary = ? WHERE id = ?", (json.dumps(web_summary), search_id))
     conn.commit()
 
 

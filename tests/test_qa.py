@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.qa import ChatSession, _build_answer_schema, _condense_question, ask
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 
 def _paper(paper_id: str, title: str) -> Paper:
@@ -22,6 +22,10 @@ def _paper(paper_id: str, title: str) -> Paper:
         abstract=f"Abstract for {title}.", url=f"http://arxiv.org/abs/{paper_id}",
         doi=None, citation_count=None, source="arxiv", paper_id=paper_id,
     )
+
+
+def _web_article(url: str, title: str) -> WebArticle:
+    return WebArticle(title=title, url=url, snippet=f"Snippet for {title}.", published_date=None, source_domain="example.com")
 
 
 def _mock_parse_response(schema_cls, **kwargs):
@@ -61,6 +65,54 @@ def test_condense_question_skips_llm_call_on_first_turn():
     mock_client.chat.completions.create.assert_not_called()
 
 
+def test_answer_schema_without_web_urls_has_no_cited_web_urls_field():
+    schema = _build_answer_schema(["a"])  # no web_urls -> field must not exist at all
+    assert "cited_web_urls" not in schema.model_fields
+
+
+def test_answer_schema_rejects_unknown_web_url():
+    schema = _build_answer_schema(["a"], ["https://real.com"])
+    schema(answerable=True, answer="fine [Paper 1] [Web 1]", cited_paper_ids=["a"], cited_web_urls=["https://real.com"])
+    try:
+        schema(answerable=True, answer="bad", cited_paper_ids=[], cited_web_urls=["https://not-retrieved.com"])
+        assert False, "expected a validation error for an unretrieved URL"
+    except Exception:
+        pass
+
+
+def test_ask_with_only_web_articles_no_papers_still_answers():
+    session = ChatSession(papers=[], web_articles=[_web_article("https://x.com/a", "Article A")])
+    schema = _build_answer_schema([], ["https://x.com/a"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], X is true.", cited_paper_ids=[], cited_web_urls=["https://x.com/a"],
+    )
+
+    result = ask(session, "what does the web say?", client=mock_client)
+
+    assert result["answerable"] is True
+    assert result["cited_papers"] == []
+    assert len(result["cited_web_articles"]) == 1
+    assert result["cited_web_articles"][0].url == "https://x.com/a"
+    mock_client.chat.completions.parse.assert_called_once()
+
+
+def test_ask_forces_empty_web_citations_when_model_marks_unanswerable():
+    session = ChatSession(papers=[], web_articles=[_web_article("https://x.com/a", "Article A")])
+    schema = _build_answer_schema([], ["https://x.com/a"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=False, answer="Can't answer.", cited_paper_ids=[], cited_web_urls=["https://x.com/a"],
+    )
+
+    result = ask(session, "unanswerable", client=mock_client)
+
+    assert result["answerable"] is False
+    assert result["cited_web_articles"] == []  # forced empty despite model returning a url
+
+
 def test_ask_forces_empty_citations_when_model_marks_unanswerable():
     """Defensive check: even if the model violates instructions and returns
     cited_paper_ids alongside answerable=False, ask() must not surface a
@@ -88,5 +140,9 @@ if __name__ == "__main__":
     test_answer_schema_rejects_unknown_paper_id()
     test_ask_with_no_papers_short_circuits_without_calling_client()
     test_condense_question_skips_llm_call_on_first_turn()
+    test_answer_schema_without_web_urls_has_no_cited_web_urls_field()
+    test_answer_schema_rejects_unknown_web_url()
+    test_ask_with_only_web_articles_no_papers_still_answers()
+    test_ask_forces_empty_web_citations_when_model_marks_unanswerable()
     test_ask_forces_empty_citations_when_model_marks_unanswerable()
     print("All qa tests passed.")
