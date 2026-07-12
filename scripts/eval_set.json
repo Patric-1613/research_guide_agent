@@ -1,0 +1,94 @@
+[
+  {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "expected_titles": [
+      "LoRA: Low-Rank Adaptation of Large Language Models",
+      "Prefix-Tuning: Optimizing Continuous Prompts for Generation"
+    ]
+  },
+  {
+    "topic": "retrieval-augmented generation for knowledge-intensive NLP tasks",
+    "expected_titles": [
+      "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    ]
+  },
+  {
+    "topic": "differential privacy in deep learning",
+    "expected_titles": [
+      "Deep Learning with Differential Privacy"
+    ]
+  },
+  {
+    "topic": "federated learning on decentralized data",
+    "expected_titles": [
+      "Communication-Efficient Learning of Deep Networks from Decentralized Data"
+    ]
+  },
+  {
+    "topic": "attention mechanism for transformer sequence models",
+    "expected_titles": [
+      "Attention Is All You Need"
+    ]
+  },
+  {
+    "topic": "contrastive learning of visual representations",
+    "expected_titles": [
+      "A Simple Framework for Contrastive Learning of Visual Representations"
+    ]
+  },
+  {
+    "topic": "denoising diffusion probabilistic models for image generation",
+    "expected_titles": [
+      "Denoising Diffusion Probabilistic Models"
+    ]
+  },
+  {
+    "topic": "in-context few-shot learning with large language models",
+    "expected_titles": [
+      "Language Models are Few-Shot Learners"
+    ]
+  },
+  {
+    "topic": "knowledge distillation for compressing neural networks",
+    "expected_titles": [
+      "Distilling the Knowledge in a Neural Network"
+    ]
+  },
+  {
+    "topic": "graph convolutional networks for semi-supervised classification",
+    "expected_titles": [
+      "Semi-Supervised Classification with Graph Convolutional Networks"
+    ]
+  },
+  {
+    "topic": "reinforcement learning from human feedback for instruction following",
+    "expected_titles": [
+      "Training language models to follow instructions with human feedback"
+    ]
+  },
+  {
+    "topic": "chain-of-thought prompting for reasoning in language models",
+    "expected_titles": [
+      "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+    ]
+  },
+  {
+    "topic": "vision transformers for image classification",
+    "expected_titles": [
+      "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
+    ]
+  },
+  {
+    "topic": "word embeddings in vector space",
+    "expected_titles": [
+      "Efficient Estimation of Word Representations in Vector Space",
+      "Distributed Representations of Words and Phrases and their Compositionality"
+    ]
+  },
+  {
+    "topic": "pretraining bidirectional transformers for language understanding",
+    "expected_titles": [
+      "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    ]
+  }
+]
