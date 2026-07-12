@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -30,14 +31,29 @@ from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from research_agent.agent import run_research_agent
+from research_agent.agent import _merge_web_articles, run_research_agent
 from research_agent.citations import CitationStyle, select_citation
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.enrichment import enrich_missing_abstracts
+from research_agent.ingestion import search_arxiv, search_semantic_scholar
 from research_agent.qa import ChatSession, ask
 from research_agent.schema import Paper, WebArticle
-from research_agent.storage import get_search, init_db, list_searches, save_search, update_summary, update_web_summary
+from research_agent.session import TriageSession, add_round
+from research_agent.storage import (
+    delete_bag,
+    get_bag,
+    get_search,
+    init_db,
+    list_bags,
+    list_searches,
+    paper_ids_referenced_by_other_bags,
+    save_bag,
+    save_search,
+    update_summary,
+    update_web_summary,
+)
 from research_agent.summarize import generate_summary, generate_web_summary
+from research_agent.web_search import search_web
 
 load_dotenv()
 
@@ -181,6 +197,115 @@ class ChatResponse(BaseModel):
     # ([Paper N]), not merged into one generic citation list.
     cited_web_articles: list[CitedWebArticleOut]
     history: list[ChatTurn]
+
+
+class RoundSearchRequest(BaseModel):
+    """Round 3, phase 2: one round of the interactive multi-round triage
+    flow. Deliberately stateless like every other endpoint here — the
+    caller (Streamlit's session_state) sends back the whole session it
+    got from the previous round-search call (or omits it on the very
+    first round of a new session) and receives the updated version.
+    Nothing here touches SQLite or Chroma; see session.py's docstring.
+    """
+
+    topic: str
+    keyword: str = Field(..., min_length=1)
+    session_state: dict | None = None
+    include_web: bool = True
+    max_results_per_source: int = Field(default=10, ge=3, le=30)
+    web_max_results: int = Field(default=4, ge=1, le=10)
+
+
+class RoundOut(BaseModel):
+    round_number: int
+    keywords_used: list[str]
+    timestamp: str
+    paper_ids_found: list[str]
+    new_paper_ids: list[str]
+    web_urls_found: list[str]
+    new_web_urls: list[str]
+
+
+class RoundSearchResponse(BaseModel):
+    # Opaque blob the frontend stores as-is and resends verbatim on the
+    # next /round_search call — see TriageSession.to_dict()/from_dict().
+    session_state: dict
+    round: RoundOut
+
+
+class TriageSummarizeRequest(BaseModel):
+    """Round 3, phase 3: the interactive-triage equivalent of /summarize.
+    Deliberately takes the whole session_state blob (not just a list of
+    ids) so the basket's paper_ids/urls can be resolved back to full
+    Paper/WebArticle records without a second round trip — the frontend
+    already has them all in session_state["all_papers"]/["all_web_articles"]
+    from the last /round_search response.
+    """
+
+    session_state: dict
+    style: CitationStyle = "apa"
+
+
+class TriageSummarizeResponse(BaseModel):
+    topic: str
+    style: CitationStyle
+    themes: list[ThemeOut]
+    gaps_and_disagreements: str
+    skipped_paper_ids: list[str]
+    web_summary: WebSummaryOut | None = None
+    basket_paper_count: int
+    basket_web_article_count: int
+    # Exposes embeddings.py's own cache_hits/cache_misses/tokens_billed/
+    # estimated_cost_usd straight through — concrete, checkable evidence
+    # (both for tests and for the UI itself) that embedding only ever
+    # covers the basket, never the full accumulated search pool.
+    embed_stats: dict
+
+
+class TriageDiscardRequest(BaseModel):
+    """Round 3, phase 4: the basket's paper_ids that /triage/summarize just
+    embedded, sent back so their Chroma vectors can be removed if the user
+    chooses not to keep this session as a bag. Never touches SQLite —
+    nothing was persisted there in the first place."""
+
+    paper_ids: list[str]
+
+
+class TriageSaveBagRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    session_state: dict
+    # The exact dict /triage/summarize returned (themes, gaps_and_disagreements,
+    # skipped_paper_ids, web_summary, ...) — saved as-is rather than
+    # regenerated, since regenerating would re-bill the LLM for no reason.
+    summary: dict
+
+
+class BagOut(BaseModel):
+    bag_id: int
+    name: str
+    topic: str
+    created_at: str
+    paper_count: int
+    web_article_count: int
+    # Union of every round's keywords_used and the creation year — the
+    # phase-4 brief's "group/filter by name, keyword, or year" needs
+    # something to group/filter on; name is already `name`/`topic`.
+    keywords: list[str]
+    year: int
+
+
+class BagDetailResponse(BaseModel):
+    bag_id: int
+    name: str
+    topic: str
+    created_at: str
+    papers: list[PaperOut]
+    web_articles: list[WebArticleOut]
+    rounds: list[RoundOut]
+    themes: list[ThemeOut]
+    gaps_and_disagreements: str
+    skipped_paper_ids: list[str]
+    web_summary: WebSummaryOut | None = None
 
 
 class LibraryItem(BaseModel):
@@ -460,11 +585,21 @@ def search(req: SearchRequest) -> SearchResponse:
 
     paper_ids = [p.paper_id for p, _ in ranked]
     scores = [score for _, score in ranked]
-    # Same code-enforced-count guarantee as top_k: the agent may have
-    # accumulated more than web_max_results across multiple search_web_tool
-    # calls (deduped by URL, not by count) — truncate here so the returned
-    # count is never silently uncontrolled, same reasoning as top_k in
-    # enhancement 1.
+    if len(session.web_articles) < req.web_max_results:
+        # Whether to call search_web_tool at all is the agent's judgment
+        # call (agent.py's system prompt) — it may skip it entirely for a
+        # topic it judges purely historical/theoretical, or just not call it
+        # this run. But web_max_results is a user-set request parameter like
+        # top_k, so the user gets that many results whenever they're
+        # available, not only when the model happened to decide to look.
+        # Same code-enforced-count guarantee as top_k's server-side rerank
+        # fallback above.
+        fallback_articles = search_web(req.topic, max_results=req.web_max_results)
+        session.web_articles = _merge_web_articles(session.web_articles, fallback_articles)
+    # The agent may have accumulated more than web_max_results across
+    # multiple search_web_tool calls (deduped by URL, not by count) —
+    # truncate here so the returned count is never silently uncontrolled,
+    # same reasoning as top_k in enhancement 1.
     web_articles = session.web_articles[: req.web_max_results]
     search_id, created_at = save_search(
         _state["db"], req.topic, paper_ids, scores,
@@ -476,6 +611,206 @@ def search(req: SearchRequest) -> SearchResponse:
         papers=[_paper_to_out(p, score) for p, score in ranked],
         web_articles=[_web_article_to_out(a) for a in web_articles],
     )
+
+
+@app.post("/round_search", response_model=RoundSearchResponse)
+def round_search(req: RoundSearchRequest) -> RoundSearchResponse:
+    """Round 3, phase 2: run one round of the interactive triage flow.
+
+    Deliberately code-driven, not the phase-4 LLM agent: with ranking
+    deferred until Summarize (phase 3), a round has nothing left for the
+    agent's mandatory rerank-by-relevance tool call to do, so routing
+    through run_research_agent would just be an LLM call that changes
+    nothing but cost. This searches both arXiv and Semantic Scholar
+    directly (matching the old flow's "search both by default" behavior),
+    optionally web, and merges into the session's accumulated pool via
+    session.add_round (which itself reuses dedup.deduplicate unmodified).
+
+    Never touches SQLite or Chroma — nothing is persisted until the user
+    saves a bag (phase 4) or the basket is embedded at Summarize (phase 3).
+    """
+    session = TriageSession.from_dict(req.session_state) if req.session_state else TriageSession()
+    if not session.topic:
+        session.topic = req.topic
+
+    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    arxiv_papers = search_arxiv(req.keyword, max_results=req.max_results_per_source)
+    s2_papers = search_semantic_scholar(req.keyword, max_results=req.max_results_per_source, api_key=s2_key)
+    found_web_articles = search_web(req.keyword, max_results=req.web_max_results) if req.include_web else []
+
+    round_ = add_round(session, [req.keyword], arxiv_papers + s2_papers, found_web_articles)
+
+    return RoundSearchResponse(session_state=session.to_dict(), round=RoundOut(**asdict(round_)))
+
+
+def _papers_from_session_dict(session_state: dict, paper_ids: list[str]) -> list[Paper]:
+    all_papers = session_state.get("all_papers", {})
+    return [Paper(**all_papers[pid]) for pid in paper_ids if pid in all_papers]
+
+
+def _web_articles_from_session_dict(session_state: dict, urls: list[str]) -> list[WebArticle]:
+    all_web_articles = session_state.get("all_web_articles", {})
+    return [WebArticle(**all_web_articles[url]) for url in urls if url in all_web_articles]
+
+
+_EMPTY_EMBED_STATS = {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0}
+
+
+@app.post("/triage/summarize", response_model=TriageSummarizeResponse)
+def triage_summarize(req: TriageSummarizeRequest) -> TriageSummarizeResponse:
+    """Round 3, phase 3: the actual cost-saving change. Every /round_search
+    call above only ever gathers raw Paper/WebArticle records in memory —
+    it never calls enrich_missing_abstracts or embed_and_index_papers, so
+    nothing is embedded or written to Chroma while the user is still
+    browsing across however many rounds. Those calls only happen here, and
+    only for whatever is in the basket at the moment Summarize is clicked —
+    never session_state's full accumulated pool, which after several
+    rounds is typically much larger than the basket.
+
+    Not yet persisted to SQLite/Chroma-as-a-bag — phase 4 adds the actual
+    named-bag save/discard step on top of the embeddings this call writes.
+    """
+    session_state = req.session_state
+    basket_paper_ids = session_state.get("basket_paper_ids", [])
+    basket_web_urls = session_state.get("basket_web_urls", [])
+    if not basket_paper_ids and not basket_web_urls:
+        raise HTTPException(
+            status_code=400,
+            detail="Your basket is empty — add at least one paper or web article before summarizing.",
+        )
+
+    basket_papers = _papers_from_session_dict(session_state, basket_paper_ids)
+    basket_web_articles = _web_articles_from_session_dict(session_state, basket_web_urls)
+    topic = session_state.get("topic", "")
+
+    embed_stats = _EMPTY_EMBED_STATS
+    if basket_papers:
+        enrich_missing_abstracts(basket_papers)
+        embed_stats = embed_and_index_papers(basket_papers, collection=_state["collection"], client=_state["client"])
+
+    result = generate_summary(topic, basket_papers, client=_state["client"], style=req.style)
+    summary_json = _summary_to_json(result, style=req.style)
+
+    web_summary_json = None
+    if basket_web_articles:
+        web_result = generate_web_summary(topic, basket_web_articles, client=_state["client"])
+        web_summary_json = _web_summary_to_json(web_result)
+
+    return TriageSummarizeResponse(
+        topic=topic,
+        style=req.style,
+        web_summary=WebSummaryOut(**web_summary_json) if web_summary_json is not None else None,
+        basket_paper_count=len(basket_papers),
+        basket_web_article_count=len(basket_web_articles),
+        embed_stats=embed_stats,
+        **summary_json,
+    )
+
+
+def _delete_chroma_vectors_unless_shared(paper_ids: list[str], exclude_bag_id: int | None = None) -> list[str]:
+    """Deletes each of `paper_ids`' Chroma vectors, except any still
+    referenced by some other saved bag (storage.paper_ids_referenced_by_other_bags) —
+    used by both /triage/discard (no bag ever existed) and DELETE /bags/{id}
+    (a bag existed and is being removed). Returns the ids actually deleted,
+    so callers/tests can confirm scope precisely."""
+    still_referenced = paper_ids_referenced_by_other_bags(_state["db"], paper_ids, exclude_bag_id=exclude_bag_id)
+    ids_to_delete = [pid for pid in paper_ids if pid not in still_referenced]
+    if ids_to_delete:
+        _state["collection"].delete(ids=ids_to_delete)
+    return ids_to_delete
+
+
+@app.post("/triage/discard")
+def triage_discard(req: TriageDiscardRequest) -> dict:
+    """Round 3, phase 4: 'discard everything generated this session' — the
+    basket was embedded into Chroma at Summarize time (phase 3) but no bag
+    was ever saved, so there's no SQLite row to remove, only those Chroma
+    vectors (and only the ones no other saved bag still needs)."""
+    removed = _delete_chroma_vectors_unless_shared(req.paper_ids)
+    return {"discarded": True, "chroma_ids_removed": removed}
+
+
+def _bag_keywords(rounds: list[dict]) -> list[str]:
+    return sorted({kw for r in rounds for kw in r.get("keywords_used", [])})
+
+
+@app.post("/triage/save_bag", response_model=BagOut)
+def triage_save_bag(req: TriageSaveBagRequest) -> BagOut:
+    """Round 3, phase 4: persist the basket, its round history, and the
+    already-generated summaries as a named bag. The embeddings themselves
+    were already written to Chroma by /triage/summarize (phase 3) — this
+    only adds the SQLite record; nothing gets re-embedded."""
+    session_state = req.session_state
+    basket_paper_ids = session_state.get("basket_paper_ids", [])
+    basket_web_urls = session_state.get("basket_web_urls", [])
+    if not basket_paper_ids and not basket_web_urls:
+        raise HTTPException(status_code=400, detail="Nothing to save — the basket is empty.")
+
+    all_web_articles = session_state.get("all_web_articles", {})
+    web_articles = [all_web_articles[u] for u in basket_web_urls if u in all_web_articles]
+    rounds = session_state.get("rounds", [])
+    summary_json = {
+        "themes": req.summary.get("themes", []),
+        "gaps_and_disagreements": req.summary.get("gaps_and_disagreements", ""),
+        "skipped_paper_ids": req.summary.get("skipped_paper_ids", []),
+    }
+    web_summary_json = req.summary.get("web_summary")
+    topic = session_state.get("topic", "")
+
+    bag_id, created_at = save_bag(
+        _state["db"], req.name, topic, basket_paper_ids, web_articles, rounds, summary_json, web_summary_json,
+    )
+    return BagOut(
+        bag_id=bag_id, name=req.name, topic=topic, created_at=created_at,
+        paper_count=len(basket_paper_ids), web_article_count=len(web_articles),
+        keywords=_bag_keywords(rounds), year=int(created_at[:4]),
+    )
+
+
+@app.get("/bags", response_model=list[BagOut])
+def list_bags_endpoint() -> list[BagOut]:
+    return [
+        BagOut(
+            bag_id=b.id, name=b.name, topic=b.topic, created_at=b.created_at,
+            paper_count=len(b.paper_ids), web_article_count=len(b.web_articles),
+            keywords=_bag_keywords(b.rounds), year=int(b.created_at[:4]),
+        )
+        for b in list_bags(_state["db"])
+    ]
+
+
+@app.get("/bags/{bag_id}", response_model=BagDetailResponse)
+def get_bag_detail(bag_id: int) -> BagDetailResponse:
+    bag = get_bag(_state["db"], bag_id)
+    if bag is None:
+        raise HTTPException(status_code=404, detail="bag_id not found")
+
+    papers = get_papers_by_ids(bag.paper_ids, collection=_state["collection"])
+    return BagDetailResponse(
+        bag_id=bag.id, name=bag.name, topic=bag.topic, created_at=bag.created_at,
+        papers=[_paper_to_out(p) for p in papers],
+        web_articles=[WebArticleOut(**a) for a in bag.web_articles],
+        rounds=[RoundOut(**r) for r in bag.rounds],
+        themes=bag.summary.get("themes", []),
+        gaps_and_disagreements=bag.summary.get("gaps_and_disagreements", ""),
+        skipped_paper_ids=bag.summary.get("skipped_paper_ids", []),
+        web_summary=WebSummaryOut(**bag.web_summary) if bag.web_summary is not None else None,
+    )
+
+
+@app.delete("/bags/{bag_id}")
+def delete_bag_endpoint(bag_id: int) -> dict:
+    """Round 3, phase 4: deleting a bag removes BOTH the SQLite record AND
+    its Chroma vectors (unless another saved bag still references the same
+    paper — see paper_ids_referenced_by_other_bags) — never just one of the
+    two, so no orphaned vectors are left behind in Chroma."""
+    bag = get_bag(_state["db"], bag_id)
+    if bag is None:
+        raise HTTPException(status_code=404, detail="bag_id not found")
+
+    removed = _delete_chroma_vectors_unless_shared(bag.paper_ids, exclude_bag_id=bag_id)
+    delete_bag(_state["db"], bag_id)
+    return {"deleted": True, "bag_id": bag_id, "chroma_ids_removed": removed}
 
 
 @app.post("/summarize", response_model=SummarizeResponse)

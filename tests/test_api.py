@@ -40,7 +40,14 @@ def _web_article(url: str, title: str) -> WebArticle:
 def _client():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
-        with patch.object(api, "init_db", lambda: real_init_db(db_path)):
+        # Default search_web to a no-op here so every test that doesn't care
+        # about web search (i.e. doesn't patch it itself) stays isolated from
+        # the network/Tavily billing, per this file's module docstring —
+        # otherwise api.py's server-side web-search fallback (added alongside
+        # the top_k-style guarantee) would fire a real call for any test
+        # whose fake session has fewer web_articles than web_max_results.
+        with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(api, "search_web", return_value=[]):
             with TestClient(api.app) as client:
                 yield client
 
@@ -97,6 +104,43 @@ def test_search_degrades_gracefully_with_no_web_articles():
 
     assert resp.status_code == 200
     assert resp.json()["web_articles"] == []
+
+
+def test_search_falls_back_to_direct_web_search_when_agent_found_none():
+    # Whether the agent calls its own search_web_tool is a per-topic
+    # judgment call (agent.py's system prompt) that it can skip entirely —
+    # but web_max_results is a user-set request parameter like top_k, so the
+    # user should still get web context whenever any exists, not only when
+    # the model happened to decide to look.
+    papers = [_paper("p1", "Paper One")]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=[])
+    fallback_articles = [_web_article("https://x.com/fallback", "Fallback Article")]
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", return_value=fake_session), \
+         patch.object(api, "search_web", return_value=fallback_articles) as mock_search_web:
+        resp = client.post("/search", json={"topic": "t", "web_max_results": 3})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["web_articles"]) == 1
+    assert body["web_articles"][0]["url"] == "https://x.com/fallback"
+    mock_search_web.assert_called_once_with("t", max_results=3)
+
+
+def test_search_skips_web_fallback_when_agent_already_met_web_max_results():
+    papers = [_paper("p1", "Paper One")]
+    web_articles = [_web_article(f"https://x.com/{i}", f"Article {i}") for i in range(3)]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=web_articles)
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", return_value=fake_session), \
+         patch.object(api, "search_web") as mock_search_web:
+        resp = client.post("/search", json={"topic": "t", "web_max_results": 3})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["web_articles"]) == 3
+    mock_search_web.assert_not_called()
 
 
 def test_search_with_no_papers_returns_404():
@@ -412,6 +456,295 @@ def test_export_includes_separate_web_context_section():
     assert resp.text.index("## Web Context") > resp.text.index("## Gaps and Disagreements")
 
 
+def test_round_search_first_round_marks_papers_new_and_does_not_touch_llm_agent():
+    with _client() as client, \
+         patch.object(api, "search_arxiv", return_value=[_paper("a1", "Paper A")]) as mock_arxiv, \
+         patch.object(api, "search_semantic_scholar", return_value=[]) as mock_s2, \
+         patch.object(api, "run_research_agent") as mock_agent:
+        resp = client.post("/round_search", json={"topic": "PEFT", "keyword": "PEFT", "include_web": False})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["round"]["round_number"] == 1
+    assert body["round"]["new_paper_ids"] == ["a1"]
+    assert body["session_state"]["all_papers"]["a1"]["title"] == "Paper A"
+    mock_arxiv.assert_called_once()
+    mock_s2.assert_called_once()
+    mock_agent.assert_not_called()  # code-driven round search, no LLM tool-loop involved
+
+
+def test_round_search_second_round_resurfaces_paper_as_seen_not_new():
+    with _client() as client, \
+         patch.object(api, "search_semantic_scholar", return_value=[]):
+        with patch.object(api, "search_arxiv", return_value=[_paper("arxiv:1", "LoRA: Low-Rank Adaptation")]):
+            first = client.post(
+                "/round_search",
+                json={"topic": "PEFT", "keyword": "PEFT", "include_web": False},
+            ).json()
+
+        with patch.object(api, "search_arxiv", return_value=[_paper("s2:1", "LoRA: Low-Rank Adaptation")]):
+            second = client.post(
+                "/round_search",
+                json={
+                    "topic": "PEFT", "keyword": "low-rank adaptation",
+                    "session_state": first["session_state"], "include_web": False,
+                },
+            ).json()
+
+    assert second["round"]["round_number"] == 2
+    merged_id = next(iter(second["session_state"]["all_papers"]))
+    assert merged_id in second["round"]["paper_ids_found"]
+    assert merged_id not in second["round"]["new_paper_ids"]
+    # exactly one merged record, not two
+    assert len(second["session_state"]["all_papers"]) == 1
+
+
+def test_round_search_basket_status_survives_a_rename_across_rounds():
+    with _client() as client, patch.object(api, "search_semantic_scholar", return_value=[]):
+        with patch.object(api, "search_arxiv", return_value=[_paper("arxiv:1", "LoRA: Low-Rank Adaptation")]):
+            first = client.post(
+                "/round_search",
+                json={"topic": "PEFT", "keyword": "PEFT", "include_web": False},
+            ).json()
+
+        session_state = first["session_state"]
+        session_state["basket_paper_ids"] = ["arxiv:1"]
+
+        with patch.object(api, "search_arxiv", return_value=[_paper("s2:1", "LoRA: Low-Rank Adaptation")]):
+            second = client.post(
+                "/round_search",
+                json={
+                    "topic": "PEFT", "keyword": "low-rank adaptation",
+                    "session_state": session_state, "include_web": False,
+                },
+            ).json()
+
+    merged_id = next(iter(second["session_state"]["all_papers"]))
+    assert second["session_state"]["basket_paper_ids"] == [merged_id]
+
+
+def test_round_search_skips_web_search_when_include_web_false():
+    with _client() as client, \
+         patch.object(api, "search_arxiv", return_value=[]), \
+         patch.object(api, "search_semantic_scholar", return_value=[]), \
+         patch.object(api, "search_web") as mock_web:
+        resp = client.post("/round_search", json={"topic": "t", "keyword": "kw", "include_web": False})
+
+    assert resp.status_code == 200
+    mock_web.assert_not_called()
+
+
+def _fake_session_state(all_papers: list[Paper], basket_paper_ids: list[str], topic: str = "t",
+                         all_web_articles: list[WebArticle] | None = None, basket_web_urls: list[str] | None = None) -> dict:
+    return {
+        "topic": topic,
+        "rounds": [],
+        "all_papers": {p.paper_id: p.to_dict() for p in all_papers},
+        "all_web_articles": {a.url: a.to_dict() for a in (all_web_articles or [])},
+        "basket_paper_ids": basket_paper_ids,
+        "basket_web_urls": basket_web_urls or [],
+    }
+
+
+def test_round_search_never_embeds_during_browsing():
+    # Phase-3 success criterion: embed_and_index_papers must never be
+    # called by a round search, however many rounds run — only /triage/summarize
+    # is allowed to call it, and only for the basket.
+    with _client() as client, \
+         patch.object(api, "search_arxiv", return_value=[_paper("a1", "Paper A")]), \
+         patch.object(api, "search_semantic_scholar", return_value=[]), \
+         patch.object(api, "embed_and_index_papers") as mock_embed, \
+         patch.object(api, "enrich_missing_abstracts") as mock_enrich:
+        client.post("/round_search", json={"topic": "t", "keyword": "kw1", "include_web": False})
+        client.post("/round_search", json={"topic": "t", "keyword": "kw2", "include_web": False})
+
+    mock_embed.assert_not_called()
+    mock_enrich.assert_not_called()
+
+
+def test_triage_summarize_embeds_only_basket_not_full_pool():
+    all_papers = [_paper("a1", "Paper A"), _paper("a2", "Paper B"), _paper("a3", "Paper C")]
+    session_state = _fake_session_state(all_papers, basket_paper_ids=["a2"])
+    fake_summary_result = {
+        "themes": [{"theme_name": "Theme", "papers": [
+            {"paper": all_papers[1], "summary": "s", "apa_citation": "c", "bibtex": "@misc{x,}"}
+        ]}],
+        "gaps_and_disagreements": "none",
+        "skipped_papers": [],
+    }
+
+    with _client() as client, \
+         patch.object(api, "embed_and_index_papers", return_value={
+             "cache_hits": 0, "cache_misses": 1, "tokens_billed": 12, "estimated_cost_usd": 0.0001,
+         }) as mock_embed, \
+         patch.object(api, "generate_summary", return_value=fake_summary_result):
+        resp = client.post("/triage/summarize", json={"session_state": session_state})
+
+    assert resp.status_code == 200
+    mock_embed.assert_called_once()
+    embedded_papers = mock_embed.call_args.args[0]
+    assert [p.paper_id for p in embedded_papers] == ["a2"]  # basket only, not all 3
+    body = resp.json()
+    assert body["basket_paper_count"] == 1
+    assert body["embed_stats"]["cache_misses"] == 1
+
+
+def test_triage_summarize_returns_400_on_empty_basket():
+    session_state = _fake_session_state([_paper("a1", "Paper A")], basket_paper_ids=[])
+    with _client() as client:
+        resp = client.post("/triage/summarize", json={"session_state": session_state})
+    assert resp.status_code == 400
+
+
+def test_triage_summarize_skips_embedding_when_basket_has_only_web_articles():
+    web_articles = [_web_article("https://x.com/a", "Article A")]
+    session_state = _fake_session_state(
+        [], basket_paper_ids=[], all_web_articles=web_articles, basket_web_urls=["https://x.com/a"],
+    )
+    fake_web_summary_result = {"synthesis": "X.", "cited_articles": [web_articles[0]]}
+
+    with _client() as client, \
+         patch.object(api, "embed_and_index_papers") as mock_embed, \
+         patch.object(api, "enrich_missing_abstracts") as mock_enrich, \
+         patch.object(api, "generate_web_summary", return_value=fake_web_summary_result):
+        resp = client.post("/triage/summarize", json={"session_state": session_state})
+
+    assert resp.status_code == 200
+    mock_embed.assert_not_called()
+    mock_enrich.assert_not_called()
+    body = resp.json()
+    assert body["basket_paper_count"] == 0
+    assert body["basket_web_article_count"] == 1
+    assert body["web_summary"]["synthesis"] == "X."
+    assert body["embed_stats"] == {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0}
+
+
+def test_triage_save_bag_persists_basket_and_reload_shows_it_organized():
+    all_papers = [_paper("a1", "Paper A"), _paper("a2", "Paper B")]
+    session_state = _fake_session_state(
+        all_papers, basket_paper_ids=["a1"], topic="PEFT",
+    )
+    session_state["rounds"] = [{
+        "round_number": 1, "keywords_used": ["PEFT"], "timestamp": "t",
+        "paper_ids_found": ["a1", "a2"], "new_paper_ids": ["a1", "a2"],
+        "web_urls_found": [], "new_web_urls": [],
+    }]
+    summary = {
+        "themes": [{"theme_name": "Theme", "papers": [
+            {"paper_id": "a1", "title": "Paper A", "summary": "s", "apa_citation": "c",
+             "harvard_citation": "c", "bibtex": "@misc{x,}", "citation": "c"},
+        ]}],
+        "gaps_and_disagreements": "none", "skipped_paper_ids": [],
+    }
+
+    with _client() as client:
+        save_resp = client.post("/triage/save_bag", json={
+            "name": "My PEFT Bag", "session_state": session_state, "summary": summary,
+        })
+        assert save_resp.status_code == 200
+        bag_id = save_resp.json()["bag_id"]
+        assert save_resp.json()["keywords"] == ["PEFT"]
+
+        # "reloading the app" == a fresh GET /bags call, exactly what the sidebar does on every rerun.
+        listing = client.get("/bags").json()
+        item = next(b for b in listing if b["bag_id"] == bag_id)
+        assert item["name"] == "My PEFT Bag"
+        assert item["paper_count"] == 1
+        assert item["year"] == save_resp.json()["year"]
+
+        with patch.object(api, "get_papers_by_ids", return_value=[all_papers[0]]):
+            detail = client.get(f"/bags/{bag_id}").json()
+        assert detail["themes"][0]["papers"][0]["title"] == "Paper A"
+        assert detail["rounds"][0]["keywords_used"] == ["PEFT"]
+
+
+def test_triage_save_bag_returns_400_on_empty_basket():
+    session_state = _fake_session_state([_paper("a1", "Paper A")], basket_paper_ids=[])
+    with _client() as client:
+        resp = client.post("/triage/save_bag", json={"name": "x", "session_state": session_state, "summary": {}})
+    assert resp.status_code == 400
+
+
+def test_triage_discard_calls_chroma_delete_for_basket_papers():
+    with _client() as client:
+        # _state["collection"] is set up by the app's lifespan; swap in a mock directly.
+        mock_collection = MagicMock()
+        api._state["collection"] = mock_collection
+        resp = client.post("/triage/discard", json={"paper_ids": ["a1", "a2"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["chroma_ids_removed"] == ["a1", "a2"]
+    mock_collection.delete.assert_called_once_with(ids=["a1", "a2"])
+
+
+def test_triage_discard_never_deletes_papers_still_referenced_by_a_saved_bag():
+    all_papers = [_paper("shared", "Shared Paper")]
+    session_state = _fake_session_state(all_papers, basket_paper_ids=["shared"])
+    summary = {"themes": [], "gaps_and_disagreements": "none", "skipped_paper_ids": []}
+
+    with _client() as client:
+        client.post("/triage/save_bag", json={"name": "Existing Bag", "session_state": session_state, "summary": summary})
+
+        mock_collection = MagicMock()
+        api._state["collection"] = mock_collection
+        resp = client.post("/triage/discard", json={"paper_ids": ["shared", "not_shared"]})
+
+    assert resp.status_code == 200
+    # "shared" is still needed by the saved bag — only "not_shared" gets removed from Chroma.
+    assert resp.json()["chroma_ids_removed"] == ["not_shared"]
+    mock_collection.delete.assert_called_once_with(ids=["not_shared"])
+
+
+def test_delete_bag_removes_sqlite_row_and_chroma_vectors_leaving_zero_trace():
+    all_papers = [_paper("a1", "Paper A")]
+    session_state = _fake_session_state(all_papers, basket_paper_ids=["a1"])
+    summary = {"themes": [], "gaps_and_disagreements": "none", "skipped_paper_ids": []}
+
+    with _client() as client:
+        bag_id = client.post(
+            "/triage/save_bag", json={"name": "Bag", "session_state": session_state, "summary": summary}
+        ).json()["bag_id"]
+
+        mock_collection = MagicMock()
+        api._state["collection"] = mock_collection
+        del_resp = client.delete(f"/bags/{bag_id}")
+
+        assert del_resp.status_code == 200
+        assert del_resp.json()["chroma_ids_removed"] == ["a1"]
+        mock_collection.delete.assert_called_once_with(ids=["a1"])
+
+        # Zero trace in SQLite: gone from both detail and list.
+        assert client.get(f"/bags/{bag_id}").status_code == 404
+        assert bag_id not in [b["bag_id"] for b in client.get("/bags").json()]
+
+
+def test_delete_bag_keeps_chroma_vector_shared_with_another_bag():
+    shared_paper = [_paper("shared", "Shared Paper")]
+    only_a = [_paper("only_a", "Only In A")]
+    summary = {"themes": [], "gaps_and_disagreements": "none", "skipped_paper_ids": []}
+
+    with _client() as client:
+        state_a = _fake_session_state(shared_paper + only_a, basket_paper_ids=["shared", "only_a"])
+        bag_a_id = client.post("/triage/save_bag", json={"name": "A", "session_state": state_a, "summary": summary}).json()["bag_id"]
+
+        state_b = _fake_session_state(shared_paper, basket_paper_ids=["shared"])
+        client.post("/triage/save_bag", json={"name": "B", "session_state": state_b, "summary": summary})
+
+        mock_collection = MagicMock()
+        api._state["collection"] = mock_collection
+        del_resp = client.delete(f"/bags/{bag_a_id}")
+
+    # "shared" must survive in Chroma since bag B still references it — only "only_a" is removed.
+    assert del_resp.json()["chroma_ids_removed"] == ["only_a"]
+    mock_collection.delete.assert_called_once_with(ids=["only_a"])
+
+
+def test_delete_bag_missing_id_returns_404():
+    with _client() as client:
+        resp = client.delete("/bags/999")
+    assert resp.status_code == 404
+
+
 def test_library_list_and_detail():
     papers = [_paper("p1", "Paper One")]
     fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)])
@@ -453,6 +786,8 @@ if __name__ == "__main__":
     test_search_returns_web_articles_as_separate_section_from_papers()
     test_search_truncates_web_articles_to_requested_web_max_results()
     test_search_degrades_gracefully_with_no_web_articles()
+    test_search_falls_back_to_direct_web_search_when_agent_found_none()
+    test_search_skips_web_fallback_when_agent_already_met_web_max_results()
     test_search_with_no_papers_returns_404()
     test_search_falls_back_to_server_side_rerank_if_agent_skipped_it()
     test_search_reranks_serverside_when_agent_ignored_requested_top_k()
@@ -469,4 +804,19 @@ if __name__ == "__main__":
     test_export_includes_separate_web_context_section()
     test_library_list_and_detail()
     test_library_reports_web_article_count()
+    test_round_search_first_round_marks_papers_new_and_does_not_touch_llm_agent()
+    test_round_search_second_round_resurfaces_paper_as_seen_not_new()
+    test_round_search_basket_status_survives_a_rename_across_rounds()
+    test_round_search_skips_web_search_when_include_web_false()
+    test_round_search_never_embeds_during_browsing()
+    test_triage_summarize_embeds_only_basket_not_full_pool()
+    test_triage_summarize_returns_400_on_empty_basket()
+    test_triage_summarize_skips_embedding_when_basket_has_only_web_articles()
+    test_triage_save_bag_persists_basket_and_reload_shows_it_organized()
+    test_triage_save_bag_returns_400_on_empty_basket()
+    test_triage_discard_calls_chroma_delete_for_basket_papers()
+    test_triage_discard_never_deletes_papers_still_referenced_by_a_saved_bag()
+    test_delete_bag_removes_sqlite_row_and_chroma_vectors_leaving_zero_trace()
+    test_delete_bag_keeps_chroma_vector_shared_with_another_bag()
+    test_delete_bag_missing_id_returns_404()
     print("All API tests passed.")
