@@ -81,14 +81,16 @@ Persistence has two layers with different jobs:
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 cp .env.example .env
 ```
+
+`uv sync` creates a `.venv` and installs the exact pinned versions from
+`uv.lock`. Run project commands with `uv run <command>`, or activate the
+environment directly with `source .venv/bin/activate`.
 
 Edit `.env` and set:
 - `OPENAI_API_KEY` — required (embeddings + summarization + chat + agent).
@@ -103,8 +105,8 @@ Edit `.env` and set:
 Two processes, in separate terminals:
 
 ```bash
-uvicorn research_agent.api:app --reload --reload-exclude "app.py"
-streamlit run research_agent/app.py
+uv run uvicorn research_agent.api:app --reload --reload-exclude "app.py"
+uv run streamlit run research_agent/app.py
 ```
 
 Then open the URL Streamlit prints (typically `http://localhost:8501`).
@@ -140,19 +142,19 @@ data/              gitignored: chroma_db/, cache/, history.sqlite
 ### Try each phase individually
 
 ```bash
-python scripts/test_ingestion.py "your topic"          # phase 1: raw search
-python scripts/test_dedup.py "your topic"               # phase 2: dedup/merge
-python scripts/test_ranking.py                          # phase 3: keyword vs. semantic ranking
-python scripts/test_agent.py "your topic"                # phase 4: agent + tool-call log
-python scripts/test_summarize.py "your topic"            # phase 5: themed summary + citations
-python scripts/test_qa.py                                # phase 6: multi-turn grounded chat
-python scripts/test_api.py                                # phase 7: full API flow, live
+uv run python scripts/test_ingestion.py "your topic"          # phase 1: raw search
+uv run python scripts/test_dedup.py "your topic"               # phase 2: dedup/merge
+uv run python scripts/test_ranking.py                          # phase 3: keyword vs. semantic ranking
+uv run python scripts/test_agent.py "your topic"                # phase 4: agent + tool-call log
+uv run python scripts/test_summarize.py "your topic"            # phase 5: themed summary + citations
+uv run python scripts/test_qa.py                                # phase 6: multi-turn grounded chat
+uv run python scripts/test_api.py                                # phase 7: full API flow, live
 ```
 
 ### Run the tests
 
 ```bash
-for f in tests/test_*.py; do python "$f"; done
+uv run pytest tests/ -v
 ```
 
 All 30 tests are deterministic (mocked LLM/API calls where relevant) except
