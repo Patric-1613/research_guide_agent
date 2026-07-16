@@ -17,6 +17,8 @@ dependencies = [
     "uvicorn[standard]==0.50.2",
     "streamlit==1.59.0",
     "langchain-tavily==0.2.18",
+    "ragas==0.3.1",
+    "datasets==5.0.0",
 ]
 
 [dependency-groups]
@@ -52,7 +54,11 @@ constraint-dependencies = [
     "filelock==3.30.0",
     "flatbuffers==25.12.19",
     "frozenlist==1.8.0",
-    "fsspec==2026.6.0",
+    # Relaxed from the original 2026.6.0 baseline pin (uv migration) to
+    # 2026.4.0 — the newest fsspec any released `datasets` version supports.
+    # Transitive-only (huggingface-hub/chromadb internals); nothing in the
+    # app imports fsspec directly.
+    "fsspec==2026.4.0",
     "gitdb==4.0.12",
     "GitPython==3.1.52",
     "googleapis-common-protos==1.75.0",
@@ -75,6 +81,12 @@ constraint-dependencies = [
     "jsonschema-specifications==2025.9.1",
     "kubernetes==36.0.3",
     "langchain==1.3.11",
+    # langchain-community is a new transitive dep pulled in by ragas (not
+    # used by any existing app code). 0.4.2, uv's default resolution,
+    # dropped the chat_models.vertexai submodule that ragas.llms.base
+    # imports unconditionally, breaking `import ragas`. Pinned to the last
+    # version that still has it.
+    "langchain-community==0.4.1",
     "langchain-core==1.4.8",
     "langchain-openai==1.3.3",
     "langchain-protocol==0.0.18",
