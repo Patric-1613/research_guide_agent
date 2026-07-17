@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.qa import ChatSession, _build_answer_schema, _condense_question, ask
+from unittest.mock import patch
+
+from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _condense_question, _recent_history, ask
 from research_agent.schema import Paper, WebArticle
 
 
@@ -126,7 +128,6 @@ def test_ask_forces_empty_citations_when_model_marks_unanswerable():
         schema, answerable=False, answer="I can't answer this.", cited_paper_ids=["1111"],
     )
 
-    from unittest.mock import patch
     with patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
          patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
@@ -134,6 +135,68 @@ def test_ask_forces_empty_citations_when_model_marks_unanswerable():
 
     assert result["answerable"] is False
     assert result["cited_papers"] == []  # forced empty despite model returning an id
+
+
+def test_recent_history_keeps_only_last_n_turns():
+    history = []
+    for i in range(12):
+        history.append({"role": "user", "content": f"question {i}"})
+        history.append({"role": "assistant", "content": f"answer {i}"})
+
+    capped = _recent_history(history, max_turns=3)
+    assert capped == [
+        {"role": "user", "content": "question 9"},
+        {"role": "assistant", "content": "answer 9"},
+        {"role": "user", "content": "question 10"},
+        {"role": "assistant", "content": "answer 10"},
+        {"role": "user", "content": "question 11"},
+        {"role": "assistant", "content": "answer 11"},
+    ]
+
+
+def test_recent_history_is_a_no_op_below_the_cap():
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    assert _recent_history(history, max_turns=8) == history
+
+
+def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
+    # A long simulated conversation (12 prior turns, more than the 8-turn
+    # cap) — only the last MAX_HISTORY_TURNS turns should reach the actual
+    # prompt sent to the model; older ones must be dropped.
+    papers = [_paper("1111", "Paper One")]
+    session = ChatSession(papers=papers)
+    for i in range(12):
+        session.history.append({"role": "user", "content": f"question {i}"})
+        session.history.append({"role": "assistant", "content": f"answer {i}"})
+
+    schema = _build_answer_schema(["1111"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Final answer [Paper 1].", cited_paper_ids=["1111"],
+    )
+
+    with patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        ask(session, "new question", client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    # [0] is the system prompt, [-1] is the new question + context, and
+    # everything in between should be exactly the last MAX_HISTORY_TURNS
+    # turns (2 messages each) — no more, no less.
+    history_in_prompt = sent_messages[1:-1]
+    assert len(history_in_prompt) == 2 * MAX_HISTORY_TURNS
+    assert history_in_prompt[0] == {"role": "user", "content": "question 4"}  # oldest turn kept
+    assert history_in_prompt[-1] == {"role": "assistant", "content": "answer 11"}  # newest prior turn
+
+    sent_contents = [m["content"] for m in sent_messages if isinstance(m.get("content"), str)]
+    assert "question 0" not in sent_contents  # dropped: older than the cap
+    assert "question 3" not in sent_contents  # dropped: older than the cap
+
+    # The full, uncapped history is still preserved on the session object —
+    # only the prompt sent to the model is capped, not what's stored (a
+    # caller building a UI transcript still sees every turn).
+    assert len(session.history) == 12 * 2 + 2
 
 
 if __name__ == "__main__":
@@ -145,4 +208,7 @@ if __name__ == "__main__":
     test_ask_with_only_web_articles_no_papers_still_answers()
     test_ask_forces_empty_web_citations_when_model_marks_unanswerable()
     test_ask_forces_empty_citations_when_model_marks_unanswerable()
+    test_recent_history_keeps_only_last_n_turns()
+    test_recent_history_is_a_no_op_below_the_cap()
+    test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model()
     print("All qa tests passed.")
