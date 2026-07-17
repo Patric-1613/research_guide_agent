@@ -19,6 +19,7 @@ dependencies = [
     "langchain-tavily==0.2.18",
     "ragas==0.3.1",
     "datasets==5.0.0",
+    "openpyxl==3.1.5",
 ]
 
 [dependency-groups]

@@ -1,0 +1,320 @@
+{
+  "peft-01": {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "difficulty": "easy",
+    "expected_papers": [
+      {
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "arxiv_id": "2106.09685",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+        "arxiv_id": "2305.14314",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "Prefix-Tuning: Optimizing Continuous Prompts for Generation",
+        "arxiv_id": "2101.00190",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "attn-01": {
+    "topic": "attention mechanism in transformer architectures",
+    "difficulty": "easy",
+    "expected_papers": [
+      {
+        "title": "Attention Is All You Need",
+        "arxiv_id": "1706.03762",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+        "arxiv_id": "1810.04805",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "rag-01": {
+    "topic": "retrieval-augmented generation for large language models",
+    "difficulty": "easy",
+    "expected_papers": [
+      {
+        "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+        "arxiv_id": "2005.11401",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+        "arxiv_id": "2004.04906",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "cnn-01": {
+    "topic": "convolutional neural networks for image classification",
+    "difficulty": "easy",
+    "expected_papers": [
+      {
+        "title": "Deep Residual Learning for Image Recognition (ResNet)",
+        "arxiv_id": "1512.03385",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "ImageNet Classification with Deep Convolutional Neural Networks (AlexNet)",
+        "arxiv_id": null,
+        "doi": null,
+        "has_abstract": "unknown",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "embed-01": {
+    "topic": "dense vector embeddings for semantic search",
+    "difficulty": "easy",
+    "expected_papers": [
+      {
+        "title": "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks",
+        "arxiv_id": "1908.10084",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "hybrid-01": {
+    "topic": "hybrid search combining dense and sparse retrieval methods",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT",
+        "arxiv_id": "2004.12832",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "ColBERTv2: Effective and Efficient Retrieval via Lightweight Late Interaction",
+        "arxiv_id": "2112.01488",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "The Probabilistic Relevance Framework: BM25 and Beyond",
+        "arxiv_id": null,
+        "doi": null,
+        "has_abstract": "unknown",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "agent-01": {
+    "topic": "tool-calling patterns in LLM agent architectures",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "Toolformer: Language Models Can Teach Themselves to Use Tools",
+        "arxiv_id": "2302.04761",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "ReAct: Synergizing Reasoning and Acting in Language Models",
+        "arxiv_id": "2210.03629",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "halluc-01": {
+    "topic": "reducing hallucination in retrieval-augmented generation",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems",
+        "arxiv_id": "2311.09476",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "Retrieval Augmentation Reduces Hallucination in Conversation",
+        "arxiv_id": "2104.07567",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "ids-fewshot-01": {
+    "topic": "few-shot learning approaches for intrusion detection systems",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "IDS-INT: Intrusion detection system using transformer-based transfer learning for imbalanced network traffic",
+        "arxiv_id": null,
+        "doi": "10.1016/j.dcan.2023.03.008",
+        "has_abstract": "no",
+        "confidence": "high"
+      },
+      {
+        "title": "Multi-class intrusion detection system for in-vehicle networks using few-shot learning and convolutional anomaly transformer network",
+        "arxiv_id": null,
+        "doi": "10.1016/j.knosys.2025.114436",
+        "has_abstract": "no",
+        "confidence": "high"
+      }
+    ]
+  },
+  "eval-01": {
+    "topic": "evaluation metrics for RAG system quality",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "Ragas: Automated Evaluation of Retrieval Augmented Generation",
+        "arxiv_id": "2309.15217",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      },
+      {
+        "title": "ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems",
+        "arxiv_id": "2311.09476",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "citegrnd-01": {
+    "topic": "structural citation grounding in LLM-generated text",
+    "difficulty": "thin",
+    "expected_papers": [
+      {
+        "title": "Enabling Large Language Models to Generate Text with Citations",
+        "arxiv_id": "2305.14627",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "vecdb-01": {
+    "topic": "approximate nearest neighbor indexing at scale for vector databases",
+    "difficulty": "thin",
+    "expected_papers": [
+      {
+        "title": "Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs",
+        "arxiv_id": "1603.09320",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "multiagent-01": {
+    "topic": "multi-round iterative retrieval in conversational search agents",
+    "difficulty": "thin",
+    "expected_papers": [
+      {
+        "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection",
+        "arxiv_id": "2310.11511",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      },
+      {
+        "title": "Interleaving Retrieval with Chain-of-Thought Reasoning for Knowledge-Intensive Multi-Step Questions",
+        "arxiv_id": "2212.10509",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "hornet-01": {
+    "topic": "deep learning approaches to Asian hornet detection",
+    "difficulty": "domain",
+    "expected_papers": [
+      {
+        "title": "VespAI: a deep learning-based system for the detection of invasive hornets",
+        "arxiv_id": null,
+        "doi": "10.1038/s42003-024-05979-z",
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "insect-cv-01": {
+    "topic": "YOLO-based object detection for pollinator and insect monitoring",
+    "difficulty": "domain",
+    "expected_papers": [
+      {
+        "title": "Evaluation of Deep Learning Models for Insects Detection at the Hive Entrance for a Bee Behavior Recognition System",
+        "arxiv_id": null,
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "insect-class-01": {
+    "topic": "multi-class insect classification using computer vision",
+    "difficulty": "domain",
+    "expected_papers": [
+      {
+        "title": "PestNet: An end-to-end deep learning approach for large-scale multi-class pest detection and classification",
+        "arxiv_id": null,
+        "doi": "10.1109/ACCESS.2019.2909522",
+        "has_abstract": "yes",
+        "confidence": "high"
+      }
+    ]
+  },
+  "langgraph-01": {
+    "topic": "stateful multi-agent orchestration with graph-based control flow",
+    "difficulty": "ambiguous",
+    "expected_papers": [
+      {
+        "title": "AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation",
+        "arxiv_id": "2308.08155",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  },
+  "ragas-01": {
+    "topic": "LLM-as-judge evaluation of retrieval-augmented generation faithfulness",
+    "difficulty": "thin",
+    "expected_papers": [
+      {
+        "title": "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena",
+        "arxiv_id": "2306.05685",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
+      }
+    ]
+  }
+}

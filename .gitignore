@@ -9,3 +9,7 @@ data/cache/
 data/*.sqlite
 data/*.sqlite3
 .DS_Store
+# Raw human-maintained reference spreadsheet: binary, not diff-friendly.
+# eval_data/reference_topics.json (its converted, reviewable output) is
+# tracked instead.
+eval_data/reference_topics.xlsx
