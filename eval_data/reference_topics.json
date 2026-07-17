@@ -186,6 +186,11 @@
       }
     ]
   },
+  "chunk-01": {
+    "topic": "chunking strategies for RAG document retrieval",
+    "difficulty": "thin",
+    "expected_papers": []
+  },
   "eval-01": {
     "topic": "evaluation metrics for RAG system quality",
     "difficulty": "ambiguous",
@@ -203,6 +208,13 @@
         "doi": null,
         "has_abstract": "yes",
         "confidence": "high"
+      },
+      {
+        "title": "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena",
+        "arxiv_id": "2306.05685",
+        "doi": null,
+        "has_abstract": "yes",
+        "confidence": "medium"
       }
     ]
   },
@@ -231,6 +243,11 @@
         "confidence": "high"
       }
     ]
+  },
+  "deferred-01": {
+    "topic": "cost-deferred embedding strategies in RAG pipelines",
+    "difficulty": "thin",
+    "expected_papers": []
   },
   "multiagent-01": {
     "topic": "multi-round iterative retrieval in conversational search agents",
@@ -291,6 +308,11 @@
       }
     ]
   },
+  "dedup-01": {
+    "topic": "deduplication of records across multiple bibliographic data sources",
+    "difficulty": "thin",
+    "expected_papers": []
+  },
   "langgraph-01": {
     "topic": "stateful multi-agent orchestration with graph-based control flow",
     "difficulty": "ambiguous",
@@ -298,19 +320,6 @@
       {
         "title": "AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation",
         "arxiv_id": "2308.08155",
-        "doi": null,
-        "has_abstract": "yes",
-        "confidence": "medium"
-      }
-    ]
-  },
-  "ragas-01": {
-    "topic": "LLM-as-judge evaluation of retrieval-augmented generation faithfulness",
-    "difficulty": "thin",
-    "expected_papers": [
-      {
-        "title": "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena",
-        "arxiv_id": "2306.05685",
         "doi": null,
         "has_abstract": "yes",
         "confidence": "medium"
