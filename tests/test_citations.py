@@ -45,6 +45,14 @@ def test_author_formatting_empty():
     assert format_authors_apa([]) == "Unknown Author"
 
 
+def test_author_formatting_handles_blank_name_within_otherwise_normal_list():
+    # A blank/whitespace-only entry within an otherwise normal list used to
+    # crash `*first_names, last = parts` on an empty `parts` list — this is
+    # a different code path from the all-authors-empty guard above.
+    assert format_authors_apa(["", "John Smith"]) == "Unknown, & Smith, J."
+    assert format_authors_apa(["   ", "John Smith"]) == "Unknown, & Smith, J."
+
+
 def test_apa_citation_includes_doi_over_url_when_present():
     p = _paper(doi="10.1234/abc")
     citation = format_apa_citation(p)
@@ -95,6 +103,10 @@ def test_harvard_author_formatting_empty():
     assert format_authors_harvard([]) == "Unknown Author"
 
 
+def test_harvard_author_formatting_handles_blank_name_within_otherwise_normal_list():
+    assert format_authors_harvard(["", "John Smith"]) == "Unknown and Smith, J."
+
+
 def test_harvard_citation_uses_single_quoted_title_and_available_at():
     p = _paper(doi="10.1234/abc")
     citation = format_harvard_citation(p)
@@ -133,6 +145,7 @@ def test_select_citation_picks_requested_style():
 if __name__ == "__main__":
     test_author_formatting_one_two_and_many()
     test_author_formatting_empty()
+    test_author_formatting_handles_blank_name_within_otherwise_normal_list()
     test_apa_citation_includes_doi_over_url_when_present()
     test_apa_citation_falls_back_to_url_without_doi()
     test_apa_citation_handles_missing_year()
@@ -141,6 +154,7 @@ if __name__ == "__main__":
     test_harvard_author_formatting_one_two_three_and_many()
     test_harvard_author_initials_have_no_space_unlike_apa()
     test_harvard_author_formatting_empty()
+    test_harvard_author_formatting_handles_blank_name_within_otherwise_normal_list()
     test_harvard_citation_uses_single_quoted_title_and_available_at()
     test_harvard_citation_falls_back_to_url_without_doi()
     test_harvard_citation_handles_missing_year()

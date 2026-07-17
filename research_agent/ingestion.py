@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import arxiv
 import requests
@@ -43,6 +45,29 @@ def _clean_venue(journal_ref: str | None) -> str | None:
     if journal_ref and len(journal_ref) <= _MAX_PLAUSIBLE_VENUE_LEN:
         return journal_ref
     return None
+
+
+def _parse_retry_after(value: str | None, default: float) -> float:
+    """Parse a `Retry-After` header value, which per RFC 9110 is either a
+    plain number of delay-seconds or an HTTP-date. Falls back to `default`
+    (the existing exponential backoff value) if it's neither, rather than
+    letting `float()` raise on a date string and crash the retry loop.
+    """
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        target = parsedate_to_datetime(value)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        delta = (target - datetime.now(timezone.utc)).total_seconds()
+        return max(delta, 0.0)
+    except (TypeError, ValueError):
+        logger.warning("Unparseable Retry-After header %r, using default backoff", value)
+        return default
 
 
 def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
@@ -130,7 +155,7 @@ def search_semantic_scholar(
             continue
 
         if response.status_code == 429:
-            wait = float(response.headers.get("Retry-After", backoff))
+            wait = _parse_retry_after(response.headers.get("Retry-After"), backoff)
             logger.warning(
                 "Semantic Scholar rate limited us (attempt %d/%d), waiting %.1fs",
                 attempt, max_retries, wait,
@@ -151,7 +176,14 @@ def search_semantic_scholar(
         )
         return []
 
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        logger.warning(
+            "Semantic Scholar returned a malformed/empty response body for query %r: %s",
+            query, exc,
+        )
+        return []
     raw_results = payload.get("data", [])
 
     papers: list[Paper] = []

@@ -22,6 +22,8 @@ CitationStyle = Literal["apa", "harvard", "bibtex"]
 
 def _format_author_apa(name: str) -> str:
     parts = name.strip().split()
+    if not parts:
+        return "Unknown"
     if len(parts) == 1:
         return parts[0]
     *first_names, last = parts
@@ -70,6 +72,8 @@ def format_apa_citation(paper: Paper) -> str:
 
 def _format_author_harvard(name: str) -> str:
     parts = name.strip().split()
+    if not parts:
+        return "Unknown"
     if len(parts) == 1:
         return parts[0]
     *first_names, last = parts

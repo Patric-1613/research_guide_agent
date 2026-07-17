@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +21,7 @@ from research_agent.embeddings import (
     _paper_from_metadata,
     _serialize_metadata,
     _set_cached,
+    embed_and_index_papers,
     semantic_search,
 )
 from research_agent.schema import Paper
@@ -160,6 +161,90 @@ def test_semantic_search_combines_paper_id_scoping_with_citation_filter():
     assert {p.paper_id for p, _ in results} == {"a"}
 
 
+def _fake_batch_embed_client() -> MagicMock:
+    """Mocks client.embeddings.create() for embed_and_index_papers, returning
+    one fixed-length vector per input text regardless of batch size."""
+    client = MagicMock()
+
+    def _create(model, input):
+        response = MagicMock()
+        response.usage.total_tokens = 3 * len(input)
+        response.data = [MagicMock(embedding=[0.1, 0.2]) for _ in input]
+        return response
+
+    client.embeddings.create.side_effect = _create
+    return client
+
+
+def _isolated_cache(tmp_path_str: str):
+    """embed_and_index_papers always calls _init_cache_db() with no args
+    (hardcoded to the real on-disk cache), so tests must patch the function
+    itself to point at a fresh temp DB — otherwise a second test run (or a
+    second test using the same abstract text) gets a spurious cache hit."""
+    return patch(
+        "research_agent.embeddings._init_cache_db",
+        return_value=_init_cache_db(Path(tmp_path_str) / "cache.sqlite"),
+    )
+
+
+def test_embed_and_index_papers_happy_path_embeds_normal_papers():
+    # Proves the Phase 1 skip-fix below doesn't change behavior for
+    # well-formed papers (title + abstract both present).
+    collection = chromadb.EphemeralClient().get_or_create_collection("skip-test-happy", metadata={"hnsw:space": "cosine"})
+    papers = [
+        Paper(
+            title="Real Paper One", authors=["A"], year=2024, venue="X",
+            abstract="a genuinely unique abstract for the happy path test one",
+            url=None, doi=None, citation_count=None, source="arxiv", paper_id="happy-1",
+        ),
+        Paper(
+            title="Real Paper Two", authors=["B"], year=2024, venue="Y",
+            abstract="a genuinely unique abstract for the happy path test two",
+            url=None, doi=None, citation_count=None, source="arxiv", paper_id="happy-2",
+        ),
+    ]
+    with tempfile.TemporaryDirectory() as tmp, _isolated_cache(tmp):
+        stats = embed_and_index_papers(papers, collection=collection, client=_fake_batch_embed_client())
+    assert stats["papers_skipped"] == 0
+    assert stats["cache_misses"] == 2
+    assert collection.count() == 2
+
+
+def test_embed_and_index_papers_skips_paper_with_empty_title_and_no_abstract():
+    collection = chromadb.EphemeralClient().get_or_create_collection("skip-test-bad", metadata={"hnsw:space": "cosine"})
+    good = Paper(
+        title="A Real Paper With Content", authors=["A"], year=2024, venue="X",
+        abstract="a genuinely unique abstract for the skip test",
+        url=None, doi=None, citation_count=None, source="arxiv", paper_id="skip-good-1",
+    )
+    bad = Paper(
+        title="", authors=[], year=None, venue=None, abstract=None,
+        url=None, doi=None, citation_count=None, source="arxiv", paper_id="skip-bad-1",
+    )
+    with tempfile.TemporaryDirectory() as tmp, _isolated_cache(tmp):
+        stats = embed_and_index_papers([good, bad], collection=collection, client=_fake_batch_embed_client())
+    # The bad paper is skipped, not crashed on — the good paper still gets
+    # embedded and indexed in the same batch call.
+    assert stats["papers_skipped"] == 1
+    assert stats["cache_misses"] == 1
+    assert collection.count() == 1
+    assert collection.get(ids=["skip-good-1"])["ids"] == ["skip-good-1"]
+    assert collection.get(ids=["skip-bad-1"])["ids"] == []
+
+
+def test_embed_and_index_papers_all_papers_bad_returns_without_crashing():
+    collection = chromadb.EphemeralClient().get_or_create_collection("skip-test-allbad", metadata={"hnsw:space": "cosine"})
+    bad = Paper(
+        title="   ", authors=[], year=None, venue=None, abstract="",
+        url=None, doi=None, citation_count=None, source="arxiv", paper_id="skip-allbad-1",
+    )
+    with tempfile.TemporaryDirectory() as tmp, _isolated_cache(tmp):
+        stats = embed_and_index_papers([bad], collection=collection, client=_fake_batch_embed_client())
+    assert stats["papers_skipped"] == 1
+    assert stats["tokens_billed"] == 0
+    assert collection.count() == 0
+
+
 def test_metadata_omits_none_fields_chroma_would_reject():
     paper = Paper(
         title="No DOI Paper",
@@ -187,5 +272,8 @@ if __name__ == "__main__":
     test_semantic_search_require_doi_excludes_papers_without_one()
     test_semantic_search_require_doi_truncates_top_k_after_filtering_not_before()
     test_semantic_search_combines_paper_id_scoping_with_citation_filter()
+    test_embed_and_index_papers_happy_path_embeds_normal_papers()
+    test_embed_and_index_papers_skips_paper_with_empty_title_and_no_abstract()
+    test_embed_and_index_papers_all_papers_bad_returns_without_crashing()
     test_metadata_omits_none_fields_chroma_would_reject()
     print("All embedding tests passed.")
