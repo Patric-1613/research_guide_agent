@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import chromadb
 
 from research_agent.embeddings import (
+    _embed_texts,
     _get_cached,
     _hash_text,
     _init_cache_db,
@@ -78,7 +79,7 @@ def _fake_openai_client(query_vector: list[float]) -> MagicMock:
     client = MagicMock()
     response = MagicMock()
     response.usage.total_tokens = 3
-    response.data = [MagicMock(embedding=query_vector)]
+    response.data = [MagicMock(embedding=query_vector, index=0)]
     client.embeddings.create.return_value = response
     return client
 
@@ -161,6 +162,29 @@ def test_semantic_search_combines_paper_id_scoping_with_citation_filter():
     assert {p.paper_id for p, _ in results} == {"a"}
 
 
+def test_embed_texts_sorts_out_of_order_response_by_index_field():
+    # OpenAI's embeddings API includes an `index` on each result specifically
+    # because return order isn't guaranteed. Simulate a response that comes
+    # back out of order (indices [2, 0, 1] instead of [0, 1, 2]) and confirm
+    # each vector still lands at the position matching its original input.
+    client = MagicMock()
+    response = MagicMock()
+    response.usage.total_tokens = 9
+    response.data = [
+        MagicMock(embedding=[0.0, 0.0, 1.0], index=2),
+        MagicMock(embedding=[1.0, 0.0, 0.0], index=0),
+        MagicMock(embedding=[0.0, 1.0, 0.0], index=1),
+    ]
+    client.embeddings.create.return_value = response
+
+    vectors, tokens = _embed_texts(client, ["text-for-input-0", "text-for-input-1", "text-for-input-2"])
+
+    assert vectors[0] == [1.0, 0.0, 0.0]
+    assert vectors[1] == [0.0, 1.0, 0.0]
+    assert vectors[2] == [0.0, 0.0, 1.0]
+    assert tokens == 9
+
+
 def _fake_batch_embed_client() -> MagicMock:
     """Mocks client.embeddings.create() for embed_and_index_papers, returning
     one fixed-length vector per input text regardless of batch size."""
@@ -169,7 +193,7 @@ def _fake_batch_embed_client() -> MagicMock:
     def _create(model, input):
         response = MagicMock()
         response.usage.total_tokens = 3 * len(input)
-        response.data = [MagicMock(embedding=[0.1, 0.2]) for _ in input]
+        response.data = [MagicMock(embedding=[0.1, 0.2], index=i) for i in range(len(input))]
         return response
 
     client.embeddings.create.side_effect = _create
@@ -272,6 +296,7 @@ if __name__ == "__main__":
     test_semantic_search_require_doi_excludes_papers_without_one()
     test_semantic_search_require_doi_truncates_top_k_after_filtering_not_before()
     test_semantic_search_combines_paper_id_scoping_with_citation_filter()
+    test_embed_texts_sorts_out_of_order_response_by_index_field()
     test_embed_and_index_papers_happy_path_embeds_normal_papers()
     test_embed_and_index_papers_skips_paper_with_empty_title_and_no_abstract()
     test_embed_and_index_papers_all_papers_bad_returns_without_crashing()
