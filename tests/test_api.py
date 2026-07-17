@@ -72,8 +72,18 @@ def _client():
         # otherwise api.py's server-side web-search fallback (added alongside
         # the top_k-style guarantee) would fire a real call for any test
         # whose fake session has fewer web_articles than web_max_results.
+        #
+        # api.OpenAI is mocked here too — lifespan() constructs a real
+        # OpenAI() client unconditionally at TestClient startup regardless
+        # of which test is running, and that constructor call itself raises
+        # if no API key is configured (confirmed empirically: with .env
+        # absent, all 27 of this file's tests failed on this exact line,
+        # not on any actual OpenAI API call — every real LLM call this file
+        # makes is already separately mocked per-test). Patching it here
+        # means the full suite needs zero API keys present.
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
-             patch.object(api, "search_web", return_value=[]):
+             patch.object(api, "search_web", return_value=[]), \
+             patch.object(api, "OpenAI", return_value=MagicMock()):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
             try:
                 with TestClient(api.app) as client:

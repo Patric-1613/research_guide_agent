@@ -134,8 +134,8 @@ research_agent/
   api.py           FastAPI backend
   app.py           Streamlit frontend
 scripts/           runnable CLI demos for each phase (see below)
-tests/             deterministic unit tests (30 tests, no network/LLM calls
-                   except where explicitly a live smoke test)
+tests/             deterministic unit tests (128 tests, zero network/LLM
+                   calls required — see "Run the tests" below)
 data/              gitignored: chroma_db/, cache/, history.sqlite
 ```
 
@@ -157,9 +157,17 @@ uv run python scripts/test_api.py                                # phase 7: full
 uv run pytest tests/ -v
 ```
 
-All 30 tests are deterministic (mocked LLM/API calls where relevant) except
-the live smoke tests in `scripts/`, which hit real APIs and cost a small
-amount of real tokens.
+All 128 tests in `tests/` are fully deterministic and need no network access
+and no API keys — every LLM call (OpenAI) and every external API call
+(arXiv, Semantic Scholar, Unpaywall/CrossRef, Tavily) is mocked, including
+the `OpenAI()` client construction in `api.py`'s FastAPI `lifespan()`, which
+otherwise runs unconditionally at `TestClient` startup regardless of which
+endpoint a given test hits. Verified directly: `tests/` passes 128/128 with
+`.env` entirely absent.
+
+The live smoke tests live separately in `scripts/` (not `tests/`, and not
+run by `pytest`) — those intentionally hit real APIs and cost a small amount
+of real tokens; see "Try each phase individually" above.
 
 ## Key design decisions
 
