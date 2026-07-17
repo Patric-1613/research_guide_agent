@@ -41,6 +41,19 @@ logger = logging.getLogger(__name__)
 # suggestion task, not the quality-sensitive step.
 TITLE_SUGGESTION_MODEL = "gpt-4.1-mini"
 
+# Diagnostic run (see project history) confirmed genuine run-to-run
+# non-determinism at the default temperature — e.g. the same topic/prompt
+# surfaced a known landmark paper in 2 of 3 identical calls. This is a
+# factual-recall task (name real, exact paper titles), not a creative one,
+# so there's no upside to sampling variety here — only downside (an eval
+# run's "miss" being sampling noise rather than a real gap). Picked 0.1,
+# the low end of the requested 0.1-0.2 range: as close to deterministic as
+# a real setting gets without asking for literal 0, which OpenAI doesn't
+# guarantee is actually deterministic either (batched-inference floating
+# point non-associativity), so there's no benefit to going lower than the
+# range asked for.
+TITLE_SUGGESTION_TEMPERATURE = 0.1
+
 # Point-in-time USD/1M-token pricing for TITLE_SUGGESTION_MODEL, same
 # transparency standard as embeddings.py's PRICE_PER_1M_TOKENS — checked
 # via web search when this module was written, not fetched live. Verify
@@ -64,7 +77,7 @@ Strict rule: only include a title if you could bet money it is the exact, verbat
 
 Most topics, especially narrow or highly specific ones, do NOT have 5 genuinely well-known landmark papers. Returning 0-2 titles is the common, correct case for a narrow topic. Only return close to the requested count for extremely well-established, widely-taught topics (e.g. attention mechanisms, ResNet, BERT).
 
-Prefer foundational/landmark papers (the kind widely cited as THE reference for a technique or idea) over obscure or tangential ones."""
+Prefer foundational/landmark papers (the kind widely cited as THE reference for a technique or idea) over obscure or tangential ones — but "foundational" means foundational to the topic's SPECIFIC question, not just to its broad research area. A topic phrase usually names a precise focus within a larger field, not the field itself — e.g. "reducing hallucination in retrieval-augmented generation" is specifically about hallucination reduction, not RAG in general. If you know of a paper that directly targets that specific focus, it belongs ahead of a more famous but more general paper from the same broad area: a well-known general RAG paper like REALM is the wrong answer for a hallucination-specific topic if you know of a paper that actually addresses hallucination reduction. Only fall back to the broader area's foundational paper when you genuinely don't know a more specific one — don't reach for the safe, famous default when a more targeted real paper is available in your knowledge."""
 
 
 class _TitleSuggestions(BaseModel):
@@ -92,6 +105,7 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
     try:
         response = client.chat.completions.parse(
             model=TITLE_SUGGESTION_MODEL,
+            temperature=TITLE_SUGGESTION_TEMPERATURE,
             messages=[
                 {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
