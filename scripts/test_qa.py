@@ -56,9 +56,11 @@ def main() -> None:
 
     session = ChatSession(papers=top_papers)
 
+    results = []
     for question in QUESTIONS:
         print(f"{'=' * 80}\nQ: {question}\n{'=' * 80}")
         result = ask(session, question, client=client)
+        results.append(result)
         print(f"answerable: {result['answerable']}")
         print(f"\nA: {result['answer']}\n")
         if result["cited_papers"]:
@@ -66,6 +68,27 @@ def main() -> None:
             for i, p in enumerate(result["cited_papers"], 1):
                 print(f"  [{i}] {p.title}")
         print()
+
+    # Real correctness checks, not just "did it produce text without crashing":
+    first_result, followup_result, out_of_scope_result = results
+
+    assert first_result["answerable"], "the RoCoFT question should be answerable from a PEFT-topic paper pool"
+    assert first_result["cited_papers"], "an answerable question must cite at least one paper (grounding, not a bare claim)"
+    cited_ids = {p.paper_id for p in first_result["cited_papers"]}
+    retrieved_ids = {p.paper_id for p in top_papers}
+    assert cited_ids <= retrieved_ids, f"cited paper(s) never actually retrieved: {cited_ids - retrieved_ids}"
+    assert followup_result["answer"].strip(), "follow-up question ('its limitations?') got an empty answer"
+
+    # The out-of-scope question (stock market, unrelated to any ML paper
+    # pool) is the actual point of this demo: the system must say so
+    # explicitly rather than guessing/hallucinating an answer.
+    assert not out_of_scope_result["answerable"], (
+        f"expected the out-of-scope stock-market question to be refused (answerable=False), "
+        f"got answerable=True with answer: {out_of_scope_result['answer']!r}"
+    )
+    assert not out_of_scope_result["cited_papers"], "an unanswerable question must not cite any papers"
+
+    print(f"\nPASS: in-scope question answered and grounded, out-of-scope question correctly refused.")
 
 
 if __name__ == "__main__":

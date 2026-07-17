@@ -102,7 +102,11 @@ def _embed_texts(client: OpenAI, texts: list[str]) -> tuple[list[list[float]], i
         response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
         batch_tokens = response.usage.total_tokens
         total_tokens += batch_tokens
-        vectors.extend(item.embedding for item in response.data)
+        # The API does not guarantee response.data is returned in the same
+        # order as the input batch — each item carries its own `index` field
+        # for exactly this reason. Sort on it before assigning positionally.
+        ordered = sorted(response.data, key=lambda item: item.index)
+        vectors.extend(item.embedding for item in ordered)
         cost = batch_tokens / 1_000_000 * PRICE_PER_1M_TOKENS
         logger.info(
             "Embedded batch of %d texts: %d tokens billed (~$%.6f)",
@@ -173,7 +177,24 @@ def embed_and_index_papers(
     Returns a stats dict: cache_hits, cache_misses, tokens_billed, estimated_cost_usd.
     """
     if not papers:
-        return {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0}
+        return {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0, "papers_skipped": 0}
+
+    embeddable_papers = []
+    skipped = 0
+    for p in papers:
+        if not p.title.strip() and not p.abstract:
+            logger.warning(
+                "Paper with paper_id=%r has neither a title nor an abstract; "
+                "skipping it from this embedding batch rather than failing the whole call",
+                p.paper_id,
+            )
+            skipped += 1
+            continue
+        embeddable_papers.append(p)
+    papers = embeddable_papers
+
+    if not papers:
+        return {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0, "papers_skipped": skipped}
 
     collection = collection or get_chroma_collection()
     client = client or OpenAI()
@@ -222,6 +243,7 @@ def embed_and_index_papers(
         "cache_misses": len(to_embed_indices),
         "tokens_billed": tokens_billed,
         "estimated_cost_usd": estimated_cost,
+        "papers_skipped": skipped,
     }
 
 

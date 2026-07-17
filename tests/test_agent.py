@@ -81,6 +81,64 @@ def test_search_web_tool_dedups_by_url_across_calls():
     assert len(session.web_articles) == 1
 
 
+def test_search_arxiv_tool_survives_underlying_exception_and_pool_stays_usable():
+    # A tool failure (e.g. an unexpected error search_arxiv's own defensive
+    # handling didn't catch) must not propagate and kill the whole agent
+    # run — it should come back as a normal tool observation, and the
+    # session must remain usable for a retry or a different tool.
+    session = ResearchSession()
+    arxiv_tool, s2_tool, _rerank_tool, _web_tool = build_tools(session)
+
+    with patch("research_agent.agent.search_arxiv", side_effect=RuntimeError("arXiv is down")):
+        result = arxiv_tool.invoke({"query": "test", "max_results": 5})
+
+    assert "arXiv is down" in result
+    assert "failed" in result.lower()
+    assert session.papers == []  # untouched by the failed call, not corrupted
+
+    # The run continues with partial results: a subsequent successful call
+    # on a different tool still works normally, no retry of the failed step
+    # required first.
+    with patch("research_agent.agent.search_semantic_scholar") as mock_s2:
+        mock_s2.return_value = [_paper("Recovered Paper", "semantic_scholar", "xyz")]
+        s2_tool.invoke({"query": "test", "max_results": 5})
+
+    assert len(session.papers) == 1
+    assert session.papers[0].title == "Recovered Paper"
+
+
+def test_rerank_tool_survives_underlying_exception_and_keeps_collected_papers():
+    session = ResearchSession()
+    _arxiv_tool, _s2_tool, rerank_tool, _web_tool = build_tools(session)
+    session.papers = [_paper("Some Paper", "arxiv", "1111.1111")]
+
+    # Mock the OpenAI() client construction itself too — otherwise this test's
+    # outcome would depend on whether a real API key happens to be present
+    # in the environment (it constructs a real client before the patched
+    # embed_and_index_papers call ever runs), which isn't the failure this
+    # test is about.
+    with patch("research_agent.agent.OpenAI"), \
+         patch("research_agent.agent.embed_and_index_papers", side_effect=RuntimeError("OpenAI is down")):
+        result = rerank_tool.invoke({"query": "test", "top_k": 5})
+
+    assert "OpenAI is down" in result
+    assert "failed" in result.lower()
+    # The already-collected papers are not lost just because reranking failed.
+    assert len(session.papers) == 1
+    assert session.ranked == []
+
+
+def test_search_web_tool_survives_underlying_exception():
+    session = ResearchSession()
+    _, _, _, web_tool = build_tools(session)
+
+    with patch("research_agent.agent.search_web", side_effect=RuntimeError("Tavily is down")):
+        result = web_tool.invoke({"query": "test", "max_results": 4})
+
+    assert "Tavily is down" in result
+    assert session.web_articles == []
+
+
 def test_search_web_tool_degrades_gracefully_when_no_results():
     session = ResearchSession()
     _, _, _, web_tool = build_tools(session)
@@ -95,6 +153,9 @@ def test_search_web_tool_degrades_gracefully_when_no_results():
 if __name__ == "__main__":
     test_search_tools_accumulate_and_dedup_into_session()
     test_rerank_tool_reports_empty_pool_without_crashing()
+    test_search_arxiv_tool_survives_underlying_exception_and_pool_stays_usable()
+    test_rerank_tool_survives_underlying_exception_and_keeps_collected_papers()
+    test_search_web_tool_survives_underlying_exception()
     test_search_web_tool_accumulates_into_session_web_articles()
     test_search_web_tool_dedups_by_url_across_calls()
     test_search_web_tool_degrades_gracefully_when_no_results()

@@ -96,6 +96,20 @@ def main() -> None:
     semantic_ranked = semantic_search(REFINED_QUERY, collection=collection, client=client, top_k=len(pool))
     _print_ranked("AFTER — embedding-based semantic search (cosine similarity)", semantic_ranked)
 
+    # The actual point of this demo, asserted rather than just eyeballed:
+    # semantic search's #1 result for "star formation in molecular clouds"
+    # must genuinely be about astrophysics, not a graph-theory paper that
+    # merely repeats the word "star" often enough to win on keyword overlap.
+    ASTRO_TERMS = ("star format", "molecular cloud", "stellar", "astrophys", "interstellar", "protostar", "nebula")
+    top_semantic_paper, top_semantic_score = semantic_ranked[0]
+    top_semantic_text = f"{top_semantic_paper.title} {top_semantic_paper.abstract or ''}".lower()
+    assert any(term in top_semantic_text for term in ASTRO_TERMS), (
+        f"expected semantic search's #1 result for {REFINED_QUERY!r} to be genuinely about star "
+        f"formation/astrophysics, got: {top_semantic_paper.title!r}"
+    )
+    assert 0.0 <= top_semantic_score <= 1.0, f"cosine similarity score out of range: {top_semantic_score}"
+    print(f"\nPASS: semantic search's #1 result ({top_semantic_paper.title!r}) is genuinely about star formation.")
+
 
 if __name__ == "__main__":
     main()

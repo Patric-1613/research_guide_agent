@@ -168,6 +168,18 @@ def generate_summary(
     for theme in parsed.themes:
         entries = []
         for ps in theme.papers:
+            if ps.paper_id in referenced_ids:
+                # The Literal grounding only guarantees a referenced paper_id
+                # was actually retrieved — it doesn't stop the model placing
+                # the SAME paper_id in more than one theme. Keep the first
+                # occurrence (whichever theme listed it first) and drop the
+                # duplicate rather than silently letting a paper appear twice.
+                logger.warning(
+                    "generate_summary: model placed paper_id=%r in more than one theme; "
+                    "dropping the duplicate from theme %r, keeping its first occurrence",
+                    ps.paper_id, theme.theme_name,
+                )
+                continue
             paper = papers_by_id[ps.paper_id]  # guaranteed present: Literal enforced it structurally
             referenced_ids.add(ps.paper_id)
             apa_citation = format_apa_citation(paper)

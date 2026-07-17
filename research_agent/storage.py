@@ -21,8 +21,15 @@ DB_PATH = Path(__file__).resolve().parent.parent / "data" / "history.sqlite"
 
 def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # WAL lets concurrent readers proceed while a writer holds the lock,
+    # instead of the default rollback-journal mode's whole-file lock — the
+    # right complement to a per-request connection pattern under FastAPI's
+    # multi-threaded request handling, where overlapping requests are the
+    # normal case, not an edge case.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS searches (
@@ -48,6 +55,27 @@ def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {column} TEXT")
     conn.commit()
     return conn
+
+
+def get_db_connection(path: Path = DB_PATH):
+    """FastAPI dependency: opens a fresh connection for one request and
+    closes it when the request finishes, instead of every request sharing
+    a single long-lived connection object across FastAPI's threadpool.
+    Schema creation/migration (init_db) must already have run once at
+    startup — this intentionally skips re-running CREATE TABLE/ALTER TABLE
+    checks on every request.
+    """
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    # With WAL, concurrent writers no longer corrupt each other, but one can
+    # still momentarily block another — busy_timeout makes a blocked writer
+    # wait and retry internally instead of immediately raising
+    # "database is locked" back to the request.
+    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 @dataclass

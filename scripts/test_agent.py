@@ -55,6 +55,20 @@ def main() -> None:
     for i, (p, score) in enumerate(session.ranked, 1):
         print(f"[{i}] ({score:.3f}) {p.title}  [{p.source}]")
 
+    assert session.papers, "agent found zero papers — search tools may be broken, not just this topic being niche"
+    assert session.ranked, "agent's working pool is non-empty but nothing got ranked — rerank_by_relevance_tool may not have run"
+
+    if topic.strip().lower() == DEFAULT_TOPIC.lower():
+        # LoRA is one of the most well-known PEFT methods — if the agent
+        # correctly reformulates the "PEFT" acronym and searches both
+        # sources, it's an extremely likely hit among the ranked results.
+        titles = " ".join(p.title.lower() for p, _ in session.ranked)
+        assert "lora" in titles or "low-rank adaptation" in titles, (
+            f"expected a well-known PEFT paper (LoRA) among the ranked results for {DEFAULT_TOPIC!r}, "
+            f"got: {[p.title for p, _ in session.ranked]}"
+        )
+        print("\nPASS: agent found and ranked papers, including a well-known PEFT method (LoRA).")
+
 
 if __name__ == "__main__":
     main()

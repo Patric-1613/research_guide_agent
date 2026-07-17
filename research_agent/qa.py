@@ -66,6 +66,16 @@ ANSWER_MODEL = "gpt-4.1"
 
 TOP_K_DEFAULT = 5
 
+# Every turn re-sends the full history to two LLM calls (condense + answer),
+# so unbounded history means unbounded per-turn cost/latency growth as a
+# conversation lengthens. Capped at the last 8 turns (user+assistant pairs,
+# i.e. 16 messages) — confirmed with the project owner: coherence rarely
+# depends on more than a handful of recent turns here, since each answer is
+# re-grounded in the retrieved paper/web context every time, not carried
+# forward from distant conversation history the way a general-purpose
+# chatbot needs.
+MAX_HISTORY_TURNS = 8
+
 CONDENSE_SYSTEM_PROMPT = """Given a conversation history and a follow-up question, rewrite the follow-up as a standalone question that makes sense without the history — resolve pronouns and implicit references (e.g. "it", "that method", "the second one") to what they actually refer to.
 
 If the follow-up question is already standalone (doesn't depend on the history), return it unchanged. Return ONLY the rewritten question, nothing else.
@@ -140,6 +150,15 @@ def _condense_question(history: list[dict], question: str, client: OpenAI, model
     return condensed
 
 
+def _recent_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> list[dict]:
+    """Caps history to the last max_turns user+assistant pairs (history
+    always grows in pairs — see _no_sources_result and the end of ask()
+    below), dropping older turns rather than letting the prompt sent on
+    every call grow without bound as a conversation lengthens. A no-op for
+    any conversation shorter than the cap."""
+    return history[-2 * max_turns:]
+
+
 def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict:
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": answer})
@@ -170,7 +189,8 @@ def ask(
 
     client = client or OpenAI()
 
-    standalone_query = _condense_question(session.history, question, client)
+    recent_history = _recent_history(session.history)
+    standalone_query = _condense_question(recent_history, question, client)
 
     retrieved_papers: list[Paper] = []
     if session.papers:
@@ -210,7 +230,7 @@ def ask(
         context_sections.append(f"Retrieved web articles:\n\n{web_context}")
 
     messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
-    messages.extend(session.history)
+    messages.extend(recent_history)
     messages.append({
         "role": "user",
         "content": "\n\n".join(context_sections) + f"\n\nQuestion: {question}",

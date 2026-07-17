@@ -9,6 +9,7 @@ the real dev database.
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from fastapi.testclient import TestClient
 
 import research_agent.api as api
 from research_agent.schema import Paper, WebArticle
+from research_agent.storage import get_db_connection
 from research_agent.storage import init_db as real_init_db
 
 
@@ -36,6 +38,30 @@ def _web_article(url: str, title: str) -> WebArticle:
     return WebArticle(title=title, url=url, snippet=f"Snippet for {title}.", published_date=None, source_domain="example.com")
 
 
+def _make_test_db_override(db_path: Path):
+    """Override for api.get_db_connection (Phase 3: per-request connection
+    pattern) that points every request's connection at this test's isolated
+    temp DB file instead of the real one, registered via FastAPI's
+    dependency_overrides rather than patching, since that's the mechanism
+    the per-request pattern is designed to be tested through.
+
+    Must return an actual generator FUNCTION (yield in its own body), not a
+    lambda wrapping one — FastAPI detects the yield-dependency shape via
+    inspect.isgeneratorfunction on the override itself, and a lambda that
+    merely returns a generator object doesn't pass that check, so the
+    generator would be handed back unconsumed instead of iterated/closed.
+    """
+    def _override():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    return _override
+
+
 @contextmanager
 def _client():
     with tempfile.TemporaryDirectory() as tmp:
@@ -46,10 +72,24 @@ def _client():
         # otherwise api.py's server-side web-search fallback (added alongside
         # the top_k-style guarantee) would fire a real call for any test
         # whose fake session has fewer web_articles than web_max_results.
+        #
+        # api.OpenAI is mocked here too — lifespan() constructs a real
+        # OpenAI() client unconditionally at TestClient startup regardless
+        # of which test is running, and that constructor call itself raises
+        # if no API key is configured (confirmed empirically: with .env
+        # absent, all 27 of this file's tests failed on this exact line,
+        # not on any actual OpenAI API call — every real LLM call this file
+        # makes is already separately mocked per-test). Patching it here
+        # means the full suite needs zero API keys present.
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
-             patch.object(api, "search_web", return_value=[]):
-            with TestClient(api.app) as client:
-                yield client
+             patch.object(api, "search_web", return_value=[]), \
+             patch.object(api, "OpenAI", return_value=MagicMock()):
+            api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
+            try:
+                with TestClient(api.app) as client:
+                    yield client
+            finally:
+                api.app.dependency_overrides.clear()
 
 
 def test_search_success_persists_and_returns_ranked_papers():
@@ -492,6 +532,66 @@ def test_library_reports_web_article_count():
         assert len(detail["web_articles"]) == 2
 
 
+def test_search_upstream_openai_failure_returns_clean_error_not_raw_500():
+    import httpx
+    from openai import APIConnectionError
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", side_effect=APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1/x"))):
+        resp = client.post("/search", json={"topic": "t"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {"error": "search service unavailable"}
+
+
+def test_search_upstream_arxiv_failure_returns_clean_error_not_raw_500():
+    import arxiv
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", side_effect=arxiv.ArxivError(url="http://export.arxiv.org", retry=3, message="boom")):
+        resp = client.post("/search", json={"topic": "t"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {"error": "search service unavailable"}
+
+
+def test_chat_upstream_openai_failure_returns_clean_error_not_raw_500():
+    import httpx
+    from openai import APIConnectionError
+
+    papers = [_paper("p1", "Paper One")]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)])
+
+    with _client() as client, \
+         patch.object(api, "run_research_agent", return_value=fake_session), \
+         patch.object(api, "get_papers_by_ids", return_value=papers), \
+         patch.object(api, "ask", side_effect=APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1/x"))):
+        search_id = client.post("/search", json={"topic": "t"}).json()["search_id"]
+        resp = client.post("/chat", json={"search_id": search_id, "question": "What is this?"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {"error": "chat service unavailable"}
+
+
+def test_search_404_from_missing_papers_is_not_masked_as_a_503():
+    # The upstream-error guard must not swallow the endpoint's own
+    # intentional 404s (HTTPException) into a 503 — only genuine upstream
+    # (OpenAI/arXiv/Semantic Scholar) failures should become a 503.
+    fake_session = MagicMock(papers=[], ranked=[])
+    with _client() as client, patch.object(api, "run_research_agent", return_value=fake_session):
+        resp = client.post("/search", json={"topic": "t"})
+    assert resp.status_code == 404
+
+
+def test_chat_history_rejects_unknown_role():
+    with _client() as client:
+        resp = client.post("/chat", json={
+            "search_id": 1, "question": "q",
+            "history": [{"role": "system", "content": "not user or assistant"}],
+        })
+    assert resp.status_code == 422
+
+
 if __name__ == "__main__":
     test_search_success_persists_and_returns_ranked_papers()
     test_search_returns_web_articles_as_separate_section_from_papers()
@@ -515,4 +615,9 @@ if __name__ == "__main__":
     test_export_includes_separate_web_context_section()
     test_library_list_and_detail()
     test_library_reports_web_article_count()
+    test_search_upstream_openai_failure_returns_clean_error_not_raw_500()
+    test_search_upstream_arxiv_failure_returns_clean_error_not_raw_500()
+    test_chat_upstream_openai_failure_returns_clean_error_not_raw_500()
+    test_search_404_from_missing_papers_is_not_masked_as_a_503()
+    test_chat_history_rejects_unknown_role()
     print("All API tests passed.")

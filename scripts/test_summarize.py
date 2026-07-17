@@ -72,6 +72,33 @@ def main() -> None:
             print(entry["bibtex"])
             print()
 
+    # Real correctness checks, not just "did it crash":
+    assert result["themes"], "generate_summary produced zero themes for a non-empty paper pool"
+    all_entries = [entry for theme in result["themes"] for entry in theme["papers"]]
+    assert all_entries, "every theme came back with zero papers"
+    for entry in all_entries:
+        assert entry["summary"].strip(), f"empty summary for paper {entry['paper'].title!r}"
+        assert entry["apa_citation"].strip(), f"empty APA citation for paper {entry['paper'].title!r}"
+    # Every paper referenced in a summary must be one we actually retrieved —
+    # the whole point of the Literal-constrained grounding this summary relies on.
+    top_paper_ids = {p.paper_id for p in top_papers}
+    referenced_ids = [entry["paper"].paper_id for entry in all_entries]
+    assert set(referenced_ids) <= top_paper_ids, (
+        f"summary referenced paper_id(s) never retrieved: {set(referenced_ids) - top_paper_ids}"
+    )
+    assert len(referenced_ids) == len(set(referenced_ids)), (
+        f"a paper_id was referenced in more than one theme: {referenced_ids}"
+    )
+
+    if topic.strip().lower() == DEFAULT_TOPIC.lower():
+        titles = " ".join(entry["paper"].title.lower() for entry in all_entries)
+        assert "lora" in titles or "low-rank adaptation" in titles, (
+            f"expected a well-known PEFT paper (LoRA) referenced in the summary for {DEFAULT_TOPIC!r}, "
+            f"got: {[entry['paper'].title for entry in all_entries]}"
+        )
+
+    print(f"\nPASS: {len(result['themes'])} theme(s), {len(all_entries)} grounded paper summar{'y' if len(all_entries) == 1 else 'ies'}, no duplicate/fabricated references.")
+
 
 if __name__ == "__main__":
     main()
