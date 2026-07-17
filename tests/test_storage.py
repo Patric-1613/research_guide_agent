@@ -6,13 +6,22 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sqlite3
 
-from research_agent.storage import get_search, init_db, list_searches, save_search, update_summary, update_web_summary
+from research_agent.storage import (
+    get_db_connection,
+    get_search,
+    init_db,
+    list_searches,
+    save_search,
+    update_summary,
+    update_web_summary,
+)
 
 
 def test_save_and_get_search_roundtrip():
@@ -112,6 +121,67 @@ def test_list_searches_orders_newest_first():
         assert [s.id for s in results] == [id2, id1]
 
 
+def test_get_db_connection_yields_working_connection_and_closes_it_after():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "test.sqlite"
+        init_db(path).close()
+
+        gen = get_db_connection(path)
+        conn = next(gen)
+        conn.execute("SELECT 1")  # works while the generator is still suspended at yield
+
+        try:
+            next(gen)  # drives the generator past yield, running the finally: conn.close()
+            assert False, "expected StopIteration once the generator is exhausted"
+        except StopIteration:
+            pass
+
+        try:
+            conn.execute("SELECT 1")
+            assert False, "connection should be closed after the generator finished"
+        except sqlite3.ProgrammingError:
+            pass
+
+
+def test_concurrent_requests_via_per_request_connections_do_not_corrupt_storage():
+    # Simulates FastAPI's threadpool handing each request its own connection
+    # (the fix for storage.py's old single-shared-connection pattern) —
+    # N threads each open a fresh connection via get_db_connection and write
+    # concurrently; every write must land, with no corruption or lost rows.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "test.sqlite"
+        init_db(path).close()
+
+        errors: list[Exception] = []
+        n_threads = 20
+
+        def worker(i: int) -> None:
+            try:
+                gen = get_db_connection(path)
+                conn = next(gen)
+                save_search(conn, f"topic-{i}", [f"p{i}"], [0.5])
+            except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+                errors.append(exc)
+            finally:
+                try:
+                    next(gen)
+                except StopIteration:
+                    pass
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"concurrent writes raised: {errors}"
+
+        conn = init_db(path)
+        results = list_searches(conn)
+        assert len(results) == n_threads
+        assert {s.topic for s in results} == {f"topic-{i}" for i in range(n_threads)}
+
+
 if __name__ == "__main__":
     test_save_and_get_search_roundtrip()
     test_get_search_missing_id_returns_none()
@@ -121,4 +191,6 @@ if __name__ == "__main__":
     test_update_web_summary_persists()
     test_init_db_migrates_pre_existing_database_missing_web_columns()
     test_list_searches_orders_newest_first()
+    test_get_db_connection_yields_working_connection_and_closes_it_after()
+    test_concurrent_requests_via_per_request_connections_do_not_corrupt_storage()
     print("All storage tests passed.")

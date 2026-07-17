@@ -21,13 +21,18 @@ second persistence concept for a single-user v1 app.
 
 from __future__ import annotations
 
+import logging
 import os
-from contextlib import asynccontextmanager
+import sqlite3
+from contextlib import asynccontextmanager, contextmanager
+from typing import Literal
 
+import arxiv
+import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field
 
 from research_agent.agent import _merge_web_articles, run_research_agent
@@ -37,22 +42,32 @@ from research_agent.enrichment import enrich_missing_abstracts
 from research_agent.qa import ChatSession, ask
 from research_agent.query_expansion import expanded_search
 from research_agent.schema import Paper, WebArticle
-from research_agent.storage import get_search, init_db, list_searches, save_search, update_summary, update_web_summary
+from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search, update_summary, update_web_summary
 from research_agent.summarize import generate_summary, generate_web_summary
 from research_agent.web_search import search_web
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 _state: dict = {}
+
+# Exception types raised by the upstream services this API depends on
+# (OpenAI, arXiv, Semantic Scholar/requests) that should surface as a clean
+# error response, not a raw 500 with a stack trace leaked to the caller.
+_UPSTREAM_ERRORS = (OpenAIError, arxiv.ArxivError, requests.RequestException)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _state["db"] = init_db()
+    # Schema creation/migration only needs to happen once, on a throwaway
+    # connection — every request after this opens its own via get_db_connection
+    # (a FastAPI dependency, safe for the multi-threaded request handling a
+    # single shared connection was not).
+    init_db().close()
     _state["client"] = OpenAI()
     _state["collection"] = get_chroma_collection()
     yield
-    _state["db"].close()
 
 
 app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
@@ -161,7 +176,7 @@ class SummarizeResponse(BaseModel):
 
 
 class ChatTurn(BaseModel):
-    role: str
+    role: Literal["user", "assistant"]
     content: str
 
 
@@ -290,7 +305,7 @@ def _reselect_style(summary_json: dict, style: CitationStyle) -> dict:
     }
 
 
-def _get_or_create_summary(search_id: int, saved, style: CitationStyle = "apa") -> dict:
+def _get_or_create_summary(db: sqlite3.Connection, search_id: int, saved, style: CitationStyle = "apa") -> dict:
     """Reuse a previously-generated summary if one exists for this
     search_id, rather than re-billing the LLM every time /summarize or
     /export is called for the same search — mirrors the embedding cache's
@@ -302,7 +317,7 @@ def _get_or_create_summary(search_id: int, saved, style: CitationStyle = "apa") 
     papers = get_papers_by_ids(saved.paper_ids, collection=_state["collection"])
     result = generate_summary(saved.topic, papers, client=_state["client"], style=style)
     summary_json = _summary_to_json(result, style=style)
-    update_summary(_state["db"], search_id, summary_json)
+    update_summary(db, search_id, summary_json)
     return summary_json
 
 
@@ -318,7 +333,7 @@ def _web_summary_to_json(result: dict) -> dict:
     }
 
 
-def _get_or_create_web_summary(search_id: int, saved) -> dict | None:
+def _get_or_create_web_summary(db: sqlite3.Connection, search_id: int, saved) -> dict | None:
     """Mirrors _get_or_create_summary's cost-consciousness for the separate
     web-article corpus — its own cache column, never merged into the paper
     summary's cache. Returns None if this search found no web articles at
@@ -331,7 +346,7 @@ def _get_or_create_web_summary(search_id: int, saved) -> dict | None:
     articles = _web_articles_from_saved(saved)
     result = generate_web_summary(saved.topic, articles, client=_state["client"])
     web_summary_json = _web_summary_to_json(result)
-    update_web_summary(_state["db"], search_id, web_summary_json)
+    update_web_summary(db, search_id, web_summary_json)
     return web_summary_json
 
 
@@ -400,6 +415,27 @@ def _render_markdown(topic: str, summary_json: dict, style: CitationStyle = "apa
 
 # ---- endpoints ------------------------------------------------------------------
 
+@contextmanager
+def _upstream_error_guard(service: str):
+    """Wraps an endpoint body that calls out to arXiv, Semantic Scholar, or
+    OpenAI. Those calls already retry/degrade internally where they can
+    (ingestion.py, embeddings.py) — this is the last line of defense for
+    what still gets through: a raw 500 with an internal stack trace leaking
+    to the caller instead of a clean, actionable error response.
+
+    HTTPException is re-raised untouched — those are this API's own
+    intentional 404s (e.g. "search_id not found"), not upstream failures,
+    and must not be swallowed into a 503.
+    """
+    try:
+        yield
+    except HTTPException:
+        raise
+    except _UPSTREAM_ERRORS as exc:
+        logger.exception("Upstream service failure during %s", service)
+        raise HTTPException(status_code=503, detail={"error": f"{service} service unavailable"}) from exc
+
+
 def _server_side_rerank(
     session, topic: str, top_k: int, doi_required: bool = False, min_citation_count: int = 0,
 ):
@@ -435,132 +471,136 @@ def _filtered_candidate_count(papers: list[Paper], doi_required: bool, min_citat
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest) -> SearchResponse:
-    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+def search(req: SearchRequest, db: sqlite3.Connection = Depends(get_db_connection)) -> SearchResponse:
+    with _upstream_error_guard("search"):
+        s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
 
-    if req.use_query_expansion:
-        # LLM-assisted query expansion (query_expansion.py) — a separate,
-        # non-agent code path for direct comparison against the agent's own
-        # search/rerank. See SearchRequest.use_query_expansion: web-article
-        # search is agent-only right now, so web_articles is empty here, a
-        # known and deliberate gap for this phase, not an oversight.
-        ranked = expanded_search(
-            req.topic, k=req.top_k, s2_api_key=s2_key,
-            doi_required=req.doi_required, min_citation_count=req.min_citation_count,
+        if req.use_query_expansion:
+            # LLM-assisted query expansion (query_expansion.py) — a separate,
+            # non-agent code path for direct comparison against the agent's own
+            # search/rerank. See SearchRequest.use_query_expansion: web-article
+            # search is agent-only right now, so web_articles is empty here, a
+            # known and deliberate gap for this phase, not an oversight.
+            ranked = expanded_search(
+                req.topic, k=req.top_k, s2_api_key=s2_key,
+                doi_required=req.doi_required, min_citation_count=req.min_citation_count,
+            )
+            web_articles: list[WebArticle] = []
+            if not ranked:
+                raise HTTPException(status_code=404, detail="No papers found for this topic.")
+        else:
+            session = run_research_agent(
+                req.topic, s2_api_key=s2_key, top_k=req.top_k,
+                doi_required=req.doi_required, min_citation_count=req.min_citation_count,
+                web_max_results=req.web_max_results,
+            )
+
+            ranked = session.ranked
+            expected_count = min(req.top_k, _filtered_candidate_count(session.papers, req.doi_required, req.min_citation_count))
+            if session.papers and len(ranked) != expected_count:
+                # The agent is prompted to rerank with exactly top_k results before
+                # finishing, and its rerank tool applies the doi/citation filters
+                # itself — but that's still a prompted/tool-execution behavior, not
+                # a guarantee (the model might skip reranking entirely). Re-rank
+                # server-side whenever what came back doesn't match what the user
+                # asked for, so the returned count and filters are always
+                # code-enforced rather than dependent on the model's behavior.
+                ranked = _server_side_rerank(session, req.topic, req.top_k, req.doi_required, req.min_citation_count)
+
+            if not ranked:
+                if session.papers and (req.doi_required or req.min_citation_count):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=(
+                            f"Found {len(session.papers)} paper(s) for this topic, but none matched the "
+                            f"active filters (DOI required: {req.doi_required}, "
+                            f"min citations: {req.min_citation_count}). Try relaxing the filters."
+                        ),
+                    )
+                raise HTTPException(status_code=404, detail="No papers found for this topic.")
+
+            if len(session.web_articles) < req.web_max_results:
+                # Whether to call search_web_tool at all is the agent's judgment
+                # call (agent.py's system prompt) — it may skip it entirely for a
+                # topic it judges purely historical/theoretical, or just not call it
+                # this run. But web_max_results is a user-set request parameter like
+                # top_k, so the user gets that many results whenever they're
+                # available, not only when the model happened to decide to look.
+                # Same code-enforced-count guarantee as top_k's server-side rerank
+                # fallback above.
+                fallback_articles = search_web(req.topic, max_results=req.web_max_results)
+                session.web_articles = _merge_web_articles(session.web_articles, fallback_articles)
+            # The agent may have accumulated more than web_max_results across
+            # multiple search_web_tool calls (deduped by URL, not by count) —
+            # truncate here so the returned count is never silently uncontrolled,
+            # same reasoning as top_k in enhancement 1.
+            web_articles = session.web_articles[: req.web_max_results]
+
+        paper_ids = [p.paper_id for p, _ in ranked]
+        scores = [score for _, score in ranked]
+        search_id, created_at = save_search(
+            db, req.topic, paper_ids, scores,
+            web_articles=[a.to_dict() for a in web_articles],
         )
-        web_articles: list[WebArticle] = []
-        if not ranked:
-            raise HTTPException(status_code=404, detail="No papers found for this topic.")
-    else:
-        session = run_research_agent(
-            req.topic, s2_api_key=s2_key, top_k=req.top_k,
-            doi_required=req.doi_required, min_citation_count=req.min_citation_count,
-            web_max_results=req.web_max_results,
+
+        return SearchResponse(
+            search_id=search_id, topic=req.topic, created_at=created_at,
+            papers=[_paper_to_out(p, score) for p, score in ranked],
+            web_articles=[_web_article_to_out(a) for a in web_articles],
         )
-
-        ranked = session.ranked
-        expected_count = min(req.top_k, _filtered_candidate_count(session.papers, req.doi_required, req.min_citation_count))
-        if session.papers and len(ranked) != expected_count:
-            # The agent is prompted to rerank with exactly top_k results before
-            # finishing, and its rerank tool applies the doi/citation filters
-            # itself — but that's still a prompted/tool-execution behavior, not
-            # a guarantee (the model might skip reranking entirely). Re-rank
-            # server-side whenever what came back doesn't match what the user
-            # asked for, so the returned count and filters are always
-            # code-enforced rather than dependent on the model's behavior.
-            ranked = _server_side_rerank(session, req.topic, req.top_k, req.doi_required, req.min_citation_count)
-
-        if not ranked:
-            if session.papers and (req.doi_required or req.min_citation_count):
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"Found {len(session.papers)} paper(s) for this topic, but none matched the "
-                        f"active filters (DOI required: {req.doi_required}, "
-                        f"min citations: {req.min_citation_count}). Try relaxing the filters."
-                    ),
-                )
-            raise HTTPException(status_code=404, detail="No papers found for this topic.")
-
-        if len(session.web_articles) < req.web_max_results:
-            # Whether to call search_web_tool at all is the agent's judgment
-            # call (agent.py's system prompt) — it may skip it entirely for a
-            # topic it judges purely historical/theoretical, or just not call it
-            # this run. But web_max_results is a user-set request parameter like
-            # top_k, so the user gets that many results whenever they're
-            # available, not only when the model happened to decide to look.
-            # Same code-enforced-count guarantee as top_k's server-side rerank
-            # fallback above.
-            fallback_articles = search_web(req.topic, max_results=req.web_max_results)
-            session.web_articles = _merge_web_articles(session.web_articles, fallback_articles)
-        # The agent may have accumulated more than web_max_results across
-        # multiple search_web_tool calls (deduped by URL, not by count) —
-        # truncate here so the returned count is never silently uncontrolled,
-        # same reasoning as top_k in enhancement 1.
-        web_articles = session.web_articles[: req.web_max_results]
-
-    paper_ids = [p.paper_id for p, _ in ranked]
-    scores = [score for _, score in ranked]
-    search_id, created_at = save_search(
-        _state["db"], req.topic, paper_ids, scores,
-        web_articles=[a.to_dict() for a in web_articles],
-    )
-
-    return SearchResponse(
-        search_id=search_id, topic=req.topic, created_at=created_at,
-        papers=[_paper_to_out(p, score) for p, score in ranked],
-        web_articles=[_web_article_to_out(a) for a in web_articles],
-    )
 
 
 @app.post("/summarize", response_model=SummarizeResponse)
-def summarize(req: SummarizeRequest) -> SummarizeResponse:
-    saved = get_search(_state["db"], req.search_id)
-    if saved is None:
-        raise HTTPException(status_code=404, detail="search_id not found")
+def summarize(req: SummarizeRequest, db: sqlite3.Connection = Depends(get_db_connection)) -> SummarizeResponse:
+    with _upstream_error_guard("summarize"):
+        saved = get_search(db, req.search_id)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="search_id not found")
 
-    summary_json = _get_or_create_summary(req.search_id, saved, style=req.style)
-    web_summary_json = _get_or_create_web_summary(req.search_id, saved)
-    web_summary_out = WebSummaryOut(**web_summary_json) if web_summary_json is not None else None
-    return SummarizeResponse(
-        search_id=req.search_id, topic=saved.topic, style=req.style, web_summary=web_summary_out, **summary_json,
-    )
+        summary_json = _get_or_create_summary(db, req.search_id, saved, style=req.style)
+        web_summary_json = _get_or_create_web_summary(db, req.search_id, saved)
+        web_summary_out = WebSummaryOut(**web_summary_json) if web_summary_json is not None else None
+        return SummarizeResponse(
+            search_id=req.search_id, topic=saved.topic, style=req.style, web_summary=web_summary_out, **summary_json,
+        )
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
-    saved = get_search(_state["db"], req.search_id)
-    if saved is None:
-        raise HTTPException(status_code=404, detail="search_id not found")
+def chat(req: ChatRequest, db: sqlite3.Connection = Depends(get_db_connection)) -> ChatResponse:
+    with _upstream_error_guard("chat"):
+        saved = get_search(db, req.search_id)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="search_id not found")
 
-    papers = get_papers_by_ids(saved.paper_ids, collection=_state["collection"])
-    web_articles = _web_articles_from_saved(saved)
-    session = ChatSession(papers=papers, web_articles=web_articles, history=[turn.model_dump() for turn in req.history])
-    result = ask(session, req.question, client=_state["client"])
+        papers = get_papers_by_ids(saved.paper_ids, collection=_state["collection"])
+        web_articles = _web_articles_from_saved(saved)
+        session = ChatSession(papers=papers, web_articles=web_articles, history=[turn.model_dump() for turn in req.history])
+        result = ask(session, req.question, client=_state["client"])
 
-    return ChatResponse(
-        answer=result["answer"],
-        answerable=result["answerable"],
-        cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in result["cited_papers"]],
-        cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in result.get("cited_web_articles", [])],
-        history=[ChatTurn(**turn) for turn in session.history],
-    )
+        return ChatResponse(
+            answer=result["answer"],
+            answerable=result["answerable"],
+            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in result["cited_papers"]],
+            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in result.get("cited_web_articles", [])],
+            history=[ChatTurn(**turn) for turn in session.history],
+        )
 
 
 @app.get("/export/{search_id}", response_class=PlainTextResponse)
-def export(search_id: int, style: CitationStyle = "apa") -> str:
-    saved = get_search(_state["db"], search_id)
-    if saved is None:
-        raise HTTPException(status_code=404, detail="search_id not found")
+def export(search_id: int, style: CitationStyle = "apa", db: sqlite3.Connection = Depends(get_db_connection)) -> str:
+    with _upstream_error_guard("export"):
+        saved = get_search(db, search_id)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="search_id not found")
 
-    summary_json = _get_or_create_summary(search_id, saved, style=style)
-    web_summary_json = _get_or_create_web_summary(search_id, saved)
-    return _render_markdown(saved.topic, summary_json, style=style, web_summary_json=web_summary_json)
+        summary_json = _get_or_create_summary(db, search_id, saved, style=style)
+        web_summary_json = _get_or_create_web_summary(db, search_id, saved)
+        return _render_markdown(saved.topic, summary_json, style=style, web_summary_json=web_summary_json)
 
 
 @app.get("/library", response_model=list[LibraryItem])
-def library() -> list[LibraryItem]:
-    saved_list = list_searches(_state["db"])
+def library(db: sqlite3.Connection = Depends(get_db_connection)) -> list[LibraryItem]:
+    saved_list = list_searches(db)
     return [
         LibraryItem(
             search_id=s.id, topic=s.topic, created_at=s.created_at,
@@ -572,8 +612,8 @@ def library() -> list[LibraryItem]:
 
 
 @app.get("/library/{search_id}", response_model=SearchResponse)
-def library_detail(search_id: int) -> SearchResponse:
-    saved = get_search(_state["db"], search_id)
+def library_detail(search_id: int, db: sqlite3.Connection = Depends(get_db_connection)) -> SearchResponse:
+    saved = get_search(db, search_id)
     if saved is None:
         raise HTTPException(status_code=404, detail="search_id not found")
 

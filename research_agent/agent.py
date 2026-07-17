@@ -115,13 +115,27 @@ def build_tools(session: ResearchSession) -> list:
         the full records are added to the working paper pool for later
         reranking. arXiv's search is a literal keyword match, not semantic —
         use specific, well-formed search terms, and expand any acronyms first."""
-        papers = search_arxiv(query, max_results=max_results)
-        session.papers = deduplicate(session.papers + papers)
-        sample = "; ".join(p.title for p in papers[:5])
-        return (
-            f"arXiv returned {len(papers)} paper(s) for query {query!r}. "
-            f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
-        )
+        try:
+            papers = search_arxiv(query, max_results=max_results)
+            session.papers = deduplicate(session.papers + papers)
+            sample = "; ".join(p.title for p in papers[:5])
+            return (
+                f"arXiv returned {len(papers)} paper(s) for query {query!r}. "
+                f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
+            )
+        except Exception as exc:
+            # A tool failure (e.g. an unexpected network/API error that
+            # ingestion.py's own defensive handling didn't catch) must not
+            # kill the whole agent run — surface it as a normal tool
+            # observation instead of an unhandled exception, so the agent
+            # can retry this tool, fall back to another source, or continue
+            # with whatever the working pool already has.
+            logger.warning("search_arxiv_tool failed for query %r: %s", query, exc)
+            return (
+                f"arXiv search failed for query {query!r}: {exc}. The working pool is unchanged "
+                f"({len(session.papers)} paper(s) so far) — you can retry this search, try a "
+                "different source, or continue with what's already been found."
+            )
 
     @tool
     def search_semantic_scholar_tool(query: str, max_results: int = 10) -> str:
@@ -129,13 +143,21 @@ def build_tools(session: ResearchSession) -> list:
         coverage than arXiv (published/peer-reviewed venues, citation counts).
         Returns a short summary; full records are added to the working pool.
         Also a literal keyword match, not semantic — expand acronyms first."""
-        papers = search_semantic_scholar(query, max_results=max_results, api_key=session.s2_api_key)
-        session.papers = deduplicate(session.papers + papers)
-        sample = "; ".join(p.title for p in papers[:5])
-        return (
-            f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r}. "
-            f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
-        )
+        try:
+            papers = search_semantic_scholar(query, max_results=max_results, api_key=session.s2_api_key)
+            session.papers = deduplicate(session.papers + papers)
+            sample = "; ".join(p.title for p in papers[:5])
+            return (
+                f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r}. "
+                f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
+            )
+        except Exception as exc:
+            logger.warning("search_semantic_scholar_tool failed for query %r: %s", query, exc)
+            return (
+                f"Semantic Scholar search failed for query {query!r}: {exc}. The working pool is "
+                f"unchanged ({len(session.papers)} paper(s) so far) — you can retry this search, "
+                "try a different source, or continue with what's already been found."
+            )
 
     @tool
     def rerank_by_relevance_tool(query: str, top_k: int = 10) -> str:
@@ -148,40 +170,53 @@ def build_tools(session: ResearchSession) -> list:
         if not session.papers:
             return "No papers collected yet — search a source first."
 
-        # Best-effort abstract recovery (round-2 enhancement 4), before the
-        # embed step decides whether a paper needs the title-only fallback —
-        # a paper that gets a real abstract recovered here never has to take
-        # that fallback at all. Failures here are swallowed inside
-        # enrich_missing_abstracts itself; this call never raises.
-        enrich_missing_abstracts(session.papers)
+        try:
+            # Best-effort abstract recovery (round-2 enhancement 4), before the
+            # embed step decides whether a paper needs the title-only fallback —
+            # a paper that gets a real abstract recovered here never has to take
+            # that fallback at all. Failures here are swallowed inside
+            # enrich_missing_abstracts itself; this call never raises.
+            enrich_missing_abstracts(session.papers)
 
-        collection = get_chroma_collection()
-        client = OpenAI()
-        stats = embed_and_index_papers(session.papers, collection=collection, client=client)
+            collection = get_chroma_collection()
+            client = OpenAI()
+            stats = embed_and_index_papers(session.papers, collection=collection, client=client)
 
-        ids = [p.paper_id for p in session.papers]
-        ranked = semantic_search(
-            query, collection=collection, client=client, top_k=top_k,
-            where={"paper_id": {"$in": ids}},
-            min_citation_count=session.min_citation_count or None,
-            require_doi=session.doi_required,
-        )
-        session.ranked = ranked
-
-        if not ranked:
-            return (
-                f"No papers matched the active filters (doi_required={session.doi_required}, "
-                f"min_citation_count={session.min_citation_count}) among the {len(session.papers)} "
-                "collected paper(s). Report this to the user rather than fabricating results — "
-                "they may want to relax the filters."
+            ids = [p.paper_id for p in session.papers]
+            ranked = semantic_search(
+                query, collection=collection, client=client, top_k=top_k,
+                where={"paper_id": {"$in": ids}},
+                min_citation_count=session.min_citation_count or None,
+                require_doi=session.doi_required,
             )
+            session.ranked = ranked
 
-        lines = [f"{i + 1}. ({score:.3f}) {p.title}" for i, (p, score) in enumerate(ranked)]
-        return (
-            f"Ranked {len(ranked)} paper(s) by relevance to {query!r} "
-            f"({stats['cache_hits']} cache hit(s), {stats['cache_misses']} newly embedded, "
-            f"~${stats['estimated_cost_usd']:.6f}):\n" + "\n".join(lines)
-        )
+            if not ranked:
+                return (
+                    f"No papers matched the active filters (doi_required={session.doi_required}, "
+                    f"min_citation_count={session.min_citation_count}) among the {len(session.papers)} "
+                    "collected paper(s). Report this to the user rather than fabricating results — "
+                    "they may want to relax the filters."
+                )
+
+            lines = [f"{i + 1}. ({score:.3f}) {p.title}" for i, (p, score) in enumerate(ranked)]
+            return (
+                f"Ranked {len(ranked)} paper(s) by relevance to {query!r} "
+                f"({stats['cache_hits']} cache hit(s), {stats['cache_misses']} newly embedded, "
+                f"~${stats['estimated_cost_usd']:.6f}):\n" + "\n".join(lines)
+            )
+        except Exception as exc:
+            # Most likely an OpenAI embedding-call failure (network/rate
+            # limit/API error) — session.ranked is left exactly as it was
+            # before this call (untouched above the try), so a prior
+            # successful rerank isn't lost, and the papers gathered so far
+            # remain available for a retry.
+            logger.warning("rerank_by_relevance_tool failed for query %r: %s", query, exc)
+            return (
+                f"Reranking failed: {exc}. The {len(session.papers)} collected paper(s) are still "
+                "available — you can retry reranking, or report the papers found so far without a "
+                "relevance ranking."
+            )
 
     @tool
     def search_web_tool(query: str, max_results: int = 4) -> str:
@@ -192,13 +227,20 @@ def build_tools(session: ResearchSession) -> list:
         purely historical or theoretical ones. Degrades to an empty result
         (never an error) if no web search provider is configured — that
         never blocks or changes the paper search."""
-        articles = search_web(query, max_results=max_results)
-        session.web_articles = _merge_web_articles(session.web_articles, articles)
-        sample = "; ".join(a.title for a in articles[:5])
-        return (
-            f"Web search returned {len(articles)} article(s) for query {query!r}. "
-            f"Web context pool now has {len(session.web_articles)} article(s) total. Sample: {sample or '(none)'}"
-        )
+        try:
+            articles = search_web(query, max_results=max_results)
+            session.web_articles = _merge_web_articles(session.web_articles, articles)
+            sample = "; ".join(a.title for a in articles[:5])
+            return (
+                f"Web search returned {len(articles)} article(s) for query {query!r}. "
+                f"Web context pool now has {len(session.web_articles)} article(s) total. Sample: {sample or '(none)'}"
+            )
+        except Exception as exc:
+            logger.warning("search_web_tool failed for query %r: %s", query, exc)
+            return (
+                f"Web search failed for query {query!r}: {exc}. This is supplementary context, not "
+                "part of the paper results — continue and report the papers found either way."
+            )
 
     return [search_arxiv_tool, search_semantic_scholar_tool, rerank_by_relevance_tool, search_web_tool]
 

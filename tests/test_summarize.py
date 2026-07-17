@@ -70,6 +70,43 @@ def test_generate_summary_attaches_citations_and_flags_skipped():
     assert result["skipped_papers"][0].paper_id == "2222"
 
 
+def test_generate_summary_drops_duplicate_paper_id_across_themes():
+    papers = [_paper("1111", "Paper One"), _paper("2222", "Paper Two")]
+    schema = _build_response_schema([p.paper_id for p in papers])
+    theme_cls = schema.model_fields["themes"].annotation.__args__[0]
+    summary_cls = theme_cls.model_fields["papers"].annotation.__args__[0]
+
+    # The model places paper_id "1111" in two different themes — the Literal
+    # grounding permits this (each reference is individually a real paper_id),
+    # but generate_summary must keep only the first occurrence.
+    parsed = schema(
+        themes=[
+            theme_cls(theme_name="First Theme", papers=[summary_cls(paper_id="1111", summary="first occurrence")]),
+            theme_cls(theme_name="Second Theme", papers=[
+                summary_cls(paper_id="1111", summary="duplicate occurrence"),
+                summary_cls(paper_id="2222", summary="fine, only referenced once"),
+            ]),
+        ],
+        gaps_and_disagreements="No notable gaps or disagreements observed among the retrieved papers.",
+    )
+    mock_message = MagicMock(parsed=parsed, refusal=None)
+    mock_usage = MagicMock(total_tokens=100, prompt_tokens=80, completion_tokens=20)
+    mock_response = MagicMock(usage=mock_usage)
+    mock_response.choices = [MagicMock(message=mock_message)]
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = mock_response
+
+    result = generate_summary("some topic", papers, client=mock_client)
+
+    all_paper_ids = [p["paper"].paper_id for theme in result["themes"] for p in theme["papers"]]
+    assert all_paper_ids == ["1111", "2222"]  # "1111" appears exactly once, in its first theme
+
+    first_theme_summary = result["themes"][0]["papers"][0]["summary"]
+    assert first_theme_summary == "first occurrence"  # first occurrence wins, not overwritten
+
+    assert result["skipped_papers"] == []  # every input paper was referenced at least once
+
+
 def test_generate_summary_returns_empty_for_no_papers():
     result = generate_summary("topic", [], client=MagicMock())
     assert result == {"themes": [], "gaps_and_disagreements": "", "skipped_papers": []}
@@ -112,6 +149,7 @@ def test_generate_web_summary_returns_empty_for_no_articles():
 if __name__ == "__main__":
     test_response_schema_rejects_unknown_paper_id()
     test_generate_summary_attaches_citations_and_flags_skipped()
+    test_generate_summary_drops_duplicate_paper_id_across_themes()
     test_generate_summary_returns_empty_for_no_papers()
     test_web_response_schema_rejects_unknown_url()
     test_generate_web_summary_returns_cited_articles_only()
