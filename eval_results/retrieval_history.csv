@@ -1,0 +1,2 @@
+run_id,date,git_commit,note,num_topics,top_k,mean_precision,mean_recall,recall_easy,recall_ambiguous,recall_thin,recall_domain
+1,2026-07-17T08:59:01+00:00,f6333334d84fb332f17fead68ee0f106b2cbd214,phase 1 baseline,18,10,0.0167,0.1389,0.0000,0.0833,0.0000,0.6667
