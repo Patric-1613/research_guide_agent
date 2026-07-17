@@ -3,3 +3,5 @@ run_id,date,git_commit,note,num_topics,top_k,mean_precision,mean_recall,recall_e
 2,2026-07-17T11:57:51+00:00,d4b1b8adca275c94c84d963fd65ad5595a5822f9,"query expansion enabled, LLM title suggestion + 3x pool",18,10,0.0389,0.2685,0.1667,0.1667,0.2500,0.6667
 3,2026-07-17T12:49:07+00:00,d4b1b8adca275c94c84d963fd65ad5595a5822f9,"refreshed reference set (ragas-01 folded into eval-01, chunk/dedup/deferred still placeholder), no expansion",17,10,0.0176,0.1373,0.0000,0.0556,0.0000,0.6667
 4,2026-07-17T12:56:40+00:00,d4b1b8adca275c94c84d963fd65ad5595a5822f9,"refreshed reference set, query expansion enabled",17,10,0.0412,0.2745,0.1667,0.1389,0.3333,0.6667
+5,2026-07-17T15:21:12+00:00,ebc444f2bf1a70d01d6a205744e14863e40e5f6b,"post temperature+prompt fix, run A",17,10,0.0412,0.2745,0.1667,0.1389,0.3333,0.6667
+6,2026-07-17T15:29:04+00:00,ebc444f2bf1a70d01d6a205744e14863e40e5f6b,"post temperature+prompt fix, run B",17,10,0.0412,0.2745,0.1667,0.1389,0.3333,0.6667
