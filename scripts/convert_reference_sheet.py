@@ -46,6 +46,17 @@ def _clean(value) -> str | None:
     return text or None
 
 
+# Reviewers sometimes mark a topic as "no real paper yet" with an explicit
+# sentinel phrase rather than leaving paper_title blank (seen in practice:
+# "(no single landmark paper identified)") -- treated identically to an
+# empty cell, not ingested as a literal expected paper title.
+_NO_PAPER_SENTINELS = {"(no single landmark paper identified)"}
+
+
+def _is_placeholder_title(title: str | None) -> bool:
+    return title is None or title.strip().lower() in _NO_PAPER_SENTINELS
+
+
 def convert(input_path: str) -> dict:
     wb = openpyxl.load_workbook(input_path, data_only=True)
     if SHEET_NAME not in wb.sheetnames:
@@ -81,9 +92,10 @@ def convert(input_path: str) -> dict:
                 "expected_papers": [],
             }
 
-        if record.get("paper_title") is None:
-            # A real topic_id with no paper_title -- a placeholder/thin
-            # topic row with no usable entry yet. Skip it, but track it so
+        if _is_placeholder_title(record.get("paper_title")):
+            # A real topic_id with no usable paper_title -- either the cell
+            # is empty, or it's an explicit "no landmark paper yet" sentinel
+            # (see _NO_PAPER_SENTINELS). Either way: skip it, but track it so
             # main() can report exactly which topic_ids lost a row this way.
             skipped_topic_ids.add(topic_id)
             continue

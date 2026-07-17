@@ -171,6 +171,15 @@ web_max_results_input = st.number_input(
          "context is actually relevant; this only caps how many it pulls in if it does.",
 )
 
+use_query_expansion_input = st.checkbox(
+    "Query expansion (experimental)",
+    help="Widens the search net with a few LLM-suggested well-known paper titles before "
+         "reranking, to fix cases where a generic topic phrase misses foundational papers "
+         "that a literal keyword search alone can't find. Bypasses the agent for this search "
+         "(no query reformulation, no web articles) — for direct comparison against the "
+         "default search above, not yet the default itself.",
+)
+
 if st.button("Search", type="primary") and topic_input.strip():
     with st.spinner("Searching arXiv + Semantic Scholar and ranking results — this can take up to a minute..."):
         ok, data = _api_post("/search", {
@@ -179,6 +188,7 @@ if st.button("Search", type="primary") and topic_input.strip():
             "doi_required": doi_required_input,
             "min_citation_count": int(min_citations_input),
             "web_max_results": int(web_max_results_input),
+            "use_query_expansion": use_query_expansion_input,
         })
     if ok:
         _set_search_result(data["search_id"], data["topic"], data["papers"], data.get("web_articles"))

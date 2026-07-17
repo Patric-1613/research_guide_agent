@@ -43,6 +43,7 @@ from openai import OpenAI
 from research_agent.dedup import _same_paper, deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.query_expansion import expanded_search
 from research_agent.schema import Paper
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -101,11 +102,23 @@ def run_topic_retrieval(topic: str, client: OpenAI) -> list[Paper]:
     return [p for p, _ in ranked]
 
 
-def evaluate_topic(topic_id: str, topic_data: dict, client: OpenAI) -> dict:
+def run_topic_retrieval_expanded(topic: str, client: OpenAI) -> list[Paper]:
+    """Same evaluation target, but via query_expansion.py's expanded_search()
+    instead of the direct search_arxiv/search_semantic_scholar/deduplicate/
+    semantic_search flow above — LLM-suggested paper titles widen the
+    candidate pool before the identical dedup + rerank-against-original-topic
+    steps. See research_agent/query_expansion.py for the full mechanism."""
+    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    ranked = expanded_search(topic, k=TOP_K, s2_api_key=s2_key, client=client)
+    return [p for p, _ in ranked]
+
+
+def evaluate_topic(topic_id: str, topic_data: dict, client: OpenAI, expand: bool) -> dict:
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
 
-    returned = run_topic_retrieval(topic_data["topic"], client)
+    retrieval_fn = run_topic_retrieval_expanded if expand else run_topic_retrieval
+    returned = retrieval_fn(topic_data["topic"], client)
 
     matched_expected_indices: set[int] = set()
     matched_returned_count = 0
@@ -216,6 +229,11 @@ def append_history_row(results: list[dict], note: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--note", required=True, help="Short description of this run, e.g. 'phase 1 baseline'")
+    parser.add_argument(
+        "--expand", action="store_true",
+        help="Use query_expansion.py's expanded_search() (LLM-suggested title search) instead of the "
+             "direct search_arxiv/search_semantic_scholar/deduplicate/semantic_search flow.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -228,12 +246,12 @@ def main() -> None:
     if skipped:
         print(f"Skipping {len(skipped)} topic(s) with zero expected papers: {skipped}")
 
-    print(f"Evaluating {len(usable)} topics at top_k={TOP_K}\n")
+    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (query expansion: {'ON' if args.expand else 'off'})\n")
 
     results = []
     for i, (topic_id, topic_data) in enumerate(usable.items(), 1):
         print(f"[{i}/{len(usable)}] {topic_id}: {topic_data['topic']!r}")
-        r = evaluate_topic(topic_id, topic_data, client)
+        r = evaluate_topic(topic_id, topic_data, client, args.expand)
         print(f"    precision={r['precision']:.3f} recall={r['recall']:.3f}\n")
         results.append(r)
 
