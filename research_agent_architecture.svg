@@ -1,4 +1,4 @@
-<svg viewBox="0 0 1180 1780" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+<svg viewBox="0 0 1180 1920" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
@@ -8,14 +8,14 @@
     </marker>
   </defs>
 
-  <rect width="1180" height="1780" fill="#0f172a"/>
+  <rect width="1180" height="1920" fill="#0f172a"/>
 
   <!-- Title -->
   <text x="590" y="45" fill="#f8fafc" font-size="26" font-weight="700" text-anchor="middle">Research Paper Summarizer Agent — Architecture</text>
   <text x="590" y="70" fill="#94a3b8" font-size="14" text-anchor="middle">first_agent / research_agent — layer by layer, file by file</text>
 
   <!-- Schema rail -->
-  <rect x="20" y="110" width="130" height="1520" rx="10" fill="#1e293b" stroke="#334155"/>
+  <rect x="20" y="110" width="130" height="1546" rx="10" fill="#1e293b" stroke="#334155"/>
   <text x="85" y="140" fill="#e2e8f0" font-size="13" font-weight="700" text-anchor="middle">schema.py</text>
   <text x="85" y="158" fill="#94a3b8" font-size="10.5" text-anchor="middle">shared contract</text>
   <text x="85" y="178" fill="#cbd5e1" font-size="10" text-anchor="middle">Paper</text>
@@ -27,7 +27,7 @@
   <text x="85" y="252" fill="#94a3b8" font-size="9" text-anchor="middle">source_urls</text>
   <text x="85" y="285" fill="#64748b" font-size="9" text-anchor="middle">used by every</text>
   <text x="85" y="297" fill="#64748b" font-size="9" text-anchor="middle">layer below</text>
-  <line x1="150" y1="270" x2="150" y2="1500" stroke="#334155" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <line x1="150" y1="270" x2="150" y2="1602" stroke="#334155" stroke-width="1.5" stroke-dasharray="4 4"/>
 
   <!-- LAYER 1: Ingestion -->
   <rect x="175" y="110" width="985" height="150" rx="10" fill="#132a1c" stroke="#166534"/>
@@ -36,7 +36,7 @@
   <text x="215" y="172" fill="#f0fdf4" font-size="14" font-weight="700">ingestion.py</text>
   <text x="215" y="190" fill="#bbf7d0" font-size="10.5">search_arxiv()  →  arxiv package  →  Client.results(), 3s built-in rate limit</text>
   <text x="215" y="207" fill="#bbf7d0" font-size="10.5">search_semantic_scholar()  →  requests  →  /graph/v1/paper/search</text>
-  <text x="215" y="224" fill="#bbf7d0" font-size="10.5">retries on 429 w/ exponential backoff, honors Retry-After header, defensive on 0 results / malformed data</text>
+  <text x="215" y="224" fill="#bbf7d0" font-size="10.5">retries on 429 w/ exponential backoff — Retry-After parsed as seconds OR HTTP-date; malformed/empty JSON bodies degrade to []</text>
   <text x="700" y="172" fill="#86efac" font-size="10.5" text-anchor="end">↳ returns list[Paper]</text>
 
   <!-- arrow 1->2 -->
@@ -55,120 +55,133 @@
   <line x1="667" y1="435" x2="667" y2="467" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 3: Embeddings -->
-  <rect x="175" y="470" width="985" height="175" rx="10" fill="#0e2233" stroke="#155e75"/>
+  <rect x="175" y="470" width="985" height="209" rx="10" fill="#0e2233" stroke="#155e75"/>
   <text x="195" y="495" fill="#22d3ee" font-size="13" font-weight="700">PHASE 3 — EMBEDDING &amp; RELEVANCE RANKING</text>
-  <rect x="195" y="510" width="945" height="120" rx="8" fill="#083344" stroke="#155e75"/>
+  <rect x="195" y="510" width="945" height="154" rx="8" fill="#083344" stroke="#155e75"/>
   <text x="215" y="532" fill="#ecfeff" font-size="14" font-weight="700">embeddings.py</text>
   <text x="215" y="550" fill="#a5f3fc" font-size="10.5">embed_and_index_papers()  →  OpenAI text-embedding-3-small, batches of 100</text>
   <text x="215" y="567" fill="#a5f3fc" font-size="10.5">cache key = SHA-256 hash of abstract text (NOT paper_id) → data/cache/embeddings.sqlite</text>
   <text x="215" y="584" fill="#a5f3fc" font-size="10.5">  ↳ survives dedup's identity changes — never re-billed for a paper already embedded</text>
   <text x="215" y="601" fill="#a5f3fc" font-size="10.5">upserts vectors + metadata into ChromaDB  →  data/chroma_db/  (collection "papers")</text>
   <text x="215" y="618" fill="#a5f3fc" font-size="10.5">semantic_search()  →  cosine similarity retrieval — this call IS the ranking step</text>
+  <text x="215" y="635" fill="#67e8f9" font-size="10.5">response vectors sorted by the API's own index field before positional assignment (return order isn't guaranteed)</text>
+  <text x="215" y="652" fill="#67e8f9" font-size="10.5">a paper with an empty title AND no abstract is skipped (logged), not left to fail the whole embedding batch</text>
 
   <!-- arrow 3->4 -->
-  <line x1="667" y1="645" x2="667" y2="677" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="667" y1="679" x2="667" y2="711" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 4: Agent -->
-  <rect x="175" y="680" width="985" height="195" rx="10" fill="#241633" stroke="#7e22ce"/>
-  <text x="195" y="705" fill="#c084fc" font-size="13" font-weight="700">PHASE 4 — AGENT ORCHESTRATION</text>
-  <rect x="195" y="720" width="945" height="140" rx="8" fill="#3b0764" stroke="#7e22ce"/>
-  <text x="215" y="742" fill="#faf5ff" font-size="14" font-weight="700">agent.py</text>
-  <text x="215" y="760" fill="#e9d5ff" font-size="10.5">LangChain create_agent()  ·  model = gpt-4.1-mini  (cheap — this loop runs many times/session)</text>
-  <text x="215" y="777" fill="#e9d5ff" font-size="10.5">decides: search arXiv, S2, or both? reformulate query (expand acronyms)? when to rerank?</text>
-  <text x="215" y="794" fill="#e9d5ff" font-size="10.5">ResearchSession dataclass holds working state: accumulated papers + latest ranking</text>
-  <text x="215" y="811" fill="#e9d5ff" font-size="10.5">run_research_agent(topic, on_step)  →  streams messages, diffs against "seen" count so a</text>
-  <text x="230" y="828" fill="#e9d5ff" font-size="10.5">multi-tool-call turn doesn't get logged twice</text>
+  <rect x="175" y="714" width="985" height="212" rx="10" fill="#241633" stroke="#7e22ce"/>
+  <text x="195" y="739" fill="#c084fc" font-size="13" font-weight="700">PHASE 4 — AGENT ORCHESTRATION</text>
+  <rect x="195" y="754" width="945" height="157" rx="8" fill="#3b0764" stroke="#7e22ce"/>
+  <text x="215" y="776" fill="#faf5ff" font-size="14" font-weight="700">agent.py</text>
+  <text x="215" y="794" fill="#e9d5ff" font-size="10.5">LangChain create_agent()  ·  model = gpt-4.1-mini  (cheap — this loop runs many times/session)</text>
+  <text x="215" y="811" fill="#e9d5ff" font-size="10.5">decides: search arXiv, S2, or both? reformulate query (expand acronyms)? when to rerank?</text>
+  <text x="215" y="828" fill="#e9d5ff" font-size="10.5">ResearchSession dataclass holds working state: accumulated papers + latest ranking</text>
+  <text x="215" y="845" fill="#e9d5ff" font-size="10.5">run_research_agent(topic, on_step)  →  streams messages, diffs against "seen" count so a</text>
+  <text x="230" y="862" fill="#e9d5ff" font-size="10.5">multi-tool-call turn doesn't get logged twice</text>
+  <text x="215" y="879" fill="#d8b4fe" font-size="10.5">each tool call wrapped in try/except — a failure returns a description; already-gathered papers survive, step is retryable</text>
   <!-- tool loop -->
-  <rect x="215" y="838" width="905" height="16" rx="6" fill="none" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="3 3"/>
-  <text x="667" y="850" fill="#fbbf24" font-size="9.5" text-anchor="middle">wraps ingestion.py, dedup.py, embeddings.py as LangChain @tool functions</text>
+  <rect x="215" y="889" width="905" height="16" rx="6" fill="none" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="3 3"/>
+  <text x="667" y="901" fill="#fbbf24" font-size="9.5" text-anchor="middle">wraps ingestion.py, dedup.py, embeddings.py as LangChain @tool functions</text>
 
   <!-- loop-back arrow from agent to ingestion/dedup/embeddings -->
-  <path d="M 1140 750 C 1175 500, 1175 300, 1140 190" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrowLoop)"/>
-  <text x="1160" y="470" fill="#fbbf24" font-size="9.5" transform="rotate(90 1160 470)">agent calls these as tools</text>
+  <path d="M 1140 784 C 1175 520, 1175 320, 1140 190" fill="none" stroke="#f59e0b" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrowLoop)"/>
+  <text x="1160" y="487" fill="#fbbf24" font-size="9.5" transform="rotate(90 1160 487)">agent calls these as tools</text>
 
   <!-- arrow 4->5 -->
-  <line x1="667" y1="875" x2="667" y2="907" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="667" y1="926" x2="667" y2="958" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 5: Output generation -->
-  <rect x="175" y="910" width="985" height="260" rx="10" fill="#1c1410" stroke="#9a3412"/>
-  <text x="195" y="935" fill="#fb923c" font-size="13" font-weight="700">PHASE 5 &amp; 6 — OUTPUT GENERATION (run independently off the ranked pool)</text>
+  <rect x="175" y="961" width="985" height="294" rx="10" fill="#1c1410" stroke="#9a3412"/>
+  <text x="195" y="986" fill="#fb923c" font-size="13" font-weight="700">PHASE 5 &amp; 6 — OUTPUT GENERATION (run independently off the ranked pool)</text>
 
-  <rect x="195" y="950" width="300" height="200" rx="8" fill="#431407" stroke="#9a3412"/>
-  <text x="215" y="972" fill="#fff7ed" font-size="13" font-weight="700">summarize.py</text>
-  <text x="215" y="990" fill="#fed7aa" font-size="9.7">model = gpt-4.1 (infrequent,</text>
-  <text x="215" y="1003" fill="#fed7aa" font-size="9.7">faithfulness &gt; cost here)</text>
-  <text x="215" y="1023" fill="#fed7aa" font-size="9.7">generate_summary(): prompt-based</text>
-  <text x="215" y="1036" fill="#fed7aa" font-size="9.7">theme clustering, 2-3 sentence</text>
-  <text x="215" y="1049" fill="#fed7aa" font-size="9.7">per-paper summary</text>
-  <text x="215" y="1069" fill="#fed7aa" font-size="9.7">grounding: paper_id field is a</text>
-  <text x="215" y="1082" fill="#fed7aa" font-size="9.7">dynamic Literal of only the</text>
-  <text x="215" y="1095" fill="#fed7aa" font-size="9.7">retrieved ids — fabricated</text>
-  <text x="215" y="1108" fill="#fed7aa" font-size="9.7">citations impossible by</text>
-  <text x="215" y="1121" fill="#fed7aa" font-size="9.7">construction</text>
-  <text x="215" y="1141" fill="#fdba74" font-size="9.7" font-style="italic">calls citations.py per paper</text>
+  <rect x="195" y="1001" width="300" height="234" rx="8" fill="#431407" stroke="#9a3412"/>
+  <text x="215" y="1023" fill="#fff7ed" font-size="13" font-weight="700">summarize.py</text>
+  <text x="215" y="1041" fill="#fed7aa" font-size="9.7">model = gpt-4.1 (infrequent,</text>
+  <text x="215" y="1054" fill="#fed7aa" font-size="9.7">faithfulness &gt; cost here)</text>
+  <text x="215" y="1074" fill="#fed7aa" font-size="9.7">generate_summary(): prompt-based</text>
+  <text x="215" y="1087" fill="#fed7aa" font-size="9.7">theme clustering, 2-3 sentence</text>
+  <text x="215" y="1100" fill="#fed7aa" font-size="9.7">per-paper summary</text>
+  <text x="215" y="1120" fill="#fed7aa" font-size="9.7">grounding: paper_id field is a</text>
+  <text x="215" y="1133" fill="#fed7aa" font-size="9.7">dynamic Literal of only the</text>
+  <text x="215" y="1146" fill="#fed7aa" font-size="9.7">retrieved ids — fabricated</text>
+  <text x="215" y="1159" fill="#fed7aa" font-size="9.7">citations impossible by</text>
+  <text x="215" y="1172" fill="#fed7aa" font-size="9.7">construction</text>
+  <text x="215" y="1192" fill="#fdba74" font-size="9.7">duplicate paper_id across themes:</text>
+  <text x="215" y="1209" fill="#fdba74" font-size="9.7">kept first occurrence only (warned)</text>
+  <text x="215" y="1226" fill="#fdba74" font-size="9.7" font-style="italic">calls citations.py per paper</text>
 
-  <rect x="510" y="950" width="290" height="200" rx="8" fill="#431407" stroke="#9a3412"/>
-  <text x="530" y="972" fill="#fff7ed" font-size="13" font-weight="700">citations.py</text>
-  <text x="530" y="990" fill="#fed7aa" font-size="9.7">NO LLM call — pure string</text>
-  <text x="530" y="1003" fill="#fed7aa" font-size="9.7">formatting, deterministic</text>
-  <text x="530" y="1023" fill="#fed7aa" font-size="9.7">format_apa_citation()</text>
-  <text x="530" y="1036" fill="#fed7aa" font-size="9.7">format_bibtex_citation()</text>
-  <text x="530" y="1056" fill="#fed7aa" font-size="9.7">rationale: citation formatting</text>
-  <text x="530" y="1069" fill="#fed7aa" font-size="9.7">is a solved rule-based problem —</text>
-  <text x="530" y="1082" fill="#fed7aa" font-size="9.7">every LLM call here would just be</text>
-  <text x="530" y="1095" fill="#fed7aa" font-size="9.7">a chance to hallucinate a date</text>
-  <text x="530" y="1108" fill="#fed7aa" font-size="9.7">or author name</text>
+  <rect x="510" y="1001" width="290" height="200" rx="8" fill="#431407" stroke="#9a3412"/>
+  <text x="530" y="1023" fill="#fff7ed" font-size="13" font-weight="700">citations.py</text>
+  <text x="530" y="1041" fill="#fed7aa" font-size="9.7">NO LLM call — pure string</text>
+  <text x="530" y="1054" fill="#fed7aa" font-size="9.7">formatting, deterministic</text>
+  <text x="530" y="1074" fill="#fed7aa" font-size="9.7">format_apa_citation()</text>
+  <text x="530" y="1087" fill="#fed7aa" font-size="9.7">format_bibtex_citation()</text>
+  <text x="530" y="1107" fill="#fed7aa" font-size="9.7">rationale: citation formatting</text>
+  <text x="530" y="1120" fill="#fed7aa" font-size="9.7">is a solved rule-based problem —</text>
+  <text x="530" y="1133" fill="#fed7aa" font-size="9.7">every LLM call here would just be</text>
+  <text x="530" y="1146" fill="#fed7aa" font-size="9.7">a chance to hallucinate a date</text>
+  <text x="530" y="1159" fill="#fed7aa" font-size="9.7">or author name</text>
+  <text x="530" y="1179" fill="#fdba74" font-size="9.7">blank/None author name in a list:</text>
+  <text x="530" y="1195" fill="#fdba74" font-size="9.7">falls back to "Unknown", no crash</text>
 
-  <rect x="815" y="950" width="325" height="200" rx="8" fill="#431407" stroke="#9a3412"/>
-  <text x="835" y="972" fill="#fff7ed" font-size="13" font-weight="700">qa.py</text>
-  <text x="835" y="990" fill="#fed7aa" font-size="9.7">condense: gpt-4.1-mini · answer: gpt-4.1</text>
-  <text x="835" y="1010" fill="#fed7aa" font-size="9.7">ChatSession holds papers + history</text>
-  <text x="835" y="1023" fill="#fed7aa" font-size="9.7">_condense_question(): rewrites pronoun-</text>
-  <text x="835" y="1036" fill="#fed7aa" font-size="9.7">heavy follow-ups into standalone queries</text>
-  <text x="835" y="1049" fill="#fed7aa" font-size="9.7">before retrieval, using history</text>
-  <text x="835" y="1069" fill="#fed7aa" font-size="9.7">ask(): re-queries embeddings.py's Chroma</text>
-  <text x="835" y="1082" fill="#fed7aa" font-size="9.7">store per turn, same Literal-constrained</text>
-  <text x="835" y="1095" fill="#fed7aa" font-size="9.7">citation grounding as summarize.py</text>
-  <text x="835" y="1115" fill="#fed7aa" font-size="9.7">inline [1][2] markers → cited_paper_ids</text>
+  <rect x="815" y="1001" width="325" height="200" rx="8" fill="#431407" stroke="#9a3412"/>
+  <text x="835" y="1023" fill="#fff7ed" font-size="13" font-weight="700">qa.py</text>
+  <text x="835" y="1041" fill="#fed7aa" font-size="9.7">condense: gpt-4.1-mini · answer: gpt-4.1</text>
+  <text x="835" y="1061" fill="#fed7aa" font-size="9.7">ChatSession holds papers + history</text>
+  <text x="835" y="1074" fill="#fed7aa" font-size="9.7">_condense_question(): rewrites pronoun-</text>
+  <text x="835" y="1087" fill="#fed7aa" font-size="9.7">heavy follow-ups into standalone queries</text>
+  <text x="835" y="1100" fill="#fed7aa" font-size="9.7">before retrieval, using history</text>
+  <text x="835" y="1120" fill="#fed7aa" font-size="9.7">ask(): re-queries embeddings.py's Chroma</text>
+  <text x="835" y="1133" fill="#fed7aa" font-size="9.7">store per turn, same Literal-constrained</text>
+  <text x="835" y="1146" fill="#fed7aa" font-size="9.7">citation grounding as summarize.py</text>
+  <text x="835" y="1166" fill="#fed7aa" font-size="9.7">inline [1][2] markers → cited_paper_ids</text>
+  <text x="835" y="1184" fill="#fdba74" font-size="9.7">history capped to last 8 turns before</text>
+  <text x="835" y="1197" fill="#fdba74" font-size="9.7">either LLM call — bounds cost/latency</text>
 
   <!-- arrow 5->6 -->
-  <line x1="667" y1="1170" x2="667" y2="1202" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="667" y1="1255" x2="667" y2="1287" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 6: Storage -->
-  <rect x="175" y="1205" width="985" height="120" rx="10" fill="#1c1024" stroke="#86198f"/>
-  <text x="195" y="1230" fill="#e879f9" font-size="13" font-weight="700">PHASE 7 — PERSISTENCE</text>
-  <rect x="195" y="1245" width="945" height="65" rx="8" fill="#4a044e" stroke="#86198f"/>
-  <text x="215" y="1267" fill="#fdf4ff" font-size="14" font-weight="700">storage.py</text>
-  <text x="215" y="1285" fill="#f5d0fe" font-size="10.5">SQLite → data/history.sqlite  ·  table "searches": topic, created_at, paper_ids (JSON), scores, summary</text>
-  <text x="215" y="1300" fill="#f5d0fe" font-size="10.5">stores ONLY identity/metadata — paper_ids is a join key back to Chroma, which owns the actual content</text>
+  <rect x="175" y="1290" width="985" height="137" rx="10" fill="#1c1024" stroke="#86198f"/>
+  <text x="195" y="1315" fill="#e879f9" font-size="13" font-weight="700">PHASE 7 — PERSISTENCE</text>
+  <rect x="195" y="1330" width="945" height="82" rx="8" fill="#4a044e" stroke="#86198f"/>
+  <text x="215" y="1352" fill="#fdf4ff" font-size="14" font-weight="700">storage.py</text>
+  <text x="215" y="1370" fill="#f0abfc" font-size="10.5">per-request connection via FastAPI Depends(get_db_connection) — WAL mode + busy_timeout, not one shared connection across threads</text>
+  <text x="215" y="1387" fill="#f5d0fe" font-size="10.5">SQLite → data/history.sqlite  ·  table "searches": topic, created_at, paper_ids (JSON), scores, summary</text>
+  <text x="215" y="1404" fill="#f5d0fe" font-size="10.5">stores ONLY identity/metadata — paper_ids is a join key back to Chroma, which owns the actual content</text>
 
   <!-- arrow 6->7 -->
-  <line x1="667" y1="1325" x2="667" y2="1357" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="667" y1="1427" x2="667" y2="1459" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 7: API -->
-  <rect x="175" y="1360" width="985" height="185" rx="10" fill="#0f1f2e" stroke="#1d4ed8"/>
-  <text x="195" y="1385" fill="#60a5fa" font-size="13" font-weight="700">PHASE 7 — BACKEND API</text>
-  <rect x="195" y="1400" width="945" height="130" rx="8" fill="#172554" stroke="#1d4ed8"/>
-  <text x="215" y="1422" fill="#eff6ff" font-size="14" font-weight="700">api.py  (FastAPI)</text>
-  <text x="215" y="1440" fill="#bfdbfe" font-size="10.5">/search → run_research_agent()  ·  server-side rerank fallback if agent skipped it</text>
-  <text x="215" y="1457" fill="#bfdbfe" font-size="10.5">/summarize → _get_or_create_summary(): reuses persisted summary, never re-bills the LLM twice</text>
-  <text x="215" y="1474" fill="#bfdbfe" font-size="10.5">/chat → stateless; client carries chat history forward in the request body each turn</text>
-  <text x="215" y="1491" fill="#bfdbfe" font-size="10.5">/export/{{id}} → renders stored summary as Markdown  ·  /library, /library/{{id}} → browse past searches</text>
-  <text x="215" y="1512" fill="#93c5fd" font-size="9.7" font-style="italic">resolves paper_ids (SQLite) back into full Paper objects via embeddings.get_papers_by_ids()</text>
+  <rect x="175" y="1462" width="985" height="219" rx="10" fill="#0f1f2e" stroke="#1d4ed8"/>
+  <text x="195" y="1487" fill="#60a5fa" font-size="13" font-weight="700">PHASE 7 — BACKEND API</text>
+  <rect x="195" y="1502" width="945" height="164" rx="8" fill="#172554" stroke="#1d4ed8"/>
+  <text x="215" y="1524" fill="#eff6ff" font-size="14" font-weight="700">api.py  (FastAPI)</text>
+  <text x="215" y="1542" fill="#bfdbfe" font-size="10.5">/search → run_research_agent()  ·  server-side rerank fallback if agent skipped it</text>
+  <text x="215" y="1559" fill="#bfdbfe" font-size="10.5">/summarize → _get_or_create_summary(): reuses persisted summary, never re-bills the LLM twice</text>
+  <text x="215" y="1576" fill="#bfdbfe" font-size="10.5">/chat → stateless; client carries chat history forward in the request body each turn</text>
+  <text x="215" y="1593" fill="#bfdbfe" font-size="10.5">/export/{id} → renders stored summary as Markdown  ·  /library, /library/{id} → browse past searches</text>
+  <text x="215" y="1614" fill="#93c5fd" font-size="10.5">upstream failures (OpenAI/arXiv/Semantic Scholar) caught at the endpoint boundary → clean 503 error, never a raw 500/stack trace</text>
+  <text x="215" y="1631" fill="#93c5fd" font-size="10.5">ChatTurn.role constrained to Literal["user", "assistant"] — not a free string</text>
+  <text x="215" y="1651" fill="#93c5fd" font-size="9.7" font-style="italic">resolves paper_ids (SQLite) back into full Paper objects via embeddings.get_papers_by_ids()</text>
 
   <!-- arrow 7->8 -->
-  <line x1="667" y1="1545" x2="667" y2="1577" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="667" y1="1681" x2="667" y2="1713" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
   <!-- LAYER 8: Frontend -->
-  <rect x="175" y="1580" width="985" height="150" rx="10" fill="#1c1917" stroke="#57534e"/>
-  <text x="195" y="1605" fill="#d6d3d1" font-size="13" font-weight="700">PHASE 8 — FRONTEND</text>
-  <rect x="195" y="1620" width="945" height="95" rx="8" fill="#292524" stroke="#57534e"/>
-  <text x="215" y="1642" fill="#fafaf9" font-size="14" font-weight="700">app.py  (Streamlit)</text>
-  <text x="215" y="1660" fill="#e7e5e4" font-size="10.5">thin HTTP client over api.py — never imports research_agent internals directly</text>
-  <text x="215" y="1677" fill="#e7e5e4" font-size="10.5">every backend call gated behind a button/chat-input — Streamlit reruns top-to-bottom on ANY</text>
-  <text x="230" y="1694" fill="#e7e5e4" font-size="10.5">widget interaction, so an unguarded call would silently re-bill an LLM on an unrelated click</text>
-  <text x="215" y="1711" fill="#e7e5e4" font-size="10.5">exception: /library — cheap SQLite read, safe to refresh every rerun for the sidebar</text>
+  <rect x="175" y="1716" width="985" height="150" rx="10" fill="#1c1917" stroke="#57534e"/>
+  <text x="195" y="1741" fill="#d6d3d1" font-size="13" font-weight="700">PHASE 8 — FRONTEND</text>
+  <rect x="195" y="1756" width="945" height="95" rx="8" fill="#292524" stroke="#57534e"/>
+  <text x="215" y="1778" fill="#fafaf9" font-size="14" font-weight="700">app.py  (Streamlit)</text>
+  <text x="215" y="1796" fill="#e7e5e4" font-size="10.5">thin HTTP client over api.py — never imports research_agent internals directly</text>
+  <text x="215" y="1813" fill="#e7e5e4" font-size="10.5">every backend call gated behind a button/chat-input — Streamlit reruns top-to-bottom on ANY</text>
+  <text x="230" y="1830" fill="#e7e5e4" font-size="10.5">widget interaction, so an unguarded call would silently re-bill an LLM on an unrelated click</text>
+  <text x="215" y="1847" fill="#e7e5e4" font-size="10.5">exception: /library — cheap SQLite read, safe to refresh every rerun for the sidebar</text>
 
   <!-- legend -->
-  <text x="590" y="1760" fill="#64748b" font-size="10.5" text-anchor="middle">Solid arrows = primary data flow  ·  Dashed orange = agent.py's tool-calling loop back into phases 1–3  ·  Dashed grey rail = schema.py's Paper type, shared by every layer</text>
+  <text x="590" y="1896" fill="#64748b" font-size="10.5" text-anchor="middle">Solid arrows = primary data flow  ·  Dashed orange = agent.py's tool-calling loop back into phases 1–3  ·  Dashed grey rail = schema.py's Paper type, shared by every layer</text>
+  <text x="590" y="1912" fill="#475569" font-size="9.5" text-anchor="middle" font-style="italic">Highlighted lines (brighter text within each box) = mentor-feedback-fixes robustness pass: resilient tool calls, per-request SQLite, upstream error handling, duplicate-citation guard, capped chat history, defensive parsing</text>
 </svg>
