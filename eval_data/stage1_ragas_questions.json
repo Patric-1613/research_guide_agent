@@ -1,0 +1,242 @@
+{
+  "_meta": {
+    "description": "Stage 1 RAGAS test set (Faithfulness + Answer Relevancy, reference-free). Redrafted from an original 25-question design after verification showed 15 questions targeted papers the real pipeline never surfaces at its actual production defaults (research_agent/api.py SearchRequest.top_k=10 for Stage 1 topic search, research_agent/qa.py TOP_K_DEFAULT=5 for Stage 2 answer-time re-rank against the condensed question text). One topic ('stateful multi-agent orchestration with graph-based control flow') was dropped entirely: 8 of its real top-10 results were unrelated classical control-theory/MARL papers, with no distinctive single-paper or comparison hook.",
+    "verification": "Every scenario was confirmed by an actual two-stage run: Stage 1 (search_arxiv + search_semantic_scholar + deduplicate + semantic_search, top_k=10) populates the candidate pool, then the REAL qa.py ask() (condense + Stage-2 semantic_search re-rank, top_k=5) was called with the exact question text, confirming the target paper(s) survive into retrieved_papers and get cited. All 24 scenarios are 'verified: stage1+stage2'.",
+    "unanswerable_subtypes": "Category 4 ('unanswerable') is not one homogeneous test — it splits into two deliberately distinct, both-valid behaviors, tagged per-scenario via 'unanswerable_type': (1) 'hard_refusal' (5 scenarios) — the model sets answerable=False outright, because the question asks for a specific fact/number that genuinely isn't in the abstract or is fully out of scope. (2) 'soft_hedge' (1 scenario, hornet-unanswerable-01-orig) — the model sets answerable=True but its prose explicitly and honestly discloses the gap ('none of the provided abstracts... direct evidence of such a comparison is not provided') rather than fabricating a comparison. Both are legitimate, non-hallucinating outcomes for a Faithfulness eval; a mentor should read this as two intentional sub-tests, not five passes and one outlier.",
+    "date": "2026-07-18",
+    "total_scenarios": 24,
+    "category_counts": {
+      "single_paper": 8,
+      "comparison": 7,
+      "multi_turn": 3,
+      "unanswerable": 6
+    },
+    "unanswerable_subtype_counts": {
+      "hard_refusal": 5,
+      "soft_hedge": 1
+    },
+    "verification_status": {
+      "stage1+stage2": 24
+    }
+  },
+
+  "peft-single-01": {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "category": "single_paper",
+    "turns": ["What update mechanism does RoCoFT use to reduce the number of trainable parameters?"],
+    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
+    "verified": "stage1+stage2"
+  },
+  "peft-comparison-01": {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "category": "comparison",
+    "turns": ["How does RoCoFT's row-column update approach differ from MoELoRA's mixture-of-experts approach?"],
+    "target_papers": [
+      "RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates",
+      "MoELoRA: Contrastive Learning Guided Mixture of Experts on Parameter-Efficient Fine-Tuning for Large Language Models"
+    ],
+    "verified": "stage1+stage2"
+  },
+  "peft-multiturn-01": {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "category": "multi_turn",
+    "turns": [
+      "What is RoCoFT?",
+      "What are its limitations, based on the paper?"
+    ],
+    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
+    "verified": "stage1+stage2"
+  },
+  "peft-unanswerable-01": {
+    "topic": "parameter-efficient fine-tuning for large language models",
+    "category": "unanswerable",
+    "unanswerable_type": "hard_refusal",
+    "turns": ["What exact learning rate did the RoCoFT authors use in their main experiment?"],
+    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
+    "why_unanswerable": "Abstract does not state hyperparameter-level detail (learning rate).",
+    "verified": "stage1+stage2"
+  },
+
+  "attention-single-01": {
+    "topic": "attention mechanism in transformer architectures",
+    "category": "single_paper",
+    "turns": ["How does the Momentum Transformer paper describe attention's advantage over LSTM-based sequence models?"],
+    "target_papers": ["Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"],
+    "verified": "stage1+stage2"
+  },
+  "attention-unanswerable-01": {
+    "topic": "attention mechanism in transformer architectures",
+    "category": "unanswerable",
+    "unanswerable_type": "hard_refusal",
+    "turns": ["What exact Sharpe ratio improvement did the Momentum Transformer paper report over its LSTM baseline?"],
+    "target_papers": ["Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"],
+    "why_unanswerable": "Abstract states the architecture outperforms benchmarks but does not quantify a Sharpe ratio figure.",
+    "verified": "stage1+stage2"
+  },
+
+  "rag-single-01": {
+    "topic": "retrieval-augmented generation for large language models",
+    "category": "single_paper",
+    "turns": ["What privacy risk does the 'Riddle Me This!' paper identify in retrieval-augmented generation systems?"],
+    "target_papers": ["Riddle Me This! Stealthy Membership Inference for Retrieval-Augmented Generation"],
+    "verified": "stage1+stage2"
+  },
+  "rag-multiturn-01": {
+    "topic": "retrieval-augmented generation for large language models",
+    "category": "multi_turn",
+    "turns": [
+      "What does Auto-RAG propose?",
+      "How does that differ from the reflective-tags adaptive-control approach?"
+    ],
+    "target_papers": [
+      "Auto-RAG: Autonomous Retrieval-Augmented Generation for Large Language Models",
+      "Adaptive Control of Retrieval-Augmented Generation for Large Language Models Through Reflective Tags"
+    ],
+    "verified": "stage1+stage2"
+  },
+
+  "cnn-single-01": {
+    "topic": "convolutional neural networks for image classification",
+    "category": "single_paper",
+    "turns": ["What architectural approach does the multi-column deep neural network paper use to improve image classification?"],
+    "target_papers": ["Multi-column deep neural networks for image classification"],
+    "verified": "stage1+stage2"
+  },
+
+  "embeddings-single-01": {
+    "topic": "dense vector embeddings for semantic search",
+    "category": "single_paper",
+    "turns": ["What does the UAE (Utility-Aligned Embeddings) paper propose to align dense retrievers with LLM utility?"],
+    "target_papers": ["Aligning Dense Retrievers with LLM Utility via Distillation"],
+    "verified": "stage1+stage2"
+  },
+
+  "hybrid-single-01": {
+    "topic": "hybrid search combining dense and sparse retrieval",
+    "category": "single_paper",
+    "turns": ["How does Query-Adaptive Hybrid Search's alpha-prediction approach differ from a static-weight hybrid baseline, per its own description?"],
+    "target_papers": ["Query-Adaptive Hybrid Search"],
+    "verified": "stage1+stage2"
+  },
+
+  "toolcalling-comparison-01": {
+    "topic": "tool-calling patterns in LLM agent architectures",
+    "category": "comparison",
+    "turns": ["How does MemTool's memory-management approach differ from the stateful-inference paper's KV-cache-reuse approach to multi-turn tool calling?"],
+    "target_papers": [
+      "MemTool: Optimizing Short-Term Memory Management for Dynamic Tool Calling in LLM Agent Multi-Turn Conversations",
+      "Stateful Inference for Low-Latency Multi-Agent Tool Calling"
+    ],
+    "verified": "stage1+stage2"
+  },
+
+  "rageval-comparison-01": {
+    "topic": "evaluation metrics for RAG system quality",
+    "category": "comparison",
+    "turns": ["How does eRAG's per-document utility evaluation differ from RAGAs's reference-free framework?"],
+    "target_papers": [
+      "Evaluating Retrieval Quality in Retrieval-Augmented Generation",
+      "RAGAs: Automated Evaluation of Retrieval Augmented Generation"
+    ],
+    "verified": "stage1+stage2"
+  },
+
+  "hallucination-multiturn-01": {
+    "topic": "reducing hallucination in retrieval-augmented generation",
+    "category": "multi_turn",
+    "turns": [
+      "What does SeaRAG propose to reduce hallucination in RAG?",
+      "Does it require labeled training data to do that?"
+    ],
+    "target_papers": ["SeaRAG: Reducing Hallucination in Retrieval-Augmented Generation via Statement-Entity Adaptive Ranking"],
+    "verified": "stage1+stage2"
+  },
+
+  "insects-comparison-01": {
+    "topic": "multi-class insect classification using computer vision",
+    "category": "comparison",
+    "turns": ["How does the crowdsourced fine-grained insect-classification paper's approach compare to the wheat pest-diagnosis CNN paper's approach?"],
+    "target_papers": [
+      "Performance of computer vision algorithms for fine-grained classification using crowdsourced insect images",
+      "Comprehensive Wheat Leaf Disease and Pest Diagnosis Using Convolutional Neural Networks"
+    ],
+    "verified": "stage1+stage2"
+  },
+
+  "llmjudge-single-01": {
+    "topic": "LLM-as-judge evaluation of RAG faithfulness",
+    "category": "single_paper",
+    "turns": ["What is the HHEM hallucination-detection model, per the Vectara benchmarking paper?"],
+    "target_papers": ["Benchmarking LLM Faithfulness in RAG with Evolving Leaderboards"],
+    "verified": "stage1+stage2"
+  },
+
+  "hornet-single-01-orig": {
+    "topic": "deep learning approaches to Asian hornet detection",
+    "category": "single_paper",
+    "turns": ["What detection approach does the VespAI system use?"],
+    "target_papers": ["VespAI: a deep learning-based system for the detection of invasive hornets"],
+    "verified": "stage1+stage2"
+  },
+  "ann-comparison-01-orig": {
+    "topic": "approximate nearest neighbor indexing for vector databases",
+    "category": "comparison",
+    "turns": ["How does HNSW's approach compare to product quantization-based methods, based on what's in these papers?"],
+    "target_papers": ["Accelerating Graph Indexing for ANNS on Modern CPUs", "Vector Databases in the Age of AI: Foundations, Architectures, and Emerging Applications"],
+    "notes": "Confirmed at Stage 2: real answer genuinely contrasts HNSW (graph-based, speed/accuracy tradeoff) against Product Quantization (quantization-based, lower memory, IVF framework) with citations to both.",
+    "verified": "stage1+stage2"
+  },
+  "ids-comparison-01-orig": {
+    "topic": "few-shot learning approaches for intrusion detection systems",
+    "category": "comparison",
+    "turns": ["What's the key difference in method between the two intrusion detection papers retrieved?"],
+    "target_papers": ["Cyber Situation Awareness with Active Learning for Intrusion Detection", "Securing Fog-to-Things Environment Using Intrusion Detection System Based On Ensemble Learning"],
+    "notes": "Confirmed at Stage 2: real, well-grounded two-paper comparison, non-hallucinated. Caveat: the question phrasing ('the two...papers retrieved') is ambiguous against a 10-paper pool, so which pair surfaces is non-deterministic across runs — this run landed on active-learning vs. ensemble-learning, not the prototypical-vs-Siamese pairing noted at original review. Still passes the faithfulness/attribution bar, just not a fixed target pair.",
+    "verified": "stage1+stage2"
+  },
+  "cnn-unanswerable-01-orig": {
+    "topic": "convolutional neural networks for image classification",
+    "category": "unanswerable",
+    "unanswerable_type": "hard_refusal",
+    "turns": ["What is the current state-of-the-art accuracy on ImageNet as of this year?"],
+    "target_papers": [],
+    "why_unanswerable": "Retrieved papers are historical; none can answer a 'current SOTA' question.",
+    "verified": "stage1+stage2"
+  },
+  "hornet-unanswerable-01-orig": {
+    "topic": "deep learning approaches to Asian hornet detection",
+    "category": "unanswerable",
+    "unanswerable_type": "soft_hedge",
+    "turns": ["How does this compare to European hornet detection methods?"],
+    "target_papers": [],
+    "why_unanswerable": "Retrieved papers are Asian-hornet-specific; European-hornet comparison is out of scope. Unlike the hard_refusal scenarios, this does not produce answerable=False — it tests the OTHER valid honest outcome: answerable=True with the gap disclosed in prose rather than fabricated.",
+    "notes": "Confirmed at Stage 2: real answer explicitly states 'none of the provided abstracts explicitly discuss... European hornet... direct evidence of such a comparison is not provided' — a non-hallucinated, honestly-hedged response. This is the deliberate soft_hedge counterpart to the other five hard_refusal scenarios, not a failure of the test.",
+    "verified": "stage1+stage2"
+  },
+  "rageval-unanswerable-01-orig": {
+    "topic": "evaluation metrics for RAG system quality",
+    "category": "unanswerable",
+    "unanswerable_type": "hard_refusal",
+    "turns": ["What's the best pizza topping?"],
+    "target_papers": [],
+    "why_unanswerable": "Fully unrelated to any retrieved paper — confirms the system doesn't generate plausible-sounding filler.",
+    "verified": "stage1+stage2"
+  },
+  "citation-comparison-01-orig": {
+    "topic": "structural citation grounding in LLM-generated text",
+    "category": "comparison",
+    "turns": ["How does this paper's citation approach compare to a standard RAG citation method?"],
+    "target_papers": ["Citation-Grounded Code Comprehension: Preventing LLM Hallucination Through Hybrid Retrieval and Graph-Augmented Context"],
+    "notes": "Confirmed at Stage 2, upgraded from 'borderline': real answer cites concrete figures (92% citation accuracy, 14-18pp improvement, 62% of architectural queries) directly from the retrieved paper, contrasted clearly against standard RAG's pure textual-similarity citation approach.",
+    "verified": "stage1+stage2"
+  },
+  "yolo-unanswerable-01-orig": {
+    "topic": "YOLO-based object detection for pollinator and insect monitoring",
+    "category": "unanswerable",
+    "unanswerable_type": "hard_refusal",
+    "turns": ["What specific model architecture does this paper use, down to the exact layer count?"],
+    "target_papers": [],
+    "why_unanswerable": "Too granular for an abstract — architecture papers are present but don't specify exact layer counts.",
+    "verified": "stage1+stage2"
+  }
+}

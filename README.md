@@ -11,6 +11,12 @@ arXiv and Semantic Scholar APIs are used.
 
 ## Architecture
 
+![Architecture diagram](research_agent_architecture.svg)
+
+The diagram above is the detailed, file-by-file view (updated for the
+robustness/reliability changes below — brighter highlighted lines within
+each box). The condensed version:
+
 ```
 Topic
   │
@@ -53,15 +59,19 @@ Topic
                                         ▼
                           ┌──────────────────────┐
                           │ storage.py (SQLite)   │
-                          │ saved searches:        │
-                          │ topic, paper_ids,      │
-                          │ scores, summary        │
+                          │ per-request conn. via │
+                          │ FastAPI Depends + WAL │
+                          │ saved searches:       │
+                          │ topic, paper_ids,     │
+                          │ scores, summary       │
                           └───────────┬──────────┘
                                        ▼
                           ┌──────────────────────┐
                           │ api.py (FastAPI)       │
                           │ /search /summarize     │
                           │ /chat /export /library │
+                          │ upstream errors →      │
+                          │ clean 503, no raw 500  │
                           └───────────┬──────────┘
                                        ▼
                           ┌──────────────────────┐
@@ -206,6 +216,61 @@ of real tokens; see "Try each phase individually" above.
   button/chat-input action.** Streamlit reruns the entire script on every
   widget interaction, so an unguarded call would silently re-trigger (and
   re-bill) on unrelated clicks.
+
+## Robustness & reliability pass
+
+A later review pass (branch `mentor-feedback-fixes`) hardened several edge
+cases and failure modes that the original phases above didn't cover. No
+behavior changed for valid/well-formed input anywhere in this list — every
+fix below only changes what happens on an already-broken or edge-case input,
+verified by keeping the full test suite green (101 → 128 tests) throughout.
+
+- **Defensive parsing fixes:** a blank/`None` author name inside an
+  otherwise normal author list no longer crashes APA/Harvard formatting
+  (falls back to `"Unknown"`); a malformed/empty Semantic Scholar response
+  body is caught and degrades to `[]` instead of raising;
+  `Retry-After` is parsed as either plain seconds or an HTTP-date (both are
+  valid per RFC 9110), falling back to the existing backoff default if
+  neither parses; a paper with both an empty title and no abstract is
+  skipped (logged) rather than failing the whole embedding batch.
+- **Embedding order correctness:** OpenAI's embeddings API doesn't guarantee
+  response order matches request order — vectors are now sorted by the
+  API's own `index` field before being assigned back to their papers,
+  instead of trusting list position.
+- **Resilient agent tool calls:** each of the four agent tools
+  (`search_arxiv_tool`, `search_semantic_scholar_tool`,
+  `rerank_by_relevance_tool`, `search_web_tool`) now wraps its body in
+  try/except, so one tool's failure (e.g. an OpenAI embedding call erroring
+  mid-rerank) returns a description instead of killing the whole agent run
+  — already-gathered papers survive, and the failed step is retryable.
+- **Per-request SQLite connections:** `storage.py` moved from one SQLite
+  connection shared across every request (`check_same_thread=False`) to a
+  FastAPI `Depends`-based connection opened and closed per request
+  (`get_db_connection`), plus WAL journal mode and a `busy_timeout` — the
+  standard pairing for safe concurrent access under FastAPI's
+  multi-threaded request handling. Verified with a 20-thread concurrent
+  write test.
+- **Clean upstream error responses:** `/search`, `/summarize`, `/chat`, and
+  `/export` now catch `OpenAIError`/`ArxivError`/`RequestException` at the
+  endpoint boundary and return a clean `503 {"error": "... unavailable"}`
+  instead of leaking a raw 500 with an internal stack trace — while
+  intentional 404s (`HTTPException`) are re-raised untouched, not swallowed
+  into a 503.
+- **Duplicate-citation guard:** the dynamic-`Literal` grounding in
+  `summarize.py` guarantees a cited `paper_id` was actually retrieved, but
+  never prevented the *same* `paper_id` from being placed in more than one
+  theme — a post-generation check now keeps only its first occurrence
+  (logged as a warning).
+- **Capped chat history:** `qa.py` now caps chat history to the last 8
+  turns (16 messages) before either LLM call it makes per turn (follow-up
+  condensing and answer generation), bounding cost/latency growth as a
+  conversation lengthens. The cap is prompt-only — `session.history` itself
+  stays fully intact for a UI transcript.
+- **Zero-API-key test suite:** the `OpenAI()` client construction in
+  `api.py`'s `lifespan()` (previously unconditional and unmocked in tests)
+  is now mocked in the shared test fixture — `pytest tests/` passes
+  128/128 with `.env` entirely absent, not just with real credentials
+  configured.
 
 ## Known limitations
 
