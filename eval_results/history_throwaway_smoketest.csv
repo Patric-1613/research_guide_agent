@@ -1,0 +1,2 @@
+run_id,date,git_commit,judge_model,num_questions,faithfulness_mean,answer_relevancy_mean,note
+1,2026-07-16T14:58:09+00:00,dadb8c83d21b8c088c1c6559fe7c588babbb2ef6,gpt-4.1-mini,4,1.0000,0.8255,phase 1 smoke test

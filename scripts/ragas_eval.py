@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
-"""RAGAS integration, phase 1: plumbing only.
+"""RAGAS integration: runs the curated Stage 1 test set
+(eval_data/stage1_ragas_questions.json) against the REAL pipeline — a real
+search/rerank pass (same flow as scripts/test_qa.py) feeding real papers
+into qa.py's ask(), whose real `answer` and real retrieved abstracts become
+RAGAS's `response` and `retrieved_contexts`. Nothing here is mocked or
+fabricated.
 
-Proves the RAGAS wiring works end-to-end against REAL output from the
-existing pipeline — a real search/rerank pass (same flow as
-scripts/test_qa.py) feeding real papers into qa.py's ask(), whose real
-`answer` and real retrieved abstracts become RAGAS's `response` and
-`retrieved_contexts`. Nothing here is mocked or fabricated.
+Every scenario in the curated set was independently verified (see that
+file's own `_meta` block) with the real production defaults this script
+also uses: Stage 1 candidate-pool search at STAGE1_TOP_K=10 (matching
+research_agent/api.py's SearchRequest.top_k default), then the real qa.ask()
+for Stage 2 (condense + re-rank at qa.py's own TOP_K_DEFAULT=5 — deliberately
+NOT overridden here, so this exercises the exact same re-rank the live app
+uses). Multi-turn scenarios reuse one ChatSession across their turns so
+condensing is genuinely exercised, not simulated.
 
 Only two metrics run: Faithfulness and Answer Relevancy. Context Precision
 and Context Recall are NOT attempted — both need a reference/ground-truth
-answer set that doesn't exist yet (a separate, later phase), and asking
-RAGAS for them without one would either error or silently score against a
-fabricated reference.
+answer set that doesn't exist yet (Stage 1b, a separate deferred phase), and
+asking RAGAS for them without one would either error or silently score
+against a fabricated reference.
 
 Not part of pytest or CI. This is a manually-run tool that makes real,
-billable OpenAI calls: the pipeline's own answer-generation calls (qa.py,
-already billable on its own) PLUS the RAGAS judge model's scoring calls
-PLUS embedding calls for Answer Relevancy. See the printed cost summary at
-the end of a run for actual token counts and an estimated dollar cost.
+billable OpenAI calls: the pipeline's own answer-generation and
+question-condensing calls (qa.py) PLUS the RAGAS judge model's scoring calls
+PLUS embedding calls for Answer Relevancy and for indexing candidates. See
+the printed cost summary at the end of a run for actual token counts and an
+estimated dollar cost. The curated set is 24 scenarios / 27 total turns (3
+are 2-turn multi-turn pairs) — meaningfully more expensive than a smoke test.
 
 Usage:
-    python scripts/ragas_eval.py --note "phase 1 smoke test"
+    python scripts/ragas_eval.py --note "stage 1 curated set, first real run"
     python scripts/ragas_eval.py --note "trying gpt-4.1 as judge" --judge-model gpt-4.1
 """
 
@@ -29,10 +39,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import json
 import logging
 import os
 import subprocess
 import sys
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,11 +69,25 @@ DEFAULT_JUDGE_MODEL = "gpt-4.1-mini"
 # already relies on and already has pricing tracked for.
 JUDGE_EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Matches research_agent/api.py's SearchRequest.top_k default exactly — this
+# is Stage 1 (candidate-pool search), distinct from qa.py's own
+# TOP_K_DEFAULT=5 (Stage 2, the answer-time re-rank). Verified via grep
+# against both files before use; see eval_data/stage1_ragas_questions.json's
+# own _meta block for the investigation that established this distinction.
+STAGE1_TOP_K = 10
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EVAL_DATA_PATH = os.path.join(REPO_ROOT, "eval_data", "stage1_ragas_questions.json")
 HISTORY_CSV = os.path.join(REPO_ROOT, "eval_results", "history.csv")
+
+CATEGORIES = ["single_paper", "comparison", "multi_turn", "unanswerable"]
+
 HISTORY_FIELDS = [
-    "run_id", "date", "git_commit", "judge_model", "num_questions",
-    "faithfulness_mean", "answer_relevancy_mean", "note",
+    "run_id", "date", "git_commit", "judge_model", "num_scenarios", "num_turns",
+    "faithfulness_mean", "answer_relevancy_mean",
+    "faithfulness_single_paper", "faithfulness_comparison", "faithfulness_multi_turn", "faithfulness_unanswerable",
+    "answer_relevancy_single_paper", "answer_relevancy_comparison", "answer_relevancy_multi_turn", "answer_relevancy_unanswerable",
+    "note",
 ]
 
 # Point-in-time OpenAI pricing (USD per 1M tokens), checked via web search
@@ -74,36 +100,21 @@ PRICING_PER_1M_USD = {
     "text-embedding-3-small": {"input": 0.02, "output": 0.0},
 }
 
-# --- THROWAWAY test questions -------------------------------------------
-# Placeholder questions for proving the RAGAS wiring works end-to-end.
-# This is NOT the curated reference eval set (a separate, later phase) —
-# just enough real, answerable questions to exercise the real pipeline and
-# get real, non-degenerate Faithfulness/Answer Relevancy scores. Disposable;
-# replace or extend freely without needing to update anything else.
-EVAL_CASES = [
-    {
-        "topic": "parameter-efficient fine-tuning methods for large language models",
-        "question": "What is RoCoFT and how does it work?",
-    },
-    {
-        "topic": "retrieval augmented generation for large language models",
-        "question": "What problem does retrieval-augmented generation solve for large language models?",
-    },
-    {
-        "topic": "vector databases for embedding search",
-        "question": "What tradeoffs do vector databases make to support fast approximate nearest neighbor search?",
-    },
-    {
-        "topic": "instruction tuning for large language models",
-        "question": "How does instruction tuning differ from standard supervised fine-tuning?",
-    },
-]
+
+def load_eval_scenarios() -> dict:
+    """Loads the curated Stage 1 set, stripping the '_meta' documentation
+    block so callers only see actual scenario entries."""
+    with open(EVAL_DATA_PATH) as f:
+        data = json.load(f)
+    return {k: v for k, v in data.items() if k != "_meta"}
 
 
-def _search_and_rank(topic: str, client: OpenAI, top_k: int = 8):
-    """Real search/rerank pass — identical flow to scripts/test_qa.py, not
-    mocked: arXiv + Semantic Scholar search, cross-source dedup, embed,
-    then semantic rerank. Returns a ranked list of Paper objects."""
+def _search_and_rank(topic: str, client: OpenAI, top_k: int = STAGE1_TOP_K):
+    """Real Stage-1 search/rerank pass — identical flow to
+    scripts/test_qa.py and research_agent/api.py's plain (non-expanded)
+    search path: arXiv + Semantic Scholar search, cross-source dedup, embed,
+    then semantic rerank at top_k=10. Returns a ranked list of Paper
+    objects that becomes the ChatSession's candidate pool."""
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
     arxiv_papers = search_arxiv(topic, max_results=15)
     s2_papers = search_semantic_scholar(topic, max_results=15, api_key=s2_key)
@@ -120,30 +131,69 @@ def _search_and_rank(topic: str, client: OpenAI, top_k: int = 8):
     return [p for p, _ in ranked]
 
 
-def collect_cases(client: OpenAI) -> list[dict]:
-    """Runs each throwaway question through the real pipeline (search/rerank
-    then qa.ask()) and returns RAGAS single-turn samples built from genuine
-    output: user_input (the question), retrieved_contexts (the real
-    retrieved abstracts), response (the real generated answer)."""
-    samples = []
-    for i, case in enumerate(EVAL_CASES, 1):
-        topic, question = case["topic"], case["question"]
-        print(f"[{i}/{len(EVAL_CASES)}] topic={topic!r}")
+def collect_cases(client: OpenAI) -> tuple[list[dict], list[dict]]:
+    """Runs every scenario in the curated set through the real pipeline —
+    Stage 1 search/rerank, then a real ChatSession where each of the
+    scenario's turns is answered in order via qa.ask() (Stage 2, using
+    qa.py's own TOP_K_DEFAULT=5, not overridden here). Multi-turn scenarios
+    reuse one session across turns so _condense_question is genuinely
+    exercised on the real conversation history, not simulated.
+
+    Returns (samples, metadata): `samples` is exactly the RAGAS-schema shape
+    ({"user_input", "retrieved_contexts", "response"}) with no extra keys,
+    since EvaluationDataset.from_list validates against SingleTurnSample's
+    strict schema. `metadata` is a same-length, same-order parallel list
+    carrying scenario_id/turn_index/category/answerable/etc. for this
+    script's own reporting — kept separate so nothing here risks breaking
+    RAGAS's own validation.
+    """
+    scenarios = load_eval_scenarios()
+    samples: list[dict] = []
+    metadata: list[dict] = []
+
+    total_turns = sum(len(s["turns"]) for s in scenarios.values())
+    turn_counter = 0
+
+    for scenario_id, scenario in scenarios.items():
+        topic = scenario["topic"]
+        category = scenario["category"]
+        turns = scenario["turns"]
+
+        print(f"[{scenario_id}] topic={topic!r} category={category}")
         papers = _search_and_rank(topic, client)
-        print(f"    retrieved {len(papers)} papers, asking: {question!r}")
+        print(f"    Stage-1 pool: {len(papers)} papers")
 
         session = ChatSession(papers=papers)
-        result = ask(session, question, client=client)
-        contexts = [p.abstract for p in result["retrieved_papers"] if p.abstract]
 
-        print(f"    answerable={result['answerable']}, {len(contexts)} contexts, "
-              f"answer length={len(result['answer'])} chars\n")
-        samples.append({
-            "user_input": question,
-            "retrieved_contexts": contexts,
-            "response": result["answer"],
-        })
-    return samples
+        for turn_index, question in enumerate(turns):
+            turn_counter += 1
+            print(f"    [{turn_counter}/{total_turns}] turn {turn_index + 1}: {question!r}")
+            result = ask(session, question, client=client)
+            contexts = [p.abstract for p in result["retrieved_papers"] if p.abstract]
+
+            print(f"        answerable={result['answerable']}, {len(contexts)} contexts, "
+                  f"answer length={len(result['answer'])} chars")
+
+            if not contexts:
+                print(f"        SKIPPED from RAGAS dataset: no retrieved contexts (see qa.py's "
+                      f"_no_sources_result path) — nothing for Faithfulness to check claims against.")
+                continue
+
+            samples.append({
+                "user_input": question,
+                "retrieved_contexts": contexts,
+                "response": result["answer"],
+            })
+            metadata.append({
+                "scenario_id": scenario_id,
+                "turn_index": turn_index,
+                "category": category,
+                "unanswerable_type": scenario.get("unanswerable_type"),
+                "answerable": result["answerable"],
+            })
+        print()
+
+    return samples, metadata
 
 
 def run_ragas_eval(samples: list[dict], judge_model: str):
@@ -167,34 +217,56 @@ def run_ragas_eval(samples: list[dict], judge_model: str):
     )
 
 
-def print_results_table(result) -> dict[str, float]:
+def print_results_table(result, metadata: list[dict]) -> dict[str, float]:
     df = result.to_pandas()
 
     print("=" * 100)
     print("RAGAS results (per question)")
     print("=" * 100)
-    for i, row in df.iterrows():
-        print(f"\n[{i + 1}] {row['user_input']}")
-        print(f"    faithfulness:      {row['faithfulness']:.3f}")
-        print(f"    answer_relevancy:  {row['answer_relevancy']:.3f}")
+    for i, (row, meta) in enumerate(zip(df.itertuples(), metadata), 1):
+        tag = meta["category"]
+        if meta.get("unanswerable_type"):
+            tag += f"/{meta['unanswerable_type']}"
+        print(f"\n[{i}] ({meta['scenario_id']} turn {meta['turn_index'] + 1}, {tag}, "
+              f"answerable={meta['answerable']}) {row.user_input}")
+        print(f"    faithfulness:      {row.faithfulness:.3f}")
+        print(f"    answer_relevancy:  {row.answer_relevancy:.3f}")
 
     means = {
         "faithfulness_mean": float(df["faithfulness"].mean()),
         "answer_relevancy_mean": float(df["answer_relevancy"].mean()),
     }
+
     print("\n" + "=" * 100)
-    print("Mean scores")
+    print("Mean scores by category")
+    print("=" * 100)
+    category_means: dict[str, dict[str, float]] = {}
+    for category in CATEGORIES:
+        idxs = [i for i, m in enumerate(metadata) if m["category"] == category]
+        if not idxs:
+            print(f"  {category}: (no scenarios)")
+            continue
+        faith = df["faithfulness"].iloc[idxs].mean()
+        rel = df["answer_relevancy"].iloc[idxs].mean()
+        category_means[category] = {"faithfulness": float(faith), "answer_relevancy": float(rel)}
+        print(f"  {category}: faithfulness={faith:.3f}  answer_relevancy={rel:.3f}  ({len(idxs)} turns)")
+
+    print("\n" + "=" * 100)
+    print("Overall mean scores")
     print("=" * 100)
     for k, v in means.items():
         print(f"  {k}: {v:.3f}")
+
+    means["_category_means"] = category_means
     return means
 
 
 def report_cost(result, judge_model: str) -> None:
     print("\n" + "=" * 100)
     print("Judge/embedding call cost (RAGAS scoring only — does NOT include the")
-    print("pipeline's own answer-generation calls in qa.py, which are separately")
-    print("billable and already logged via that module's own usage logging)")
+    print("pipeline's own answer-generation AND question-condensing calls in qa.py,")
+    print("which are separately billable and already logged via that module's own")
+    print("usage logging)")
     print("=" * 100)
     try:
         usage_list = result.total_tokens()
@@ -235,7 +307,7 @@ def report_cost(result, judge_model: str) -> None:
     print(f"  negligible in absolute terms, but the number above is not the full total.")
 
 
-def append_history_row(means: dict[str, float], judge_model: str, num_questions: int, note: str) -> dict:
+def append_history_row(means: dict, judge_model: str, num_scenarios: int, num_turns: int, note: str) -> dict:
     os.makedirs(os.path.dirname(HISTORY_CSV), exist_ok=True)
     file_exists = os.path.isfile(HISTORY_CSV)
 
@@ -250,14 +322,30 @@ def append_history_row(means: dict[str, float], judge_model: str, num_questions:
         ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     ).stdout.strip()
 
+    category_means = means.get("_category_means", {})
+
+    def cat_score(category: str, metric: str) -> str:
+        if category not in category_means:
+            return ""
+        return f"{category_means[category][metric]:.4f}"
+
     row = {
         "run_id": next_run_id,
         "date": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "git_commit": git_commit,
         "judge_model": judge_model,
-        "num_questions": num_questions,
+        "num_scenarios": num_scenarios,
+        "num_turns": num_turns,
         "faithfulness_mean": f"{means['faithfulness_mean']:.4f}",
         "answer_relevancy_mean": f"{means['answer_relevancy_mean']:.4f}",
+        "faithfulness_single_paper": cat_score("single_paper", "faithfulness"),
+        "faithfulness_comparison": cat_score("comparison", "faithfulness"),
+        "faithfulness_multi_turn": cat_score("multi_turn", "faithfulness"),
+        "faithfulness_unanswerable": cat_score("unanswerable", "faithfulness"),
+        "answer_relevancy_single_paper": cat_score("single_paper", "answer_relevancy"),
+        "answer_relevancy_comparison": cat_score("comparison", "answer_relevancy"),
+        "answer_relevancy_multi_turn": cat_score("multi_turn", "answer_relevancy"),
+        "answer_relevancy_unanswerable": cat_score("unanswerable", "answer_relevancy"),
         "note": note,
     }
 
@@ -272,7 +360,7 @@ def append_history_row(means: dict[str, float], judge_model: str, num_questions:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--note", required=True, help="Short description of this run, e.g. 'phase 1 smoke test'")
+    parser.add_argument("--note", required=True, help="Short description of this run, e.g. 'stage 1 curated set, first real run'")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL,
                          help=f"OpenAI model used by RAGAS to judge answers (default: {DEFAULT_JUDGE_MODEL})")
     args = parser.parse_args()
@@ -280,14 +368,22 @@ def main() -> None:
     load_dotenv()
     client = OpenAI()
 
-    print(f"Judge model: {args.judge_model}")
-    print(f"Questions:   {len(EVAL_CASES)} (throwaway placeholder set, not the curated eval set)\n")
+    scenarios = load_eval_scenarios()
+    total_turns = sum(len(s["turns"]) for s in scenarios.values())
 
-    samples = collect_cases(client)
+    print(f"Judge model: {args.judge_model}")
+    print(f"Dataset:     {EVAL_DATA_PATH}")
+    print(f"Scenarios:   {len(scenarios)} ({total_turns} total turns)\n")
+
+    samples, metadata = collect_cases(client)
+    if len(samples) < total_turns:
+        print(f"NOTE: {total_turns - len(samples)} turn(s) were skipped from RAGAS scoring (no retrieved contexts) — "
+              f"scoring {len(samples)} of {total_turns} turns.\n")
+
     result = run_ragas_eval(samples, args.judge_model)
-    means = print_results_table(result)
+    means = print_results_table(result, metadata)
     report_cost(result, args.judge_model)
-    row = append_history_row(means, args.judge_model, len(samples), args.note)
+    row = append_history_row(means, args.judge_model, len(scenarios), len(samples), args.note)
 
     print("\n" + "=" * 100)
     print(f"Appended run {row['run_id']} to {os.path.relpath(HISTORY_CSV, REPO_ROOT)}")
