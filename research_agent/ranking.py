@@ -133,6 +133,49 @@ def reciprocal_rank_fusion(
     return [(paper_by_id[pid], score) for pid, score in fused[:top_k]]
 
 
+def get_partition_n(k: int) -> int:
+    """Derived production rule for how many of the final top-k slots to
+    guarantee from Partition A when the caller hasn't specified n
+    explicitly — a flat n=min(2, k), not a function that scales with k.
+
+    This is the outcome of a real k-generalization test (k=3, 5, 10, 20,
+    25, 30, each swept across multiple n values against the 17-topic
+    reference set), not an assumption. The originally-considered "20% of
+    k" rule was DISCONFIRMED — it's the worst citation_partition setting
+    tested at k=5, and the true peak proportion swings from ~67% at k=3
+    down to ~7% at k=30. The true peak absolute n, in contrast, stayed in
+    a narrow, non-monotonic band (2, 3, 2, 4, 3, 2 at those six k values)
+    with no clean trend — which is exactly why a flat constant, not a
+    scaling formula or a hand-fit step function, is the recommended rule:
+    two more complex candidates (a step function; a light k/8-scaled-and-
+    clamped formula) scored marginally better in aggregate against these
+    six points, but only by introducing thresholds/coefficients tuned to
+    exactly those six data points, with no independent validation that
+    the thresholds reflect anything real rather than small-sample noise.
+
+    n=2 was chosen over the also-close n=3 specifically because n=2 is
+    exactly optimal at k=3, at k=10 (api.py's and app.py's documented
+    production default), and at k=30 (the production maximum) — n=3 is
+    marginally better in raw aggregate gap-from-peak but gives up recall
+    at k=10 specifically, the single likeliest real value in production.
+    n=2 is NOT optimal everywhere: it leaves real recall on the table at
+    k=5 (-0.049 vs true peak) and k=20 (-0.088, the largest shortfall
+    found in the whole study) — a known, reported gap, not a universal
+    optimum. A smaller guaranteed count is also the more conservative
+    choice against the citation-bias failure mode this project's own
+    testing confirmed elsewhere (forcing every slot into Partition A at
+    k=3 collapsed the domain difficulty tier from 0.667 to 0.000) — all
+    else this close, fewer forced slots is the safer default, not just
+    the simpler one.
+
+    The min(2, k) clamp is a defensive floor, not a finding: k<2 never
+    occurs in this project's actual bounds (api.py's SearchRequest.top_k
+    is ge=3), but a caller passing an out-of-range k here should get a
+    valid n back rather than one exceeding the pool size it's drawn from.
+    """
+    return min(2, k)
+
+
 def partition_by_citation(papers: list[Paper], n: int) -> tuple[list[Paper], list[Paper]]:
     """Splits `papers` into (partition_A, partition_B) by citation_count,
     RELATIVE not threshold-based: papers WITH a known citation_count are

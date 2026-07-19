@@ -17,3 +17,31 @@ run_id,date,git_commit,note,num_topics,top_k,ranking_mode,partition_n,mean_preci
 16,2026-07-19T16:04:43+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=1 at k=3,17,3,citation_partition,1,0.1569,0.3137,0.5667,0.0833,0.0000,0.6667
 17,2026-07-19T16:10:30+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=2 at k=3,17,3,citation_partition,2,0.2157,0.3922,0.6667,0.2222,0.3333,0.3333
 18,2026-07-19T16:15:30+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=3 (100%) at k=3,17,3,citation_partition,3,0.2157,0.3529,0.7333,0.2222,0.3333,0.0000
+19,2026-07-19T17:50:11+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=20 gap-fill: citation_partition n=1 (5%),17,20,citation_partition,1,0.0353,0.4314,0.6333,0.1944,0.3333,0.6667
+20,2026-07-19T17:55:17+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=20 gap-fill: citation_partition n=3 (15%),17,20,citation_partition,3,0.0441,0.5490,0.7333,0.2778,0.6667,0.6667
+21,2026-07-19T17:59:25+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=20 gap-fill: citation_partition n=5 (25%),17,20,citation_partition,5,0.0441,0.5490,0.7333,0.2778,0.6667,0.6667
+22,2026-07-19T18:03:58+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=20 gap-fill: citation_partition n=7 (35%),17,20,citation_partition,7,0.0441,0.5490,0.7333,0.2778,0.6667,0.6667
+23,2026-07-19T18:08:52+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,citation-partition-final-rule: semantic baseline at k=25,17,25,semantic,,0.0165,0.2745,0.2667,0.0556,0.3333,0.6667
+24,2026-07-19T18:14:07+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=1 (4%),17,25,citation_partition,1,0.0282,0.4314,0.6333,0.1944,0.3333,0.6667
+25,2026-07-19T18:39:14+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=2 (8%),17,25,citation_partition,2,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+26,2026-07-19T18:57:51+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=3 (12%),17,25,citation_partition,3,0.0376,0.5784,0.8333,0.2778,0.6667,0.6667
+27,2026-07-19T19:04:22+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=4 (16%),17,25,citation_partition,4,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+28,2026-07-19T19:08:36+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=5 (20%),17,25,citation_partition,5,0.0329,0.4902,0.5333,0.2778,0.6667,0.6667
+29,2026-07-19T19:12:54+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=6 (24%),17,25,citation_partition,6,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+30,2026-07-19T19:19:01+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=7 (28%),17,25,citation_partition,7,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+31,2026-07-19T19:24:06+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=25 sweep: citation_partition n=8 (32%),17,25,citation_partition,8,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+32,2026-07-19T19:28:45+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,citation-partition-final-rule: semantic baseline at k=30,17,30,semantic,,0.0137,0.2745,0.2667,0.0556,0.3333,0.6667
+33,2026-07-19T19:34:16+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=1,17,30,citation_partition,1,0.0235,0.4314,0.6333,0.1944,0.3333,0.6667
+34,2026-07-19T19:39:33+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=2,17,30,citation_partition,2,0.0294,0.5490,0.8333,0.1944,0.6667,0.6667
+35,2026-07-19T19:44:09+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=3,17,30,citation_partition,3,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+36,2026-07-19T19:49:48+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=4,17,30,citation_partition,4,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+37,2026-07-19T19:54:56+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=5,17,30,citation_partition,5,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+38,2026-07-19T20:01:22+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=6,17,30,citation_partition,6,0.0275,0.5196,0.6333,0.2778,0.6667,0.6667
+39,2026-07-19T20:07:41+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=7,17,30,citation_partition,7,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+40,2026-07-19T20:12:25+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,k=30 sweep: citation_partition n=8,17,30,citation_partition,8,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+41,2026-07-19T20:25:29+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=3,17,3,citation_partition,2,0.2353,0.4216,0.7667,0.2222,0.3333,0.3333
+42,2026-07-19T20:31:41+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=5,17,5,citation_partition,2,0.1412,0.4510,0.6667,0.2222,0.3333,0.6667
+43,2026-07-19T20:37:22+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=10,17,10,citation_partition,2,0.0882,0.5490,0.7333,0.2778,0.6667,0.6667
+44,2026-07-19T20:50:52+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=20,17,20,citation_partition,2,0.0412,0.5196,0.6333,0.2778,0.6667,0.6667
+45,2026-07-19T20:54:48+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=25,17,25,citation_partition,2,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
+46,2026-07-19T21:03:18+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=30,17,30,citation_partition,2,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667

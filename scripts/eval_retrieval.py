@@ -44,7 +44,13 @@ from research_agent.dedup import _same_paper, deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
 from research_agent.query_expansion import build_candidate_pool, expanded_search
-from research_agent.ranking import bm25_search, hybrid_search, merge_with_guaranteed_slots, partition_by_citation
+from research_agent.ranking import (
+    bm25_search,
+    get_partition_n,
+    hybrid_search,
+    merge_with_guaranteed_slots,
+    partition_by_citation,
+)
 from research_agent.schema import Paper
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -319,18 +325,27 @@ def main() -> None:
              "(cosine similarity — same algorithm --expand alone already uses), 'bm25' (lexical "
              "scoring, research_agent/ranking.py), 'hybrid' (RRF fusion of both, same module), or "
              "'citation_partition' (guaranteed slots for high-citation papers, also ranking.py — "
-             "needs --partition-proportion too). Always uses the expanded candidate pool for "
-             "building it regardless of --expand's value — this is an opt-in evaluation mode; omit "
-             "entirely to leave existing --expand/plain behavior (and the live app's own default) "
-             "completely untouched.",
+             "automatically uses ranking.py's derived get_partition_n(k) rule unless overridden via "
+             "--partition-n or --partition-proportion, see below). Always uses the expanded candidate "
+             "pool for building it regardless of --expand's value — this is an opt-in evaluation "
+             "mode; omit entirely to leave existing --expand/plain behavior (and the live app's own "
+             "default) completely untouched.",
     )
     parser.add_argument(
-        "--partition-proportion", type=float, default=0.3,
+        "--partition-proportion", type=float, default=None,
         help="Only used when --ranking-mode citation_partition: fraction of top_k reserved as "
-             "guaranteed Partition-A slots, e.g. 0.3 at top_k=10 means n=3. A proportion, not a raw "
-             "count, because 'N is proportional to k' per the experiment's own design — this way the "
-             "same --partition-proportion value stays meaningful if top_k ever changes, rather than "
-             "silently meaning a different fraction of the result. n = round(proportion * top_k).",
+             "guaranteed Partition-A slots, e.g. 0.3 at top_k=10 means n=3. n = round(proportion * "
+             "top_k). Overrides the derived get_partition_n(k) rule (see --partition-n and "
+             "ranking.py's get_partition_n) for this run only — the proportion-based experiment that "
+             "originally motivated this flag is superseded now that get_partition_n(k) exists, but "
+             "it's kept for anyone who wants to re-run that comparison. Ignored if --partition-n is "
+             "also given.",
+    )
+    parser.add_argument(
+        "--partition-n", type=int, default=None,
+        help="Only used when --ranking-mode citation_partition: an explicit, raw guaranteed-slot "
+             "count, overriding both --partition-proportion and the derived get_partition_n(k) rule "
+             "for this run only. Takes precedence over --partition-proportion if both are given.",
     )
     parser.add_argument(
         "--top-k", type=int, default=DEFAULT_TOP_K,
@@ -353,11 +368,24 @@ def main() -> None:
         print(f"Skipping {len(skipped)} topic(s) with zero expected papers: {skipped}")
 
     partition_n = None
+    partition_source = None
     if args.ranking_mode == "citation_partition":
-        partition_n = round(args.partition_proportion * args.top_k)
+        if args.partition_n is not None:
+            partition_n = args.partition_n
+            partition_source = "explicit --partition-n"
+        elif args.partition_proportion is not None:
+            partition_n = round(args.partition_proportion * args.top_k)
+            partition_source = f"explicit --partition-proportion={args.partition_proportion}"
+        else:
+            # Automatic default: the derived production rule from the
+            # k-generalization study (research_agent/ranking.py's
+            # get_partition_n), used whenever the caller doesn't override
+            # it — no manually-specified n required for the normal case.
+            partition_n = get_partition_n(args.top_k)
+            partition_source = "get_partition_n(k) [derived rule]"
 
     ranking_mode_label = args.ranking_mode or ("expanded" if args.expand else "plain")
-    partition_note = f" (n={partition_n}, proportion={args.partition_proportion})" if partition_n is not None else ""
+    partition_note = f" (n={partition_n}, source={partition_source})" if partition_n is not None else ""
     print(f"Evaluating {len(usable)} topics at top_k={args.top_k} (ranking mode: {ranking_mode_label}{partition_note})\n")
 
     results = []

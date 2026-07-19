@@ -14,7 +14,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.ranking import bm25_search, merge_with_guaranteed_slots, partition_by_citation, reciprocal_rank_fusion
+from research_agent.ranking import (
+    bm25_search,
+    get_partition_n,
+    merge_with_guaranteed_slots,
+    partition_by_citation,
+    reciprocal_rank_fusion,
+)
 from research_agent.schema import Paper
 
 
@@ -303,3 +309,23 @@ def test_merge_empty_pool_does_not_crash():
     with patch("research_agent.ranking.semantic_search", side_effect=_fake_semantic_search_returning([])):
         result = merge_with_guaranteed_slots("topic", partition_a=[], partition_b=[], n=3, top_k=5)
     assert result == []
+
+
+# --- get_partition_n ---------------------------------------------------------
+
+def test_get_partition_n_is_flat_2_across_the_real_production_k_range():
+    # api.py's SearchRequest.top_k is ge=3, le=30 — the actual range a real
+    # user can select. The derived rule is a flat constant (not a function
+    # of k) across that whole range, confirmed via real k-generalization
+    # testing at k=3,5,10,20,25,30 — this test locks that in.
+    for k in [3, 5, 10, 20, 25, 30]:
+        assert get_partition_n(k) == 2
+
+
+def test_get_partition_n_clamps_defensively_below_2():
+    # k<2 never occurs in this project's real bounds, but the clamp is a
+    # defensive floor, not a finding — a caller passing an out-of-range k
+    # should get a valid n back, never one exceeding the pool size it's
+    # drawn from.
+    assert get_partition_n(1) == 1
+    assert get_partition_n(0) == 0
