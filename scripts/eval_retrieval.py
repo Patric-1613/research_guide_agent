@@ -55,8 +55,15 @@ HISTORY_CSV = os.path.join(REPO_ROOT, "eval_results", "retrieval_history.csv")
 
 # Matches semantic_search()'s own default and api.py's SearchRequest
 # default top_k — the value the app itself uses for a plain search, not an
-# inflated number chosen to flatter recall.
-TOP_K = 10
+# inflated number chosen to flatter recall. Overridable per-run via
+# --top-k (k-generalization experiment) — every existing call site below
+# now takes top_k as a runtime parameter instead of reading this constant
+# directly, so omitting --top-k reproduces the exact k=10 behavior/results
+# already established, while passing it lets the SAME harness test other k
+# values without touching query_expansion.py or ranking.py's partition/
+# merge logic at all — this is a harness-level parameter, not a change to
+# either.
+DEFAULT_TOP_K = 10
 
 DIFFICULTY_TIERS = ["easy", "ambiguous", "thin", "domain"]
 
@@ -84,7 +91,7 @@ def load_reference_topics() -> dict:
         return json.load(f)
 
 
-def run_topic_retrieval(topic: str, client: OpenAI) -> list[Paper]:
+def run_topic_retrieval(topic: str, client: OpenAI, top_k: int = DEFAULT_TOP_K) -> list[Paper]:
     """Real search/dedup/rerank pass, no agent — search_arxiv() +
     search_semantic_scholar() + deduplicate() + semantic_search(), each
     called with its own function default (no override), matching the app's
@@ -99,25 +106,25 @@ def run_topic_retrieval(topic: str, client: OpenAI) -> list[Paper]:
     embed_and_index_papers(pool, collection=collection, client=client)
     ids = [p.paper_id for p in pool]
     ranked = semantic_search(
-        topic, collection=collection, client=client, top_k=TOP_K,
+        topic, collection=collection, client=client, top_k=top_k,
         where={"paper_id": {"$in": ids}},
     )
     return [p for p, _ in ranked]
 
 
-def run_topic_retrieval_expanded(topic: str, client: OpenAI) -> list[Paper]:
+def run_topic_retrieval_expanded(topic: str, client: OpenAI, top_k: int = DEFAULT_TOP_K) -> list[Paper]:
     """Same evaluation target, but via query_expansion.py's expanded_search()
     instead of the direct search_arxiv/search_semantic_scholar/deduplicate/
     semantic_search flow above — LLM-suggested paper titles widen the
     candidate pool before the identical dedup + rerank-against-original-topic
     steps. See research_agent/query_expansion.py for the full mechanism."""
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
-    ranked = expanded_search(topic, k=TOP_K, s2_api_key=s2_key, client=client)
+    ranked = expanded_search(topic, k=top_k, s2_api_key=s2_key, client=client)
     return [p for p, _ in ranked]
 
 
 def run_topic_retrieval_ranked(
-    topic: str, client: OpenAI, ranking_mode: str, partition_n: int | None = None,
+    topic: str, client: OpenAI, ranking_mode: str, partition_n: int | None = None, top_k: int = DEFAULT_TOP_K,
 ) -> list[Paper]:
     """Ranking-stage experiment: reuses query_expansion.py's
     build_candidate_pool() UNCHANGED (same locked pool-size parameters,
@@ -138,11 +145,11 @@ def run_topic_retrieval_ranked(
     to build for it, unlike the other three modes.
     """
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
-    pool = build_candidate_pool(topic, k=TOP_K, s2_api_key=s2_key, client=client)
+    pool = build_candidate_pool(topic, k=top_k, s2_api_key=s2_key, client=client)
     pool = [p for p in pool if p.abstract]
 
     if ranking_mode == "bm25":
-        ranked = bm25_search(topic, pool, top_k=TOP_K)
+        ranked = bm25_search(topic, pool, top_k=top_k)
         return [p for p, _ in ranked]
 
     collection = get_chroma_collection()
@@ -151,17 +158,17 @@ def run_topic_retrieval_ranked(
 
     if ranking_mode == "semantic":
         ranked = semantic_search(
-            topic, collection=collection, client=client, top_k=TOP_K, where={"paper_id": {"$in": ids}},
+            topic, collection=collection, client=client, top_k=top_k, where={"paper_id": {"$in": ids}},
         )
     elif ranking_mode == "hybrid":
-        ranked = hybrid_search(topic, pool, collection=collection, client=client, top_k=TOP_K)
+        ranked = hybrid_search(topic, pool, collection=collection, client=client, top_k=top_k)
     elif ranking_mode == "citation_partition":
         if partition_n is None:
             raise ValueError("ranking_mode='citation_partition' requires partition_n")
         partition_a, partition_b = partition_by_citation(pool, n=partition_n)
         ranked = merge_with_guaranteed_slots(
             topic, partition_a, partition_b, n=partition_n,
-            collection=collection, client=client, top_k=TOP_K,
+            collection=collection, client=client, top_k=top_k,
         )
     else:
         raise ValueError(f"Unknown ranking_mode: {ranking_mode!r} (expected one of {RANKING_MODES})")
@@ -171,7 +178,7 @@ def run_topic_retrieval_ranked(
 
 def evaluate_topic(
     topic_id: str, topic_data: dict, client: OpenAI, expand: bool,
-    ranking_mode: str | None = None, partition_n: int | None = None,
+    ranking_mode: str | None = None, partition_n: int | None = None, top_k: int = DEFAULT_TOP_K,
 ) -> dict:
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
@@ -181,10 +188,10 @@ def evaluate_topic(
         # (query_expansion.py's build_candidate_pool()) regardless of
         # --expand — Phase 4 of the experiment runs all three modes "with
         # query expansion enabled", so that's not a separate toggle here.
-        returned = run_topic_retrieval_ranked(topic_data["topic"], client, ranking_mode, partition_n)
+        returned = run_topic_retrieval_ranked(topic_data["topic"], client, ranking_mode, partition_n, top_k)
     else:
         retrieval_fn = run_topic_retrieval_expanded if expand else run_topic_retrieval
-        returned = retrieval_fn(topic_data["topic"], client)
+        returned = retrieval_fn(topic_data["topic"], client, top_k)
 
     matched_expected_indices: set[int] = set()
     matched_returned_count = 0
@@ -213,14 +220,14 @@ def evaluate_topic(
     }
 
 
-def print_results_table(results: list[dict]) -> None:
+def print_results_table(results: list[dict], top_k: int = DEFAULT_TOP_K) -> None:
     print("=" * 100)
     print("Retrieval evaluation results (per topic)")
     print("=" * 100)
     for r in results:
         print(f"\n[{r['topic_id']}] ({r['difficulty']}) {r['topic']}")
-        print(f"    precision@{TOP_K}: {r['precision']:.3f}  ({r['num_returned']} returned)")
-        print(f"    recall@{TOP_K}:    {r['recall']:.3f}  ({r['num_expected']} expected)")
+        print(f"    precision@{top_k}: {r['precision']:.3f}  ({r['num_returned']} returned)")
+        print(f"    recall@{top_k}:    {r['recall']:.3f}  ({r['num_expected']} expected)")
         if r["missed"]:
             print(f"    missed {len(r['missed'])} expected paper(s):")
             for m in r["missed"]:
@@ -232,8 +239,8 @@ def print_results_table(results: list[dict]) -> None:
     print("\n" + "=" * 100)
     print("Overall means")
     print("=" * 100)
-    print(f"  mean precision@{TOP_K}: {mean_precision:.3f}")
-    print(f"  mean recall@{TOP_K}:    {mean_recall:.3f}")
+    print(f"  mean precision@{top_k}: {mean_precision:.3f}")
+    print(f"  mean recall@{top_k}:    {mean_recall:.3f}")
 
     print("\nRecall by difficulty tier (an overall average would hide whether misses cluster in harder topics):")
     for tier in DIFFICULTY_TIERS:
@@ -245,7 +252,10 @@ def print_results_table(results: list[dict]) -> None:
         print(f"  {tier}: {tier_recall:.3f}  ({len(tier_results)} topics)")
 
 
-def append_history_row(results: list[dict], note: str, ranking_mode_label: str, partition_n: int | None = None) -> dict:
+def append_history_row(
+    results: list[dict], note: str, ranking_mode_label: str,
+    partition_n: int | None = None, top_k: int = DEFAULT_TOP_K,
+) -> dict:
     os.makedirs(os.path.dirname(HISTORY_CSV), exist_ok=True)
     file_exists = os.path.isfile(HISTORY_CSV)
 
@@ -274,7 +284,7 @@ def append_history_row(results: list[dict], note: str, ranking_mode_label: str, 
         "git_commit": git_commit,
         "note": note,
         "num_topics": len(results),
-        "top_k": TOP_K,
+        "top_k": top_k,
         "ranking_mode": ranking_mode_label,
         "partition_n": partition_n if partition_n is not None else "",
         "mean_precision": f"{mean_precision:.4f}",
@@ -322,6 +332,14 @@ def main() -> None:
              "same --partition-proportion value stays meaningful if top_k ever changes, rather than "
              "silently meaning a different fraction of the result. n = round(proportion * top_k).",
     )
+    parser.add_argument(
+        "--top-k", type=int, default=DEFAULT_TOP_K,
+        help=f"k-generalization experiment: override the evaluation's top_k (default {DEFAULT_TOP_K}, "
+             f"matching semantic_search()'s own default and api.py's SearchRequest default). Omitting "
+             f"this reproduces the exact k=10 results already established — this flag lets the same "
+             f"harness test other k values without touching query_expansion.py or ranking.py's "
+             f"partition/merge logic, which stay exactly as already built and tested.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -336,21 +354,21 @@ def main() -> None:
 
     partition_n = None
     if args.ranking_mode == "citation_partition":
-        partition_n = round(args.partition_proportion * TOP_K)
+        partition_n = round(args.partition_proportion * args.top_k)
 
     ranking_mode_label = args.ranking_mode or ("expanded" if args.expand else "plain")
     partition_note = f" (n={partition_n}, proportion={args.partition_proportion})" if partition_n is not None else ""
-    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (ranking mode: {ranking_mode_label}{partition_note})\n")
+    print(f"Evaluating {len(usable)} topics at top_k={args.top_k} (ranking mode: {ranking_mode_label}{partition_note})\n")
 
     results = []
     for i, (topic_id, topic_data) in enumerate(usable.items(), 1):
         print(f"[{i}/{len(usable)}] {topic_id}: {topic_data['topic']!r}")
-        r = evaluate_topic(topic_id, topic_data, client, args.expand, args.ranking_mode, partition_n)
+        r = evaluate_topic(topic_id, topic_data, client, args.expand, args.ranking_mode, partition_n, args.top_k)
         print(f"    precision={r['precision']:.3f} recall={r['recall']:.3f}\n")
         results.append(r)
 
-    print_results_table(results)
-    row = append_history_row(results, args.note, ranking_mode_label, partition_n)
+    print_results_table(results, args.top_k)
+    row = append_history_row(results, args.note, ranking_mode_label, partition_n, args.top_k)
 
     print("\n" + "=" * 100)
     print(f"Appended run {row['run_id']} to {os.path.relpath(HISTORY_CSV, REPO_ROOT)}")

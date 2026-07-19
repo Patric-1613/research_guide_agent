@@ -3,3 +3,17 @@ run_id,date,git_commit,note,num_topics,top_k,ranking_mode,partition_n,mean_preci
 2,2026-07-19T11:46:40+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=3 (30%),17,10,citation_partition,3,0.0765,0.4706,0.7333,0.2222,0.3333,0.6667
 3,2026-07-19T11:51:07+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=4 (40%),17,10,citation_partition,4,0.0765,0.4706,0.7333,0.2222,0.3333,0.6667
 4,2026-07-19T12:03:13+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=1 (10%),17,10,citation_partition,1,0.0706,0.4314,0.6333,0.1944,0.3333,0.6667
+5,2026-07-19T14:12:14+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: semantic baseline at k=5,17,5,semantic,,0.0353,0.1373,0.0000,0.0556,0.0000,0.6667
+6,2026-07-19T14:48:03+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=1 (20%) at k=5,17,5,citation_partition,1,0.0941,0.3137,0.5667,0.0833,0.0000,0.6667
+7,2026-07-19T14:53:46+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=2 (40%) at k=5,17,5,citation_partition,2,0.1412,0.4216,0.5667,0.2222,0.3333,0.6667
+8,2026-07-19T14:58:52+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=3 (60%) at k=5,17,5,citation_partition,3,0.1529,0.4706,0.7333,0.2222,0.3333,0.6667
+9,2026-07-19T15:14:49+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=4 (80%) at k=5,17,5,citation_partition,4,0.1294,0.3824,0.7333,0.1389,0.3333,0.3333
+10,2026-07-19T15:20:08+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: semantic baseline at k=20,17,20,semantic,,0.0176,0.2451,0.1667,0.0556,0.3333,0.6667
+11,2026-07-19T15:24:52+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=2 (10%) at k=20,17,20,citation_partition,2,0.0412,0.4902,0.5333,0.2778,0.6667,0.6667
+12,2026-07-19T15:28:46+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=4 (20%) at k=20,17,20,citation_partition,4,0.0471,0.5784,0.8333,0.2778,0.6667,0.6667
+13,2026-07-19T15:33:06+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=6 (30%) at k=20,17,20,citation_partition,6,0.0441,0.5490,0.7333,0.2778,0.6667,0.6667
+14,2026-07-19T15:38:36+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=8 (40%) at k=20,17,20,citation_partition,8,0.0441,0.5490,0.7333,0.2778,0.6667,0.6667
+15,2026-07-19T16:00:32+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: semantic baseline at k=3,17,3,semantic,,0.0392,0.1176,0.0000,0.0000,0.0000,0.6667
+16,2026-07-19T16:04:43+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=1 at k=3,17,3,citation_partition,1,0.1569,0.3137,0.5667,0.0833,0.0000,0.6667
+17,2026-07-19T16:10:30+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=2 at k=3,17,3,citation_partition,2,0.2157,0.3922,0.6667,0.2222,0.3333,0.3333
+18,2026-07-19T16:15:30+00:00,705d3babe4fac87641a0df13cf95205cc9f4154c,k-generalization: citation_partition n=3 (100%) at k=3,17,3,citation_partition,3,0.2157,0.3529,0.7333,0.2222,0.3333,0.0000
