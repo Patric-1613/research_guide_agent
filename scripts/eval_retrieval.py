@@ -43,7 +43,8 @@ from openai import OpenAI
 from research_agent.dedup import _same_paper, deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
-from research_agent.query_expansion import expanded_search
+from research_agent.query_expansion import build_candidate_pool, expanded_search
+from research_agent.ranking import bm25_search, hybrid_search
 from research_agent.schema import Paper
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -60,10 +61,12 @@ TOP_K = 10
 DIFFICULTY_TIERS = ["easy", "ambiguous", "thin", "domain"]
 
 HISTORY_FIELDS = [
-    "run_id", "date", "git_commit", "note", "num_topics", "top_k",
+    "run_id", "date", "git_commit", "note", "num_topics", "top_k", "ranking_mode",
     "mean_precision", "mean_recall",
     "recall_easy", "recall_ambiguous", "recall_thin", "recall_domain",
 ]
+
+RANKING_MODES = ["semantic", "hybrid", "bm25"]
 
 
 def _expected_to_paper(expected: dict) -> Paper:
@@ -113,12 +116,61 @@ def run_topic_retrieval_expanded(topic: str, client: OpenAI) -> list[Paper]:
     return [p for p, _ in ranked]
 
 
-def evaluate_topic(topic_id: str, topic_data: dict, client: OpenAI, expand: bool) -> dict:
+def run_topic_retrieval_ranked(topic: str, client: OpenAI, ranking_mode: str) -> list[Paper]:
+    """Ranking-stage experiment: reuses query_expansion.py's
+    build_candidate_pool() UNCHANGED (same locked pool-size parameters,
+    same suggest_related_titles() call, same dedup) — only the final
+    ranking step differs between 'semantic' (embeddings.py's cosine
+    similarity — identical algorithm to run_topic_retrieval_expanded()'s
+    own default), 'bm25' (lexical scoring, research_agent/ranking.py), or
+    'hybrid' (RRF fusion of both, also ranking.py). Every mode ranks
+    against `topic` itself, never an LLM-suggested title — the anti-
+    hallucination anchor query_expansion.py's docstring establishes,
+    enforced identically across all three modes here, not just semantic.
+
+    'bm25' skips embedding/indexing entirely — BM25 is pure in-memory
+    lexical scoring over the pool's own text, so there's no vector index
+    to build for it, unlike the other two modes.
+    """
+    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    pool = build_candidate_pool(topic, k=TOP_K, s2_api_key=s2_key, client=client)
+    pool = [p for p in pool if p.abstract]
+
+    if ranking_mode == "bm25":
+        ranked = bm25_search(topic, pool, top_k=TOP_K)
+        return [p for p, _ in ranked]
+
+    collection = get_chroma_collection()
+    embed_and_index_papers(pool, collection=collection, client=client)
+    ids = [p.paper_id for p in pool]
+
+    if ranking_mode == "semantic":
+        ranked = semantic_search(
+            topic, collection=collection, client=client, top_k=TOP_K, where={"paper_id": {"$in": ids}},
+        )
+    elif ranking_mode == "hybrid":
+        ranked = hybrid_search(topic, pool, collection=collection, client=client, top_k=TOP_K)
+    else:
+        raise ValueError(f"Unknown ranking_mode: {ranking_mode!r} (expected one of {RANKING_MODES})")
+
+    return [p for p, _ in ranked]
+
+
+def evaluate_topic(
+    topic_id: str, topic_data: dict, client: OpenAI, expand: bool, ranking_mode: str | None = None,
+) -> dict:
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
 
-    retrieval_fn = run_topic_retrieval_expanded if expand else run_topic_retrieval
-    returned = retrieval_fn(topic_data["topic"], client)
+    if ranking_mode:
+        # Ranking-stage experiment: always uses the expanded candidate pool
+        # (query_expansion.py's build_candidate_pool()) regardless of
+        # --expand — Phase 4 of the experiment runs all three modes "with
+        # query expansion enabled", so that's not a separate toggle here.
+        returned = run_topic_retrieval_ranked(topic_data["topic"], client, ranking_mode)
+    else:
+        retrieval_fn = run_topic_retrieval_expanded if expand else run_topic_retrieval
+        returned = retrieval_fn(topic_data["topic"], client)
 
     matched_expected_indices: set[int] = set()
     matched_returned_count = 0
@@ -179,7 +231,7 @@ def print_results_table(results: list[dict]) -> None:
         print(f"  {tier}: {tier_recall:.3f}  ({len(tier_results)} topics)")
 
 
-def append_history_row(results: list[dict], note: str) -> dict:
+def append_history_row(results: list[dict], note: str, ranking_mode_label: str) -> dict:
     os.makedirs(os.path.dirname(HISTORY_CSV), exist_ok=True)
     file_exists = os.path.isfile(HISTORY_CSV)
 
@@ -209,6 +261,7 @@ def append_history_row(results: list[dict], note: str) -> dict:
         "note": note,
         "num_topics": len(results),
         "top_k": TOP_K,
+        "ranking_mode": ranking_mode_label,
         "mean_precision": f"{mean_precision:.4f}",
         "mean_recall": f"{mean_recall:.4f}",
         "recall_easy": f"{tier_recalls['easy']:.4f}" if tier_recalls["easy"] is not None else "",
@@ -232,7 +285,17 @@ def main() -> None:
     parser.add_argument(
         "--expand", action="store_true",
         help="Use query_expansion.py's expanded_search() (LLM-suggested title search) instead of the "
-             "direct search_arxiv/search_semantic_scholar/deduplicate/semantic_search flow.",
+             "direct search_arxiv/search_semantic_scholar/deduplicate/semantic_search flow. Ignored "
+             "if --ranking-mode is also given (see below).",
+    )
+    parser.add_argument(
+        "--ranking-mode", choices=RANKING_MODES, default=None,
+        help="Ranking-stage experiment: rank query_expansion.py's candidate pool via 'semantic' "
+             "(cosine similarity — same algorithm --expand alone already uses), 'bm25' (lexical "
+             "scoring, research_agent/ranking.py), or 'hybrid' (RRF fusion of both, same module). "
+             "Always uses the expanded candidate pool for building it regardless of --expand's "
+             "value — this is an opt-in evaluation mode; omit entirely to leave existing --expand/"
+             "plain behavior (and the live app's own default) completely untouched.",
     )
     args = parser.parse_args()
 
@@ -246,17 +309,18 @@ def main() -> None:
     if skipped:
         print(f"Skipping {len(skipped)} topic(s) with zero expected papers: {skipped}")
 
-    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (query expansion: {'ON' if args.expand else 'off'})\n")
+    ranking_mode_label = args.ranking_mode or ("expanded" if args.expand else "plain")
+    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (ranking mode: {ranking_mode_label})\n")
 
     results = []
     for i, (topic_id, topic_data) in enumerate(usable.items(), 1):
         print(f"[{i}/{len(usable)}] {topic_id}: {topic_data['topic']!r}")
-        r = evaluate_topic(topic_id, topic_data, client, args.expand)
+        r = evaluate_topic(topic_id, topic_data, client, args.expand, args.ranking_mode)
         print(f"    precision={r['precision']:.3f} recall={r['recall']:.3f}\n")
         results.append(r)
 
     print_results_table(results)
-    row = append_history_row(results, args.note)
+    row = append_history_row(results, args.note, ranking_mode_label)
 
     print("\n" + "=" * 100)
     print(f"Appended run {row['run_id']} to {os.path.relpath(HISTORY_CSV, REPO_ROOT)}")

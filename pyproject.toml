@@ -20,6 +20,7 @@ dependencies = [
     "ragas==0.3.1",
     "datasets==5.0.0",
     "openpyxl==3.1.5",
+    "rank-bm25==0.2.2",
 ]
 
 [dependency-groups]

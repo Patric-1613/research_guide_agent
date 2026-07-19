@@ -139,35 +139,25 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
     return titles
 
 
-def expanded_search(
+def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
-    doi_required: bool = False, min_citation_count: int = 0,
-) -> list[tuple[Paper, float]]:
-    """Widen the candidate pool with LLM-suggested paper titles, then rerank
-    against the ORIGINAL topic — never against a suggested title (see the
-    anti-hallucination anchor in this module's docstring).
+) -> list[Paper]:
+    """Steps 1-4 of the pipeline documented on expanded_search() below:
+    direct topic search widened to 3xk (floor 15, cap 40) + LLM-suggested-
+    title search (fixed 5 per source per title) + cross-source dedup.
+    Returns the deduped candidate pool, UNRANKED — ranking against the
+    topic is a separate, pluggable concern (expanded_search() does it via
+    semantic_search() below, the live app's only ranking mode; the
+    ranking-stage experiment in scripts/eval_retrieval.py's --ranking-mode
+    plugs in research_agent/ranking.py's BM25/hybrid alternatives against
+    this SAME pool instead — never against a different or re-built one).
 
-    Pipeline (locked, see module docstring for the parameters):
-      1. search_arxiv() + search_semantic_scholar() for `topic` itself, at
-         3xk per source (floor 15, cap 40) — the existing functions,
-         unchanged, just with a wider pool size.
-      2. suggest_related_titles(topic) — one LLM call.
-      3. search_arxiv() + search_semantic_scholar() again, once per
-         suggested title, at a fixed 5 per source each.
-      4. Combine every raw result, deduplicate() (dedup.py, unchanged).
-      5. semantic_search() against `topic` (never a suggested title),
-         cut to top-k. doi_required/min_citation_count pass straight
-         through to semantic_search()'s own existing filter params —
-         unchanged there, just forwarded.
-
-    A hallucinated or wrong suggested title costs at most one extra pair of
-    (likely empty or irrelevant) search calls — step 4's dedup and step 5's
-    rerank against the original topic are what actually decide the final
-    result, so nothing a suggested-title search turns up can enter the
-    top-k without first being genuinely relevant to `topic`.
-
-    Returns (Paper, similarity) pairs, same convention as semantic_search()
-    itself — callers that only want the papers can discard the score.
+    Extracted out of expanded_search() so that experiment can reuse this
+    exact candidate-pool-building logic unchanged (same locked pool-size
+    parameters, same suggest_related_titles() call, same dedup) while
+    swapping only the final ranking step. Nothing about steps 1-4
+    themselves changed by this extraction — expanded_search() calls this
+    function and then does exactly what it always did.
     """
     client = client or OpenAI()
 
@@ -187,6 +177,45 @@ def expanded_search(
     combined_raw = original_results + suggested_results
     deduped = deduplicate(combined_raw)
 
+    logger.info(
+        "build_candidate_pool(%r, k=%d): %d suggested title(s), %d raw result(s) "
+        "(%d from original query, %d from suggested titles) -> %d after dedup",
+        topic, k, len(suggested_titles), len(combined_raw), len(original_results), len(suggested_results),
+        len(deduped),
+    )
+
+    return deduped
+
+
+def expanded_search(
+    topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
+    doi_required: bool = False, min_citation_count: int = 0,
+) -> list[tuple[Paper, float]]:
+    """Widen the candidate pool with LLM-suggested paper titles, then rerank
+    against the ORIGINAL topic — never against a suggested title (see the
+    anti-hallucination anchor in this module's docstring).
+
+    Pipeline (locked, see module docstring for the parameters):
+      1-4. build_candidate_pool() above — direct topic search + LLM-
+         suggested-title search + cross-source dedup, unchanged.
+      5. semantic_search() against `topic` (never a suggested title),
+         cut to top-k. doi_required/min_citation_count pass straight
+         through to semantic_search()'s own existing filter params —
+         unchanged there, just forwarded.
+
+    A hallucinated or wrong suggested title costs at most one extra pair of
+    (likely empty or irrelevant) search calls — step 4's dedup and step 5's
+    rerank against the original topic are what actually decide the final
+    result, so nothing a suggested-title search turns up can enter the
+    top-k without first being genuinely relevant to `topic`.
+
+    Returns (Paper, similarity) pairs, same convention as semantic_search()
+    itself — callers that only want the papers can discard the score.
+    """
+    client = client or OpenAI()
+
+    deduped = build_candidate_pool(topic, k, s2_api_key=s2_api_key, client=client)
+
     collection = get_chroma_collection()
     embed_stats = embed_and_index_papers(deduped, collection=collection, client=client)
     ids = [p.paper_id for p in deduped]
@@ -196,11 +225,9 @@ def expanded_search(
     )
 
     logger.info(
-        "expanded_search(%r, k=%d): %d suggested title(s), %d raw result(s) "
-        "(%d from original query, %d from suggested titles) -> %d after dedup -> %d final "
+        "expanded_search(%r, k=%d): %d candidates -> %d final "
         "(embedding: %d cache hit(s), %d newly embedded, ~$%.6f)",
-        topic, k, len(suggested_titles), len(combined_raw), len(original_results), len(suggested_results),
-        len(deduped), len(ranked),
+        topic, k, len(deduped), len(ranked),
         embed_stats["cache_hits"], embed_stats["cache_misses"], embed_stats["estimated_cost_usd"],
     )
 
