@@ -17,25 +17,42 @@
     },
     "verification_status": {
       "stage1+stage2": 24
+    },
+    "phase1b_references_round": {
+      "date": "2026-07-18",
+      "description": "Reference answers added for Context Precision/Recall (Stage 1b). Drafted strictly from the real retrieved_contexts reconstructed via the same deterministic Stage-1(top_k=10)+Stage-2(top_k=5, real _condense_question) pipeline as the original paid run, NOT freshly re-fetched from general knowledge. 17 of 24 scenarios received a 'references' list (one entry per turn, aligned with 'turns'). 7 were excluded from Context Precision/Recall per an explicit Phase 0 decision (approved before drafting began): the 6 unanswerable scenarios (Context P/R don't meaningfully apply to a deliberate refusal) plus 'ann-comparison-01-orig', flagged during Phase 1 review as too thin to ground a confident, non-speculative reference. Excluded scenarios keep their existing Faithfulness/Answer Relevancy validity from run 1 untouched; they simply don't get a 'references' field or Context Precision/Recall scoring going forward.",
+      "included_count": 17,
+      "excluded_count": 7
     }
   },
-
   "peft-single-01": {
     "topic": "parameter-efficient fine-tuning for large language models",
     "category": "single_paper",
-    "turns": ["What update mechanism does RoCoFT use to reduce the number of trainable parameters?"],
-    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What update mechanism does RoCoFT use to reduce the number of trainable parameters?"
+    ],
+    "target_papers": [
+      "RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "RoCoFT reduces the number of trainable parameters by updating only a small, selected subset of rows and columns of the weight matrices in transformer layers, rather than updating all parameters. This row-and-column update mechanism is evaluated across BERT, RoBERTa, Bloom-7B, Llama2-7B, and Llama2-13B, and the paper reports comparable or better accuracy than other parameter-efficient fine-tuning methods while being more memory- and computation-efficient."
+    ]
   },
   "peft-comparison-01": {
     "topic": "parameter-efficient fine-tuning for large language models",
     "category": "comparison",
-    "turns": ["How does RoCoFT's row-column update approach differ from MoELoRA's mixture-of-experts approach?"],
+    "turns": [
+      "How does RoCoFT's row-column update approach differ from MoELoRA's mixture-of-experts approach?"
+    ],
     "target_papers": [
       "RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates",
       "MoELoRA: Contrastive Learning Guided Mixture of Experts on Parameter-Efficient Fine-Tuning for Large Language Models"
     ],
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "RoCoFT fine-tunes a large language model by directly updating a restricted set of rows and columns of the existing weight matrices — no additional modules are introduced. MoELoRA instead builds on LoRA's low-rank adaptation approach but treats the LoRA modules as a Mixture of Experts (MoE), adding contrastive learning to prevent the random-routing problem observed in standard MoE and to encourage individual experts to learn distinct features. The core difference is architectural: RoCoFT is a direct-update method operating on the original weight matrices, while MoELoRA is an added-module method combining multiple low-rank expert adapters with a routing mechanism refined via contrastive learning."
+    ]
   },
   "peft-multiturn-01": {
     "topic": "parameter-efficient fine-tuning for large language models",
@@ -44,42 +61,72 @@
       "What is RoCoFT?",
       "What are its limitations, based on the paper?"
     ],
-    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
-    "verified": "stage1+stage2"
+    "target_papers": [
+      "RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "RoCoFT is a parameter-efficient fine-tuning method for large language models that updates only a few rows and columns of each transformer weight matrix, rather than all parameters. It has been tested on models from BERT and RoBERTa up to Bloom-7B, Llama2-7B, and Llama2-13B, achieving accuracy comparable to or better than other parameter-efficient fine-tuning methods while being more memory- and computation-efficient. The paper also uses neural tangent kernel theory to explain why the method works, showing that the kernel built from the restricted row/column parameters closely approximates the full-parameter kernel.",
+      "The abstract does not explicitly enumerate RoCoFT's limitations. It does note that performance depends on specific algorithmic choices that require ablation study to tune — specifically the strategy used to select which rows and columns to update, and the optimal rank for the method's implementation — implying that results are sensitive to these choices rather than being method-agnostic. Beyond that, no further limitations (e.g. task types where it underperforms, scalability concerns beyond the tested model sizes) are stated in the abstract."
+    ]
   },
   "peft-unanswerable-01": {
     "topic": "parameter-efficient fine-tuning for large language models",
     "category": "unanswerable",
     "unanswerable_type": "hard_refusal",
-    "turns": ["What exact learning rate did the RoCoFT authors use in their main experiment?"],
-    "target_papers": ["RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"],
+    "turns": [
+      "What exact learning rate did the RoCoFT authors use in their main experiment?"
+    ],
+    "target_papers": [
+      "RoCoFT: Efficient Finetuning of Large Language Models with Row-Column Updates"
+    ],
     "why_unanswerable": "Abstract does not state hyperparameter-level detail (learning rate).",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/hard_refusal — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   },
-
   "attention-single-01": {
     "topic": "attention mechanism in transformer architectures",
     "category": "single_paper",
-    "turns": ["How does the Momentum Transformer paper describe attention's advantage over LSTM-based sequence models?"],
-    "target_papers": ["Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "How does the Momentum Transformer paper describe attention's advantage over LSTM-based sequence models?"
+    ],
+    "target_papers": [
+      "Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper states that, unlike LSTM architectures — which are sequential in nature and tailored to local processing — an attention mechanism gives the Momentum Transformer a direct connection to all previous time-steps. This lets the model learn longer-term dependencies, and the use of multiple attention heads lets it capture several concurrent regimes or temporal dynamics occurring at different timescales, which the paper credits for improved performance (including after transaction costs) and adaptability to new market regimes such as the COVID-19 (SARS-CoV-2) period."
+    ]
   },
   "attention-unanswerable-01": {
     "topic": "attention mechanism in transformer architectures",
     "category": "unanswerable",
     "unanswerable_type": "hard_refusal",
-    "turns": ["What exact Sharpe ratio improvement did the Momentum Transformer paper report over its LSTM baseline?"],
-    "target_papers": ["Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"],
+    "turns": [
+      "What exact Sharpe ratio improvement did the Momentum Transformer paper report over its LSTM baseline?"
+    ],
+    "target_papers": [
+      "Trading with the Momentum Transformer: An Intelligent and Interpretable Architecture"
+    ],
     "why_unanswerable": "Abstract states the architecture outperforms benchmarks but does not quantify a Sharpe ratio figure.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/hard_refusal — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   },
-
   "rag-single-01": {
     "topic": "retrieval-augmented generation for large language models",
     "category": "single_paper",
-    "turns": ["What privacy risk does the 'Riddle Me This!' paper identify in retrieval-augmented generation systems?"],
-    "target_papers": ["Riddle Me This! Stealthy Membership Inference for Retrieval-Augmented Generation"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What privacy risk does the 'Riddle Me This!' paper identify in retrieval-augmented generation systems?"
+    ],
+    "target_papers": [
+      "Riddle Me This! Stealthy Membership Inference for Retrieval-Augmented Generation"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper identifies that RAG systems are vulnerable to membership inference attacks against the documents stored in the retrieval datastore: because RAG leaves model parameters untouched, an adversary can't infer membership through the model weights, but can instead exploit the retrieved documents that appear in the model's context. The paper introduces 'Interrogation Attack' (IA), which crafts natural-language queries that are answerable only if a specific target document is present in the datastore, achieving successful inference with as few as 30 queries while being harder to detect than prior jailbreaking- or unnatural-query-based membership inference methods (existing detectors flag prior methods' queries up to ~76x more often), and improving true-positive rate at 1% false-positive rate by 2x over prior attacks, at a cost of under $0.02 per document."
+    ]
   },
   "rag-multiturn-01": {
     "topic": "retrieval-augmented generation for large language models",
@@ -92,55 +139,84 @@
       "Auto-RAG: Autonomous Retrieval-Augmented Generation for Large Language Models",
       "Adaptive Control of Retrieval-Augmented Generation for Large Language Models Through Reflective Tags"
     ],
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "Auto-RAG proposes an autonomous, LLM-driven iterative retrieval process: instead of using few-shot prompting or manually constructed rules to decide when and how to retrieve again (as prior iterative-retrieval work did), Auto-RAG has the LLM itself engage in multi-turn dialogue with the retriever, planning retrievals and refining its queries based on its own reasoning until it judges that enough external information has been gathered, at which point it presents the answer. The authors developed a method to autonomously synthesize reasoning-based decision-making instructions for this iterative process and fine-tuned open-source LLMs on it.",
+      "The reflective-tags paper takes a different approach to controlling retrieval: rather than having the LLM autonomously decide, turn by turn, when and how to retrieve again (as Auto-RAG does), it evaluates multiple retrieved documents in parallel, attaches reflective tags to score/qualify them, and uses chain-of-thought generation to select the highest-quality content for the final output. Its stated goals are to reduce hallucination by focusing on high-scoring documents, improve real-time performance through efficient retrieval, and filter out irrelevant or low-quality retrieved content. So where Auto-RAG's innovation is autonomous, sequential, LLM-driven decision-making about when/how to retrieve again, the reflective-tags approach's innovation is in-parallel document quality filtering/scoring after retrieval, to decide which already-retrieved content to trust."
+    ]
   },
-
   "cnn-single-01": {
     "topic": "convolutional neural networks for image classification",
     "category": "single_paper",
-    "turns": ["What architectural approach does the multi-column deep neural network paper use to improve image classification?"],
-    "target_papers": ["Multi-column deep neural networks for image classification"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What architectural approach does the multi-column deep neural network paper use to improve image classification?"
+    ],
+    "target_papers": [
+      "Multi-column deep neural networks for image classification"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper uses multiple deep neural network 'columns,' each processing the input after a different preprocessing step, with convolutional winner-take-all neurons using small (often minimal) receptive fields — a biologically-inspired design intended to resemble the sparsely-connected layer structure found between the retina and visual cortex in mammals. Only the 'winner' neurons in each column are trained. Each column becomes an expert on its particular preprocessing variant, and the columns' individual predictions are averaged together to produce the final classification. The paper reports this was the first method to achieve near-human performance on the MNIST handwriting benchmark, outperformed humans by roughly a factor of two on a traffic sign recognition benchmark, and improved the state of the art on several other image classification benchmarks; training was accelerated using GPUs."
+    ]
   },
-
   "embeddings-single-01": {
     "topic": "dense vector embeddings for semantic search",
     "category": "single_paper",
-    "turns": ["What does the UAE (Utility-Aligned Embeddings) paper propose to align dense retrievers with LLM utility?"],
-    "target_papers": ["Aligning Dense Retrievers with LLM Utility via Distillation"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What does the UAE (Utility-Aligned Embeddings) paper propose to align dense retrievers with LLM utility?"
+    ],
+    "target_papers": [
+      "Aligning Dense Retrievers with LLM Utility via Distillation"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper proposes Utility-Aligned Embeddings (UAE), which frames retrieval as a distribution-matching problem: a bi-encoder is trained to imitate a 'utility distribution' derived from perplexity reduction, using a Utility-Modulated InfoNCE training objective. This injects graded utility signals — reflecting how useful a passage actually is to an LLM's generation — directly into the embedding space, without needing LLM inference at test/retrieval time (unlike prior utility-based approaches that rely on computationally expensive LLM re-ranking). On the QASPER benchmark, the paper reports UAE improves Recall@1 by 30.59%, MAP by 30.16%, and Token F1 by 17.3% over a strong semantic baseline (BGE-Base), while being over 180x faster than efficient LLM re-ranking methods with competitive performance."
+    ]
   },
-
   "hybrid-single-01": {
     "topic": "hybrid search combining dense and sparse retrieval",
     "category": "single_paper",
-    "turns": ["How does Query-Adaptive Hybrid Search's alpha-prediction approach differ from a static-weight hybrid baseline, per its own description?"],
-    "target_papers": ["Query-Adaptive Hybrid Search"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "How does Query-Adaptive Hybrid Search's alpha-prediction approach differ from a static-weight hybrid baseline, per its own description?"
+    ],
+    "target_papers": [
+      "Query-Adaptive Hybrid Search"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper states that most existing hybrid retrieval frameworks use static mixing coefficients and train their sparse/dense components independently, which fails to account for the needs of individual queries or corpus heterogeneity. Its own approach instead introduces query-driven alpha prediction: the mixing weight between sparse and dense retrieval is dynamically calibrated per query, based on the query's latent representation, using either a lightweight low-latency predictor or a full-capacity encoder-scale predictor, without relying on resource-intensive LLM-based online evaluation. The paper also introduces 'antagonist negative sampling,' a training approach that optimizes the dense encoder specifically to compensate for cases where the lexical (BM25) retriever is highly uncertain. On large-scale multilingual benchmarks (MLDR and MIRACL), the paper reports superior average performance versus the state of the art it compares against."
+    ]
   },
-
   "toolcalling-comparison-01": {
     "topic": "tool-calling patterns in LLM agent architectures",
     "category": "comparison",
-    "turns": ["How does MemTool's memory-management approach differ from the stateful-inference paper's KV-cache-reuse approach to multi-turn tool calling?"],
+    "turns": [
+      "How does MemTool's memory-management approach differ from the stateful-inference paper's KV-cache-reuse approach to multi-turn tool calling?"
+    ],
     "target_papers": [
       "MemTool: Optimizing Short-Term Memory Management for Dynamic Tool Calling in LLM Agent Multi-Turn Conversations",
       "Stateful Inference for Low-Latency Multi-Agent Tool Calling"
     ],
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "The stateful-inference paper addresses an efficiency/latency problem: standard inference frameworks re-process the entire conversation from scratch on every tool call, even though 85-95% of the prompt is unchanged turn to turn. Its solution is a stateful inference architecture where a persistent KV cache is carried across turns and only new tokens are ingested, combined with a radix prefix cache across interleaved multi-agent traffic and a prompt-lookup speculative decoder — reported as 2.1x faster per turn on a 6-turn workflow and 4.2x faster on the median turn of a 35-turn workflow versus vLLM and SGLang. MemTool addresses a different problem: managing which tools/MCP servers are available in the agent's context as a conversation progresses, since fixed context windows limit how many tools can be kept available across many turns. It offers three modes — Autonomous Agent Mode, Workflow Mode, and Hybrid Mode — evaluated by tool-removal efficiency and task completion accuracy across 13+ LLMs. The difference is one of scope: the stateful-inference paper optimizes the computational/serving efficiency of processing each turn, while MemTool optimizes which tools stay in the context window across turns."
+    ]
   },
-
   "rageval-comparison-01": {
     "topic": "evaluation metrics for RAG system quality",
     "category": "comparison",
-    "turns": ["How does eRAG's per-document utility evaluation differ from RAGAs's reference-free framework?"],
+    "turns": [
+      "How does eRAG's per-document utility evaluation differ from RAGAs's reference-free framework?"
+    ],
     "target_papers": [
       "Evaluating Retrieval Quality in Retrieval-Augmented Generation",
       "RAGAs: Automated Evaluation of Retrieval Augmented Generation"
     ],
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "eRAG evaluates retrieval quality by individually feeding each retrieved document to the downstream LLM and scoring the resulting output against the downstream task's ground-truth labels — so each document's relevance label is its measured downstream utility, aggregated via set-based or ranking metrics. The paper reports this achieves a higher correlation with actual downstream RAG performance than baseline methods (Kendall's tau improvements from 0.168 to 0.494) while being computationally cheaper than end-to-end evaluation. RAGAs takes a different approach: it is a reference-free evaluation framework that does not require ground-truth human annotations at all, instead providing a suite of metrics assessing whether retrieval surfaces relevant/focused passages, whether the LLM uses those passages faithfully, and the quality of the generated output itself. The core difference is what each needs as input: eRAG explicitly needs downstream ground-truth labels to score each retrieved document's real utility, while RAGAs is designed specifically to avoid needing any ground truth/reference annotations."
+    ]
   },
-
   "hallucination-multiturn-01": {
     "topic": "reducing hallucination in retrieval-augmented generation",
     "category": "multi_turn",
@@ -148,95 +224,155 @@
       "What does SeaRAG propose to reduce hallucination in RAG?",
       "Does it require labeled training data to do that?"
     ],
-    "target_papers": ["SeaRAG: Reducing Hallucination in Retrieval-Augmented Generation via Statement-Entity Adaptive Ranking"],
-    "verified": "stage1+stage2"
+    "target_papers": [
+      "SeaRAG: Reducing Hallucination in Retrieval-Augmented Generation via Statement-Entity Adaptive Ranking"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "SeaRAG is a training-free, adaptive RAG framework that detects and mitigates hallucination by probing the LLM's uncertainty at both the entity level and the statement level in real time. It uses these entropy-based uncertainty probes to rank retrieved passages and to regenerate evidence-grounded responses. The paper reports this approach improves accuracy consistently across several Question-Answering benchmarks and multiple LLMs and reduces retrieval frequency — for example outperforming an 'Always Retrieve' baseline by up to 11.1% on TriviaQA while cutting retrieval.",
+      "No — the paper explicitly describes SeaRAG as 'training-free.' It relies on probing the LLM's own uncertainty (entropy-based signals at the entity and statement level) at inference time rather than on any labeled training data or a separately trained hallucination-detection model."
+    ]
   },
-
   "insects-comparison-01": {
     "topic": "multi-class insect classification using computer vision",
     "category": "comparison",
-    "turns": ["How does the crowdsourced fine-grained insect-classification paper's approach compare to the wheat pest-diagnosis CNN paper's approach?"],
+    "turns": [
+      "How does the crowdsourced fine-grained insect-classification paper's approach compare to the wheat pest-diagnosis CNN paper's approach?"
+    ],
     "target_papers": [
       "Performance of computer vision algorithms for fine-grained classification using crowdsourced insect images",
       "Comprehensive Wheat Leaf Disease and Pest Diagnosis Using Convolutional Neural Networks"
     ],
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "The crowdsourced insect-classification paper is a comparative benchmarking study, not a single new model: it evaluates nine different algorithms — deep convolutional neural networks (CNNs), vision transformers (ViT), and locality-based vision transformers (LBVT) — against each other on fine-grained species recognition within Insecta, using citizen-science-collected images, and assesses them on classification performance, embedding quality, computational cost, and gradient activity, reporting that ViT performs best on inference speed and computational cost. The wheat pest-diagnosis paper, in contrast, is a single-architecture-family application study: it applies two specific CNN backbones — MobileNetV2 and VGG16 — to a 15-category multi-class classification task (wheat diseases, insect pests, and healthy plants), reporting VGG16 at 96.28% accuracy and MobileNetV2 at 93%, with little to no overfitting observed. The two papers differ in kind: one is a multi-algorithm-family comparative evaluation, the other an applied, single-family (CNN-only) classification pipeline for one specific task."
+    ]
   },
-
   "llmjudge-single-01": {
     "topic": "LLM-as-judge evaluation of RAG faithfulness",
     "category": "single_paper",
-    "turns": ["What is the HHEM hallucination-detection model, per the Vectara benchmarking paper?"],
-    "target_papers": ["Benchmarking LLM Faithfulness in RAG with Evolving Leaderboards"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What is the HHEM hallucination-detection model, per the Vectara benchmarking paper?"
+    ],
+    "target_papers": [
+      "Benchmarking LLM Faithfulness in RAG with Evolving Leaderboards"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "Per the paper, HHEM is Vectara's original hallucination detection model, which has been used since 2023 to track hallucination rates for LLMs on Vectara's original hallucination leaderboard. Motivated by limitations observed in current hallucination detection methods, the paper introduces FaithJudge, an LLM-as-a-judge framework using a pool of diverse human-annotated hallucination examples to substantially improve automated hallucination evaluation, and builds an enhanced leaderboard centered on FaithJudge for benchmarking LLM faithfulness in RAG across summarization, question-answering, and data-to-text generation tasks."
+    ]
   },
-
   "hornet-single-01-orig": {
     "topic": "deep learning approaches to Asian hornet detection",
     "category": "single_paper",
-    "turns": ["What detection approach does the VespAI system use?"],
-    "target_papers": ["VespAI: a deep learning-based system for the detection of invasive hornets"],
-    "verified": "stage1+stage2"
+    "turns": [
+      "What detection approach does the VespAI system use?"
+    ],
+    "target_papers": [
+      "VespAI: a deep learning-based system for the detection of invasive hornets"
+    ],
+    "verified": "stage1+stage2",
+    "references": [
+      "VespAI is a hardware-assisted AI detection system: it combines a standardized physical monitoring station with a deep YOLOv5s architecture and a ResNet backbone, trained end-to-end on a purpose-built pipeline. It detects hornets in real time, reporting a mean precision-recall score of ≥0.99, and sends image alerts via a compact remote processor. The paper describes a working prototype deployed in the field and states it is suitable for large-scale deployment."
+    ]
   },
   "ann-comparison-01-orig": {
     "topic": "approximate nearest neighbor indexing for vector databases",
     "category": "comparison",
-    "turns": ["How does HNSW's approach compare to product quantization-based methods, based on what's in these papers?"],
-    "target_papers": ["Accelerating Graph Indexing for ANNS on Modern CPUs", "Vector Databases in the Age of AI: Foundations, Architectures, and Emerging Applications"],
+    "turns": [
+      "How does HNSW's approach compare to product quantization-based methods, based on what's in these papers?"
+    ],
+    "target_papers": [
+      "Accelerating Graph Indexing for ANNS on Modern CPUs",
+      "Vector Databases in the Age of AI: Foundations, Architectures, and Emerging Applications"
+    ],
     "notes": "Confirmed at Stage 2: real answer genuinely contrasts HNSW (graph-based, speed/accuracy tradeoff) against Product Quantization (quantization-based, lower memory, IVF framework) with citations to both.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "comparison, but excluded from Context Precision/Recall during Phase 1 review — the two target abstracts don't actually spell out a specific HNSW-vs-PQ comparison (one just lists PQ alongside HNSW/IVF/DiskANN with unspecified trade-offs), so a confident non-speculative reference for this exact question isn't groundable. Faithfulness/Answer Relevancy from run 1 remain valid."
   },
   "ids-comparison-01-orig": {
     "topic": "few-shot learning approaches for intrusion detection systems",
     "category": "comparison",
-    "turns": ["What's the key difference in method between the two intrusion detection papers retrieved?"],
-    "target_papers": ["Cyber Situation Awareness with Active Learning for Intrusion Detection", "Securing Fog-to-Things Environment Using Intrusion Detection System Based On Ensemble Learning"],
+    "turns": [
+      "What's the key difference in method between the two intrusion detection papers retrieved?"
+    ],
+    "target_papers": [
+      "Cyber Situation Awareness with Active Learning for Intrusion Detection",
+      "Securing Fog-to-Things Environment Using Intrusion Detection System Based On Ensemble Learning"
+    ],
     "notes": "Confirmed at Stage 2: real, well-grounded two-paper comparison, non-hallucinated. Caveat: the question phrasing ('the two...papers retrieved') is ambiguous against a 10-paper pool, so which pair surfaces is non-deterministic across runs — this run landed on active-learning vs. ensemble-learning, not the prototypical-vs-Siamese pairing noted at original review. Still passes the faithfulness/attribution bar, just not a fixed target pair.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "The two papers use different core machine-learning methods. The 'Cyber Situation Awareness' paper uses active learning: it queries an oracle to select the most informative samples, trains a Random Forest classifier on the selected samples, and then aggregates event-level detection results to calculate the probability that a system is under attack, evaluated on the UNSW-NB15 dataset. The 'Securing Fog-to-Things Environment' paper instead uses ensemble learning: it combines multiple machine-learning models to increase detection accuracy and reduce false alarms, motivated by the observation that many published IDS solutions report high accuracy but perform poorly in real deployments, and that single-learner approaches are limited by that one algorithm's intrinsic weaknesses. The key difference: one improves detection through active-learning-guided sample selection plus alert aggregation into an attack probability, the other through combining multiple learners (ensemble learning) to overcome the limitations of any single model."
+    ]
   },
   "cnn-unanswerable-01-orig": {
     "topic": "convolutional neural networks for image classification",
     "category": "unanswerable",
     "unanswerable_type": "hard_refusal",
-    "turns": ["What is the current state-of-the-art accuracy on ImageNet as of this year?"],
+    "turns": [
+      "What is the current state-of-the-art accuracy on ImageNet as of this year?"
+    ],
     "target_papers": [],
     "why_unanswerable": "Retrieved papers are historical; none can answer a 'current SOTA' question.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/hard_refusal — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   },
   "hornet-unanswerable-01-orig": {
     "topic": "deep learning approaches to Asian hornet detection",
     "category": "unanswerable",
     "unanswerable_type": "soft_hedge",
-    "turns": ["How does this compare to European hornet detection methods?"],
+    "turns": [
+      "How does this compare to European hornet detection methods?"
+    ],
     "target_papers": [],
     "why_unanswerable": "Retrieved papers are Asian-hornet-specific; European-hornet comparison is out of scope. Unlike the hard_refusal scenarios, this does not produce answerable=False — it tests the OTHER valid honest outcome: answerable=True with the gap disclosed in prose rather than fabricated.",
     "notes": "Confirmed at Stage 2: real answer explicitly states 'none of the provided abstracts explicitly discuss... European hornet... direct evidence of such a comparison is not provided' — a non-hallucinated, honestly-hedged response. This is the deliberate soft_hedge counterpart to the other five hard_refusal scenarios, not a failure of the test.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/soft_hedge — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   },
   "rageval-unanswerable-01-orig": {
     "topic": "evaluation metrics for RAG system quality",
     "category": "unanswerable",
     "unanswerable_type": "hard_refusal",
-    "turns": ["What's the best pizza topping?"],
+    "turns": [
+      "What's the best pizza topping?"
+    ],
     "target_papers": [],
     "why_unanswerable": "Fully unrelated to any retrieved paper — confirms the system doesn't generate plausible-sounding filler.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/hard_refusal — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   },
   "citation-comparison-01-orig": {
     "topic": "structural citation grounding in LLM-generated text",
     "category": "comparison",
-    "turns": ["How does this paper's citation approach compare to a standard RAG citation method?"],
-    "target_papers": ["Citation-Grounded Code Comprehension: Preventing LLM Hallucination Through Hybrid Retrieval and Graph-Augmented Context"],
+    "turns": [
+      "How does this paper's citation approach compare to a standard RAG citation method?"
+    ],
+    "target_papers": [
+      "Citation-Grounded Code Comprehension: Preventing LLM Hallucination Through Hybrid Retrieval and Graph-Augmented Context"
+    ],
     "notes": "Confirmed at Stage 2, upgraded from 'borderline': real answer cites concrete figures (92% citation accuracy, 14-18pp improvement, 62% of architectural queries) directly from the retrieved paper, contrasted clearly against standard RAG's pure textual-similarity citation approach.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "references": [
+      "The paper's approach is grounded in citation for code comprehension specifically: it evaluates hybrid retrieval combined with lightweight structural reasoning across 30 Python repositories and 180 developer queries, comparing retrieval modalities, graph-expansion strategies, and citation-verification mechanisms. Its key finding is that cross-file evidence discovery is the largest single contributor to citation completeness, something existing systems largely miss because they rely on pure textual similarity without using code structure. Its hybrid system (BM25 sparse matching, BGE dense embeddings, and Neo4j graph expansion via import relationships) achieves 92 percent citation accuracy with zero hallucinations, outperforms single-mode baselines by 14 to 18 percentage points, and discovers cross-file evidence missed by pure text similarity in 62 percent of architectural queries. A 'standard RAG citation method' is characterized, by contrast, as relying on pure textual similarity alone, without leveraging code structure."
+    ]
   },
   "yolo-unanswerable-01-orig": {
     "topic": "YOLO-based object detection for pollinator and insect monitoring",
     "category": "unanswerable",
     "unanswerable_type": "hard_refusal",
-    "turns": ["What specific model architecture does this paper use, down to the exact layer count?"],
+    "turns": [
+      "What specific model architecture does this paper use, down to the exact layer count?"
+    ],
     "target_papers": [],
     "why_unanswerable": "Too granular for an abstract — architecture papers are present but don't specify exact layer counts.",
-    "verified": "stage1+stage2"
+    "verified": "stage1+stage2",
+    "context_pr_excluded": true,
+    "context_pr_exclusion_reason": "unanswerable/hard_refusal — Faithfulness/Answer Relevancy already scored in run 1; Context Precision/Recall don't meaningfully apply to a deliberate refusal (Phase 0 decision)."
   }
 }
