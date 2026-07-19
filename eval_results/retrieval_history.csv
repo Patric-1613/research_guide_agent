@@ -1,4 +1,5 @@
-run_id,date,git_commit,note,num_topics,top_k,ranking_mode,mean_precision,mean_recall,recall_easy,recall_ambiguous,recall_thin,recall_domain
-1,2026-07-19T10:11:34+00:00,bfec8f0f01fe205c90ae60c246b4f7aed37b299a,ranking experiment: semantic baseline,17,10,semantic,0.0294,0.2157,0.0667,0.0556,0.3333,0.6667
-2,2026-07-19T10:16:08+00:00,bfec8f0f01fe205c90ae60c246b4f7aed37b299a,ranking experiment: hybrid (RRF),17,10,hybrid,0.0176,0.1373,0.0000,0.0556,0.0000,0.6667
-3,2026-07-19T10:20:48+00:00,bfec8f0f01fe205c90ae60c246b4f7aed37b299a,ranking experiment: bm25 alone,17,10,bm25,0.0176,0.1471,0.1000,0.0000,0.0000,0.6667
+run_id,date,git_commit,note,num_topics,top_k,ranking_mode,partition_n,mean_precision,mean_recall,recall_easy,recall_ambiguous,recall_thin,recall_domain
+1,2026-07-19T11:42:03+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=2 (20%),17,10,citation_partition,2,0.0882,0.5490,0.7333,0.2778,0.6667,0.6667
+2,2026-07-19T11:46:40+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=3 (30%),17,10,citation_partition,3,0.0765,0.4706,0.7333,0.2222,0.3333,0.6667
+3,2026-07-19T11:51:07+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=4 (40%),17,10,citation_partition,4,0.0765,0.4706,0.7333,0.2222,0.3333,0.6667
+4,2026-07-19T12:03:13+00:00,bcd5e9169127999395ac36867933028c6127e1d5,citation partition experiment: n=1 (10%),17,10,citation_partition,1,0.0706,0.4314,0.6333,0.1944,0.3333,0.6667

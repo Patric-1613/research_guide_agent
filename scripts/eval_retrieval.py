@@ -44,7 +44,7 @@ from research_agent.dedup import _same_paper, deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
 from research_agent.query_expansion import build_candidate_pool, expanded_search
-from research_agent.ranking import bm25_search, hybrid_search
+from research_agent.ranking import bm25_search, hybrid_search, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -61,12 +61,12 @@ TOP_K = 10
 DIFFICULTY_TIERS = ["easy", "ambiguous", "thin", "domain"]
 
 HISTORY_FIELDS = [
-    "run_id", "date", "git_commit", "note", "num_topics", "top_k", "ranking_mode",
+    "run_id", "date", "git_commit", "note", "num_topics", "top_k", "ranking_mode", "partition_n",
     "mean_precision", "mean_recall",
     "recall_easy", "recall_ambiguous", "recall_thin", "recall_domain",
 ]
 
-RANKING_MODES = ["semantic", "hybrid", "bm25"]
+RANKING_MODES = ["semantic", "hybrid", "bm25", "citation_partition"]
 
 
 def _expected_to_paper(expected: dict) -> Paper:
@@ -116,21 +116,26 @@ def run_topic_retrieval_expanded(topic: str, client: OpenAI) -> list[Paper]:
     return [p for p, _ in ranked]
 
 
-def run_topic_retrieval_ranked(topic: str, client: OpenAI, ranking_mode: str) -> list[Paper]:
+def run_topic_retrieval_ranked(
+    topic: str, client: OpenAI, ranking_mode: str, partition_n: int | None = None,
+) -> list[Paper]:
     """Ranking-stage experiment: reuses query_expansion.py's
     build_candidate_pool() UNCHANGED (same locked pool-size parameters,
     same suggest_related_titles() call, same dedup) — only the final
     ranking step differs between 'semantic' (embeddings.py's cosine
     similarity — identical algorithm to run_topic_retrieval_expanded()'s
-    own default), 'bm25' (lexical scoring, research_agent/ranking.py), or
-    'hybrid' (RRF fusion of both, also ranking.py). Every mode ranks
-    against `topic` itself, never an LLM-suggested title — the anti-
-    hallucination anchor query_expansion.py's docstring establishes,
-    enforced identically across all three modes here, not just semantic.
+    own default), 'bm25' (lexical scoring, research_agent/ranking.py),
+    'hybrid' (RRF fusion of both, also ranking.py), or 'citation_partition'
+    (citation-count-partitioned reranking with a guaranteed slot count,
+    also ranking.py — see partition_by_citation()/merge_with_guaranteed_
+    slots() there for the actual mechanism). Every mode ranks against
+    `topic` itself, never an LLM-suggested title — the anti-hallucination
+    anchor query_expansion.py's docstring establishes, enforced
+    identically across every mode here, not just semantic.
 
     'bm25' skips embedding/indexing entirely — BM25 is pure in-memory
     lexical scoring over the pool's own text, so there's no vector index
-    to build for it, unlike the other two modes.
+    to build for it, unlike the other three modes.
     """
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
     pool = build_candidate_pool(topic, k=TOP_K, s2_api_key=s2_key, client=client)
@@ -150,6 +155,14 @@ def run_topic_retrieval_ranked(topic: str, client: OpenAI, ranking_mode: str) ->
         )
     elif ranking_mode == "hybrid":
         ranked = hybrid_search(topic, pool, collection=collection, client=client, top_k=TOP_K)
+    elif ranking_mode == "citation_partition":
+        if partition_n is None:
+            raise ValueError("ranking_mode='citation_partition' requires partition_n")
+        partition_a, partition_b = partition_by_citation(pool, n=partition_n)
+        ranked = merge_with_guaranteed_slots(
+            topic, partition_a, partition_b, n=partition_n,
+            collection=collection, client=client, top_k=TOP_K,
+        )
     else:
         raise ValueError(f"Unknown ranking_mode: {ranking_mode!r} (expected one of {RANKING_MODES})")
 
@@ -157,7 +170,8 @@ def run_topic_retrieval_ranked(topic: str, client: OpenAI, ranking_mode: str) ->
 
 
 def evaluate_topic(
-    topic_id: str, topic_data: dict, client: OpenAI, expand: bool, ranking_mode: str | None = None,
+    topic_id: str, topic_data: dict, client: OpenAI, expand: bool,
+    ranking_mode: str | None = None, partition_n: int | None = None,
 ) -> dict:
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
@@ -167,7 +181,7 @@ def evaluate_topic(
         # (query_expansion.py's build_candidate_pool()) regardless of
         # --expand — Phase 4 of the experiment runs all three modes "with
         # query expansion enabled", so that's not a separate toggle here.
-        returned = run_topic_retrieval_ranked(topic_data["topic"], client, ranking_mode)
+        returned = run_topic_retrieval_ranked(topic_data["topic"], client, ranking_mode, partition_n)
     else:
         retrieval_fn = run_topic_retrieval_expanded if expand else run_topic_retrieval
         returned = retrieval_fn(topic_data["topic"], client)
@@ -231,7 +245,7 @@ def print_results_table(results: list[dict]) -> None:
         print(f"  {tier}: {tier_recall:.3f}  ({len(tier_results)} topics)")
 
 
-def append_history_row(results: list[dict], note: str, ranking_mode_label: str) -> dict:
+def append_history_row(results: list[dict], note: str, ranking_mode_label: str, partition_n: int | None = None) -> dict:
     os.makedirs(os.path.dirname(HISTORY_CSV), exist_ok=True)
     file_exists = os.path.isfile(HISTORY_CSV)
 
@@ -262,6 +276,7 @@ def append_history_row(results: list[dict], note: str, ranking_mode_label: str) 
         "num_topics": len(results),
         "top_k": TOP_K,
         "ranking_mode": ranking_mode_label,
+        "partition_n": partition_n if partition_n is not None else "",
         "mean_precision": f"{mean_precision:.4f}",
         "mean_recall": f"{mean_recall:.4f}",
         "recall_easy": f"{tier_recalls['easy']:.4f}" if tier_recalls["easy"] is not None else "",
@@ -292,10 +307,20 @@ def main() -> None:
         "--ranking-mode", choices=RANKING_MODES, default=None,
         help="Ranking-stage experiment: rank query_expansion.py's candidate pool via 'semantic' "
              "(cosine similarity — same algorithm --expand alone already uses), 'bm25' (lexical "
-             "scoring, research_agent/ranking.py), or 'hybrid' (RRF fusion of both, same module). "
-             "Always uses the expanded candidate pool for building it regardless of --expand's "
-             "value — this is an opt-in evaluation mode; omit entirely to leave existing --expand/"
-             "plain behavior (and the live app's own default) completely untouched.",
+             "scoring, research_agent/ranking.py), 'hybrid' (RRF fusion of both, same module), or "
+             "'citation_partition' (guaranteed slots for high-citation papers, also ranking.py — "
+             "needs --partition-proportion too). Always uses the expanded candidate pool for "
+             "building it regardless of --expand's value — this is an opt-in evaluation mode; omit "
+             "entirely to leave existing --expand/plain behavior (and the live app's own default) "
+             "completely untouched.",
+    )
+    parser.add_argument(
+        "--partition-proportion", type=float, default=0.3,
+        help="Only used when --ranking-mode citation_partition: fraction of top_k reserved as "
+             "guaranteed Partition-A slots, e.g. 0.3 at top_k=10 means n=3. A proportion, not a raw "
+             "count, because 'N is proportional to k' per the experiment's own design — this way the "
+             "same --partition-proportion value stays meaningful if top_k ever changes, rather than "
+             "silently meaning a different fraction of the result. n = round(proportion * top_k).",
     )
     args = parser.parse_args()
 
@@ -309,18 +334,23 @@ def main() -> None:
     if skipped:
         print(f"Skipping {len(skipped)} topic(s) with zero expected papers: {skipped}")
 
+    partition_n = None
+    if args.ranking_mode == "citation_partition":
+        partition_n = round(args.partition_proportion * TOP_K)
+
     ranking_mode_label = args.ranking_mode or ("expanded" if args.expand else "plain")
-    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (ranking mode: {ranking_mode_label})\n")
+    partition_note = f" (n={partition_n}, proportion={args.partition_proportion})" if partition_n is not None else ""
+    print(f"Evaluating {len(usable)} topics at top_k={TOP_K} (ranking mode: {ranking_mode_label}{partition_note})\n")
 
     results = []
     for i, (topic_id, topic_data) in enumerate(usable.items(), 1):
         print(f"[{i}/{len(usable)}] {topic_id}: {topic_data['topic']!r}")
-        r = evaluate_topic(topic_id, topic_data, client, args.expand, args.ranking_mode)
+        r = evaluate_topic(topic_id, topic_data, client, args.expand, args.ranking_mode, partition_n)
         print(f"    precision={r['precision']:.3f} recall={r['recall']:.3f}\n")
         results.append(r)
 
     print_results_table(results)
-    row = append_history_row(results, args.note, ranking_mode_label)
+    row = append_history_row(results, args.note, ranking_mode_label, partition_n)
 
     print("\n" + "=" * 100)
     print(f"Appended run {row['run_id']} to {os.path.relpath(HISTORY_CSV, REPO_ROOT)}")

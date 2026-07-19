@@ -10,17 +10,18 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.ranking import bm25_search, reciprocal_rank_fusion
+from research_agent.ranking import bm25_search, merge_with_guaranteed_slots, partition_by_citation, reciprocal_rank_fusion
 from research_agent.schema import Paper
 
 
-def _paper(paper_id: str, title: str, abstract: str) -> Paper:
+def _paper(paper_id: str, title: str, abstract: str, citation_count: int | None = None) -> Paper:
     return Paper(
         title=title, authors=[], year=None, venue=None, abstract=abstract,
-        url=None, doi=None, citation_count=None, source="test", paper_id=paper_id,
+        url=None, doi=None, citation_count=citation_count, source="test", paper_id=paper_id,
     )
 
 
@@ -147,3 +148,158 @@ def test_rrf_respects_top_k():
     ranking = [(p, 1.0 / (i + 1)) for i, p in enumerate(papers)]
     fused = reciprocal_rank_fusion([ranking], k=60, top_k=2)
     assert len(fused) == 2
+
+
+# --- partition_by_citation ---------------------------------------------------
+
+def test_partition_by_citation_basic_ranking():
+    high = _paper("high", "High", "x", citation_count=500)
+    mid = _paper("mid", "Mid", "x", citation_count=100)
+    low = _paper("low", "Low", "x", citation_count=10)
+    a, b = partition_by_citation([low, high, mid], n=2)
+
+    assert [p.paper_id for p in a] == ["high", "mid"]
+    assert [p.paper_id for p in b] == ["low"]
+
+
+def test_partition_by_citation_none_values_never_enter_partition_a():
+    # A None-citation paper must never be treated as citation_count=0 —
+    # it should land in B regardless of how it compares to A's members,
+    # even when A isn't full.
+    no_count = _paper("no_count", "NoCount", "x", citation_count=None)
+    low_but_real = _paper("low_real", "LowReal", "x", citation_count=1)
+    a, b = partition_by_citation([no_count, low_but_real], n=5)
+
+    assert [p.paper_id for p in a] == ["low_real"]
+    assert "no_count" not in [p.paper_id for p in a]
+    assert "no_count" in [p.paper_id for p in b]
+
+
+def test_partition_by_citation_fewer_eligible_than_n_does_not_force_fill_or_crash():
+    # Only 2 papers have a real citation_count at all; n=5 asks for more
+    # than exist. Partition A must come back with exactly those 2 — never
+    # padded with the None-citation papers to reach 5, and never raising.
+    eligible_1 = _paper("e1", "E1", "x", citation_count=50)
+    eligible_2 = _paper("e2", "E2", "x", citation_count=20)
+    no_count_1 = _paper("nc1", "NC1", "x", citation_count=None)
+    no_count_2 = _paper("nc2", "NC2", "x", citation_count=None)
+
+    a, b = partition_by_citation([no_count_1, eligible_1, no_count_2, eligible_2], n=5)
+
+    assert len(a) == 2
+    assert {p.paper_id for p in a} == {"e1", "e2"}
+    assert {p.paper_id for p in b} == {"nc1", "nc2"}
+
+
+def test_partition_by_citation_empty_pool_does_not_crash():
+    a, b = partition_by_citation([], n=5)
+    assert a == []
+    assert b == []
+
+
+def test_partition_by_citation_ties_break_deterministically_by_paper_id():
+    # Three papers tied at citation_count=100 — tie-break must be by
+    # paper_id (ascending), not by input list order, so the SAME logical
+    # pool produces the SAME partition regardless of what order the
+    # papers happened to arrive in (e.g. from a real API response whose
+    # ordering isn't itself guaranteed stable run-to-run).
+    tied_z = _paper("z_paper", "Z", "x", citation_count=100)
+    tied_a = _paper("a_paper", "A", "x", citation_count=100)
+    tied_m = _paper("m_paper", "M", "x", citation_count=100)
+
+    order1_a, order1_b = partition_by_citation([tied_z, tied_a, tied_m], n=2)
+    order2_a, order2_b = partition_by_citation([tied_m, tied_z, tied_a], n=2)
+    order3_a, order3_b = partition_by_citation([tied_a, tied_m, tied_z], n=2)
+
+    expected_a_ids = ["a_paper", "m_paper"]  # ascending paper_id, top 2
+    assert [p.paper_id for p in order1_a] == expected_a_ids
+    assert [p.paper_id for p in order2_a] == expected_a_ids
+    assert [p.paper_id for p in order3_a] == expected_a_ids
+    assert [p.paper_id for p in order1_b] == [p.paper_id for p in order2_b] == [p.paper_id for p in order3_b]
+
+
+# --- merge_with_guaranteed_slots ---------------------------------------------
+#
+# semantic_search() needs a real embedding client + Chroma collection, so
+# these tests patch research_agent.ranking.semantic_search directly (the
+# name as looked up in ranking.py's own namespace, not embeddings.py's) to
+# return a fully controlled, deterministic ranking — the point of these
+# tests is the MERGE logic, not semantic_search() itself (already covered
+# by test_embeddings.py).
+
+def _fake_semantic_search_returning(scored: list[tuple[Paper, float]]):
+    """Builds a stand-in for semantic_search() that ignores the real
+    query/collection/client and just returns `scored`, sorted descending
+    and cut to whatever top_k the caller asks for — exactly semantic_
+    search()'s own return contract, just backed by fixed test data."""
+    def fake(query, collection=None, client=None, top_k=10, where=None):
+        ranked = sorted(scored, key=lambda item: item[1], reverse=True)
+        return ranked[:top_k]
+    return fake
+
+
+def test_merge_pulls_in_a_paper_that_ranks_outside_topk_on_merit_alone():
+    # a_foundational is the ONLY Partition A member, and it scores dead
+    # last semantically (0.10) — well outside top_k=5 among 10 total
+    # papers. This is exactly the diagnosed real-world failure mode: a
+    # foundational paper losing rerank against generic ones.
+    a_foundational = _paper("a_found", "Foundational", "x", citation_count=1000)
+    b_papers = [_paper(f"b{i}", f"B{i}", "x") for i in range(9)]
+    scored = [(p, 0.90 - 0.05 * i) for i, p in enumerate(b_papers)]  # 0.90 down to 0.50
+    scored.append((a_foundational, 0.10))
+
+    with patch("research_agent.ranking.semantic_search", side_effect=_fake_semantic_search_returning(scored)):
+        result = merge_with_guaranteed_slots(
+            "topic", partition_a=[a_foundational], partition_b=b_papers, n=1, top_k=5,
+        )
+
+    result_ids = [p.paper_id for p, _ in result]
+    assert len(result) == 5
+    assert "a_found" in result_ids
+    # Ordered by semantic score, not promoted to the front just because
+    # the guarantee is why it's present at all — it lands at its own real
+    # (low) score position within the chosen set, last among the 5.
+    assert result_ids[-1] == "a_found"
+
+
+def test_merge_does_not_disturb_result_when_a_already_ranks_well_on_merit():
+    # a_strong is Partition A AND already scores highest overall — the
+    # guarantee (n=1) is already naturally satisfied. Result must be
+    # identical to what plain top-k semantic ranking would have produced;
+    # the merge logic shouldn't perturb an already-satisfied guarantee.
+    a_strong = _paper("a_strong", "Strong", "x", citation_count=1000)
+    b_papers = [_paper(f"b{i}", f"B{i}", "x") for i in range(9)]
+    scored = [(a_strong, 0.95)] + [(p, 0.90 - 0.05 * i) for i, p in enumerate(b_papers)]
+
+    with patch("research_agent.ranking.semantic_search", side_effect=_fake_semantic_search_returning(scored)):
+        result = merge_with_guaranteed_slots(
+            "topic", partition_a=[a_strong], partition_b=b_papers, n=1, top_k=5,
+        )
+
+    expected_ids = [p.paper_id for p, _ in sorted(scored, key=lambda item: item[1], reverse=True)[:5]]
+    assert [p.paper_id for p, _ in result] == expected_ids
+    assert result[0][0].paper_id == "a_strong"
+
+
+def test_merge_relaxes_guarantee_when_partition_a_smaller_than_n():
+    # Only 1 real Partition A member exists, but n=3 asks for more than
+    # that. The guarantee must relax to "1" (not error, not force-fill
+    # with partition_b papers relabeled as A) — min(n, len(partition_a)).
+    a_only = _paper("a_only", "OnlyA", "x", citation_count=1000)
+    b_papers = [_paper(f"b{i}", f"B{i}", "x") for i in range(9)]
+    scored = [(p, 0.90 - 0.05 * i) for i, p in enumerate(b_papers)]
+    scored.append((a_only, 0.10))
+
+    with patch("research_agent.ranking.semantic_search", side_effect=_fake_semantic_search_returning(scored)):
+        result = merge_with_guaranteed_slots(
+            "topic", partition_a=[a_only], partition_b=b_papers, n=3, top_k=5,
+        )
+
+    assert len(result) == 5
+    assert "a_only" in [p.paper_id for p, _ in result]
+
+
+def test_merge_empty_pool_does_not_crash():
+    with patch("research_agent.ranking.semantic_search", side_effect=_fake_semantic_search_returning([])):
+        result = merge_with_guaranteed_slots("topic", partition_a=[], partition_b=[], n=3, top_k=5)
+    assert result == []

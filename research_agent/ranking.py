@@ -133,6 +133,51 @@ def reciprocal_rank_fusion(
     return [(paper_by_id[pid], score) for pid, score in fused[:top_k]]
 
 
+def partition_by_citation(papers: list[Paper], n: int) -> tuple[list[Paper], list[Paper]]:
+    """Splits `papers` into (partition_A, partition_B) by citation_count,
+    RELATIVE not threshold-based: papers WITH a known citation_count are
+    sorted descending, Partition A = the top n of those, Partition B =
+    everyone else. There is no fixed citation-count cutoff anywhere in
+    this function — "top n" is defined purely by rank within this pool.
+
+    Papers with citation_count=None (arXiv-only results Semantic Scholar
+    never matched) are NOT eligible for Partition A at all — they land in
+    Partition B unconditionally, never treated as citation_count=0 (which
+    would make them the WORST-ranked eligible papers rather than simply
+    ineligible; those are different claims, and only the latter is true —
+    "we don't know this paper's citation count" is not "this paper has
+    zero citations").
+
+    If fewer than n papers have a citation_count at all, Partition A comes
+    back smaller than n — it is NEVER force-filled with ineligible or
+    weak candidates to reach n. Backfilling unfilled slots from Partition
+    B is a decision for the caller (merge_with_guaranteed_slots() below),
+    not something this function silently does on its own.
+
+    Tie-breaking for equal citation_count is by paper_id (ascending) —
+    deterministic and intrinsic to each paper, not dependent on `papers`'
+    input order. This matters beyond single-call determinism: real
+    arXiv/Semantic Scholar search result order is not itself guaranteed
+    stable run-to-run, so relying on Python's stable-sort-preserves-input-
+    order behavior alone would make ties resolve differently across
+    separate real pipeline executions even though each individual sort
+    call is internally stable. paper_id is this project's existing
+    canonical per-paper identity key (dedup.py, Chroma filters, this
+    module's own reciprocal_rank_fusion) — reused here for the same
+    reason: it's already the established way to break a tie between two
+    Paper records deterministically.
+    """
+    eligible = [p for p in papers if p.citation_count is not None]
+    ineligible = [p for p in papers if p.citation_count is None]
+
+    eligible_sorted = sorted(eligible, key=lambda p: (-p.citation_count, p.paper_id))
+
+    partition_a = eligible_sorted[:n]
+    partition_b = eligible_sorted[n:] + ineligible
+
+    return partition_a, partition_b
+
+
 def hybrid_search(
     query: str, papers: list[Paper], collection=None, client: OpenAI | None = None,
     top_k: int = 10, rrf_k: int = RRF_K,
@@ -161,3 +206,63 @@ def hybrid_search(
     bm25_full = bm25_search(query, papers, top_k=len(papers))
 
     return reciprocal_rank_fusion([semantic_full, bm25_full], k=rrf_k, top_k=top_k)
+
+
+def merge_with_guaranteed_slots(
+    query: str, partition_a: list[Paper], partition_b: list[Paper], n: int,
+    collection=None, client: OpenAI | None = None, top_k: int = 10,
+) -> list[tuple[Paper, float]]:
+    """Semantically scores every paper in BOTH partitions against `query`
+    (embeddings.py's semantic_search(), never reimplemented), then builds
+    a final top-k that (1) is ordered by semantic score — NOT partition_a-
+    then-partition_b stacking — while (2) guaranteeing at least
+    min(n, len(partition_a)) of those top-k slots are partition_a members.
+    The min() is the relaxation Phase 1's partition_by_citation() fallback
+    requires: if partition_a has fewer than n eligible papers at all, the
+    guarantee quietly becomes "as many as exist," never an error and never
+    a demand partition_b can't satisfy.
+
+    Algorithm: rank the WHOLE pool once by semantic score. The best
+    `required` partition_a papers BY THAT SAME SCORE are the guaranteed
+    set — not arbitrarily chosen, not re-scored some other way. Fill the
+    remaining top_k slots by walking the full ranking in score order,
+    skipping anything already guaranteed. Finally, re-sort the assembled
+    set by semantic score for the actual output order. When partition_a
+    already has >= `required` members ranking within the natural top-k on
+    merit alone, this provably produces the exact same result as plain
+    top-k semantic ranking would have (the guaranteed set is necessarily
+    already a subset of the natural top-k in that case) — the guarantee
+    only changes anything when it needs to.
+
+    `collection` must already have every paper in partition_a + partition_b
+    embedded and indexed (same precondition as hybrid_search() above);
+    `query` must be the original topic text, never an LLM-suggested title.
+    """
+    all_papers = partition_a + partition_b
+    if not all_papers:
+        return []
+
+    a_ids = {p.paper_id for p in partition_a}
+    ids = [p.paper_id for p in all_papers]
+
+    full_ranked = semantic_search(
+        query, collection=collection, client=client, top_k=len(all_papers),
+        where={"paper_id": {"$in": ids}},
+    )
+
+    required = min(n, len(partition_a))
+
+    a_ranked_full = [item for item in full_ranked if item[0].paper_id in a_ids]
+    guaranteed = a_ranked_full[:required]
+    guaranteed_ids = {item[0].paper_id for item in guaranteed}
+
+    final_items = list(guaranteed)
+    for item in full_ranked:
+        if len(final_items) >= top_k:
+            break
+        if item[0].paper_id in guaranteed_ids:
+            continue
+        final_items.append(item)
+
+    final_items.sort(key=lambda item: item[1], reverse=True)
+    return final_items[:top_k]
