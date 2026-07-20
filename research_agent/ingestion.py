@@ -16,8 +16,10 @@ from email.utils import parsedate_to_datetime
 
 import arxiv
 import requests
+from langfuse import get_client, observe
 
 from research_agent.schema import Paper
+from research_agent.tracing import paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ def _parse_retry_after(value: str | None, default: float) -> float:
         return default
 
 
+@observe(name="search_arxiv", capture_input=False, capture_output=False)
 def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
     """Search arXiv and return normalized Paper records.
 
@@ -80,6 +83,10 @@ def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
     """
     if not query.strip():
         logger.warning("search_arxiv called with empty query")
+        get_client().update_current_span(
+            input={"query": query, "max_results": max_results},
+            output={"count": 0, "papers": []},
+        )
         return []
 
     client = arxiv.Client()
@@ -113,6 +120,11 @@ def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
 
     if not papers:
         logger.info("search_arxiv: no results for query %r", query)
+
+    get_client().update_current_span(
+        input={"query": query, "max_results": max_results},
+        output={"count": len(papers), "papers": paper_metadata(papers)},
+    )
     return papers
 
 
