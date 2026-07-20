@@ -128,6 +128,7 @@ def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
     return papers
 
 
+@observe(name="search_semantic_scholar", capture_input=False, capture_output=False)
 def search_semantic_scholar(
     query: str,
     max_results: int = 20,
@@ -142,7 +143,13 @@ def search_semantic_scholar(
     """
     if not query.strip():
         logger.warning("search_semantic_scholar called with empty query")
+        get_client().update_current_span(
+            input={"query": query, "max_results": max_results},
+            output={"count": 0, "papers": []},
+        )
         return []
+
+    get_client().update_current_span(input={"query": query, "max_results": max_results})
 
     limit = min(max_results, _S2_MAX_LIMIT)
     headers = {"x-api-key": api_key} if api_key else {}
@@ -161,6 +168,7 @@ def search_semantic_scholar(
                 query, attempt, max_retries, exc,
             )
             if attempt == max_retries:
+                get_client().update_current_span(output={"count": 0, "papers": []})
                 return []
             time.sleep(backoff)
             backoff *= 2
@@ -174,6 +182,7 @@ def search_semantic_scholar(
             )
             if attempt == max_retries:
                 logger.warning("Giving up on Semantic Scholar search for query %r", query)
+                get_client().update_current_span(output={"count": 0, "papers": []})
                 return []
             time.sleep(wait)
             backoff *= 2
@@ -186,6 +195,7 @@ def search_semantic_scholar(
         logger.warning(
             "Semantic Scholar search failed for query %r: status=%s", query, status
         )
+        get_client().update_current_span(output={"count": 0, "papers": []})
         return []
 
     try:
@@ -195,6 +205,7 @@ def search_semantic_scholar(
             "Semantic Scholar returned a malformed/empty response body for query %r: %s",
             query, exc,
         )
+        get_client().update_current_span(output={"count": 0, "papers": []})
         return []
     raw_results = payload.get("data", [])
 
@@ -220,4 +231,6 @@ def search_semantic_scholar(
 
     if not papers:
         logger.info("search_semantic_scholar: no results for query %r", query)
+
+    get_client().update_current_span(output={"count": len(papers), "papers": paper_metadata(papers)})
     return papers

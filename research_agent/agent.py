@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
 from langchain.tools import tool
+from langfuse.langchain import CallbackHandler
 from openai import OpenAI
 
 from research_agent.dedup import deduplicate
@@ -279,13 +280,24 @@ def run_research_agent(
     tools = build_tools(session)
     agent = create_agent(AGENT_MODEL, tools=tools, system_prompt=_build_system_prompt(top_k, web_max_results))
 
+    # Langfuse's native LangChain/LangGraph integration: passing this handler
+    # via config traces the whole run (tool calls, the underlying LLM
+    # decision calls with token usage) as one trace, nested automatically —
+    # the idiomatic way to instrument a LangChain agent, vs. hand-wrapping
+    # each tool closure in build_tools() above.
+    langfuse_handler = CallbackHandler()
+
     # stream_mode="values" yields the full cumulative message list after each
     # graph step. When the model issues more than one tool call in the same
     # turn (common — e.g. searching both sources at once), several messages
     # can land in a single step, so we diff against what we've already seen
     # rather than assume the last message is the only new one.
     seen = 0
-    for step in agent.stream({"messages": [{"role": "user", "content": topic}]}, stream_mode="values"):
+    for step in agent.stream(
+        {"messages": [{"role": "user", "content": topic}]},
+        stream_mode="values",
+        config={"callbacks": [langfuse_handler]},
+    ):
         messages = step["messages"]
         for message in messages[seen:]:
             if on_step:

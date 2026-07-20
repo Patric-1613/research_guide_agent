@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 
+from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -33,6 +34,7 @@ from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
 from research_agent.schema import Paper
+from research_agent.tracing import ranked_paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ class _TitleSuggestions(BaseModel):
     )
 
 
+@observe(name="suggest_related_titles", as_type="generation", capture_input=False, capture_output=False)
 def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | None = None) -> list[str]:
     """One LLM call. Returns up to max_titles well-known real paper titles
     related to topic, or fewer if the model isn't confident about that many
@@ -101,19 +104,27 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
         return []
 
     client = client or OpenAI()
+    messages = [
+        {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
+    ]
+    langfuse = get_client()
+    langfuse.update_current_generation(
+        input=messages,
+        model=TITLE_SUGGESTION_MODEL,
+        model_parameters={"temperature": TITLE_SUGGESTION_TEMPERATURE},
+    )
 
     try:
         response = client.chat.completions.parse(
             model=TITLE_SUGGESTION_MODEL,
             temperature=TITLE_SUGGESTION_TEMPERATURE,
-            messages=[
-                {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
-            ],
+            messages=messages,
             response_format=_TitleSuggestions,
         )
     except Exception:
         logger.warning("suggest_related_titles: LLM call failed for topic %r", topic, exc_info=True)
+        langfuse.update_current_generation(output={"titles": []}, level="WARNING", status_message="LLM call failed")
         return []
 
     usage = response.usage
@@ -124,10 +135,18 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
             "suggest_related_titles: %d tokens billed (prompt=%d, completion=%d, ~$%.6f)",
             usage.total_tokens, usage.prompt_tokens, usage.completion_tokens, cost,
         )
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
 
     parsed = response.choices[0].message.parsed
     if parsed is None:
         logger.warning("suggest_related_titles: model refused/returned no parsed content for topic %r", topic)
+        langfuse.update_current_generation(output={"titles": []})
         return []
 
     titles = [t.strip() for t in parsed.titles if t and t.strip()][:max_titles]
@@ -136,9 +155,11 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
             "suggest_related_titles: model returned %d/%d titles for topic %r (fewer is expected when not confident)",
             len(titles), max_titles, topic,
         )
+    langfuse.update_current_generation(output={"titles": titles})
     return titles
 
 
+@observe(name="build_candidate_pool", capture_input=False, capture_output=False)
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
 ) -> list[Paper]:
@@ -184,9 +205,20 @@ def build_candidate_pool(
         len(deduped),
     )
 
+    get_client().update_current_span(
+        input={"topic": topic, "k": k},
+        output={
+            "suggested_titles": suggested_titles,
+            "raw_count": len(combined_raw),
+            "original_query_count": len(original_results),
+            "suggested_title_count": len(suggested_results),
+            "deduped_count": len(deduped),
+        },
+    )
     return deduped
 
 
+@observe(name="expanded_search", capture_input=False, capture_output=False)
 def expanded_search(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
     doi_required: bool = False, min_citation_count: int = 0,
@@ -231,4 +263,11 @@ def expanded_search(
         embed_stats["cache_hits"], embed_stats["cache_misses"], embed_stats["estimated_cost_usd"],
     )
 
+    get_client().update_current_span(
+        input={
+            "topic": topic, "k": k,
+            "doi_required": doi_required, "min_citation_count": min_citation_count,
+        },
+        output={"count": len(ranked), "papers": ranked_paper_metadata(ranked)},
+    )
     return ranked

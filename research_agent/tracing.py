@@ -31,3 +31,9 @@ def paper_metadata(papers: list[Paper]) -> list[dict]:
         }
         for p in papers
     ]
+
+
+def ranked_paper_metadata(ranked: list[tuple[Paper, float]]) -> list[dict]:
+    """Same redaction as paper_metadata(), for (Paper, similarity-score)
+    pairs as returned by semantic_search()/expanded_search()."""
+    return [{**meta, "score": score} for meta, (_, score) in zip(paper_metadata([p for p, _ in ranked]), ranked)]
