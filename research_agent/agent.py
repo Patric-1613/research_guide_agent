@@ -110,13 +110,23 @@ def _merge_web_articles(existing: list[WebArticle], new: list[WebArticle]) -> li
 
 def build_tools(session: ResearchSession) -> list:
     @tool
-    def search_arxiv_tool(query: str, max_results: int = 10) -> str:
+    def search_arxiv_tool(query: str) -> str:
         """Search arXiv for papers matching a query. Returns a short summary;
         the full records are added to the working paper pool for later
         reranking. arXiv's search is a literal keyword match, not semantic —
         use specific, well-formed search terms, and expand any acronyms first."""
         try:
-            papers = search_arxiv(query, max_results=max_results)
+            # No max_results argument here on purpose (see round-2/measure-
+            # langgraph-agent postmortem): this used to hardcode its own
+            # max_results=10 default, a second, disconnected copy of
+            # ingestion.py's own max_results=20 default that silently drifted
+            # out of sync and starved the agent's candidate pool relative to
+            # every direct-function retrieval path. There is now exactly one
+            # place this number is defined — search_arxiv's own default —
+            # and this tool always inherits it, the same way top_k above is a
+            # code-enforced value rather than something left for the model
+            # to infer.
+            papers = search_arxiv(query)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
@@ -138,13 +148,16 @@ def build_tools(session: ResearchSession) -> list:
             )
 
     @tool
-    def search_semantic_scholar_tool(query: str, max_results: int = 10) -> str:
+    def search_semantic_scholar_tool(query: str) -> str:
         """Search Semantic Scholar for papers matching a query — broader
         coverage than arXiv (published/peer-reviewed venues, citation counts).
         Returns a short summary; full records are added to the working pool.
         Also a literal keyword match, not semantic — expand acronyms first."""
         try:
-            papers = search_semantic_scholar(query, max_results=max_results, api_key=session.s2_api_key)
+            # No max_results argument here either — same single-source-of-
+            # truth reasoning as search_arxiv_tool above; inherits
+            # search_semantic_scholar's own default.
+            papers = search_semantic_scholar(query, api_key=session.s2_api_key)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (

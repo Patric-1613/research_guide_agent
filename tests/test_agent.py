@@ -31,14 +31,14 @@ def test_search_tools_accumulate_and_dedup_into_session():
 
     with patch("research_agent.agent.search_arxiv") as mock_arxiv:
         mock_arxiv.return_value = [_paper("Same Paper", "arxiv", "1111.1111")]
-        arxiv_tool.invoke({"query": "test", "max_results": 5})
+        arxiv_tool.invoke({"query": "test"})
 
     assert len(session.papers) == 1
 
     with patch("research_agent.agent.search_semantic_scholar") as mock_s2:
         # Same title from a different source -> should merge, not duplicate.
         mock_s2.return_value = [_paper("Same Paper", "semantic_scholar", "abc123")]
-        s2_tool.invoke({"query": "test", "max_results": 5})
+        s2_tool.invoke({"query": "test"})
 
     assert len(session.papers) == 1
     assert session.papers[0].source == "arxiv+semantic_scholar"
@@ -90,7 +90,7 @@ def test_search_arxiv_tool_survives_underlying_exception_and_pool_stays_usable()
     arxiv_tool, s2_tool, _rerank_tool, _web_tool = build_tools(session)
 
     with patch("research_agent.agent.search_arxiv", side_effect=RuntimeError("arXiv is down")):
-        result = arxiv_tool.invoke({"query": "test", "max_results": 5})
+        result = arxiv_tool.invoke({"query": "test"})
 
     assert "arXiv is down" in result
     assert "failed" in result.lower()
@@ -101,7 +101,7 @@ def test_search_arxiv_tool_survives_underlying_exception_and_pool_stays_usable()
     # required first.
     with patch("research_agent.agent.search_semantic_scholar") as mock_s2:
         mock_s2.return_value = [_paper("Recovered Paper", "semantic_scholar", "xyz")]
-        s2_tool.invoke({"query": "test", "max_results": 5})
+        s2_tool.invoke({"query": "test"})
 
     assert len(session.papers) == 1
     assert session.papers[0].title == "Recovered Paper"

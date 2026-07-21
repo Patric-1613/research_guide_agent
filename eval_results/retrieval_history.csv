@@ -48,3 +48,4 @@ run_id,date,git_commit,note,num_topics,top_k,ranking_mode,partition_n,mean_preci
 47,2026-07-20T22:30:01+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,phase 1: langgraph_agent single-topic sanity check,1,10,langgraph_agent,,0.0000,0.0000,0.0000,,,
 48,2026-07-20T22:31:32+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,"phase 2: langgraph_agent cost/sanity check (agent-01, hornet-01)",2,10,langgraph_agent,,0.0000,0.0000,,0.0000,,0.0000
 49,2026-07-20T22:36:05+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,"langgraph_agent path, real default, first full measurement",17,10,langgraph_agent,,0.0118,0.0784,0.0000,0.0556,0.3333,0.0000
+50,2026-07-21T09:24:19+00:00,e1b28b4b782e1cd9fd35b2b29bb3202b0d5c9557,post pool-size fix: langgraph_agent re-run (agent.py max_results now inherits ingestion.py's 20 default),17,10,langgraph_agent,,0.0176,0.1373,0.0000,0.0556,0.3333,0.3333
