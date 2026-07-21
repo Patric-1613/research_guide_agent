@@ -187,7 +187,8 @@ def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict
     # Relies on ask()'s own @observe span being the current span at the time
     # this runs, the same way any plain helper called from a decorated
     # function updates that function's span.
-    get_client().update_current_span(
+    langfuse = get_client()
+    langfuse.update_current_span(
         input={"question": question},
         output={"answerable": False, "answer": answer},
     )
@@ -195,6 +196,12 @@ def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict
         "answer": answer, "answerable": False,
         "cited_papers": [], "retrieved_papers": [],
         "cited_web_articles": [], "retrieved_web_articles": [],
+        # Trace of THIS turn's own ask() span — callers that later compute
+        # an external score for this turn (e.g. scripts/ragas_eval.py, once
+        # RAGAS finishes judging a whole batch of turns) use this to attach
+        # it back to the right trace after the fact, since by then ask()'s
+        # own span/trace context has long since closed.
+        "trace_id": langfuse.get_current_trace_id(),
     }
 
 
@@ -308,7 +315,8 @@ def ask(
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": parsed.answer})
 
-    get_client().update_current_span(
+    langfuse = get_client()
+    langfuse.update_current_span(
         input={"question": question, "top_k": top_k},
         output={
             "answerable": parsed.answerable,
@@ -325,4 +333,6 @@ def ask(
         "retrieved_papers": retrieved_papers,
         "cited_web_articles": cited_web_articles,
         "retrieved_web_articles": retrieved_web_articles,
+        # See _no_sources_result's matching field for why this is exposed.
+        "trace_id": langfuse.get_current_trace_id(),
     }

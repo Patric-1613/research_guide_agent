@@ -38,6 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+from langfuse import get_client, observe
 from openai import OpenAI
 
 from research_agent.dedup import _same_paper, deduplicate
@@ -182,10 +183,23 @@ def run_topic_retrieval_ranked(
     return [p for p, _ in ranked]
 
 
+@observe(name="eval_retrieval_topic", capture_input=False, capture_output=False)
 def evaluate_topic(
     topic_id: str, topic_data: dict, client: OpenAI, expand: bool,
     ranking_mode: str | None = None, partition_n: int | None = None, top_k: int = DEFAULT_TOP_K,
 ) -> dict:
+    """Wrapping this whole function in one @observe span (rather than
+    relying on whatever @observe-decorated research_agent function(s) it
+    happens to call) gives every ranking mode ONE coherent trace per topic
+    to attach Precision@k/Recall@k to — 'plain' mode alone calls three
+    separately-traced functions (search_arxiv, search_semantic_scholar,
+    semantic_rerank) with no shared parent otherwise, and 'ranked' modes
+    mix traced (semantic_rerank) and untraced (bm25_search, hybrid_search)
+    calls. This span is the SAME kind of thing regardless of mode: the
+    real retrieval pass for one topic, precision/recall attached to it as
+    a second, complementary view — eval_results/retrieval_history.csv
+    below remains the unchanged source of truth; this doesn't replace it.
+    """
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
 
@@ -213,6 +227,18 @@ def evaluate_topic(
     precision = matched_returned_count / len(returned) if returned else 0.0
     recall = len(matched_expected_indices) / len(expected) if expected else 0.0
     missed = [expected[i] for i in range(len(expected)) if i not in matched_expected_indices]
+
+    ranking_mode_label = ranking_mode or ("expanded" if expand else "plain")
+    langfuse = get_client()
+    langfuse.update_current_span(
+        input={"topic_id": topic_id, "topic": topic_data["topic"], "ranking_mode": ranking_mode_label, "top_k": top_k},
+        output={"num_returned": len(returned), "num_expected": len(expected), "precision": precision, "recall": recall},
+    )
+    # Real eval scores attached directly to this topic's own trace — a
+    # second, complementary view in the Langfuse dashboard alongside the
+    # CSV history below, not a replacement for it.
+    langfuse.score_current_trace(name="precision_at_k", value=precision, data_type="NUMERIC")
+    langfuse.score_current_trace(name="recall_at_k", value=recall, data_type="NUMERIC")
 
     return {
         "topic_id": topic_id,
