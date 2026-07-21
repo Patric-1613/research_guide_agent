@@ -26,9 +26,10 @@ from langchain.tools import tool
 from openai import OpenAI
 
 from research_agent.dedup import deduplicate
-from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
+from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
 from research_agent.web_search import search_web
 
@@ -195,12 +196,37 @@ def build_tools(session: ResearchSession) -> list:
             client = OpenAI()
             stats = embed_and_index_papers(session.papers, collection=collection, client=client)
 
-            ids = [p.paper_id for p in session.papers]
-            ranked = semantic_search(
-                query, collection=collection, client=client, top_k=top_k,
-                where={"paper_id": {"$in": ids}},
-                min_citation_count=session.min_citation_count or None,
-                require_doi=session.doi_required,
+            # Round-2 enhancement 2's filters (doi_required/min_citation_count)
+            # used to be Chroma `where` clauses inside semantic_search() itself.
+            # merge_with_guaranteed_slots()/partition_by_citation() (ranking.py,
+            # reused here exactly as already validated — not modified for this)
+            # don't take filter arguments, so the equivalent filtering happens
+            # here instead, as a plain pre-filter on the candidate list, before
+            # partitioning — same semantics (a paper missing citation_count
+            # entirely is never treated as satisfying min_citation_count), same
+            # end result: an excluded paper never reaches the final ranking.
+            candidates = session.papers
+            if session.min_citation_count:
+                candidates = [
+                    p for p in candidates
+                    if p.citation_count is not None and p.citation_count >= session.min_citation_count
+                ]
+            if session.doi_required:
+                candidates = [p for p in candidates if p.doi]
+
+            # Citation-partitioned reranking (validated in eval-only testing
+            # via scripts/eval_retrieval.py's --ranking-mode citation_partition:
+            # 0.733 recall_easy vs. 0.067 for plain semantic ranking alone) —
+            # guarantees get_partition_n(top_k) slots for the most-cited
+            # eligible papers, then ranks everything by semantic score against
+            # `query` (always the original topic — same anti-hallucination
+            # anchor as every other ranking mode in this project, never one of
+            # the agent's own reformulated search queries).
+            partition_n = get_partition_n(top_k)
+            partition_a, partition_b = partition_by_citation(candidates, n=partition_n)
+            ranked = merge_with_guaranteed_slots(
+                query, partition_a, partition_b, n=partition_n,
+                collection=collection, client=client, top_k=top_k,
             )
             session.ranked = ranked
 
@@ -214,7 +240,8 @@ def build_tools(session: ResearchSession) -> list:
 
             lines = [f"{i + 1}. ({score:.3f}) {p.title}" for i, (p, score) in enumerate(ranked)]
             return (
-                f"Ranked {len(ranked)} paper(s) by relevance to {query!r} "
+                f"Ranked {len(ranked)} paper(s) by relevance to {query!r} via citation-partitioned "
+                f"reranking ({partition_n} guaranteed high-citation slot(s)) "
                 f"({stats['cache_hits']} cache hit(s), {stats['cache_misses']} newly embedded, "
                 f"~${stats['estimated_cost_usd']:.6f}):\n" + "\n".join(lines)
             )
