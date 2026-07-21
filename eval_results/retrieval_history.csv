@@ -45,3 +45,6 @@ run_id,date,git_commit,note,num_topics,top_k,ranking_mode,partition_n,mean_preci
 44,2026-07-19T20:50:52+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=20,17,20,citation_partition,2,0.0412,0.5196,0.6333,0.2778,0.6667,0.6667
 45,2026-07-19T20:54:48+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=25,17,25,citation_partition,2,0.0353,0.5490,0.7333,0.2778,0.6667,0.6667
 46,2026-07-19T21:03:18+00:00,043f851ed116dc238650d2a06f39c867fc26f1c7,final rule validation: get_partition_n(k) automatic default at k=30,17,30,citation_partition,2,0.0294,0.5490,0.7333,0.2778,0.6667,0.6667
+47,2026-07-20T22:30:01+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,phase 1: langgraph_agent single-topic sanity check,1,10,langgraph_agent,,0.0000,0.0000,0.0000,,,
+48,2026-07-20T22:31:32+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,"phase 2: langgraph_agent cost/sanity check (agent-01, hornet-01)",2,10,langgraph_agent,,0.0000,0.0000,,0.0000,,0.0000
+49,2026-07-20T22:36:05+00:00,90d21fd9905d6e955e87446dfc847e59ea9db2d0,"langgraph_agent path, real default, first full measurement",17,10,langgraph_agent,,0.0118,0.0784,0.0000,0.0556,0.3333,0.0000
