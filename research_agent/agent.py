@@ -29,6 +29,7 @@ from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.query_expansion import suggest_related_titles
 from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
 from research_agent.web_search import search_web
@@ -36,6 +37,12 @@ from research_agent.web_search import search_web
 logger = logging.getLogger(__name__)
 
 AGENT_MODEL = "openai:gpt-4.1-mini"
+
+# Mirrors query_expansion.py's own _SUGGESTED_TITLE_POOL_SIZE exactly (not
+# imported directly since it's that module's private constant) — a
+# suggested title is searched to confirm/locate one specific paper, not to
+# gather a broad candidate pool, same reasoning as the direct-call path.
+_TITLE_SEARCH_MAX_RESULTS = 5
 
 # top_k is a user-controlled request parameter (phase-round-2 enhancement 1),
 # not something the model should infer. Earlier versions left the number of
@@ -79,6 +86,20 @@ class ResearchSession:
     s2_api_key: str | None = None
     papers: list[Paper] = field(default_factory=list)
     ranked: list[tuple[Paper, float]] = field(default_factory=list)
+    # The original user topic, set once by run_research_agent — title
+    # suggestion (see _get_suggested_titles below) always runs against this,
+    # never whatever ad-hoc query text the agent's own (separately
+    # acknowledged as shallow) reformulation passes to a given tool call.
+    # Same "fixed session value, not left to model judgment" pattern as
+    # top_k/doi_required/min_citation_count above.
+    topic: str = ""
+    # Cache for suggest_related_titles(topic) — None means "not yet
+    # computed" (distinct from "computed, model wasn't confident about any",
+    # which is a real, valid empty list). Computed at most once per session
+    # regardless of how many search tool calls the agent makes, mirroring
+    # build_candidate_pool()'s own one-call-per-topic behavior in the
+    # direct-call path.
+    suggested_titles: list[str] | None = None
     # Round-2 enhancement 2: DOI/citation-count filters. These are set once
     # from the user's request (see run_research_agent) and read directly by
     # rerank_by_relevance_tool below — deliberately NOT exposed as tool-call
@@ -93,6 +114,19 @@ class ResearchSession:
     # section stay independently sized and independently displayed all the
     # way through to the UI.
     web_articles: list[WebArticle] = field(default_factory=list)
+
+
+def _get_suggested_titles(session: ResearchSession) -> list[str]:
+    """suggest_related_titles(), called automatically (never an agent
+    decision point — see this phase's brief: the agent's own query
+    reformulation was already found to be shallow paraphrasing, not
+    reliable judgment, so this isn't left to it) and cached on the session
+    so repeated tool calls in one run only pay for the LLM suggestion call
+    once. Reuses query_expansion.py's suggest_related_titles() directly,
+    unmodified — same function the direct-call path uses, not a fork."""
+    if session.suggested_titles is None:
+        session.suggested_titles = suggest_related_titles(session.topic)
+    return session.suggested_titles
 
 
 def _merge_web_articles(existing: list[WebArticle], new: list[WebArticle]) -> list[WebArticle]:
@@ -115,7 +149,11 @@ def build_tools(session: ResearchSession) -> list:
         """Search arXiv for papers matching a query. Returns a short summary;
         the full records are added to the working paper pool for later
         reranking. arXiv's search is a literal keyword match, not semantic —
-        use specific, well-formed search terms, and expand any acronyms first."""
+        use specific, well-formed search terms, and expand any acronyms first.
+        Automatically also searches arXiv for a few well-known landmark
+        paper titles related to the original topic (query_expansion.py's
+        suggest_related_titles(), same mechanism the direct-call retrieval
+        path already uses) — this always happens, not something to request."""
         try:
             # No max_results argument here on purpose (see round-2/measure-
             # langgraph-agent postmortem): this used to hardcode its own
@@ -128,10 +166,22 @@ def build_tools(session: ResearchSession) -> list:
             # code-enforced value rather than something left for the model
             # to infer.
             papers = search_arxiv(query)
+            # Automatic title-suggestion search (agent-title-suggestion
+            # phase): a literal keyword search on a generic topic phrase
+            # reliably misses foundational papers whose title doesn't
+            # closely match that wording (confirmed directly: LoRA/Attention
+            # Is All You Need never entered the agent's pool via the topic
+            # search alone). Searching each suggested title's exact wording
+            # reliably surfaces that exact paper instead — same fix as
+            # query_expansion.py's build_candidate_pool(), unconditional
+            # here for the same reason it's unconditional there.
+            for title in _get_suggested_titles(session):
+                papers += search_arxiv(title, max_results=_TITLE_SEARCH_MAX_RESULTS)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
-                f"arXiv returned {len(papers)} paper(s) for query {query!r}. "
+                f"arXiv returned {len(papers)} paper(s) for query {query!r} "
+                f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
                 f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
@@ -153,16 +203,25 @@ def build_tools(session: ResearchSession) -> list:
         """Search Semantic Scholar for papers matching a query — broader
         coverage than arXiv (published/peer-reviewed venues, citation counts).
         Returns a short summary; full records are added to the working pool.
-        Also a literal keyword match, not semantic — expand acronyms first."""
+        Also a literal keyword match, not semantic — expand acronyms first.
+        Automatically also searches Semantic Scholar for a few well-known
+        landmark paper titles related to the original topic (same
+        suggest_related_titles() mechanism as search_arxiv_tool) — this
+        always happens, not something to request."""
         try:
             # No max_results argument here either — same single-source-of-
             # truth reasoning as search_arxiv_tool above; inherits
             # search_semantic_scholar's own default.
             papers = search_semantic_scholar(query, api_key=session.s2_api_key)
+            # Automatic title-suggestion search — see search_arxiv_tool's
+            # matching comment above for why this is unconditional.
+            for title in _get_suggested_titles(session):
+                papers += search_semantic_scholar(title, max_results=_TITLE_SEARCH_MAX_RESULTS, api_key=session.s2_api_key)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
-                f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r}. "
+                f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r} "
+                f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
                 f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
@@ -314,7 +373,7 @@ def run_research_agent(
     genuine per-topic decision, not a user-configured hard constraint).
     """
     session = ResearchSession(
-        s2_api_key=s2_api_key, doi_required=doi_required, min_citation_count=min_citation_count,
+        s2_api_key=s2_api_key, doi_required=doi_required, min_citation_count=min_citation_count, topic=topic,
     )
     tools = build_tools(session)
     agent = create_agent(AGENT_MODEL, tools=tools, system_prompt=_build_system_prompt(top_k, web_max_results))

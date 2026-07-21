@@ -44,6 +44,40 @@ def test_search_tools_accumulate_and_dedup_into_session():
     assert session.papers[0].source == "arxiv+semantic_scholar"
 
 
+def test_search_tools_automatically_search_suggested_titles():
+    # session.topic set (unlike the default-"" sessions above, where
+    # suggest_related_titles's own empty-topic guard makes this a no-op) —
+    # this is the case that actually exercises the automatic title-search.
+    session = ResearchSession(topic="parameter-efficient fine-tuning")
+    arxiv_tool, s2_tool, _rerank_tool, _web_tool = build_tools(session)
+
+    def fake_arxiv_search(query, max_results=20):
+        if query == "parameter-efficient fine-tuning":
+            return [_paper("Generic Survey Paper", "arxiv", "1111.1111")]
+        if query == "LoRA: Low-Rank Adaptation of Large Language Models":
+            return [_paper("LoRA: Low-Rank Adaptation of Large Language Models", "arxiv", "2222.2222")]
+        return []
+
+    with patch("research_agent.agent.suggest_related_titles") as mock_suggest, \
+         patch("research_agent.agent.search_arxiv", side_effect=fake_arxiv_search) as mock_arxiv:
+        mock_suggest.return_value = ["LoRA: Low-Rank Adaptation of Large Language Models"]
+        arxiv_tool.invoke({"query": "parameter-efficient fine-tuning"})
+
+    # Suggested by the original topic, not whatever query text the tool call used.
+    mock_suggest.assert_called_once_with("parameter-efficient fine-tuning")
+    # One call for the query itself, one for the suggested title.
+    assert mock_arxiv.call_count == 2
+    titles = {p.title for p in session.papers}
+    assert titles == {"Generic Survey Paper", "LoRA: Low-Rank Adaptation of Large Language Models"}
+
+    # A second search call (any source) must not re-trigger the LLM
+    # suggestion call — cached on the session for the whole run.
+    with patch("research_agent.agent.suggest_related_titles") as mock_suggest_2, \
+         patch("research_agent.agent.search_semantic_scholar", return_value=[]):
+        s2_tool.invoke({"query": "parameter-efficient fine-tuning"})
+    mock_suggest_2.assert_not_called()
+
+
 def test_rerank_tool_reports_empty_pool_without_crashing():
     session = ResearchSession()
     _, _, rerank_tool, _web_tool = build_tools(session)
