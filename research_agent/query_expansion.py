@@ -32,7 +32,12 @@ from pydantic import BaseModel, Field
 
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
-from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.ingestion import (
+    get_rate_limited_call_count,
+    reset_rate_limit_tracking,
+    search_arxiv,
+    search_semantic_scholar,
+)
 from research_agent.schema import Paper
 from research_agent.tracing import ranked_paper_metadata
 
@@ -181,6 +186,13 @@ def build_candidate_pool(
     function and then does exactly what it always did.
     """
     client = client or OpenAI()
+    # Starts counting search_semantic_scholar calls (original query + one
+    # per suggested title, below) that need a retry, so this function's own
+    # span metadata can carry "how many of my child calls hit rate-limiting"
+    # instead of that being visible only on each individual child span —
+    # see ingestion.py's reset_rate_limit_tracking() docstring for why this
+    # is a plain contextvar rather than a Langfuse mechanism.
+    reset_rate_limit_tracking()
 
     original_pool_size = min(max(_ORIGINAL_QUERY_POOL_MULTIPLIER * k, _ORIGINAL_QUERY_POOL_FLOOR), _ORIGINAL_QUERY_POOL_CAP)
 
@@ -205,16 +217,23 @@ def build_candidate_pool(
         len(deduped),
     )
 
-    get_client().update_current_span(
-        input={"topic": topic, "k": k},
-        output={
+    rate_limited_calls = get_rate_limited_call_count()
+    update_kwargs = {
+        "input": {"topic": topic, "k": k},
+        "output": {
             "suggested_titles": suggested_titles,
             "raw_count": len(combined_raw),
             "original_query_count": len(original_results),
             "suggested_title_count": len(suggested_results),
             "deduped_count": len(deduped),
         },
-    )
+    }
+    if rate_limited_calls:
+        # Same "only set when true" convention as search_semantic_scholar's
+        # own child-span metadata — a search that never hit rate-limiting
+        # gets no such field at all, not an explicit False/0.
+        update_kwargs["metadata"] = {"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls}
+    get_client().update_current_span(**update_kwargs)
     return deduped
 
 
@@ -263,11 +282,23 @@ def expanded_search(
         embed_stats["cache_hits"], embed_stats["cache_misses"], embed_stats["estimated_cost_usd"],
     )
 
-    get_client().update_current_span(
-        input={
+    update_kwargs = {
+        "input": {
             "topic": topic, "k": k,
             "doi_required": doi_required, "min_citation_count": min_citation_count,
         },
-        output={"count": len(ranked), "papers": ranked_paper_metadata(ranked)},
-    )
+        "output": {"count": len(ranked), "papers": ranked_paper_metadata(ranked)},
+    }
+    # build_candidate_pool() (called above) already reset+read this same
+    # counter for its OWN span; reading it again here (not resetting) rolls
+    # the same count onto expanded_search's span too, since THIS is the
+    # actual root of the trace whenever expanded_search wraps
+    # build_candidate_pool (the live app's default path) rather than
+    # build_candidate_pool being called directly (scripts/eval_retrieval.py's
+    # ranking-mode experiments, where build_candidate_pool's own span above
+    # is already the root and already carries this).
+    rate_limited_calls = get_rate_limited_call_count()
+    if rate_limited_calls:
+        update_kwargs["metadata"] = {"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls}
+    get_client().update_current_span(**update_kwargs)
     return ranked
