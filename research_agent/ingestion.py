@@ -180,6 +180,14 @@ def search_semantic_scholar(
                 "Semantic Scholar rate limited us (attempt %d/%d), waiting %.1fs",
                 attempt, max_retries, wait,
             )
+            # Explicit span metadata (not just a long duration to infer it
+            # from) so rate-limit events are directly searchable/filterable
+            # in Langfuse. update_current_span merges rather than replaces,
+            # so a later successful attempt's output={"count": ...} update
+            # doesn't erase this — a call that got rate-limited but
+            # eventually succeeded still shows rate_limited=True with the
+            # retry count it took, not just a silent success.
+            get_client().update_current_span(metadata={"rate_limited": True, "retry_count": attempt})
             if attempt == max_retries:
                 logger.warning("Giving up on Semantic Scholar search for query %r", query)
                 get_client().update_current_span(output={"count": 0, "papers": []})
