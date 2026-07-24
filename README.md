@@ -476,6 +476,52 @@ fetching. Whether that flexibility is worth 7.6× the cost is a product
 call, not a data one — the data above is what makes that call an
 informed one instead of a guess.
 
+## Search-call parallelization
+
+`query_expansion.py`'s `build_candidate_pool()` (the function backing
+`expanded_search` and, via `scripts/eval_retrieval.py`, every retrieval
+number above) used to run its arXiv and Semantic Scholar calls
+sequentially — one call at a time, per query, for the original topic plus
+every LLM-suggested title. Each pair is now issued concurrently
+(`asyncio.gather` over `asyncio.to_thread`), and the suggested-title
+searches themselves run with bounded cross-pair concurrency (a semaphore
+capped at 2 simultaneous title-pairs) rather than one after another.
+Nothing about *what* gets searched, deduplicated, or ranked changed —
+same function signatures, same return values, same data sources — only
+the scheduling of independent network calls. (`agent.py`'s tool-calling
+path needed no such change: LangGraph's own `ToolNode` already runs
+same-turn tool calls concurrently via a thread pool executor, confirmed
+by reading its source and by real trace timestamps.)
+
+Measured directly, not assumed: the same 20-topic reference set, same
+`k=10`, run at commit `a3769e3` (sequential, pre-parallelization) and
+again immediately after at `main` (parallelized), back-to-back so both
+runs hit the same Semantic Scholar rate-limit conditions — confirmed
+comparable, since **every topic in both runs hit at least one rate-limit
+retry** (48 total rate-limited calls before vs. 52 after; not a cleaner
+network window for either side).
+
+| Metric | Before (sequential) | After (parallelized) |
+|---|---|---|
+| Mean latency | 49.90s | 13.96s |
+| Median latency | 26.48s | 12.03s |
+| Min / Max | 8.94s / 219.67s | 4.83s / 36.69s |
+| Total (20 topics) | 998.02s | 279.15s |
+
+**Every one of the 20 topics got faster** — improvements ranged from
+-6% (`insect-cv-01`) to -94% (`attn-01`), with the largest wins on
+topics that hit the worst rate-limit stalls beforehand (`peft-01`:
+219.67s → 14.44s; `attn-01`: 150.31s → 9.33s; `insect-class-01`:
+100.06s → 14.84s). **Mean speedup: 72.0%. Median speedup: 54.6%.**
+
+The result holds up under heavy rate-limiting rather than depending on
+its absence: sequentially, every 429 backoff (1s/2s/4s) stacks serially
+across calls; concurrently, independent calls absorb their own backoffs
+in overlapping wall-clock time, so total elapsed time collapses even
+though the raw count of rate-limited calls barely moved. Full per-topic
+data (both runs, git commit, rate-limited-call counts) is in
+`eval_results/latency_history.csv`.
+
 ## RAGAS quality evaluation
 
 A curated, hand-verified test set (`eval_data/stage1_ragas_questions.json`,
