@@ -24,6 +24,7 @@ relevant to the original topic, the same bar every other candidate clears.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from langfuse import get_client, observe
@@ -164,6 +165,35 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
     return titles
 
 
+async def _search_pair(
+    query: str, max_results: int, s2_api_key: str | None,
+) -> tuple[list[Paper], list[Paper]]:
+    """One arXiv + Semantic Scholar search for the SAME query, run
+    concurrently instead of sequentially — real trace data showed these
+    two independent network calls running back-to-back inside
+    build_candidate_pool (~27s for one pair) despite neither depending on
+    the other's result at all.
+
+    asyncio.to_thread(), not a rewrite to async HTTP libraries: search_arxiv/
+    search_semantic_scholar stay fully synchronous, unchanged. Everything
+    that calls build_candidate_pool()/expanded_search() (api.py's sync
+    FastAPI route, scripts/eval_retrieval.py's CLI) is synchronous too, so
+    each call site wraps a call to this function in asyncio.run() — a
+    short-lived event loop just for one pair's concurrent fetch, not a
+    cascading async rewrite of this module's own public signatures.
+    asyncio.to_thread() copies the caller's contextvars into the new
+    thread, so search_arxiv's/search_semantic_scholar's own @observe spans
+    still nest correctly under whichever span called this (verified
+    directly against real trace data, not assumed).
+
+    Returns (arxiv_results, s2_results) — same order the previous
+    sequential code accumulated them in, so callers concatenate identically.
+    """
+    arxiv_task = asyncio.to_thread(search_arxiv, query, max_results=max_results)
+    s2_task = asyncio.to_thread(search_semantic_scholar, query, max_results=max_results, api_key=s2_api_key)
+    return await asyncio.gather(arxiv_task, s2_task)
+
+
 @observe(name="build_candidate_pool", capture_input=False, capture_output=False)
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
@@ -196,16 +226,24 @@ def build_candidate_pool(
 
     original_pool_size = min(max(_ORIGINAL_QUERY_POOL_MULTIPLIER * k, _ORIGINAL_QUERY_POOL_FLOOR), _ORIGINAL_QUERY_POOL_CAP)
 
-    original_arxiv = search_arxiv(topic, max_results=original_pool_size)
-    original_s2 = search_semantic_scholar(topic, max_results=original_pool_size, api_key=s2_api_key)
+    # Phase 1 (parallelize-search-calls): arXiv and Semantic Scholar are
+    # independent network calls for the same query — run concurrently, not
+    # sequentially. See _search_pair()'s docstring for why asyncio.run()
+    # here rather than making this function itself async.
+    original_arxiv, original_s2 = asyncio.run(_search_pair(topic, original_pool_size, s2_api_key))
     original_results = original_arxiv + original_s2
 
     suggested_titles = suggest_related_titles(topic, client=client)
 
     suggested_results: list[Paper] = []
     for title in suggested_titles:
-        suggested_results += search_arxiv(title, max_results=_SUGGESTED_TITLE_POOL_SIZE)
-        suggested_results += search_semantic_scholar(title, max_results=_SUGGESTED_TITLE_POOL_SIZE, api_key=s2_api_key)
+        # Parallel WITHIN one title's own arXiv+Semantic Scholar pair;
+        # still sequential ACROSS different titles — cross-title
+        # concurrency is a separate, deliberately-isolated change so its
+        # own latency/rate-limit effect can be measured independently.
+        title_arxiv, title_s2 = asyncio.run(_search_pair(title, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key))
+        suggested_results += title_arxiv
+        suggested_results += title_s2
 
     combined_raw = original_results + suggested_results
     deduped = deduplicate(combined_raw)
