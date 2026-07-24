@@ -32,15 +32,18 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, ToolMessage
 from langfuse import get_client, observe
 from openai import OpenAI
 
+from research_agent.agent import run_research_agent
 from research_agent.dedup import _same_paper, deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import search_arxiv, search_semantic_scholar
@@ -81,6 +84,33 @@ HISTORY_FIELDS = [
 ]
 
 RANKING_MODES = ["semantic", "hybrid", "bm25", "citation_partition"]
+
+# The one mode in this file that does NOT call build_candidate_pool()/any
+# direct-function retrieval flow — it runs the real LangChain/LangGraph
+# tool-calling agent (agent.py's run_research_agent(), the actual default
+# path a live user hits today) and measures whatever it decides to search,
+# reformulate, and rank. Kept out of RANKING_MODES (which all funnel through
+# run_topic_retrieval_ranked()'s shared candidate-pool step) since this mode
+# needs its own dispatch: there is no shared candidate pool, and "k" doesn't
+# mean the same thing here (see run_topic_retrieval_agent's docstring).
+AGENT_RANKING_MODE = "langgraph_agent"
+
+# USD per 1M tokens for gpt-4.1-mini (agent.py's AGENT_MODEL), per OpenAI's
+# published pricing as of training data cutoff (Jan 2026). Prices change —
+# verify at https://openai.com/api/pricing before relying on this figure for
+# real budgeting. Embedding cost (text-embedding-3-small, spent inside the
+# agent's own rerank_by_relevance_tool call) is tracked separately using
+# embeddings.py's own PRICE_PER_1M_TOKENS via the cost the tool itself
+# reports, not re-derived here.
+AGENT_MODEL_PRICE_PER_1M_INPUT_TOKENS = 0.40
+AGENT_MODEL_PRICE_PER_1M_OUTPUT_TOKENS = 1.60
+
+# rerank_by_relevance_tool's own ToolMessage content ends with
+# "... N newly embedded, ~$0.000123):\n1. (0.912) Title..." — this is the
+# authoritative per-call embedding cost embeddings.py itself computed;
+# parsing it back out here avoids recomputing (and risking drift from) that
+# same number.
+_EMBED_COST_RE = re.compile(r"~\$(\d+\.\d+)\)")
 
 
 def _expected_to_paper(expected: dict) -> Paper:
@@ -183,6 +213,76 @@ def run_topic_retrieval_ranked(
     return [p for p, _ in ranked]
 
 
+def run_topic_retrieval_agent(topic: str, top_k: int = DEFAULT_TOP_K) -> tuple[list[Paper], dict]:
+    """Runs the real LangGraph tool-calling agent (agent.py's
+    run_research_agent(), unmodified — this is genuinely the same code path
+    a live user hits by default today), instead of calling any
+    ingestion/dedup/embeddings function directly.
+
+    What "k" means here, honestly: `top_k` is passed to run_research_agent(),
+    which bakes it into the system prompt as an instruction ("call
+    rerank_by_relevance with top_k set to exactly N") — it is NOT a
+    code-enforced constraint on this evaluation path the way it is for every
+    other mode in this file. The agent decides for itself whether to call
+    rerank_by_relevance_tool at all, how many times, and what top_k argument
+    to actually pass. We observe (not control) that behavior via on_step:
+    every rerank_by_relevance_tool call the agent actually issues is
+    recorded in observed_top_k_args below. If that list is empty, [10],  or
+    [10, 10], the agent obeyed the instruction as designed; if it's
+    something else (or the agent never reranks at all, in which case
+    session.ranked — and thus the returned paper list — is simply empty),
+    that's the agent choosing its own k, and the honest thing to report is
+    "whatever the agent chose," not a fixed k=N result comparable
+    apples-to-apples with the other modes' code-enforced top_k.
+
+    Returns (ranked_papers, cost_info) where cost_info carries token counts,
+    an estimated USD cost, and the observed-k diagnostics above.
+    """
+    llm_input_tokens = 0
+    llm_output_tokens = 0
+    embedding_cost_usd = 0.0
+    rerank_calls = 0
+    observed_top_k_args: list[int | None] = []
+
+    def on_step(message) -> None:
+        nonlocal llm_input_tokens, llm_output_tokens, embedding_cost_usd, rerank_calls
+        if isinstance(message, AIMessage):
+            usage = message.usage_metadata
+            if usage:
+                llm_input_tokens += usage.get("input_tokens", 0) or 0
+                llm_output_tokens += usage.get("output_tokens", 0) or 0
+            for tc in message.tool_calls or []:
+                if tc.get("name") == "rerank_by_relevance_tool":
+                    observed_top_k_args.append(tc.get("args", {}).get("top_k"))
+        elif isinstance(message, ToolMessage) and message.name == "rerank_by_relevance_tool":
+            rerank_calls += 1
+            match = _EMBED_COST_RE.search(message.content)
+            if match:
+                embedding_cost_usd += float(match.group(1))
+
+    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    session = run_research_agent(topic, s2_api_key=s2_key, top_k=top_k, on_step=on_step)
+
+    llm_cost_usd = (
+        llm_input_tokens / 1_000_000 * AGENT_MODEL_PRICE_PER_1M_INPUT_TOKENS
+        + llm_output_tokens / 1_000_000 * AGENT_MODEL_PRICE_PER_1M_OUTPUT_TOKENS
+    )
+
+    cost_info = {
+        "instructed_top_k": top_k,
+        "observed_top_k_args": observed_top_k_args,
+        "rerank_calls": rerank_calls,
+        "num_papers_in_pool": len(session.papers),
+        "num_papers_returned": len(session.ranked),
+        "llm_input_tokens": llm_input_tokens,
+        "llm_output_tokens": llm_output_tokens,
+        "llm_cost_usd": llm_cost_usd,
+        "embedding_cost_usd": embedding_cost_usd,
+        "total_cost_usd": llm_cost_usd + embedding_cost_usd,
+    }
+    return [p for p, _ in session.ranked], cost_info
+
+
 @observe(name="eval_retrieval_topic", capture_input=False, capture_output=False)
 def evaluate_topic(
     topic_id: str, topic_data: dict, client: OpenAI, expand: bool,
@@ -203,7 +303,13 @@ def evaluate_topic(
     expected = topic_data["expected_papers"]
     expected_papers = [_expected_to_paper(e) for e in expected]
 
-    if ranking_mode:
+    agent_cost_info = None
+    if ranking_mode == AGENT_RANKING_MODE:
+        # Its own dispatch, not run_topic_retrieval_ranked(): the agent does
+        # its own retrieval end to end (no shared build_candidate_pool()
+        # step), and reports its own cost/k diagnostics alongside the papers.
+        returned, agent_cost_info = run_topic_retrieval_agent(topic_data["topic"], top_k)
+    elif ranking_mode:
         # Ranking-stage experiment: always uses the expanded candidate pool
         # (query_expansion.py's build_candidate_pool()) regardless of
         # --expand — Phase 4 of the experiment runs all three modes "with
@@ -249,6 +355,7 @@ def evaluate_topic(
         "precision": precision,
         "recall": recall,
         "missed": missed,
+        "agent_cost_info": agent_cost_info,
     }
 
 
@@ -256,10 +363,28 @@ def print_results_table(results: list[dict], top_k: int = DEFAULT_TOP_K) -> None
     print("=" * 100)
     print("Retrieval evaluation results (per topic)")
     print("=" * 100)
+    is_agent_mode = any(r.get("agent_cost_info") for r in results)
     for r in results:
         print(f"\n[{r['topic_id']}] ({r['difficulty']}) {r['topic']}")
-        print(f"    precision@{top_k}: {r['precision']:.3f}  ({r['num_returned']} returned)")
-        print(f"    recall@{top_k}:    {r['recall']:.3f}  ({r['num_expected']} expected)")
+        if is_agent_mode and r["agent_cost_info"]:
+            ci = r["agent_cost_info"]
+            print(
+                f"    precision: {r['precision']:.3f}  recall: {r['recall']:.3f}  "
+                f"({r['num_returned']} returned / {r['num_expected']} expected)"
+            )
+            print(
+                f"    k: instructed={ci['instructed_top_k']}  observed rerank top_k arg(s)="
+                f"{ci['observed_top_k_args']}  rerank_calls={ci['rerank_calls']}  "
+                f"pool_size={ci['num_papers_in_pool']}"
+            )
+            print(
+                f"    cost: ${ci['total_cost_usd']:.6f}  (llm=${ci['llm_cost_usd']:.6f} "
+                f"[{ci['llm_input_tokens']} in / {ci['llm_output_tokens']} out tokens], "
+                f"embedding=${ci['embedding_cost_usd']:.6f})"
+            )
+        else:
+            print(f"    precision@{top_k}: {r['precision']:.3f}  ({r['num_returned']} returned)")
+            print(f"    recall@{top_k}:    {r['recall']:.3f}  ({r['num_expected']} expected)")
         if r["missed"]:
             print(f"    missed {len(r['missed'])} expected paper(s):")
             for m in r["missed"]:
@@ -271,8 +396,15 @@ def print_results_table(results: list[dict], top_k: int = DEFAULT_TOP_K) -> None
     print("\n" + "=" * 100)
     print("Overall means")
     print("=" * 100)
-    print(f"  mean precision@{top_k}: {mean_precision:.3f}")
-    print(f"  mean recall@{top_k}:    {mean_recall:.3f}")
+    if is_agent_mode:
+        print(
+            f"  mean precision: {mean_precision:.3f}  mean recall: {mean_recall:.3f}  "
+            f"(k is 'whatever the agent chose' per topic — see per-topic k lines above, "
+            f"NOT a fixed, controlled top_k={top_k} the way other modes' numbers are)"
+        )
+    else:
+        print(f"  mean precision@{top_k}: {mean_precision:.3f}")
+        print(f"  mean recall@{top_k}:    {mean_recall:.3f}")
 
     print("\nRecall by difficulty tier (an overall average would hide whether misses cluster in harder topics):")
     for tier in DIFFICULTY_TIERS:
@@ -282,6 +414,15 @@ def print_results_table(results: list[dict], top_k: int = DEFAULT_TOP_K) -> None
             continue
         tier_recall = sum(r["recall"] for r in tier_results) / len(tier_results)
         print(f"  {tier}: {tier_recall:.3f}  ({len(tier_results)} topics)")
+
+    if is_agent_mode:
+        costed = [r["agent_cost_info"] for r in results if r.get("agent_cost_info")]
+        total_cost = sum(ci["total_cost_usd"] for ci in costed)
+        print("\n" + "=" * 100)
+        print(f"Agent path cost: ${total_cost:.6f} total across {len(costed)} topic(s), "
+              f"${total_cost / len(costed):.6f} mean/topic (LLM orchestration + embedding only — "
+              f"arXiv/Semantic Scholar/web-search API calls are unbilled)")
+        print("=" * 100)
 
 
 def append_history_row(
@@ -346,7 +487,7 @@ def main() -> None:
              "if --ranking-mode is also given (see below).",
     )
     parser.add_argument(
-        "--ranking-mode", choices=RANKING_MODES, default=None,
+        "--ranking-mode", choices=[*RANKING_MODES, AGENT_RANKING_MODE], default=None,
         help="Ranking-stage experiment: rank query_expansion.py's candidate pool via 'semantic' "
              "(cosine similarity — same algorithm --expand alone already uses), 'bm25' (lexical "
              "scoring, research_agent/ranking.py), 'hybrid' (RRF fusion of both, same module), or "
@@ -355,7 +496,15 @@ def main() -> None:
              "--partition-n or --partition-proportion, see below). Always uses the expanded candidate "
              "pool for building it regardless of --expand's value — this is an opt-in evaluation "
              "mode; omit entirely to leave existing --expand/plain behavior (and the live app's own "
-             "default) completely untouched.",
+             "default) completely untouched. 'langgraph_agent' is different in kind, not degree: it "
+             "runs the real LangChain/LangGraph tool-calling agent (agent.py's run_research_agent(), "
+             "unmodified) end to end — its own query reformulation, its own tool/source choices, its "
+             "own decision of whether and how to rerank — instead of any direct-function retrieval "
+             "flow. --top-k is only an instruction baked into its system prompt here, not a "
+             "code-enforced constraint; see run_topic_retrieval_agent()'s docstring. Makes real LLM "
+             "tool-calling calls in addition to the embedding calls every other mode already makes — "
+             "materially more expensive per topic. --expand and --partition-*/--partition-proportion "
+             "are ignored when this mode is selected.",
     )
     parser.add_argument(
         "--partition-proportion", type=float, default=None,
@@ -381,6 +530,13 @@ def main() -> None:
              f"harness test other k values without touching query_expansion.py or ranking.py's "
              f"partition/merge logic, which stay exactly as already built and tested.",
     )
+    parser.add_argument(
+        "--topic-ids", default=None,
+        help="Comma-separated subset of topic IDs to evaluate (e.g. 'peft-01,rag-02'), for a small-scale "
+             "sanity/cost check before committing to a full run. Omit to evaluate every usable topic "
+             "(existing behavior, unchanged). Not appended to retrieval_history.csv's num_topics "
+             "comparison history as a full run — use --note to make a partial run's scope obvious.",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -392,6 +548,13 @@ def main() -> None:
     usable = {tid: t for tid, t in topics.items() if t["expected_papers"]}
     if skipped:
         print(f"Skipping {len(skipped)} topic(s) with zero expected papers: {skipped}")
+
+    if args.topic_ids:
+        requested = [t.strip() for t in args.topic_ids.split(",") if t.strip()]
+        unknown = [t for t in requested if t not in usable]
+        if unknown:
+            raise SystemExit(f"Unknown/unusable topic id(s): {unknown}. Usable topics: {sorted(usable)}")
+        usable = {tid: usable[tid] for tid in requested}
 
     partition_n = None
     partition_source = None
@@ -412,7 +575,8 @@ def main() -> None:
 
     ranking_mode_label = args.ranking_mode or ("expanded" if args.expand else "plain")
     partition_note = f" (n={partition_n}, source={partition_source})" if partition_n is not None else ""
-    print(f"Evaluating {len(usable)} topics at top_k={args.top_k} (ranking mode: {ranking_mode_label}{partition_note})\n")
+    top_k_label = f"instructed top_k={args.top_k} (not code-enforced)" if args.ranking_mode == AGENT_RANKING_MODE else f"top_k={args.top_k}"
+    print(f"Evaluating {len(usable)} topics at {top_k_label} (ranking mode: {ranking_mode_label}{partition_note})\n")
 
     results = []
     for i, (topic_id, topic_data) in enumerate(usable.items(), 1):
