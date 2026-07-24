@@ -24,6 +24,36 @@ from research_agent.tracing import paper_metadata
 
 logger = logging.getLogger(__name__)
 
+# Surfaces the `arxiv` package's own internal retry/pacing messages
+# ("Got error (try N)", "Sleeping: Ns", "Giving up (try N)", "Requesting
+# page..."), which it logs at DEBUG/INFO by default. That's a real evidence
+# gap: search_semantic_scholar's retry loop below is hand-written
+# specifically to log at WARNING with "attempt %d/%d" phrasing, so S2
+# rate-limiting is always visible, while arXiv's own (also real —
+# delay_seconds=3.0, num_retries=3 by default) retry/backoff behavior was
+# previously silent, making "why was this arXiv call slow" unanswerable
+# without guessing.
+#
+# Setting the logger's own level to DEBUG isn't sufficient by itself —
+# verified directly: with no explicit logging.basicConfig() in the calling
+# script (the common case for ad hoc runs, unlike scripts/eval_retrieval.py),
+# Python's logging module falls back to a "last resort" handler that only
+# emits WARNING and above, so DEBUG/INFO records never reach the terminal
+# regardless of the logger's own level. An explicit handler on the "arxiv"
+# logger itself sidesteps that entirely, matching search_semantic_scholar's
+# WARNING-level messages, which are visible in any invocation style. Scoped
+# to the "arxiv" logger specifically (not the root logger) so this doesn't
+# also enable DEBUG noise from unrelated libraries (urllib3, openai,
+# chromadb, etc), and propagate is left on so it still reaches a caller's
+# own handler (e.g. scripts/eval_retrieval.py's basicConfig) if one exists.
+_arxiv_logger = logging.getLogger("arxiv")
+_arxiv_logger.setLevel(logging.DEBUG)
+if not _arxiv_logger.handlers:
+    _arxiv_handler = logging.StreamHandler()
+    _arxiv_handler.setLevel(logging.DEBUG)
+    _arxiv_handler.setFormatter(logging.Formatter("%(levelname)s arxiv: %(message)s"))
+    _arxiv_logger.addHandler(_arxiv_handler)
+
 _S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 _S2_FIELDS = "title,authors,year,venue,abstract,externalIds,citationCount,url"
 _S2_MAX_LIMIT = 100  # hard cap enforced by the Semantic Scholar API per request
@@ -303,6 +333,121 @@ def search_semantic_scholar(
 
     if not papers:
         logger.info("search_semantic_scholar: no results for query %r", query)
+
+    get_client().update_current_span(output={"count": len(papers), "papers": paper_metadata(papers)})
+    return papers
+
+
+_OPENALEX_SEARCH_URL = "https://api.openalex.org/works"
+_OPENALEX_MAX_PER_PAGE = 200  # documented cap on the Works list endpoint
+
+
+def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str | None:
+    """OpenAlex doesn't return plain-text abstracts (legal constraint on
+    their end) — only an inverted index mapping each word to the list of
+    positions it occurs at, e.g. {"The": [0, 18], "dominant": [1], ...}.
+    Confirmed directly against a real API response, not assumed. Rebuilds
+    the original word order by placing each word at every position it
+    maps to, then joining left to right."""
+    if not inverted_index:
+        return None
+    positions: dict[int, str] = {}
+    for word, idxs in inverted_index.items():
+        for i in idxs:
+            positions[i] = word
+    if not positions:
+        return None
+    ordered = [positions[i] for i in sorted(positions)]
+    return _clean_abstract(" ".join(ordered))
+
+
+@observe(name="search_openalex", capture_input=False, capture_output=False)
+def search_openalex(query: str, max_results: int = 20, mailto: str | None = None) -> list[Paper]:
+    """Search OpenAlex's /works endpoint — a free, keyless, high-rate-limit
+    (100k requests/day, confirmed against current OpenAlex docs) source of
+    scholarly works, used as a Semantic Scholar FALLBACK (see
+    query_expansion.py) rather than a third always-on source, so it never
+    changes default behavior.
+
+    No API key required (confirmed: "The OpenAlex API doesn't require
+    authentication") — `mailto` opts into the "polite pool" for more
+    consistent response times, same numeric rate limit either way. DOIs
+    come back as a full "https://doi.org/10.xxxx" URL, unlike arXiv/
+    Semantic Scholar's bare-DOI convention here — stripped below so
+    dedup.py's exact-DOI-match path still works unmodified across sources.
+
+    Same defensive standard as search_arxiv/search_semantic_scholar above:
+    never raises, logs and returns whatever's available (possibly empty)
+    on any failure.
+    """
+    if not query.strip():
+        logger.warning("search_openalex called with empty query")
+        get_client().update_current_span(
+            input={"query": query, "max_results": max_results},
+            output={"count": 0, "papers": []},
+        )
+        return []
+
+    params = {
+        "search": query,
+        "per_page": min(max_results, _OPENALEX_MAX_PER_PAGE),
+    }
+    if mailto:
+        params["mailto"] = mailto
+
+    get_client().update_current_span(input={"query": query, "max_results": max_results})
+
+    try:
+        response = requests.get(_OPENALEX_SEARCH_URL, params=params, timeout=15)
+    except requests.RequestException as exc:
+        logger.warning("Network error during OpenAlex search for query %r: %s", query, exc)
+        get_client().update_current_span(output={"count": 0, "papers": []})
+        return []
+
+    if response.status_code != 200:
+        logger.warning(
+            "OpenAlex search failed for query %r: status=%s", query, response.status_code
+        )
+        get_client().update_current_span(output={"count": 0, "papers": []})
+        return []
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        logger.warning(
+            "OpenAlex returned a malformed/empty response body for query %r: %s", query, exc,
+        )
+        get_client().update_current_span(output={"count": 0, "papers": []})
+        return []
+
+    papers: list[Paper] = []
+    for item in payload.get("results", []) or []:
+        authors = [
+            a.get("author", {}).get("display_name", "")
+            for a in (item.get("authorships") or [])
+            if a.get("author", {}).get("display_name")
+        ]
+        raw_doi = item.get("doi") or ""
+        doi = raw_doi.removeprefix("https://doi.org/") or None
+        source_obj = (item.get("primary_location") or {}).get("source") or {}
+        openalex_id = item.get("id") or ""
+        papers.append(
+            Paper(
+                title=(item.get("display_name") or item.get("title") or "").strip(),
+                authors=authors,
+                year=item.get("publication_year"),
+                venue=source_obj.get("display_name") or None,
+                abstract=_reconstruct_abstract(item.get("abstract_inverted_index")),
+                url=openalex_id or (f"https://doi.org/{doi}" if doi else None),
+                doi=doi,
+                citation_count=item.get("cited_by_count"),
+                source="openalex",
+                paper_id=openalex_id or "",
+            )
+        )
+
+    if not papers:
+        logger.info("search_openalex: no results for query %r", query)
 
     get_client().update_current_span(output={"count": len(papers), "papers": paper_metadata(papers)})
     return papers
