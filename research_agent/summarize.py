@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
@@ -56,6 +57,7 @@ from research_agent.citations import (
     select_citation,
 )
 from research_agent.schema import Paper, WebArticle
+from research_agent.tracing import paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,47 @@ def _build_response_schema(paper_ids: list[str]) -> type[BaseModel]:
     return constrained_summary
 
 
+@observe(name="generate_theme_summary", as_type="generation", capture_input=False, capture_output=False)
+def _generate_theme_summary(
+    topic: str, papers: list[Paper], schema: type[BaseModel], client: OpenAI, model: str = SUMMARY_MODEL,
+) -> BaseModel:
+    paper_listing = "\n\n".join(
+        f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
+        for p in papers
+    )
+    user_message = f"Research topic: {topic}\n\nPapers:\n\n{paper_listing}"
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    langfuse = get_client()
+    langfuse.update_current_generation(input=messages, model=model)
+
+    response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused")
+        raise RuntimeError(f"Model refused to produce a structured summary: {response.choices[0].message.refusal}")
+
+    usage = response.usage
+    logger.info(
+        "generate_summary: %d tokens billed (prompt=%d, completion=%d)",
+        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
+    )
+    if usage is not None:
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
+    langfuse.update_current_generation(output=parsed.model_dump())
+    return parsed
+
+
+@observe(name="generate_summary", capture_input=False, capture_output=False)
 def generate_summary(
     topic: str,
     papers: list[Paper],
@@ -138,30 +181,8 @@ def generate_summary(
     papers_by_id = {p.paper_id: p for p in papers}
     schema = _build_response_schema(list(papers_by_id))
 
-    paper_listing = "\n\n".join(
-        f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
-        for p in papers
-    )
-    user_message = f"Research topic: {topic}\n\nPapers:\n\n{paper_listing}"
-
     client = client or OpenAI()
-    response = client.chat.completions.parse(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        response_format=schema,
-    )
-    parsed = response.choices[0].message.parsed
-    if parsed is None:
-        raise RuntimeError(f"Model refused to produce a structured summary: {response.choices[0].message.refusal}")
-
-    usage = response.usage
-    logger.info(
-        "generate_summary: %d tokens billed (prompt=%d, completion=%d)",
-        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
-    )
+    parsed = _generate_theme_summary(topic, papers, schema, client, model)
 
     referenced_ids: set[str] = set()
     themes_out = []
@@ -202,6 +223,18 @@ def generate_summary(
             len(skipped), [p.title for p in skipped],
         )
 
+    # Post-processing outcome (theme count, skipped papers) — distinct from
+    # _generate_theme_summary's own generation span, which already captures
+    # the full raw model output; this span is the orchestration-level result
+    # after the dedup/skip logic above, not a duplicate of that payload.
+    get_client().update_current_span(
+        input={"topic": topic, "num_papers": len(papers), "style": style},
+        output={
+            "num_themes": len(themes_out),
+            "gaps_and_disagreements": parsed.gaps_and_disagreements,
+            "skipped_papers": paper_metadata(skipped),
+        },
+    )
     return {
         "themes": themes_out,
         "gaps_and_disagreements": parsed.gaps_and_disagreements,

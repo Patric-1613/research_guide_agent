@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+from langfuse import get_client, observe
 from rapidfuzz import fuzz
 
 from research_agent.schema import Paper
@@ -99,6 +100,7 @@ def _merge_cluster(cluster: list[Paper]) -> Paper:
     return merged
 
 
+@observe(name="deduplicate", capture_input=False, capture_output=False)
 def deduplicate(papers: list[Paper]) -> list[Paper]:
     """Cluster duplicate papers (DOI or fuzzy title match) and merge each cluster.
 
@@ -118,4 +120,9 @@ def deduplicate(papers: list[Paper]) -> list[Paper]:
     n_dupes = len(papers) - len(merged)
     if n_dupes:
         logger.info("deduplicate: merged %d duplicate record(s) across sources", n_dupes)
+
+    get_client().update_current_span(
+        input={"raw_count": len(papers)},
+        output={"deduped_count": len(merged), "duplicates_merged": n_dupes},
+    )
     return merged

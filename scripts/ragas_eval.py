@@ -71,6 +71,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+from langfuse import get_client
 from openai import OpenAI
 
 from research_agent.dedup import deduplicate
@@ -181,6 +182,12 @@ def _raw_turn_record(meta: dict, sample: dict) -> dict:
         "retrieved_contexts": sample["retrieved_contexts"],
         "response": sample["response"],
         "reference": sample["reference"],
+        # ask()'s own Langfuse trace for this turn — kept here so the
+        # per-turn artifact is enough to jump straight to the trace later,
+        # and so attach_langfuse_scores() (called after RAGAS scoring,
+        # well after this turn's ask() span has closed) can reattach this
+        # turn's scores to the right trace by id.
+        "trace_id": meta.get("trace_id"),
     }
 
 
@@ -266,6 +273,11 @@ def collect_cases(client: OpenAI, raw_jsonl_path: str) -> tuple[list[dict], list
                     "has_reference": reference is not None,
                     "retrieved_paper_titles": [p.title for p in result["retrieved_papers"]],
                     "cited_paper_titles": [p.title for p in result["cited_papers"]],
+                    # ask()'s own trace for this exact turn — captured now
+                    # since it's only available while/right after ask() ran;
+                    # RAGAS scores this turn much later, in a batch alongside
+                    # every other turn, well after this trace's span closed.
+                    "trace_id": result.get("trace_id"),
                 }
 
                 # Decoupled from RAGAS scoring on purpose — see docstring.
@@ -409,6 +421,45 @@ def print_results_table(fa_result, pr_result, metadata: list[dict], pr_metadata:
 
     means["_category_means"] = category_means
     return means
+
+
+def attach_langfuse_scores(metadata: list[dict], fa_df, pr_metadata: list[dict], pr_df) -> int:
+    """Attaches each turn's real RAGAS scores to that turn's own Langfuse
+    trace (captured via ask()'s own trace_id in qa.py, since RAGAS scores
+    a whole batch of turns well after each one's ask() span has already
+    closed) — a second, complementary view in the dashboard alongside
+    eval_results/history.csv and the run_<id>.json artifact, neither of
+    which this touches or replaces.
+
+    Skips a turn with no trace_id (e.g. tracing disabled) rather than
+    raising — attaching scores is additive telemetry, not something a real
+    eval run should fail over. Returns how many turns actually got scored,
+    for the caller to report honestly if that's fewer than the full set.
+    """
+    langfuse = get_client()
+
+    pr_lookup = {
+        (m["scenario_id"], m["turn_index"]): row
+        for m, row in zip(pr_metadata, pr_df.itertuples())
+    }
+
+    scored = 0
+    for meta, fa_row in zip(metadata, fa_df.itertuples()):
+        trace_id = meta.get("trace_id")
+        if not trace_id:
+            continue
+
+        langfuse.create_score(trace_id=trace_id, name="faithfulness", value=float(fa_row.faithfulness), data_type="NUMERIC")
+        langfuse.create_score(trace_id=trace_id, name="answer_relevancy", value=float(fa_row.answer_relevancy), data_type="NUMERIC")
+
+        pr_row = pr_lookup.get((meta["scenario_id"], meta["turn_index"]))
+        if pr_row is not None:
+            langfuse.create_score(trace_id=trace_id, name="context_precision", value=float(pr_row.context_precision), data_type="NUMERIC")
+            langfuse.create_score(trace_id=trace_id, name="context_recall", value=float(pr_row.context_recall), data_type="NUMERIC")
+        scored += 1
+
+    langfuse.flush()
+    return scored
 
 
 def report_cost(fa_result, pr_result, judge_model: str) -> None:
@@ -635,6 +686,13 @@ def main() -> None:
     print("\n" + "=" * 100)
     print(f"Appended run {row['run_id']} to {os.path.relpath(HISTORY_CSV, REPO_ROOT)}")
     print(f"Saved per-turn artifact to {os.path.relpath(artifact_path, REPO_ROOT)}")
+    print("=" * 100)
+
+    scored = attach_langfuse_scores(metadata, fa_result.to_pandas(), pr_metadata, pr_result.to_pandas())
+    print(f"Attached real per-turn scores (faithfulness/answer_relevancy/context_precision/context_recall) "
+          f"to {scored}/{len(metadata)} Langfuse traces — a second, complementary view in the dashboard; "
+          f"{os.path.relpath(HISTORY_CSV, REPO_ROOT)} and the run artifact above are unchanged and remain "
+          f"the source of truth.")
     print("=" * 100)
 
 

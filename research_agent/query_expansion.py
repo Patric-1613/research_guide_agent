@@ -24,15 +24,23 @@ relevant to the original topic, the same bar every other candidate clears.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
-from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.ingestion import (
+    get_rate_limited_call_count,
+    reset_rate_limit_tracking,
+    search_arxiv,
+    search_semantic_scholar,
+)
 from research_agent.schema import Paper
+from research_agent.tracing import ranked_paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +79,19 @@ _ORIGINAL_QUERY_POOL_CAP = 40
 _ORIGINAL_QUERY_POOL_MULTIPLIER = 3
 _SUGGESTED_TITLE_POOL_SIZE = 5
 
+# Phase 2 (parallelize-search-calls): how many different suggested titles'
+# arXiv+Semantic Scholar pairs may be in flight at once. 2, not the 3
+# top of the brief's suggested 2-3 range, and deliberately not unlimited:
+# this project's own real trace history shows Semantic Scholar's shared
+# rate limit tripping under completely sequential load already (94.1%
+# incidence on the agent path, 35.2% on this same expanded_search path) —
+# firing every suggested title's pair at once would multiply that
+# exposure, not just latency. 2 keeps some real concurrency benefit
+# (still lets one pair's search run while another's is in flight) while
+# adding the smallest amount of new simultaneous load against a limit
+# already shown to be strained.
+_MAX_CONCURRENT_TITLE_PAIRS = 2
+
 SUGGEST_TITLES_SYSTEM_PROMPT = """You suggest well-known, REAL academic papers relevant to a research topic, to help widen a search net.
 
 Strict rule: only include a title if you could bet money it is the exact, verbatim title of a real, published paper you have encountered many times in training data. If you are reconstructing or guessing a plausible-sounding title for a paper you are not certain exists with that exact wording, DO NOT include it — leave it out entirely rather than approximate it.
@@ -86,6 +107,7 @@ class _TitleSuggestions(BaseModel):
     )
 
 
+@observe(name="suggest_related_titles", as_type="generation", capture_input=False, capture_output=False)
 def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | None = None) -> list[str]:
     """One LLM call. Returns up to max_titles well-known real paper titles
     related to topic, or fewer if the model isn't confident about that many
@@ -101,19 +123,27 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
         return []
 
     client = client or OpenAI()
+    messages = [
+        {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
+    ]
+    langfuse = get_client()
+    langfuse.update_current_generation(
+        input=messages,
+        model=TITLE_SUGGESTION_MODEL,
+        model_parameters={"temperature": TITLE_SUGGESTION_TEMPERATURE},
+    )
 
     try:
         response = client.chat.completions.parse(
             model=TITLE_SUGGESTION_MODEL,
             temperature=TITLE_SUGGESTION_TEMPERATURE,
-            messages=[
-                {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
-            ],
+            messages=messages,
             response_format=_TitleSuggestions,
         )
     except Exception:
         logger.warning("suggest_related_titles: LLM call failed for topic %r", topic, exc_info=True)
+        langfuse.update_current_generation(output={"titles": []}, level="WARNING", status_message="LLM call failed")
         return []
 
     usage = response.usage
@@ -124,10 +154,18 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
             "suggest_related_titles: %d tokens billed (prompt=%d, completion=%d, ~$%.6f)",
             usage.total_tokens, usage.prompt_tokens, usage.completion_tokens, cost,
         )
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
 
     parsed = response.choices[0].message.parsed
     if parsed is None:
         logger.warning("suggest_related_titles: model refused/returned no parsed content for topic %r", topic)
+        langfuse.update_current_generation(output={"titles": []})
         return []
 
     titles = [t.strip() for t in parsed.titles if t and t.strip()][:max_titles]
@@ -136,9 +174,67 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
             "suggest_related_titles: model returned %d/%d titles for topic %r (fewer is expected when not confident)",
             len(titles), max_titles, topic,
         )
+    langfuse.update_current_generation(output={"titles": titles})
     return titles
 
 
+async def _search_pair(
+    query: str, max_results: int, s2_api_key: str | None,
+) -> tuple[list[Paper], list[Paper]]:
+    """One arXiv + Semantic Scholar search for the SAME query, run
+    concurrently instead of sequentially — real trace data showed these
+    two independent network calls running back-to-back inside
+    build_candidate_pool (~27s for one pair) despite neither depending on
+    the other's result at all.
+
+    asyncio.to_thread(), not a rewrite to async HTTP libraries: search_arxiv/
+    search_semantic_scholar stay fully synchronous, unchanged. Everything
+    that calls build_candidate_pool()/expanded_search() (api.py's sync
+    FastAPI route, scripts/eval_retrieval.py's CLI) is synchronous too, so
+    each call site wraps a call to this function in asyncio.run() — a
+    short-lived event loop just for one pair's concurrent fetch, not a
+    cascading async rewrite of this module's own public signatures.
+    asyncio.to_thread() copies the caller's contextvars into the new
+    thread, so search_arxiv's/search_semantic_scholar's own @observe spans
+    still nest correctly under whichever span called this (verified
+    directly against real trace data, not assumed).
+
+    Returns (arxiv_results, s2_results) — same order the previous
+    sequential code accumulated them in, so callers concatenate identically.
+    """
+    arxiv_task = asyncio.to_thread(search_arxiv, query, max_results=max_results)
+    s2_task = asyncio.to_thread(search_semantic_scholar, query, max_results=max_results, api_key=s2_api_key)
+    return await asyncio.gather(arxiv_task, s2_task)
+
+
+async def _search_title_pairs_bounded(
+    titles: list[str], max_results: int, s2_api_key: str | None, max_concurrent_pairs: int,
+) -> list[tuple[list[Paper], list[Paper]]]:
+    """Phase 2: runs multiple suggested titles' arXiv+Semantic Scholar
+    pairs concurrently, bounded by a semaphore so at most
+    max_concurrent_pairs pairs are ever in flight — Phase 1's _search_pair()
+    already parallelizes WITHIN one title's own pair; this additionally
+    parallelizes ACROSS different titles' pairs, previously strictly
+    sequential (title 2 waited for title 1 to fully finish).
+
+    Bounded, not unlimited, given this project's own real rate-limiting
+    history — see _MAX_CONCURRENT_TITLE_PAIRS' own comment for the exact
+    reasoning behind the chosen cap.
+
+    Returns one (arxiv_results, s2_results) tuple per title, in the SAME
+    order as `titles` (asyncio.gather preserves input order), so the
+    caller concatenates identically to the old sequential loop.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent_pairs)
+
+    async def _bounded_pair(title: str) -> tuple[list[Paper], list[Paper]]:
+        async with semaphore:
+            return await _search_pair(title, max_results, s2_api_key)
+
+    return await asyncio.gather(*[_bounded_pair(title) for title in titles])
+
+
+@observe(name="build_candidate_pool", capture_input=False, capture_output=False)
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
 ) -> list[Paper]:
@@ -160,19 +256,37 @@ def build_candidate_pool(
     function and then does exactly what it always did.
     """
     client = client or OpenAI()
+    # Starts counting search_semantic_scholar calls (original query + one
+    # per suggested title, below) that need a retry, so this function's own
+    # span metadata can carry "how many of my child calls hit rate-limiting"
+    # instead of that being visible only on each individual child span —
+    # see ingestion.py's reset_rate_limit_tracking() docstring for why this
+    # is a plain contextvar rather than a Langfuse mechanism.
+    reset_rate_limit_tracking()
 
     original_pool_size = min(max(_ORIGINAL_QUERY_POOL_MULTIPLIER * k, _ORIGINAL_QUERY_POOL_FLOOR), _ORIGINAL_QUERY_POOL_CAP)
 
-    original_arxiv = search_arxiv(topic, max_results=original_pool_size)
-    original_s2 = search_semantic_scholar(topic, max_results=original_pool_size, api_key=s2_api_key)
+    # Phase 1 (parallelize-search-calls): arXiv and Semantic Scholar are
+    # independent network calls for the same query — run concurrently, not
+    # sequentially. See _search_pair()'s docstring for why asyncio.run()
+    # here rather than making this function itself async.
+    original_arxiv, original_s2 = asyncio.run(_search_pair(topic, original_pool_size, s2_api_key))
     original_results = original_arxiv + original_s2
 
     suggested_titles = suggest_related_titles(topic, client=client)
 
+    # Phase 2 (parallelize-search-calls): different titles' pairs now run
+    # concurrently too, bounded by _MAX_CONCURRENT_TITLE_PAIRS (see its own
+    # comment for the exact reasoning) rather than strictly one-after-
+    # another. Order preserved — flattened in the same title order as the
+    # old sequential loop, arXiv results before Semantic Scholar's for each.
+    title_pair_results = asyncio.run(
+        _search_title_pairs_bounded(suggested_titles, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key, _MAX_CONCURRENT_TITLE_PAIRS)
+    )
     suggested_results: list[Paper] = []
-    for title in suggested_titles:
-        suggested_results += search_arxiv(title, max_results=_SUGGESTED_TITLE_POOL_SIZE)
-        suggested_results += search_semantic_scholar(title, max_results=_SUGGESTED_TITLE_POOL_SIZE, api_key=s2_api_key)
+    for title_arxiv, title_s2 in title_pair_results:
+        suggested_results += title_arxiv
+        suggested_results += title_s2
 
     combined_raw = original_results + suggested_results
     deduped = deduplicate(combined_raw)
@@ -184,9 +298,27 @@ def build_candidate_pool(
         len(deduped),
     )
 
+    rate_limited_calls = get_rate_limited_call_count()
+    update_kwargs = {
+        "input": {"topic": topic, "k": k},
+        "output": {
+            "suggested_titles": suggested_titles,
+            "raw_count": len(combined_raw),
+            "original_query_count": len(original_results),
+            "suggested_title_count": len(suggested_results),
+            "deduped_count": len(deduped),
+        },
+    }
+    if rate_limited_calls:
+        # Same "only set when true" convention as search_semantic_scholar's
+        # own child-span metadata — a search that never hit rate-limiting
+        # gets no such field at all, not an explicit False/0.
+        update_kwargs["metadata"] = {"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls}
+    get_client().update_current_span(**update_kwargs)
     return deduped
 
 
+@observe(name="expanded_search", capture_input=False, capture_output=False)
 def expanded_search(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
     doi_required: bool = False, min_citation_count: int = 0,
@@ -231,4 +363,23 @@ def expanded_search(
         embed_stats["cache_hits"], embed_stats["cache_misses"], embed_stats["estimated_cost_usd"],
     )
 
+    update_kwargs = {
+        "input": {
+            "topic": topic, "k": k,
+            "doi_required": doi_required, "min_citation_count": min_citation_count,
+        },
+        "output": {"count": len(ranked), "papers": ranked_paper_metadata(ranked)},
+    }
+    # build_candidate_pool() (called above) already reset+read this same
+    # counter for its OWN span; reading it again here (not resetting) rolls
+    # the same count onto expanded_search's span too, since THIS is the
+    # actual root of the trace whenever expanded_search wraps
+    # build_candidate_pool (the live app's default path) rather than
+    # build_candidate_pool being called directly (scripts/eval_retrieval.py's
+    # ranking-mode experiments, where build_candidate_pool's own span above
+    # is already the root and already carries this).
+    rate_limited_calls = get_rate_limited_call_count()
+    if rate_limited_calls:
+        update_kwargs["metadata"] = {"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls}
+    get_client().update_current_span(**update_kwargs)
     return ranked

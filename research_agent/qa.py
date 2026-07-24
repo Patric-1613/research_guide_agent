@@ -49,11 +49,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
+from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.schema import Paper, WebArticle
+from research_agent.tracing import paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -132,21 +134,38 @@ def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None
     return create_model("ChatAnswer", **fields)
 
 
+@observe(name="condense_question", as_type="generation", capture_input=False, capture_output=False)
 def _condense_question(history: list[dict], question: str, client: OpenAI, model: str = CONDENSE_MODEL) -> str:
     if not history:
+        # No LLM call on the common first-turn case — nothing to condense
+        # against, so the span is left with no generation details recorded,
+        # same convention query_expansion.py's suggest_related_titles() uses
+        # for its own early-return/skip case.
         return question
 
     transcript = "\n".join(f"{turn['role']}: {turn['content']}" for turn in history)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": CONDENSE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Conversation history:\n{transcript}\n\nFollow-up question: {question}"},
-        ],
-    )
+    messages = [
+        {"role": "system", "content": CONDENSE_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Conversation history:\n{transcript}\n\nFollow-up question: {question}"},
+    ]
+    langfuse = get_client()
+    langfuse.update_current_generation(input=messages, model=model)
+
+    response = client.chat.completions.create(model=model, messages=messages)
     condensed = (response.choices[0].message.content or "").strip() or question
     if condensed != question:
         logger.info("Condensed follow-up %r -> standalone query %r", question, condensed)
+
+    usage = response.usage
+    if usage is not None:
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
+    langfuse.update_current_generation(output=condensed)
     return condensed
 
 
@@ -162,13 +181,59 @@ def _recent_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> 
 def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict:
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": answer})
+    # Called from both of ask()'s early-return branches (never had any
+    # sources at all; had sources but nothing was retrieved this turn) — one
+    # update here covers both without duplicating it at each call site.
+    # Relies on ask()'s own @observe span being the current span at the time
+    # this runs, the same way any plain helper called from a decorated
+    # function updates that function's span.
+    langfuse = get_client()
+    langfuse.update_current_span(
+        input={"question": question},
+        output={"answerable": False, "answer": answer},
+    )
     return {
         "answer": answer, "answerable": False,
         "cited_papers": [], "retrieved_papers": [],
         "cited_web_articles": [], "retrieved_web_articles": [],
+        # Trace of THIS turn's own ask() span — callers that later compute
+        # an external score for this turn (e.g. scripts/ragas_eval.py, once
+        # RAGAS finishes judging a whole batch of turns) use this to attach
+        # it back to the right trace after the fact, since by then ask()'s
+        # own span/trace context has long since closed.
+        "trace_id": langfuse.get_current_trace_id(),
     }
 
 
+@observe(name="generate_answer", as_type="generation", capture_input=False, capture_output=False)
+def _generate_answer(messages: list[dict], schema: type[BaseModel], client: OpenAI, model: str = ANSWER_MODEL) -> BaseModel:
+    langfuse = get_client()
+    langfuse.update_current_generation(input=messages, model=model)
+
+    response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused to answer")
+        raise RuntimeError(f"Model refused to answer: {response.choices[0].message.refusal}")
+
+    usage = response.usage
+    logger.info(
+        "ask: %d tokens billed (prompt=%d, completion=%d)",
+        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
+    )
+    if usage is not None:
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
+    langfuse.update_current_generation(output=parsed.model_dump())
+    return parsed
+
+
+@observe(name="ask", capture_input=False, capture_output=False)
 def ask(
     session: ChatSession,
     question: str,
@@ -236,20 +301,7 @@ def ask(
         "content": "\n\n".join(context_sections) + f"\n\nQuestion: {question}",
     })
 
-    response = client.chat.completions.parse(
-        model=ANSWER_MODEL,
-        messages=messages,
-        response_format=schema,
-    )
-    parsed = response.choices[0].message.parsed
-    if parsed is None:
-        raise RuntimeError(f"Model refused to answer: {response.choices[0].message.refusal}")
-
-    usage = response.usage
-    logger.info(
-        "ask: %d tokens billed (prompt=%d, completion=%d)",
-        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
-    )
+    parsed = _generate_answer(messages, schema, client, model=ANSWER_MODEL)
 
     # Defensive: don't trust the model to honor "empty if not answerable" on
     # its own — enforce it, since a fabricated citation on an "I can't
@@ -263,6 +315,17 @@ def ask(
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": parsed.answer})
 
+    langfuse = get_client()
+    langfuse.update_current_span(
+        input={"question": question, "top_k": top_k},
+        output={
+            "answerable": parsed.answerable,
+            "cited_papers": paper_metadata(cited_papers),
+            "retrieved_papers": paper_metadata(retrieved_papers),
+            "cited_web_articles": [{"url": a.url, "title": a.title} for a in cited_web_articles],
+            "retrieved_web_articles": [{"url": a.url, "title": a.title} for a in retrieved_web_articles],
+        },
+    )
     return {
         "answer": parsed.answer,
         "answerable": parsed.answerable,
@@ -270,4 +333,6 @@ def ask(
         "retrieved_papers": retrieved_papers,
         "cited_web_articles": cited_web_articles,
         "retrieved_web_articles": retrieved_web_articles,
+        # See _no_sources_result's matching field for why this is exposed.
+        "trace_id": langfuse.get_current_trace_id(),
     }

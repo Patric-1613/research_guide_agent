@@ -21,9 +21,11 @@ import time
 from pathlib import Path
 
 import chromadb
+from langfuse import get_client, observe
 from openai import OpenAI
 
 from research_agent.schema import Paper
+from research_agent.tracing import ranked_paper_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +255,7 @@ def _combine_where(where: dict | None, extra: dict | None) -> dict | None:
     return where or extra
 
 
+@observe(name="semantic_rerank", capture_input=False, capture_output=False)
 def semantic_search(
     query: str,
     collection=None,
@@ -297,8 +300,16 @@ def semantic_search(
     collection = collection or get_chroma_collection()
     client = client or OpenAI()
 
+    get_client().update_current_span(
+        input={
+            "query": query, "top_k": top_k,
+            "min_citation_count": min_citation_count, "require_doi": require_doi,
+        }
+    )
+
     if collection.count() == 0:
         logger.warning("semantic_search: collection is empty, nothing to retrieve")
+        get_client().update_current_span(output={"count": 0, "papers": []})
         return []
 
     query_vector, tokens_billed = _embed_texts(client, [query])
@@ -328,6 +339,9 @@ def semantic_search(
     if require_doi:
         papers_with_scores = [(p, s) for p, s in papers_with_scores if p.doi][:top_k]
 
+    get_client().update_current_span(
+        output={"count": len(papers_with_scores), "papers": ranked_paper_metadata(papers_with_scores)}
+    )
     return papers_with_scores
 
 

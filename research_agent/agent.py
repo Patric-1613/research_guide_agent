@@ -23,18 +23,28 @@ from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
 from langchain.tools import tool
+from langfuse import get_client
+from langfuse.langchain import CallbackHandler
 from openai import OpenAI
 
 from research_agent.dedup import deduplicate
-from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
+from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
-from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.ingestion import get_rate_limited_call_count, reset_rate_limit_tracking, search_arxiv, search_semantic_scholar
+from research_agent.query_expansion import suggest_related_titles
+from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
 from research_agent.web_search import search_web
 
 logger = logging.getLogger(__name__)
 
 AGENT_MODEL = "openai:gpt-4.1-mini"
+
+# Mirrors query_expansion.py's own _SUGGESTED_TITLE_POOL_SIZE exactly (not
+# imported directly since it's that module's private constant) — a
+# suggested title is searched to confirm/locate one specific paper, not to
+# gather a broad candidate pool, same reasoning as the direct-call path.
+_TITLE_SEARCH_MAX_RESULTS = 5
 
 # top_k is a user-controlled request parameter (phase-round-2 enhancement 1),
 # not something the model should infer. Earlier versions left the number of
@@ -78,6 +88,20 @@ class ResearchSession:
     s2_api_key: str | None = None
     papers: list[Paper] = field(default_factory=list)
     ranked: list[tuple[Paper, float]] = field(default_factory=list)
+    # The original user topic, set once by run_research_agent — title
+    # suggestion (see _get_suggested_titles below) always runs against this,
+    # never whatever ad-hoc query text the agent's own (separately
+    # acknowledged as shallow) reformulation passes to a given tool call.
+    # Same "fixed session value, not left to model judgment" pattern as
+    # top_k/doi_required/min_citation_count above.
+    topic: str = ""
+    # Cache for suggest_related_titles(topic) — None means "not yet
+    # computed" (distinct from "computed, model wasn't confident about any",
+    # which is a real, valid empty list). Computed at most once per session
+    # regardless of how many search tool calls the agent makes, mirroring
+    # build_candidate_pool()'s own one-call-per-topic behavior in the
+    # direct-call path.
+    suggested_titles: list[str] | None = None
     # Round-2 enhancement 2: DOI/citation-count filters. These are set once
     # from the user's request (see run_research_agent) and read directly by
     # rerank_by_relevance_tool below — deliberately NOT exposed as tool-call
@@ -92,6 +116,19 @@ class ResearchSession:
     # section stay independently sized and independently displayed all the
     # way through to the UI.
     web_articles: list[WebArticle] = field(default_factory=list)
+
+
+def _get_suggested_titles(session: ResearchSession) -> list[str]:
+    """suggest_related_titles(), called automatically (never an agent
+    decision point — see this phase's brief: the agent's own query
+    reformulation was already found to be shallow paraphrasing, not
+    reliable judgment, so this isn't left to it) and cached on the session
+    so repeated tool calls in one run only pay for the LLM suggestion call
+    once. Reuses query_expansion.py's suggest_related_titles() directly,
+    unmodified — same function the direct-call path uses, not a fork."""
+    if session.suggested_titles is None:
+        session.suggested_titles = suggest_related_titles(session.topic)
+    return session.suggested_titles
 
 
 def _merge_web_articles(existing: list[WebArticle], new: list[WebArticle]) -> list[WebArticle]:
@@ -110,17 +147,43 @@ def _merge_web_articles(existing: list[WebArticle], new: list[WebArticle]) -> li
 
 def build_tools(session: ResearchSession) -> list:
     @tool
-    def search_arxiv_tool(query: str, max_results: int = 10) -> str:
+    def search_arxiv_tool(query: str) -> str:
         """Search arXiv for papers matching a query. Returns a short summary;
         the full records are added to the working paper pool for later
         reranking. arXiv's search is a literal keyword match, not semantic —
-        use specific, well-formed search terms, and expand any acronyms first."""
+        use specific, well-formed search terms, and expand any acronyms first.
+        Automatically also searches arXiv for a few well-known landmark
+        paper titles related to the original topic (query_expansion.py's
+        suggest_related_titles(), same mechanism the direct-call retrieval
+        path already uses) — this always happens, not something to request."""
         try:
-            papers = search_arxiv(query, max_results=max_results)
+            # No max_results argument here on purpose (see round-2/measure-
+            # langgraph-agent postmortem): this used to hardcode its own
+            # max_results=10 default, a second, disconnected copy of
+            # ingestion.py's own max_results=20 default that silently drifted
+            # out of sync and starved the agent's candidate pool relative to
+            # every direct-function retrieval path. There is now exactly one
+            # place this number is defined — search_arxiv's own default —
+            # and this tool always inherits it, the same way top_k above is a
+            # code-enforced value rather than something left for the model
+            # to infer.
+            papers = search_arxiv(query)
+            # Automatic title-suggestion search (agent-title-suggestion
+            # phase): a literal keyword search on a generic topic phrase
+            # reliably misses foundational papers whose title doesn't
+            # closely match that wording (confirmed directly: LoRA/Attention
+            # Is All You Need never entered the agent's pool via the topic
+            # search alone). Searching each suggested title's exact wording
+            # reliably surfaces that exact paper instead — same fix as
+            # query_expansion.py's build_candidate_pool(), unconditional
+            # here for the same reason it's unconditional there.
+            for title in _get_suggested_titles(session):
+                papers += search_arxiv(title, max_results=_TITLE_SEARCH_MAX_RESULTS)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
-                f"arXiv returned {len(papers)} paper(s) for query {query!r}. "
+                f"arXiv returned {len(papers)} paper(s) for query {query!r} "
+                f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
                 f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
@@ -138,17 +201,29 @@ def build_tools(session: ResearchSession) -> list:
             )
 
     @tool
-    def search_semantic_scholar_tool(query: str, max_results: int = 10) -> str:
+    def search_semantic_scholar_tool(query: str) -> str:
         """Search Semantic Scholar for papers matching a query — broader
         coverage than arXiv (published/peer-reviewed venues, citation counts).
         Returns a short summary; full records are added to the working pool.
-        Also a literal keyword match, not semantic — expand acronyms first."""
+        Also a literal keyword match, not semantic — expand acronyms first.
+        Automatically also searches Semantic Scholar for a few well-known
+        landmark paper titles related to the original topic (same
+        suggest_related_titles() mechanism as search_arxiv_tool) — this
+        always happens, not something to request."""
         try:
-            papers = search_semantic_scholar(query, max_results=max_results, api_key=session.s2_api_key)
+            # No max_results argument here either — same single-source-of-
+            # truth reasoning as search_arxiv_tool above; inherits
+            # search_semantic_scholar's own default.
+            papers = search_semantic_scholar(query, api_key=session.s2_api_key)
+            # Automatic title-suggestion search — see search_arxiv_tool's
+            # matching comment above for why this is unconditional.
+            for title in _get_suggested_titles(session):
+                papers += search_semantic_scholar(title, max_results=_TITLE_SEARCH_MAX_RESULTS, api_key=session.s2_api_key)
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
-                f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r}. "
+                f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r} "
+                f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
                 f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
@@ -182,12 +257,37 @@ def build_tools(session: ResearchSession) -> list:
             client = OpenAI()
             stats = embed_and_index_papers(session.papers, collection=collection, client=client)
 
-            ids = [p.paper_id for p in session.papers]
-            ranked = semantic_search(
-                query, collection=collection, client=client, top_k=top_k,
-                where={"paper_id": {"$in": ids}},
-                min_citation_count=session.min_citation_count or None,
-                require_doi=session.doi_required,
+            # Round-2 enhancement 2's filters (doi_required/min_citation_count)
+            # used to be Chroma `where` clauses inside semantic_search() itself.
+            # merge_with_guaranteed_slots()/partition_by_citation() (ranking.py,
+            # reused here exactly as already validated — not modified for this)
+            # don't take filter arguments, so the equivalent filtering happens
+            # here instead, as a plain pre-filter on the candidate list, before
+            # partitioning — same semantics (a paper missing citation_count
+            # entirely is never treated as satisfying min_citation_count), same
+            # end result: an excluded paper never reaches the final ranking.
+            candidates = session.papers
+            if session.min_citation_count:
+                candidates = [
+                    p for p in candidates
+                    if p.citation_count is not None and p.citation_count >= session.min_citation_count
+                ]
+            if session.doi_required:
+                candidates = [p for p in candidates if p.doi]
+
+            # Citation-partitioned reranking (validated in eval-only testing
+            # via scripts/eval_retrieval.py's --ranking-mode citation_partition:
+            # 0.733 recall_easy vs. 0.067 for plain semantic ranking alone) —
+            # guarantees get_partition_n(top_k) slots for the most-cited
+            # eligible papers, then ranks everything by semantic score against
+            # `query` (always the original topic — same anti-hallucination
+            # anchor as every other ranking mode in this project, never one of
+            # the agent's own reformulated search queries).
+            partition_n = get_partition_n(top_k)
+            partition_a, partition_b = partition_by_citation(candidates, n=partition_n)
+            ranked = merge_with_guaranteed_slots(
+                query, partition_a, partition_b, n=partition_n,
+                collection=collection, client=client, top_k=top_k,
             )
             session.ranked = ranked
 
@@ -201,7 +301,8 @@ def build_tools(session: ResearchSession) -> list:
 
             lines = [f"{i + 1}. ({score:.3f}) {p.title}" for i, (p, score) in enumerate(ranked)]
             return (
-                f"Ranked {len(ranked)} paper(s) by relevance to {query!r} "
+                f"Ranked {len(ranked)} paper(s) by relevance to {query!r} via citation-partitioned "
+                f"reranking ({partition_n} guaranteed high-citation slot(s)) "
                 f"({stats['cache_hits']} cache hit(s), {stats['cache_misses']} newly embedded, "
                 f"~${stats['estimated_cost_usd']:.6f}):\n" + "\n".join(lines)
             )
@@ -274,22 +375,62 @@ def run_research_agent(
     genuine per-topic decision, not a user-configured hard constraint).
     """
     session = ResearchSession(
-        s2_api_key=s2_api_key, doi_required=doi_required, min_citation_count=min_citation_count,
+        s2_api_key=s2_api_key, doi_required=doi_required, min_citation_count=min_citation_count, topic=topic,
     )
     tools = build_tools(session)
     agent = create_agent(AGENT_MODEL, tools=tools, system_prompt=_build_system_prompt(top_k, web_max_results))
 
-    # stream_mode="values" yields the full cumulative message list after each
-    # graph step. When the model issues more than one tool call in the same
-    # turn (common — e.g. searching both sources at once), several messages
-    # can land in a single step, so we diff against what we've already seen
-    # rather than assume the last message is the only new one.
-    seen = 0
-    for step in agent.stream({"messages": [{"role": "user", "content": topic}]}, stream_mode="values"):
-        messages = step["messages"]
-        for message in messages[seen:]:
-            if on_step:
-                on_step(message)
-        seen = len(messages)
+    # Langfuse's native LangChain/LangGraph integration: passing this handler
+    # via config traces the whole run (tool calls, the underlying LLM
+    # decision calls with token usage) as one trace, nested automatically —
+    # the idiomatic way to instrument a LangChain agent, vs. hand-wrapping
+    # each tool closure in build_tools() above.
+    langfuse_handler = CallbackHandler()
+
+    # Explicit wrapping span (not just the CallbackHandler's own auto-created
+    # "LangGraph" chain) so there's always a span object this function itself
+    # holds a reference to and can update after the run completes — the
+    # child-level search_semantic_scholar_tool calls (build_tools above) can
+    # each report their OWN rate_limited/retry_count via update_current_span,
+    # but nothing can retroactively push that onto an ancestor span it never
+    # held a reference to (same root-cause finding as query_expansion.py's
+    # search_had_rate_limit rollup: no current Langfuse SDK method updates an
+    # already-started ancestor from a descendant). This span becomes the
+    # actual root of the trace when this function is called directly (the
+    # live app's default path) or a child of whatever's already active when
+    # called from within another @observe span (e.g. scripts/eval_retrieval.py's
+    # eval_retrieval_topic) — either way, it's a real object this function
+    # can call .update(metadata=...) on directly once the run is done.
+    with get_client().start_as_current_observation(name="run_research_agent", as_type="span") as span:
+        # Starts counting search_semantic_scholar calls (this run's own
+        # searches, across however many times the agent decides to call
+        # search_semantic_scholar_tool) that need a retry — same counter,
+        # same reset/read pattern already proven for build_candidate_pool().
+        reset_rate_limit_tracking()
+
+        # stream_mode="values" yields the full cumulative message list after
+        # each graph step. When the model issues more than one tool call in
+        # the same turn (common — e.g. searching both sources at once),
+        # several messages can land in a single step, so we diff against
+        # what we've already seen rather than assume the last message is the
+        # only new one.
+        seen = 0
+        for step in agent.stream(
+            {"messages": [{"role": "user", "content": topic}]},
+            stream_mode="values",
+            config={"callbacks": [langfuse_handler]},
+        ):
+            messages = step["messages"]
+            for message in messages[seen:]:
+                if on_step:
+                    on_step(message)
+            seen = len(messages)
+
+        rate_limited_calls = get_rate_limited_call_count()
+        if rate_limited_calls:
+            # Same "only set when true" convention as every other rate-limit
+            # metadata field in this project — a run that never hit rate
+            # limiting gets no such field at all, not an explicit False/0.
+            span.update(metadata={"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls})
 
     return session

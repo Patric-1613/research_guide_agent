@@ -147,6 +147,8 @@ research_agent/
   citations.py       APA + BibTeX formatting (deterministic, no LLM)
   qa.py              conversational RAG over retrieved abstracts
   storage.py         SQLite persistence for saved searches
+  tracing.py         shared Langfuse helpers (redacted paper/trace metadata
+                     views) — see "Observability" below
   api.py             FastAPI backend
   app.py             Streamlit frontend
 scripts/           runnable CLI demos for each phase (see below), plus two
@@ -154,7 +156,7 @@ scripts/           runnable CLI demos for each phase (see below), plus two
                    (retrieval precision/recall + ranking-mode experiments)
                    and ragas_eval.py (RAGAS Faithfulness/Answer Relevancy/
                    Context Precision/Context Recall over a curated question set)
-tests/             deterministic unit tests (147 tests, zero network/LLM
+tests/             deterministic unit tests (148 tests, zero network/LLM
                    calls required — see "Run the tests" below)
 eval_data/         curated reference sets consumed by the eval harnesses
                    (17-topic retrieval reference set, 24-scenario RAGAS set)
@@ -181,13 +183,15 @@ uv run python scripts/test_api.py                                # phase 7: full
 uv run pytest tests/ -v
 ```
 
-All 147 tests in `tests/` are fully deterministic and need no network access
+All 148 tests in `tests/` are fully deterministic and need no network access
 and no API keys — every LLM call (OpenAI) and every external API call
 (arXiv, Semantic Scholar, Unpaywall/CrossRef, Tavily) is mocked, including
 the `OpenAI()` client construction in `api.py`'s FastAPI `lifespan()`, which
 otherwise runs unconditionally at `TestClient` startup regardless of which
-endpoint a given test hits. Verified directly: `tests/` passes 147/147 with
-`.env` entirely absent.
+endpoint a given test hits. Verified directly: `tests/` passes 148/148 with
+`.env` entirely absent — including Langfuse tracing, disabled for the whole
+suite via `tests/conftest.py` (see "Observability" below) so a normal test
+run never sends real telemetry.
 
 The live smoke tests live separately in `scripts/` (not `tests/`, and not
 run by `pytest`) — those intentionally hit real APIs and cost a small amount
@@ -381,17 +385,96 @@ mode uses this rule automatically unless `--partition-n` or
 `--partition-proportion` explicitly overrides it for further
 experimentation.
 
-**Deployment status: still opt-in only.** Even with the k-generalization
-question resolved, this hasn't been validated against live user queries
-(only the offline 17-topic reference set) and isn't merged into any
-default path — promoting it would require that live-query validation
-first.
+**Deployment status: promoted to the live agent's default path.** This
+section's own findings — citation-partitioned reranking and the derived
+`get_partition_n(k)` rule — are no longer opt-in-only: `agent.py`'s
+`rerank_by_relevance_tool` now uses this exact mechanism (unmodified) on
+every real agent run, not just `scripts/eval_retrieval.py`'s eval-only
+`citation_partition` mode. See "LangGraph agent path" below for why, and
+the real, measured numbers from doing so.
 
 Run it yourself:
 ```bash
 uv run python scripts/eval_retrieval.py --note "..." --ranking-mode citation_partition --top-k 10
 uv run python scripts/eval_retrieval.py --note "..." --ranking-mode bm25          # or hybrid, semantic
 ```
+
+## LangGraph agent path — measured, fixed, and now the live default
+
+Every retrieval number above was measured by calling ingestion/dedup/
+embeddings functions directly — a deliberate, correct isolation choice at
+the time, but it meant `agent.py`'s LangGraph tool-calling agent (the
+actual default path a real user hits, since `expanded_search` is opt-in —
+see `SearchRequest.use_query_expansion` in `api.py`) had never once been
+measured against the 17-topic reference set. It was, via
+`scripts/eval_retrieval.py`'s `--ranking-mode langgraph_agent`, and it was
+substantially worse than every direct-function mode above: recall 0.078
+against citation-partitioned reranking's 0.549, with `recall_easy` at a
+flat 0.000 — every single "easy" topic missed, including foundational
+papers as well-known as *Attention Is All You Need*.
+
+Three concrete, sequential causes, each fixed directly in `agent.py`:
+
+1. **A duplicated, drifted constant.** `agent.py`'s search tools hardcoded
+   `max_results=10`; `ingestion.py`'s own `search_arxiv`/
+   `search_semantic_scholar` default to `max_results=20`. Fixed by removing
+   the parameter from the tool signatures entirely so they inherit
+   `ingestion.py`'s default — one place defines this number, not two.
+2. **No citation-partitioned reranking.** `rerank_by_relevance_tool` used
+   plain semantic reranking only. Now uses `ranking.py`'s
+   `partition_by_citation`/`get_partition_n`/`merge_with_guaranteed_slots`
+   pipeline, unmodified — the exact mechanism validated above.
+3. **No title-suggestion.** The single biggest gap: `query_expansion.py`'s
+   `suggest_related_titles()` (the mechanism that actually recovers
+   foundational papers — see above) was never wired into the agent at all.
+   It now runs automatically on every agent search — deliberately *not* an
+   optional tool call the model can skip, since the agent's own query
+   reformulation was separately found to be shallow paraphrasing, not
+   reliable judgment.
+
+| Fix stacked | Recall | recall_easy |
+|---|---|---|
+| none (original agent) | 0.078 | 0.000 |
+| + pool-size fix | 0.137 | 0.000 |
+| + citation-partitioned reranking | 0.078* | 0.000 |
+| + automatic title-suggestion | **0.578** | **0.733** |
+| *(reference: best direct-call mode, citation_partition n=2)* | 0.549 | 0.733 |
+
+*\*Measured no better than the pool-size-only run — explained by
+Semantic Scholar rate-limiting hitting more topics that specific run, not
+a regression from the fix itself; confirmed by re-checking individual
+trace data, not assumed.*
+
+**All three fixes are live in `agent.py` today** — not opt-in, not behind
+a flag. Confirmed the fixes generalize, not just fit one run: a fresh
+15-trial re-measurement after merging came back at recall 0.533
+(`recall_easy` 0.733), consistent with the number above.
+
+**What that recall parity actually costs**, measured directly via
+Langfuse trace data (`totalCost`/`latency`, real production traces, not
+estimates) — `expanded_search` (n=54) vs. the now-fixed agent (n=17):
+
+| Metric | `expanded_search` | Agent | Delta |
+|---|---|---|---|
+| Avg. cost/search | $0.000286 | $0.002187 | 7.6× more |
+| Avg. latency | 22.31s | 40.27s | 1.8× slower |
+| Semantic Scholar rate-limit incidence | 35.2% | 94.1% | 2.7× more often |
+
+The mechanism is direct, not mysterious: the agent now makes roughly the
+same ~6 Semantic Scholar calls per search that `expanded_search` always
+did (original query + up to 5 suggested titles), against the same shared
+rate limit — plus its own LLM tool-selection reasoning turns
+(`ChatOpenAI`, ~2.9s each) stacked on top. Recall parity was never free;
+it was previously just *unmeasured*.
+
+**Why keep the agent as the default anyway**, rather than switching to
+the cheaper deterministic path: it can do things `expanded_search`
+structurally cannot at any price — scope a search to one source only
+("arXiv preprints on X"), pull in live web context (`search_web_tool`,
+agent-only), and judge per-topic whether that web context is even worth
+fetching. Whether that flexibility is worth 7.6× the cost is a product
+call, not a data one — the data above is what makes that call an
+informed one instead of a guess.
 
 ## RAGAS quality evaluation
 
@@ -434,6 +517,64 @@ crashes or rate-limits.
 ```bash
 uv run python scripts/ragas_eval.py --note "..."
 ```
+
+## Observability (Langfuse tracing)
+
+Every real pipeline call — `search_arxiv`/`search_semantic_scholar`,
+`deduplicate`, `semantic_search`, `suggest_related_titles`,
+`build_candidate_pool`/`expanded_search`, `qa.py`'s `ask()` (condense +
+answer as two generations under one trace), `summarize.py`'s
+`generate_summary()`, and the full agent tool-calling loop
+(`agent.py`'s `run_research_agent()`, via LangChain's native Langfuse
+`CallbackHandler`) — is traced. Set `LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` in `.env` to enable it;
+absent, the client degrades to an inert no-op (confirmed directly — no
+exception, no broken calls), so tracing is genuinely optional.
+
+**RAGAS and retrieval-eval scores are attached directly to their trace**,
+a second, complementary view alongside `eval_results/*.csv` (which stays
+the unchanged source of truth): `scripts/ragas_eval.py` captures each
+turn's own trace ID from `ask()`'s return value and reattaches
+Faithfulness/Answer Relevancy/Context Precision/Context Recall after
+RAGAS finishes scoring the whole batch; `scripts/eval_retrieval.py`
+wraps each topic's evaluation in its own span and attaches
+Precision@k/Recall@k while still in that span's own context.
+
+**Rate-limit visibility, at two levels.** `search_semantic_scholar`
+tags its own span with `rate_limited`/`retry_count` on every 429 (`
+search_arxiv` has no equivalent retry logic of its own — confirmed by
+reading it; it relies entirely on the `arxiv` package's internal
+handling). Separately, both `query_expansion.py`'s `build_candidate_pool`/
+`expanded_search` and `agent.py`'s `run_research_agent` roll this up onto
+their own root trace (`search_had_rate_limit`/`rate_limit_count`), so
+"how many of my searches hit rate-limiting" is a direct
+`Is Root Observation: True` + metadata filter, not a manual
+cross-reference of child spans. This needed a real workaround, not a
+built-in: there is no current, public Langfuse SDK method to update an
+already-started ancestor span's metadata from a descendant (verified,
+not assumed — `update_current_span`/`update_current_generation` only
+ever target whichever span is currently active, and
+`propagate_attributes` explicitly only flows attributes forward to
+future child spans, never retroactively to an already-created parent).
+Both rollups instead use a plain `contextvars.ContextVar`
+(`reset_rate_limit_tracking()`/`get_rate_limited_call_count()` in
+`ingestion.py`) that the retry logic increments and the root caller
+reads back — `agent.py`'s version additionally wraps `agent.stream()` in
+an explicit span it holds a real reference to, since unlike
+`expanded_search`, nothing wrapped the agent's own run at all when
+called directly from `api.py`.
+
+**Cost and latency are native, not hand-tracked.** Langfuse's own
+`totalCost`/`latency` trace fields already roll up every descendant
+generation's cost (confirmed directly against a trace's own
+`Σ $X` header value) — no custom aggregation needed; this is what the
+LangGraph-agent-path cost/latency numbers above are measured from.
+
+`tests/conftest.py` sets `LANGFUSE_TRACING_ENABLED=false` before any
+test module is imported, so `pytest` never sends real telemetry — this
+was overdue rather than new when added: earlier `@observe`-decorated
+modules had been silently doing so on every test run since tracing was
+first introduced.
 
 ## Known limitations
 
