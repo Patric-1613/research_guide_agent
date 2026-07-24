@@ -79,6 +79,19 @@ _ORIGINAL_QUERY_POOL_CAP = 40
 _ORIGINAL_QUERY_POOL_MULTIPLIER = 3
 _SUGGESTED_TITLE_POOL_SIZE = 5
 
+# Phase 2 (parallelize-search-calls): how many different suggested titles'
+# arXiv+Semantic Scholar pairs may be in flight at once. 2, not the 3
+# top of the brief's suggested 2-3 range, and deliberately not unlimited:
+# this project's own real trace history shows Semantic Scholar's shared
+# rate limit tripping under completely sequential load already (94.1%
+# incidence on the agent path, 35.2% on this same expanded_search path) —
+# firing every suggested title's pair at once would multiply that
+# exposure, not just latency. 2 keeps some real concurrency benefit
+# (still lets one pair's search run while another's is in flight) while
+# adding the smallest amount of new simultaneous load against a limit
+# already shown to be strained.
+_MAX_CONCURRENT_TITLE_PAIRS = 2
+
 SUGGEST_TITLES_SYSTEM_PROMPT = """You suggest well-known, REAL academic papers relevant to a research topic, to help widen a search net.
 
 Strict rule: only include a title if you could bet money it is the exact, verbatim title of a real, published paper you have encountered many times in training data. If you are reconstructing or guessing a plausible-sounding title for a paper you are not certain exists with that exact wording, DO NOT include it — leave it out entirely rather than approximate it.
@@ -194,6 +207,33 @@ async def _search_pair(
     return await asyncio.gather(arxiv_task, s2_task)
 
 
+async def _search_title_pairs_bounded(
+    titles: list[str], max_results: int, s2_api_key: str | None, max_concurrent_pairs: int,
+) -> list[tuple[list[Paper], list[Paper]]]:
+    """Phase 2: runs multiple suggested titles' arXiv+Semantic Scholar
+    pairs concurrently, bounded by a semaphore so at most
+    max_concurrent_pairs pairs are ever in flight — Phase 1's _search_pair()
+    already parallelizes WITHIN one title's own pair; this additionally
+    parallelizes ACROSS different titles' pairs, previously strictly
+    sequential (title 2 waited for title 1 to fully finish).
+
+    Bounded, not unlimited, given this project's own real rate-limiting
+    history — see _MAX_CONCURRENT_TITLE_PAIRS' own comment for the exact
+    reasoning behind the chosen cap.
+
+    Returns one (arxiv_results, s2_results) tuple per title, in the SAME
+    order as `titles` (asyncio.gather preserves input order), so the
+    caller concatenates identically to the old sequential loop.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent_pairs)
+
+    async def _bounded_pair(title: str) -> tuple[list[Paper], list[Paper]]:
+        async with semaphore:
+            return await _search_pair(title, max_results, s2_api_key)
+
+    return await asyncio.gather(*[_bounded_pair(title) for title in titles])
+
+
 @observe(name="build_candidate_pool", capture_input=False, capture_output=False)
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
@@ -235,13 +275,16 @@ def build_candidate_pool(
 
     suggested_titles = suggest_related_titles(topic, client=client)
 
+    # Phase 2 (parallelize-search-calls): different titles' pairs now run
+    # concurrently too, bounded by _MAX_CONCURRENT_TITLE_PAIRS (see its own
+    # comment for the exact reasoning) rather than strictly one-after-
+    # another. Order preserved — flattened in the same title order as the
+    # old sequential loop, arXiv results before Semantic Scholar's for each.
+    title_pair_results = asyncio.run(
+        _search_title_pairs_bounded(suggested_titles, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key, _MAX_CONCURRENT_TITLE_PAIRS)
+    )
     suggested_results: list[Paper] = []
-    for title in suggested_titles:
-        # Parallel WITHIN one title's own arXiv+Semantic Scholar pair;
-        # still sequential ACROSS different titles — cross-title
-        # concurrency is a separate, deliberately-isolated change so its
-        # own latency/rate-limit effect can be measured independently.
-        title_arxiv, title_s2 = asyncio.run(_search_pair(title, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key))
+    for title_arxiv, title_s2 in title_pair_results:
         suggested_results += title_arxiv
         suggested_results += title_s2
 
