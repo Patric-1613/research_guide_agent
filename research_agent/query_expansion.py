@@ -40,7 +40,7 @@ from research_agent.ingestion import (
     search_semantic_scholar,
 )
 from research_agent.schema import Paper
-from research_agent.tracing import ranked_paper_metadata
+from research_agent.tracing import ranked_paper_metadata, tag_current_trace
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +345,7 @@ def expanded_search(
     itself — callers that only want the papers can discard the score.
     """
     client = client or OpenAI()
+    tag_current_trace(["expanded_search"])
 
     deduped = build_candidate_pool(topic, k, s2_api_key=s2_api_key, client=client)
 

@@ -34,6 +34,7 @@ from research_agent.ingestion import get_rate_limited_call_count, reset_rate_lim
 from research_agent.query_expansion import suggest_related_titles
 from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
+from research_agent.tracing import tag_current_trace
 from research_agent.web_search import search_web
 
 logger = logging.getLogger(__name__)
@@ -402,6 +403,8 @@ def run_research_agent(
     # eval_retrieval_topic) — either way, it's a real object this function
     # can call .update(metadata=...) on directly once the run is done.
     with get_client().start_as_current_observation(name="run_research_agent", as_type="span") as span:
+        tag_current_trace(["agent"])
+
         # Starts counting search_semantic_scholar calls (this run's own
         # searches, across however many times the agent decides to call
         # search_semantic_scholar_tool) that need a retry — same counter,
