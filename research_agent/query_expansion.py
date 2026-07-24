@@ -37,6 +37,7 @@ from research_agent.ingestion import (
     get_rate_limited_call_count,
     reset_rate_limit_tracking,
     search_arxiv,
+    search_openalex,
     search_semantic_scholar,
 )
 from research_agent.schema import Paper
@@ -178,8 +179,45 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
     return titles
 
 
+def _search_semantic_scholar_with_openalex_fallback(
+    query: str, max_results: int, s2_api_key: str | None, openalex_mailto: str | None,
+) -> list[Paper]:
+    """search_semantic_scholar(), falling back to search_openalex() ONLY
+    when S2's own retry loop exhausts and gives up (empty result AND a
+    real rate-limit event occurred during this call) — never on an
+    ordinary zero-result search, which must behave identically whether or
+    not the fallback is enabled.
+
+    reset_rate_limit_tracking()/get_rate_limited_call_count() here are
+    scoped to THIS call only, not the caller's own rollup: this function
+    is always invoked via asyncio.to_thread (see _search_pair below),
+    which copies the current contextvars Context into the new thread
+    before running — mutating the tracker inside that copy (via .set())
+    never propagates back to the parent's own Context, so
+    build_candidate_pool's own top-level reset_rate_limit_tracking()/
+    get_rate_limited_call_count() rollup (used for its
+    search_had_rate_limit span metadata) is completely unaffected by this
+    — verified against contextvars' own documented copy-on-spawn behavior,
+    not assumed. One accepted, minor side effect: when the fallback is
+    enabled and actually fires, that specific call's rate-limit event is
+    no longer counted in the OUTER rollup either — arguably the right
+    framing anyway (the rate-limiting was mitigated here, not left as an
+    unaddressed problem for the caller to see).
+    """
+    reset_rate_limit_tracking()
+    papers = search_semantic_scholar(query, max_results=max_results, api_key=s2_api_key)
+    if not papers and get_rate_limited_call_count() > 0:
+        logger.warning(
+            "Semantic Scholar exhausted retries for query %r — falling back to OpenAlex",
+            query,
+        )
+        return search_openalex(query, max_results=max_results, mailto=openalex_mailto)
+    return papers
+
+
 async def _search_pair(
     query: str, max_results: int, s2_api_key: str | None,
+    use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
 ) -> tuple[list[Paper], list[Paper]]:
     """One arXiv + Semantic Scholar search for the SAME query, run
     concurrently instead of sequentially — real trace data showed these
@@ -199,16 +237,27 @@ async def _search_pair(
     still nest correctly under whichever span called this (verified
     directly against real trace data, not assumed).
 
+    use_openalex_fallback defaults to False — the Semantic Scholar call
+    is then exactly what it always was, byte-for-byte. Only when a caller
+    explicitly opts in does the S2 half route through
+    _search_semantic_scholar_with_openalex_fallback instead.
+
     Returns (arxiv_results, s2_results) — same order the previous
     sequential code accumulated them in, so callers concatenate identically.
     """
     arxiv_task = asyncio.to_thread(search_arxiv, query, max_results=max_results)
-    s2_task = asyncio.to_thread(search_semantic_scholar, query, max_results=max_results, api_key=s2_api_key)
+    if use_openalex_fallback:
+        s2_task = asyncio.to_thread(
+            _search_semantic_scholar_with_openalex_fallback, query, max_results, s2_api_key, openalex_mailto,
+        )
+    else:
+        s2_task = asyncio.to_thread(search_semantic_scholar, query, max_results=max_results, api_key=s2_api_key)
     return await asyncio.gather(arxiv_task, s2_task)
 
 
 async def _search_title_pairs_bounded(
     titles: list[str], max_results: int, s2_api_key: str | None, max_concurrent_pairs: int,
+    use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
 ) -> list[tuple[list[Paper], list[Paper]]]:
     """Phase 2: runs multiple suggested titles' arXiv+Semantic Scholar
     pairs concurrently, bounded by a semaphore so at most
@@ -229,7 +278,7 @@ async def _search_title_pairs_bounded(
 
     async def _bounded_pair(title: str) -> tuple[list[Paper], list[Paper]]:
         async with semaphore:
-            return await _search_pair(title, max_results, s2_api_key)
+            return await _search_pair(title, max_results, s2_api_key, use_openalex_fallback, openalex_mailto)
 
     return await asyncio.gather(*[_bounded_pair(title) for title in titles])
 
@@ -237,6 +286,7 @@ async def _search_title_pairs_bounded(
 @observe(name="build_candidate_pool", capture_input=False, capture_output=False)
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
+    use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
 ) -> list[Paper]:
     """Steps 1-4 of the pipeline documented on expanded_search() below:
     direct topic search widened to 3xk (floor 15, cap 40) + LLM-suggested-
@@ -254,6 +304,14 @@ def build_candidate_pool(
     swapping only the final ranking step. Nothing about steps 1-4
     themselves changed by this extraction — expanded_search() calls this
     function and then does exactly what it always did.
+
+    use_openalex_fallback defaults to False — omitting it (or leaving it
+    False) produces byte-identical behavior to before this parameter
+    existed. When explicitly enabled, a Semantic Scholar call that
+    exhausts its own retries falls back to OpenAlex for that one call
+    only (see _search_semantic_scholar_with_openalex_fallback) — never a
+    third always-on source, and never triggered by anything other than
+    S2 genuinely giving up.
     """
     client = client or OpenAI()
     # Starts counting search_semantic_scholar calls (original query + one
@@ -270,7 +328,9 @@ def build_candidate_pool(
     # independent network calls for the same query — run concurrently, not
     # sequentially. See _search_pair()'s docstring for why asyncio.run()
     # here rather than making this function itself async.
-    original_arxiv, original_s2 = asyncio.run(_search_pair(topic, original_pool_size, s2_api_key))
+    original_arxiv, original_s2 = asyncio.run(
+        _search_pair(topic, original_pool_size, s2_api_key, use_openalex_fallback, openalex_mailto)
+    )
     original_results = original_arxiv + original_s2
 
     suggested_titles = suggest_related_titles(topic, client=client)
@@ -281,7 +341,10 @@ def build_candidate_pool(
     # another. Order preserved — flattened in the same title order as the
     # old sequential loop, arXiv results before Semantic Scholar's for each.
     title_pair_results = asyncio.run(
-        _search_title_pairs_bounded(suggested_titles, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key, _MAX_CONCURRENT_TITLE_PAIRS)
+        _search_title_pairs_bounded(
+            suggested_titles, _SUGGESTED_TITLE_POOL_SIZE, s2_api_key, _MAX_CONCURRENT_TITLE_PAIRS,
+            use_openalex_fallback, openalex_mailto,
+        )
     )
     suggested_results: list[Paper] = []
     for title_arxiv, title_s2 in title_pair_results:
@@ -322,6 +385,7 @@ def build_candidate_pool(
 def expanded_search(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
     doi_required: bool = False, min_citation_count: int = 0,
+    use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
 ) -> list[tuple[Paper, float]]:
     """Widen the candidate pool with LLM-suggested paper titles, then rerank
     against the ORIGINAL topic — never against a suggested title (see the
@@ -343,11 +407,18 @@ def expanded_search(
 
     Returns (Paper, similarity) pairs, same convention as semantic_search()
     itself — callers that only want the papers can discard the score.
+
+    use_openalex_fallback/openalex_mailto pass straight through to
+    build_candidate_pool() — see its docstring; default False produces
+    identical behavior to before these parameters existed.
     """
     client = client or OpenAI()
     tag_current_trace(["expanded_search"])
 
-    deduped = build_candidate_pool(topic, k, s2_api_key=s2_api_key, client=client)
+    deduped = build_candidate_pool(
+        topic, k, s2_api_key=s2_api_key, client=client,
+        use_openalex_fallback=use_openalex_fallback, openalex_mailto=openalex_mailto,
+    )
 
     collection = get_chroma_collection()
     embed_stats = embed_and_index_papers(deduped, collection=collection, client=client)
