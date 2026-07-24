@@ -18,7 +18,9 @@ single constant below if you want to try a newer one.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
@@ -103,6 +105,18 @@ class ResearchSession:
     # build_candidate_pool()'s own one-call-per-topic behavior in the
     # direct-call path.
     suggested_titles: list[str] | None = None
+    # Guards the check-then-act on suggested_titles above. search_arxiv_tool
+    # and search_semantic_scholar_tool both call _get_suggested_titles(), and
+    # LangGraph's ToolNode runs same-turn tool calls concurrently on a REAL
+    # thread pool (get_executor_for_config -> ContextThreadPoolExecutor, not
+    # asyncio tasks — confirmed by reading langgraph's tool_node.py and
+    # langchain_core's get_executor_for_config directly), so without this
+    # lock both threads can see `suggested_titles is None` at the same time
+    # and each fire their own real, separately-billed, non-deterministic
+    # suggest_related_titles() call — doubling cost and potentially giving
+    # arXiv and Semantic Scholar DIFFERENT suggested titles, which breaks
+    # the cross-source pairing guarantee the direct-call path already has.
+    _suggested_titles_lock: threading.Lock = field(default_factory=threading.Lock)
     # Round-2 enhancement 2: DOI/citation-count filters. These are set once
     # from the user's request (see run_research_agent) and read directly by
     # rerank_by_relevance_tool below — deliberately NOT exposed as tool-call
@@ -119,6 +133,40 @@ class ResearchSession:
     web_articles: list[WebArticle] = field(default_factory=list)
 
 
+# Same cap and same reasoning as query_expansion.py's
+# _MAX_CONCURRENT_TITLE_PAIRS: bounds how many suggested-title searches
+# against ONE source are ever in flight at once, so this doesn't add
+# unbounded new simultaneous load against a limit already shown to be
+# strained.
+_MAX_CONCURRENT_TITLE_SEARCHES = 2
+
+
+async def _search_titles_bounded(
+    search_fn, titles: list[str], max_results: int, max_concurrent: int, **kwargs,
+) -> list[list[Paper]]:
+    """Runs one tool's suggested-title searches (all against the SAME
+    source — search_fn is either search_arxiv or search_semantic_scholar,
+    never both) concurrently instead of sequentially, bounded by a
+    semaphore — same asyncio.gather + asyncio.to_thread pattern already
+    proven correct in query_expansion.py's _search_title_pairs_bounded(),
+    reused rather than reinvented. Real trace data showed these calls
+    previously running back-to-back inside a single tool call (e.g. 4
+    sequential arXiv searches summing to ~17.5s) despite none depending on
+    another's result.
+
+    Returns one paper list per title, in the SAME order as `titles`
+    (asyncio.gather preserves input order), so the caller concatenates
+    identically to the old sequential loop.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _bounded(title: str) -> list[Paper]:
+        async with semaphore:
+            return await asyncio.to_thread(search_fn, title, max_results=max_results, **kwargs)
+
+    return await asyncio.gather(*[_bounded(title) for title in titles])
+
+
 def _get_suggested_titles(session: ResearchSession) -> list[str]:
     """suggest_related_titles(), called automatically (never an agent
     decision point — see this phase's brief: the agent's own query
@@ -128,7 +176,11 @@ def _get_suggested_titles(session: ResearchSession) -> list[str]:
     once. Reuses query_expansion.py's suggest_related_titles() directly,
     unmodified — same function the direct-call path uses, not a fork."""
     if session.suggested_titles is None:
-        session.suggested_titles = suggest_related_titles(session.topic)
+        with session._suggested_titles_lock:
+            # Re-check inside the lock: another thread may have already
+            # computed this while we were waiting to acquire it.
+            if session.suggested_titles is None:
+                session.suggested_titles = suggest_related_titles(session.topic)
     return session.suggested_titles
 
 
@@ -178,8 +230,12 @@ def build_tools(session: ResearchSession) -> list:
             # reliably surfaces that exact paper instead — same fix as
             # query_expansion.py's build_candidate_pool(), unconditional
             # here for the same reason it's unconditional there.
-            for title in _get_suggested_titles(session):
-                papers += search_arxiv(title, max_results=_TITLE_SEARCH_MAX_RESULTS)
+            titles = _get_suggested_titles(session)
+            if titles:
+                for title_papers in asyncio.run(
+                    _search_titles_bounded(search_arxiv, titles, _TITLE_SEARCH_MAX_RESULTS, _MAX_CONCURRENT_TITLE_SEARCHES)
+                ):
+                    papers += title_papers
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
@@ -218,8 +274,15 @@ def build_tools(session: ResearchSession) -> list:
             papers = search_semantic_scholar(query, api_key=session.s2_api_key)
             # Automatic title-suggestion search — see search_arxiv_tool's
             # matching comment above for why this is unconditional.
-            for title in _get_suggested_titles(session):
-                papers += search_semantic_scholar(title, max_results=_TITLE_SEARCH_MAX_RESULTS, api_key=session.s2_api_key)
+            titles = _get_suggested_titles(session)
+            if titles:
+                for title_papers in asyncio.run(
+                    _search_titles_bounded(
+                        search_semantic_scholar, titles, _TITLE_SEARCH_MAX_RESULTS, _MAX_CONCURRENT_TITLE_SEARCHES,
+                        api_key=session.s2_api_key,
+                    )
+                ):
+                    papers += title_papers
             session.papers = deduplicate(session.papers + papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
