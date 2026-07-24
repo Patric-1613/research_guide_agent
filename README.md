@@ -522,6 +522,61 @@ though the raw count of rate-limited calls barely moved. Full per-topic
 data (both runs, git commit, rate-limited-call counts) is in
 `eval_results/latency_history.csv`.
 
+## Agent-path concurrency fixes: a race condition and an unparallelized loop
+
+Reading real Langfuse traces closely (not just the summary numbers) after
+the search-call parallelization work surfaced two more bugs in
+`agent.py` — both pre-existing since the earlier `agent-title-suggestion`
+merge, neither caused by that parallelization work, which never touched
+this file.
+
+**1. A real race condition.** `_get_suggested_titles()` cached
+`suggest_related_titles()`'s result on the session with a plain
+check-then-act (`if session.suggested_titles is None: ...`). LangGraph's
+`ToolNode` runs same-turn tool calls concurrently on a real OS thread pool
+(`get_executor_for_config` → `ContextThreadPoolExecutor` — confirmed by
+reading LangGraph's own source, not assumed), so `search_arxiv_tool` and
+`search_semantic_scholar_tool` could both see `None` at the same instant
+and each fire their own real, separately-billed, non-deterministic LLM
+call — doubling title-suggestion cost and, since the two calls could
+return *different* titles, breaking the cross-source pairing guarantee
+the direct-call path already has. Fixed with a `threading.Lock`
+(double-checked locking) on `ResearchSession`. Confirmed live, not
+assumed: across 5 real "before" runs the race actually fired in **2 of
+5** (`suggest_related_titles` called twice); across 5 "after" runs, it
+was called **exactly once, every time** — and both tools' searched titles
+now provably match.
+
+**2. An unparallelized per-tool search loop.** Each tool's suggested-title
+search ran one title at a time in a plain `for` loop — real trace data
+showed 4 sequential arXiv calls (1.57s, 2.73s, 2.77s, 8.80s) summing
+directly into one tool call's ~17.5s total. This loop was never touched
+by the earlier parallelization work (that work only reasoned "LangGraph's
+`ToolNode` already parallelizes *across* tools," which is true but says
+nothing about the calls *within* one tool's own loop). Fixed by reusing
+`query_expansion.py`'s exact `asyncio.gather` + `asyncio.to_thread` +
+bounded-semaphore pattern, unchanged, at each tool's call site.
+
+Real 5-topic before/after measurement (a git worktree at the commit
+before both fixes vs. the fixed code, run back-to-back under matched —
+and heavily degraded — Semantic Scholar conditions, so this reflects the
+fix's real effect even under failure, not a clean network):
+
+| Topic | Before | After | Change |
+|---|---|---|---|
+| RAG for QA | 43.39s | 33.97s | -22% |
+| CNN image classification | 81.05s | 32.25s | -60% |
+| Few-shot intrusion detection | 64.46s | 26.22s | -59% |
+| Vector databases | 95.56s | 21.10s | -78% |
+| Multi-agent LLM systems | 52.11s | 25.12s | -52% |
+
+**Mean latency: 67.31s → 27.73s (-58.8%). Median: 64.46s → 26.22s
+(-59.3%).** Every topic improved. ReAct loop structure (3 model turns,
+same tool selection every time) confirmed unchanged across all 5
+after-fix traces — `search_arxiv_tool` + `search_semantic_scholar_tool`
+together, then `rerank_by_relevance_tool`, same as before both fixes —
+only correctness and speed changed, not reasoning behavior.
+
 ## RAGAS quality evaluation
 
 A curated, hand-verified test set (`eval_data/stage1_ragas_questions.json`,
