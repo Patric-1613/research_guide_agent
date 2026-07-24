@@ -23,13 +23,14 @@ from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
 from langchain.tools import tool
+from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from openai import OpenAI
 
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
-from research_agent.ingestion import search_arxiv, search_semantic_scholar
+from research_agent.ingestion import get_rate_limited_call_count, reset_rate_limit_tracking, search_arxiv, search_semantic_scholar
 from research_agent.query_expansion import suggest_related_titles
 from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
@@ -386,21 +387,50 @@ def run_research_agent(
     # each tool closure in build_tools() above.
     langfuse_handler = CallbackHandler()
 
-    # stream_mode="values" yields the full cumulative message list after each
-    # graph step. When the model issues more than one tool call in the same
-    # turn (common — e.g. searching both sources at once), several messages
-    # can land in a single step, so we diff against what we've already seen
-    # rather than assume the last message is the only new one.
-    seen = 0
-    for step in agent.stream(
-        {"messages": [{"role": "user", "content": topic}]},
-        stream_mode="values",
-        config={"callbacks": [langfuse_handler]},
-    ):
-        messages = step["messages"]
-        for message in messages[seen:]:
-            if on_step:
-                on_step(message)
-        seen = len(messages)
+    # Explicit wrapping span (not just the CallbackHandler's own auto-created
+    # "LangGraph" chain) so there's always a span object this function itself
+    # holds a reference to and can update after the run completes — the
+    # child-level search_semantic_scholar_tool calls (build_tools above) can
+    # each report their OWN rate_limited/retry_count via update_current_span,
+    # but nothing can retroactively push that onto an ancestor span it never
+    # held a reference to (same root-cause finding as query_expansion.py's
+    # search_had_rate_limit rollup: no current Langfuse SDK method updates an
+    # already-started ancestor from a descendant). This span becomes the
+    # actual root of the trace when this function is called directly (the
+    # live app's default path) or a child of whatever's already active when
+    # called from within another @observe span (e.g. scripts/eval_retrieval.py's
+    # eval_retrieval_topic) — either way, it's a real object this function
+    # can call .update(metadata=...) on directly once the run is done.
+    with get_client().start_as_current_observation(name="run_research_agent", as_type="span") as span:
+        # Starts counting search_semantic_scholar calls (this run's own
+        # searches, across however many times the agent decides to call
+        # search_semantic_scholar_tool) that need a retry — same counter,
+        # same reset/read pattern already proven for build_candidate_pool().
+        reset_rate_limit_tracking()
+
+        # stream_mode="values" yields the full cumulative message list after
+        # each graph step. When the model issues more than one tool call in
+        # the same turn (common — e.g. searching both sources at once),
+        # several messages can land in a single step, so we diff against
+        # what we've already seen rather than assume the last message is the
+        # only new one.
+        seen = 0
+        for step in agent.stream(
+            {"messages": [{"role": "user", "content": topic}]},
+            stream_mode="values",
+            config={"callbacks": [langfuse_handler]},
+        ):
+            messages = step["messages"]
+            for message in messages[seen:]:
+                if on_step:
+                    on_step(message)
+            seen = len(messages)
+
+        rate_limited_calls = get_rate_limited_call_count()
+        if rate_limited_calls:
+            # Same "only set when true" convention as every other rate-limit
+            # metadata field in this project — a run that never hit rate
+            # limiting gets no such field at all, not an explicit False/0.
+            span.update(metadata={"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls})
 
     return session
