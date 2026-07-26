@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 
 from langfuse import get_client, observe
 from openai import OpenAI
@@ -109,10 +110,26 @@ class _TitleSuggestions(BaseModel):
 
 
 @observe(name="suggest_related_titles", as_type="generation", capture_input=False, capture_output=False)
-def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | None = None) -> list[str]:
+def suggest_related_titles(
+    topic: str, max_titles: int = 5, client: OpenAI | None = None,
+    exclude_titles: list[str] | None = None,
+) -> list[str]:
     """One LLM call. Returns up to max_titles well-known real paper titles
     related to topic, or fewer if the model isn't confident about that many
     — never padded to a fixed count.
+
+    exclude_titles (curation-pool-foundation Phase 1c): titles already
+    found/shown this session — told to the model IN THE PROMPT ITSELF,
+    not just filtered out of its response afterward. At
+    TITLE_SUGGESTION_TEMPERATURE=0.1 (near-deterministic), a second call
+    for the same topic with no such instruction would very likely just
+    return the same well-known landmark titles again — post-filtering
+    would silently shrink the result (possibly to zero) rather than
+    actually prompting the model to think of DIFFERENT ones. A defensive
+    post-filter is still applied below on top of the prompt instruction
+    (belt and suspenders, same pattern as this project's other
+    defensive/enforced-not-just-instructed checks) in case the model
+    still repeats one despite being told not to.
 
     Defensive like the rest of the project's ingestion layer (ingestion.py):
     any failure (API error, malformed/empty response) logs and returns an
@@ -124,9 +141,18 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
         return []
 
     client = client or OpenAI()
+    user_content = f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."
+    if exclude_titles:
+        excluded_list = "\n".join(f"- {t}" for t in exclude_titles)
+        user_content += (
+            f"\n\nThe following have already been found and must NOT be suggested again:\n{excluded_list}\n\n"
+            "Suggest DIFFERENT real papers instead. If you genuinely don't know any other well-known, "
+            "verbatim-titled real papers on this specific topic beyond the ones listed above, return "
+            "fewer titles (even zero) rather than repeating one of them."
+        )
     messages = [
         {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."},
+        {"role": "user", "content": user_content},
     ]
     langfuse = get_client()
     langfuse.update_current_generation(
@@ -170,6 +196,18 @@ def suggest_related_titles(topic: str, max_titles: int = 5, client: OpenAI | Non
         return []
 
     titles = [t.strip() for t in parsed.titles if t and t.strip()][:max_titles]
+
+    if exclude_titles:
+        exclude_normalized = {t.strip().lower() for t in exclude_titles}
+        before_filter = len(titles)
+        titles = [t for t in titles if t.lower() not in exclude_normalized]
+        if len(titles) < before_filter:
+            logger.warning(
+                "suggest_related_titles: model repeated %d excluded title(s) for topic %r despite the prompt "
+                "instruction — filtered defensively",
+                before_filter - len(titles), topic,
+            )
+
     if len(titles) < max_titles:
         logger.info(
             "suggest_related_titles: model returned %d/%d titles for topic %r (fewer is expected when not confident)",
@@ -287,6 +325,7 @@ async def _search_title_pairs_bounded(
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
     use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
+    exclude_titles: list[str] | None = None,
 ) -> list[Paper]:
     """Steps 1-4 of the pipeline documented on expanded_search() below:
     direct topic search widened to 3xk (floor 15, cap 40) + LLM-suggested-
@@ -333,7 +372,7 @@ def build_candidate_pool(
     )
     original_results = original_arxiv + original_s2
 
-    suggested_titles = suggest_related_titles(topic, client=client)
+    suggested_titles = suggest_related_titles(topic, client=client, exclude_titles=exclude_titles)
 
     # Phase 2 (parallelize-search-calls): different titles' pairs now run
     # concurrently too, bounded by _MAX_CONCURRENT_TITLE_PAIRS (see its own
@@ -381,6 +420,46 @@ def build_candidate_pool(
     return deduped
 
 
+_EMPTY_EMBED_STATS = {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0, "papers_skipped": 0}
+
+
+def rank_full_pool(
+    topic: str, deduped: list[Paper], client: OpenAI | None = None,
+    doi_required: bool = False, min_citation_count: int = 0,
+    collection=None,
+) -> tuple[list[tuple[Paper, float]], dict]:
+    """Embeds/indexes `deduped` and ranks ALL of it against `topic` — no
+    truncation. expanded_search() below is the only truncating caller
+    (slices to k for byte-identical existing behavior); the literature-
+    review curation feature (curation-pool-foundation) is what actually
+    needs the untruncated list, so it can hold the rest back as a reserve
+    to serve later turns from without re-searching.
+
+    Deliberately reuses semantic_search() unchanged rather than a new
+    ranking path: passing top_k=len(deduped) (every candidate) is enough
+    to get the full ranked list back — see
+    tests/test_query_expansion.py's equivalence test for direct proof
+    this produces the identical top-k a smaller top_k would have, not
+    just an assumption that asking for more can't reorder fewer.
+
+    Returns (ranked, embed_stats) — embed_stats mirrors
+    embed_and_index_papers()'s own return shape (cache_hits/cache_misses/
+    tokens_billed/estimated_cost_usd/papers_skipped) so callers can log
+    cost the same way regardless of whether the pool was empty.
+    """
+    client = client or OpenAI()
+    if not deduped:
+        return [], dict(_EMPTY_EMBED_STATS)
+    collection = collection or get_chroma_collection()
+    embed_stats = embed_and_index_papers(deduped, collection=collection, client=client)
+    ids = [p.paper_id for p in deduped]
+    ranked = semantic_search(
+        topic, collection=collection, client=client, top_k=len(ids), where={"paper_id": {"$in": ids}},
+        require_doi=doi_required, min_citation_count=min_citation_count or None,
+    )
+    return ranked, embed_stats
+
+
 @observe(name="expanded_search", capture_input=False, capture_output=False)
 def expanded_search(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
@@ -394,8 +473,12 @@ def expanded_search(
     Pipeline (locked, see module docstring for the parameters):
       1-4. build_candidate_pool() above — direct topic search + LLM-
          suggested-title search + cross-source dedup, unchanged.
-      5. semantic_search() against `topic` (never a suggested title),
-         cut to top-k. doi_required/min_citation_count pass straight
+      5. rank_full_pool() against `topic` (never a suggested title), then
+         sliced to top-k here — same final result as truncating inside
+         the ranking step itself (see rank_full_pool()'s own docstring),
+         just with the truncation point moved to the caller so other
+         callers (the curation feature) can keep the rest instead of
+         discarding it. doi_required/min_citation_count pass straight
          through to semantic_search()'s own existing filter params —
          unchanged there, just forwarded.
 
@@ -420,13 +503,10 @@ def expanded_search(
         use_openalex_fallback=use_openalex_fallback, openalex_mailto=openalex_mailto,
     )
 
-    collection = get_chroma_collection()
-    embed_stats = embed_and_index_papers(deduped, collection=collection, client=client)
-    ids = [p.paper_id for p in deduped]
-    ranked = semantic_search(
-        topic, collection=collection, client=client, top_k=k, where={"paper_id": {"$in": ids}},
-        require_doi=doi_required, min_citation_count=min_citation_count or None,
+    full_ranked, embed_stats = rank_full_pool(
+        topic, deduped, client=client, doi_required=doi_required, min_citation_count=min_citation_count,
     )
+    ranked = full_ranked[:k]
 
     logger.info(
         "expanded_search(%r, k=%d): %d candidates -> %d final "
@@ -455,3 +535,109 @@ def expanded_search(
         update_kwargs["metadata"] = {"search_had_rate_limit": True, "rate_limit_count": rate_limited_calls}
     get_client().update_current_span(**update_kwargs)
     return ranked
+
+
+# curation-pool-foundation Phase 1b: session-scoped tracking so a
+# literature-review curation loop can serve several turns' worth of
+# candidates from ONE search, only re-searching once the reserve actually
+# runs low. Foundation only — a plain in-memory structure a caller
+# creates and threads through calls itself; no persistence yet (that's
+# Phase 2's job, activating the checkpointer already built during the
+# qa.py LangGraph conversion).
+BATCH_SIZE = 10
+
+
+@dataclass
+class PaperPoolSession:
+    """topic: what every search/refill in this session is for and ranked
+    against (never a suggested title — same anti-hallucination anchor as
+    expanded_search() above). reserve: the full ranked candidate list
+    from the most recent build_candidate_pool()+rank_full_pool() call —
+    NOT just top-k, the whole thing, per Phase 1a. cursor: how much of
+    `reserve` has already been served via serve_next_batch(). seen_paper_ids:
+    every paper_id ever served (shown OR picked — picked is always a
+    subset of shown, so tracking "shown" alone covers both) — used both to
+    never re-serve the same paper twice and, on refill, to exclude it from
+    the fresh search. seen_titles: the same papers' titles, kept
+    separately because paper_id alone isn't enough once refill_pool()
+    replaces the reserve — the original Paper objects for already-served
+    items aren't stored anywhere else, but suggest_related_titles's
+    exclude_titles (Phase 1c) needs the actual title strings, not ids.
+    """
+
+    topic: str
+    reserve: list[tuple[Paper, float]] = field(default_factory=list)
+    cursor: int = 0
+    seen_paper_ids: set[str] = field(default_factory=set)
+    seen_titles: set[str] = field(default_factory=set)
+
+    def remaining(self) -> int:
+        """How many un-served candidates are left in the current reserve."""
+        return len(self.reserve) - self.cursor
+
+    def needs_refill(self, batch_size: int = BATCH_SIZE) -> bool:
+        return self.remaining() < batch_size
+
+
+def serve_next_batch(session: PaperPoolSession, batch_size: int = BATCH_SIZE) -> list[tuple[Paper, float]]:
+    """Returns the next up-to-batch_size unseen candidates from the
+    reserve, advances the cursor, and marks them seen. Pure bookkeeping —
+    never triggers a refill itself (that's a real search, a different,
+    explicitly-opted-into concern; check session.needs_refill() and call
+    refill_pool() separately). Returns fewer than batch_size (or zero)
+    without error if the reserve doesn't have that many left — the caller
+    decides whether that's a refill trigger or genuine exhaustion.
+    """
+    batch = session.reserve[session.cursor : session.cursor + batch_size]
+    session.cursor += len(batch)
+    for paper, _ in batch:
+        session.seen_paper_ids.add(paper.paper_id)
+        session.seen_titles.add(paper.title)
+    return batch
+
+
+def refill_pool(
+    session: PaperPoolSession, k_for_widening: int = BATCH_SIZE,
+    s2_api_key: str | None = None, client: OpenAI | None = None,
+    use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
+) -> int:
+    """Reruns build_candidate_pool()+rank_full_pool() for session.topic,
+    then merges the result with whatever's still un-served in the current
+    reserve (never re-searched, just carried forward) — the combined set
+    is re-ranked and replaces the reserve; the cursor resets to 0, which
+    is safe because both halves of the new reserve are guaranteed
+    seen-free (the unserved tail was never shown by definition; the fresh
+    results are filtered against session.seen_paper_ids below).
+
+    Exclusion happens at TWO levels, not just one: session.seen_titles
+    goes into build_candidate_pool()'s exclude_titles (Phase 1c — the
+    suggested-title LLM call is actually told what's already been found,
+    not just filtered afterward), and the fresh search's actual paper
+    results are additionally filtered against session.seen_paper_ids
+    below (catches anything the direct topic search turns up again, which
+    exclude_titles can't reach since that only constrains the LLM's own
+    title suggestions).
+
+    Returns how many genuinely new (not already in the reserve or seen)
+    papers this refill found — 0 is a real, valid signal that the topic
+    is exhausted, not an error; callers should surface that to the user
+    rather than looping forever (Phase 1d's adversarial case).
+    """
+    client = client or OpenAI()
+    unserved_tail = session.reserve[session.cursor:]
+    unserved_ids = {p.paper_id for p, _ in unserved_tail}
+
+    fresh_pool = build_candidate_pool(
+        session.topic, k_for_widening, s2_api_key=s2_api_key, client=client,
+        use_openalex_fallback=use_openalex_fallback, openalex_mailto=openalex_mailto,
+        exclude_titles=list(session.seen_titles) or None,
+    )
+    exclude_ids = session.seen_paper_ids | unserved_ids
+    genuinely_new = [p for p in fresh_pool if p.paper_id not in exclude_ids]
+
+    combined_papers = [p for p, _ in unserved_tail] + genuinely_new
+    ranked, _ = rank_full_pool(session.topic, combined_papers, client=client)
+
+    session.reserve = ranked
+    session.cursor = 0
+    return len(genuinely_new)
