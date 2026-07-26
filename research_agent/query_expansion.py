@@ -575,6 +575,19 @@ class PaperPoolSession:
     session start); selected_paper_ids is which of the seen papers were
     actually picked (ordered, a list not a set, so a UI can show pick
     order), distinct from seen_paper_ids (shown OR picked).
+    selected_papers (curation-report-synthesis Phase 4): the SAME picks
+    as selected_paper_ids, but as full serialized Paper dicts, not just
+    ids — necessary because reserve is NOT a reliable place to resolve a
+    picked paper_id back to its full data once a refill has happened
+    (refill_pool replaces reserve with unserved_tail + genuinely_new,
+    dropping the already-served prefix entirely). Populated at pick-time
+    in curation_loop.py's present_and_apply node, which already has the
+    full Paper data in scope (current_batch) before any future refill
+    could discard it. Always kept in the same order and membership as
+    selected_paper_ids — verified explicitly by
+    tests/test_curation_loop.py's sync-invariant test across a session
+    that includes a refill, not just assumed from populating both in the
+    same node.
     """
 
     topic: str
@@ -585,6 +598,7 @@ class PaperPoolSession:
     stage: str = "curate"
     target_count: int = 10
     selected_paper_ids: list[str] = field(default_factory=list)
+    selected_papers: list[Paper] = field(default_factory=list)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

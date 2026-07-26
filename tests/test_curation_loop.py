@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -239,6 +239,64 @@ def test_target_hit_mid_batch():
         assert result["session"]["selected_paper_ids"] == batch1_ids + picks2
 
 
+# --- curation-report-synthesis Phase 4: selected_papers/selected_paper_ids sync invariant ---
+
+def _assert_selected_lists_in_sync(session_dict: dict) -> None:
+    ids_from_selected_paper_ids = session_dict["selected_paper_ids"]
+    ids_from_selected_papers = [p["paper_id"] for p in session_dict["selected_papers"]]
+    assert ids_from_selected_papers == ids_from_selected_paper_ids, (
+        f"selected_papers {ids_from_selected_papers} out of sync with "
+        f"selected_paper_ids {ids_from_selected_paper_ids}"
+    )
+
+
+def test_selected_papers_and_selected_paper_ids_stay_in_sync_across_a_refill():
+    """Not just trusting that populating both in the same node guarantees
+    this — explicitly checked (same members, same order) at every step of
+    a session that genuinely triggers a refill mid-way."""
+    from research_agent import query_expansion as qe_module
+
+    def _identity_rank(topic, papers, client=None, **kwargs):
+        return [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers), \
+             patch.object(qe_module, "rank_full_pool", side_effect=_identity_rank), \
+             sqlite_checkpointer(db_path) as cp:
+
+            # reserve=15, target_count=100 (unreachable) -- forces a
+            # refill after turn 1 drains the reserve below batch size,
+            # and lets natural exhaustion end the test rather than an
+            # artificial target.
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=100)))
+            _assert_selected_lists_in_sync(result["session"])
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks1 = batch1_ids[:5]
+
+            # This resume triggers the refill internally (remaining=5 < 10)
+            # before serving turn 2's batch -- confirmed by the mocked
+            # build_candidate_pool having been called. refill_pool() itself
+            # runs for real (only its own internals are mocked above), so
+            # it still needs a client passed through config.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=picks1, config={"client": MagicMock()})
+            qe_module.build_candidate_pool.assert_called()
+            _assert_selected_lists_in_sync(result["session"])
+            assert result["session"]["selected_paper_ids"] == picks1
+
+            assert "__interrupt__" in result, "expected turn 2 to still be presenting, not stopped"
+            batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks2 = batch2_ids[:3]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=picks2, stop=True)
+            _assert_selected_lists_in_sync(result["session"])
+
+        assert result["stop_reason"] == "user_stopped"
+        assert result["session"]["selected_paper_ids"] == picks1 + picks2
+
+
 if __name__ == "__main__":
     test_single_turn_interrupt_then_resume_reaches_target()
     test_multi_turn_loop_continues_across_batches_until_target_met()
@@ -249,4 +307,5 @@ if __name__ == "__main__":
     test_user_stops_before_hitting_target()
     test_target_hit_exactly_on_a_batch_boundary()
     test_target_hit_mid_batch()
+    test_selected_papers_and_selected_paper_ids_stay_in_sync_across_a_refill()
     print("All curation_loop tests passed.")

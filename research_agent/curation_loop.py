@@ -60,6 +60,7 @@ from research_agent.curation_session import (
     curation_thread_id,
 )
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
+from research_agent.schema import Paper
 
 
 class CurationLoopState(TypedDict):
@@ -116,13 +117,19 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
     # resume payload blindly. Anything not in current_batch is silently
     # dropped, not applied and not an error (a stale/malformed client
     # payload shouldn't corrupt session state).
-    presented_ids = {paper_dict["paper_id"] for paper_dict, _ in state["current_batch"]}
-    valid_picks = [pid for pid in picked_paper_ids if pid in presented_ids]
+    presented_by_id = {paper_dict["paper_id"]: paper_dict for paper_dict, _ in state["current_batch"]}
+    valid_picks = [pid for pid in picked_paper_ids if pid in presented_by_id]
 
     session = _dict_to_session(state["session"])
     for pid in valid_picks:
         if pid not in session.selected_paper_ids:
+            # Both lists updated together, in the same node, from the
+            # same current_batch data -- kept in sync by construction, and
+            # verified explicitly (not just assumed) by
+            # tests/test_curation_loop.py's sync-invariant test across a
+            # session that includes a refill.
             session.selected_paper_ids.append(pid)
+            session.selected_papers.append(Paper(**presented_by_id[pid]))
 
     return {"session": _session_to_dict(session), "should_stop": stop}
 
