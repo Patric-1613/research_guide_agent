@@ -41,15 +41,34 @@ the scale this pool actually runs at (3-4 articles per session, the same
 "small enough that ranking doesn't earn its keep" scale reasoning
 summarize.py already applies to generate_web_summary()), the whole pool is
 just included in context directly.
+
+qa-langgraph-conversion: ask() is now a thin wrapper around a compiled
+LangGraph StateGraph (_DEFAULT_GRAPH) instead of a plain function — laying
+the foundation for summarization/checkpointing/human-in-the-loop work
+planned on top of this later. This phase is a structural refactor only:
+the graph reproduces today's exact routing (the two "no sources" early
+exits and condense_question's first-turn skip are now conditional edges
+instead of inline `if`s), not new behavior. A SqliteSaver checkpointer is
+wired in and available (see sqlite_checkpointer() below) but NOT activated
+on the default path — ask() runs exactly as statelessly as before. Its own
+physical file (data/qa_checkpoints.sqlite) is deliberately separate from
+storage.py's history.sqlite: different concern (conversation state vs.
+saved-search identity), different connection lifecycle (a checkpointer
+wants one long-lived connection; storage.py opens one per request).
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import TypedDict, Literal
 
 from langfuse import get_client, observe
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
@@ -58,6 +77,11 @@ from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import paper_metadata
 
 logger = logging.getLogger(__name__)
+
+# Separate from storage.py's DB_PATH (data/history.sqlite) by design — see
+# module docstring. Not written to on the default (non-persistent) path;
+# only used if a future phase activates sqlite_checkpointer() below.
+QA_CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "qa_checkpoints.sqlite"
 
 # Condensing a follow-up question is a small, frequent, low-stakes rewrite —
 # same cost tier as the phase-4 agent's tool orchestration. Answer synthesis
@@ -178,15 +202,67 @@ def _recent_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> 
     return history[-2 * max_turns:]
 
 
+# Phase 2 (qa-langgraph-conversion): a fixed, deterministic set of short
+# conversational closers/acknowledgments. Deliberately an EXACT-match
+# allowlist, not a "starts with" or fuzzy check — "thanks, but can you also
+# tell me about its limitations?" must NOT match, since only the bare
+# closer itself is safe to skip retrieval/generation for. Anything not in
+# this exact set (after normalization) falls through to the real answer
+# path — a false negative here just costs one ordinary LLM call; a false
+# positive means silently never answering a real question.
+_NON_SUBSTANTIVE_PHRASES = {
+    "thanks", "thank you",
+    "thanks a lot", "thanks so much", "thank you so much", "many thanks",
+    "much appreciated", "appreciate it", "appreciated",
+    "ok", "okay", "k", "kk",
+    "cool", "great", "nice", "perfect", "awesome", "cheers", "alright",
+    "got it", "gotcha", "noted", "understood",
+    "sounds good", "makes sense", "good to know",
+    "that helps", "that works", "will do", "sure thing", "no worries", "all good", "fair enough",
+}
+
+# Independent of the phrase list above — a real follow-up question is
+# almost always longer than this, so anything over the cap is never
+# treated as non-substantive even if it happens to start with a closer
+# phrase (same "thanks, but ..." trap case).
+_NON_SUBSTANTIVE_MAX_WORDS = 5
+
+_NON_SUBSTANTIVE_RESPONSE = "You're welcome! Let me know if you have any more questions about these papers."
+
+
+def _is_non_substantive(question: str) -> bool:
+    """Deterministic, deliberately conservative classifier for messages
+    that need neither retrieval nor an LLM call at all (a bare "thanks!"
+    after a real answer). Three independent signals must ALL agree to
+    skip: (1) no question mark anywhere in the raw text, (2) short enough
+    (word-count gate), (3) the normalized text is an EXACT match against a
+    fixed closer-phrase allowlist. Any one of them failing means "don't
+    skip" — biased hard against false positives: wrongly skipping a real
+    question is a far worse failure than occasionally spending a real LLM
+    call on a message that turns out to be a plain acknowledgment.
+    """
+    if "?" in question:
+        return False
+
+    normalized = " ".join(question.strip().lower().split())
+    if not normalized:
+        return False
+    if len(normalized.split()) > _NON_SUBSTANTIVE_MAX_WORDS:
+        return False
+
+    stripped = normalized.rstrip("!.,;: ")
+    return stripped in _NON_SUBSTANTIVE_PHRASES
+
+
 def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict:
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": answer})
-    # Called from both of ask()'s early-return branches (never had any
+    # Called from both of the graph's "no sources" nodes (never had any
     # sources at all; had sources but nothing was retrieved this turn) — one
     # update here covers both without duplicating it at each call site.
-    # Relies on ask()'s own @observe span being the current span at the time
-    # this runs, the same way any plain helper called from a decorated
-    # function updates that function's span.
+    # Relies on ask()'s own @observe span still being the current span while
+    # the graph's nodes run synchronously inside it, the same way any plain
+    # helper called from a decorated function updates that function's span.
     langfuse = get_client()
     langfuse.update_current_span(
         input={"question": question},
@@ -196,12 +272,9 @@ def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict
         "answer": answer, "answerable": False,
         "cited_papers": [], "retrieved_papers": [],
         "cited_web_articles": [], "retrieved_web_articles": [],
-        # Trace of THIS turn's own ask() span — callers that later compute
-        # an external score for this turn (e.g. scripts/ragas_eval.py, once
-        # RAGAS finishes judging a whole batch of turns) use this to attach
-        # it back to the right trace after the fact, since by then ask()'s
-        # own span/trace context has long since closed.
-        "trace_id": langfuse.get_current_trace_id(),
+        # trace_id is NOT set here — ask() stamps it once on the final
+        # result after the graph finishes, regardless of which node
+        # produced it. See ask()'s own docstring/comment for why.
     }
 
 
@@ -233,37 +306,93 @@ def _generate_answer(messages: list[dict], schema: type[BaseModel], client: Open
     return parsed
 
 
-@observe(name="ask", capture_input=False, capture_output=False)
-def ask(
-    session: ChatSession,
-    question: str,
-    client: OpenAI | None = None,
-    top_k: int = TOP_K_DEFAULT,
-) -> dict:
-    """Answer a question grounded in session.papers and session.web_articles,
-    using session.history for follow-up context. Appends the turn to
-    session.history and returns {"answer", "answerable",
-    "cited_papers": [Paper...], "retrieved_papers": [Paper...],
-    "cited_web_articles": [WebArticle...], "retrieved_web_articles": [WebArticle...]}.
+class QAState(TypedDict):
+    """State threaded through the graph for one ask() call. `session` is
+    the same ChatSession object the caller passed in — held by reference,
+    not copied, so a node appending to session.history (see
+    _no_sources_result and _generate_node) mutates the caller's own object
+    exactly as the old plain-function version did. Not yet a fully
+    JSON-serializable state on purpose: persistence isn't activated on the
+    default path (see module docstring), so there's no requirement yet for
+    every field to survive a checkpoint round-trip. That requirement lands
+    with whichever future phase actually turns persistence on.
     """
-    if not session.papers and not session.web_articles:
-        return _no_sources_result(
-            session, question,
-            "No papers or web articles have been retrieved yet for this conversation — search a topic first.",
+
+    session: ChatSession
+    question: str
+    recent_history: list[dict]
+    client: OpenAI
+    top_k: int
+    is_non_substantive: bool
+    standalone_query: str | None
+    retrieved_papers: list[Paper]
+    retrieved_web_articles: list[WebArticle]
+    result: dict
+
+
+def _classify_node(state: QAState) -> dict:
+    """The graph's first real node (per the Phase 0 design) — runs before
+    even the "do we have any sources" check, since a bare "thanks!" should
+    short-circuit regardless of whether papers exist for this session."""
+    is_skip = _is_non_substantive(state["question"])
+    if is_skip:
+        logger.info(
+            "classify_message: treating %r as non-substantive — skipping retrieval/LLM calls",
+            state["question"],
         )
+        get_client().update_current_span(metadata={"non_substantive_skip": True})
+    return {"is_non_substantive": is_skip}
 
-    client = client or OpenAI()
 
-    recent_history = _recent_history(session.history)
-    standalone_query = _condense_question(recent_history, question, client)
+def _non_substantive_node(state: QAState) -> dict:
+    session = state["session"]
+    question = state["question"]
+    session.history.append({"role": "user", "content": question})
+    session.history.append({"role": "assistant", "content": _NON_SUBSTANTIVE_RESPONSE})
+    get_client().update_current_span(
+        input={"question": question},
+        output={"answerable": True, "answer": _NON_SUBSTANTIVE_RESPONSE},
+    )
+    return {
+        "result": {
+            "answer": _NON_SUBSTANTIVE_RESPONSE,
+            "answerable": True,
+            "cited_papers": [], "retrieved_papers": [],
+            "cited_web_articles": [], "retrieved_web_articles": [],
+        },
+    }
+
+
+def _route_after_classify(state: QAState) -> str:
+    """Routes on classify_message's verdict first, then falls back to the
+    original entry logic: today's "no sources at all" guard, plus
+    condense_question's "skip on first turn" logic promoted from an inline
+    `if` to a real edge — first-turn conversations go straight to retrieve
+    with no LLM call, identical cost/behavior to before."""
+    if state["is_non_substantive"]:
+        return "non_substantive"
+    session = state["session"]
+    if not session.papers and not session.web_articles:
+        return "no_sources"
+    return "condense" if state["recent_history"] else "retrieve"
+
+
+def _condense_node(state: QAState) -> dict:
+    standalone = _condense_question(state["recent_history"], state["question"], state["client"])
+    return {"standalone_query": standalone}
+
+
+def _retrieve_node(state: QAState) -> dict:
+    session = state["session"]
+    query = state["standalone_query"] or state["question"]
 
     retrieved_papers: list[Paper] = []
     if session.papers:
         collection = get_chroma_collection()
-        embed_and_index_papers(session.papers, collection=collection, client=client)
+        embed_and_index_papers(session.papers, collection=collection, client=state["client"])
         ids = [p.paper_id for p in session.papers]
         retrieved = semantic_search(
-            standalone_query, collection=collection, client=client, top_k=top_k,
+            query, collection=collection, client=state["client"], top_k=state["top_k"],
             where={"paper_id": {"$in": ids}},
         )
         retrieved_papers = [p for p, _ in retrieved]
@@ -272,9 +401,39 @@ def ask(
     # (3-4 per session, per web_search.py's default) that including all of
     # it is simpler and no less relevant than embedding-ranking it would be.
     retrieved_web_articles = list(session.web_articles)
+    return {"retrieved_papers": retrieved_papers, "retrieved_web_articles": retrieved_web_articles}
 
-    if not retrieved_papers and not retrieved_web_articles:
-        return _no_sources_result(session, question, "No indexed papers or web articles are available to answer this question.")
+
+def _route_retrieved(state: QAState) -> str:
+    """Second routing decision: today's second "nothing retrieved this
+    turn" guard, now an edge off retrieve instead of an inline `if`."""
+    if not state["retrieved_papers"] and not state["retrieved_web_articles"]:
+        return "no_sources"
+    return "generate"
+
+
+def _no_sources_initial_node(state: QAState) -> dict:
+    result = _no_sources_result(
+        state["session"], state["question"],
+        "No papers or web articles have been retrieved yet for this conversation — search a topic first.",
+    )
+    return {"result": result}
+
+
+def _no_sources_empty_node(state: QAState) -> dict:
+    result = _no_sources_result(
+        state["session"], state["question"],
+        "No indexed papers or web articles are available to answer this question.",
+    )
+    return {"result": result}
+
+
+def _generate_node(state: QAState) -> dict:
+    session = state["session"]
+    question = state["question"]
+    top_k = state["top_k"]
+    retrieved_papers = state["retrieved_papers"]
+    retrieved_web_articles = state["retrieved_web_articles"]
 
     papers_by_id = {p.paper_id: p for p in retrieved_papers}
     web_by_url = {a.url: a for a in retrieved_web_articles}
@@ -295,13 +454,13 @@ def ask(
         context_sections.append(f"Retrieved web articles:\n\n{web_context}")
 
     messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
-    messages.extend(recent_history)
+    messages.extend(state["recent_history"])
     messages.append({
         "role": "user",
         "content": "\n\n".join(context_sections) + f"\n\nQuestion: {question}",
     })
 
-    parsed = _generate_answer(messages, schema, client, model=ANSWER_MODEL)
+    parsed = _generate_answer(messages, schema, state["client"], model=ANSWER_MODEL)
 
     # Defensive: don't trust the model to honor "empty if not answerable" on
     # its own — enforce it, since a fabricated citation on an "I can't
@@ -315,8 +474,7 @@ def ask(
     session.history.append({"role": "user", "content": question})
     session.history.append({"role": "assistant", "content": parsed.answer})
 
-    langfuse = get_client()
-    langfuse.update_current_span(
+    get_client().update_current_span(
         input={"question": question, "top_k": top_k},
         output={
             "answerable": parsed.answerable,
@@ -326,13 +484,125 @@ def ask(
             "retrieved_web_articles": [{"url": a.url, "title": a.title} for a in retrieved_web_articles],
         },
     )
+
     return {
-        "answer": parsed.answer,
-        "answerable": parsed.answerable,
-        "cited_papers": cited_papers,
-        "retrieved_papers": retrieved_papers,
-        "cited_web_articles": cited_web_articles,
-        "retrieved_web_articles": retrieved_web_articles,
-        # See _no_sources_result's matching field for why this is exposed.
-        "trace_id": langfuse.get_current_trace_id(),
+        "result": {
+            "answer": parsed.answer,
+            "answerable": parsed.answerable,
+            "cited_papers": cited_papers,
+            "retrieved_papers": retrieved_papers,
+            "cited_web_articles": cited_web_articles,
+            "retrieved_web_articles": retrieved_web_articles,
+        },
     }
+
+
+def build_qa_graph(checkpointer: BaseCheckpointSaver | None = None) -> object:
+    """Builds and compiles the qa graph. checkpointer=None (the default
+    used by _DEFAULT_GRAPH below) compiles a graph with no persistence at
+    all — every invoke() is as stateless as the old plain-function ask()
+    was. Passing a real checkpointer (see sqlite_checkpointer()) is how a
+    future phase turns on cross-request conversation memory; not wired
+    into ask()'s default path yet (qa-langgraph-conversion Phase 0 decision:
+    lay the foundation, don't activate it in this phase).
+
+    START ─► classify_message ─┬─"non_substantive"──────────────► non_substantive_response ─► END
+                                ├─"no_sources"───────────────────► no_sources_initial ─► END
+                                ├─"condense"──► condense_question ─┐
+                                │                                   │
+                                └─"retrieve"(first turn)────────────┤
+                                                                     │
+                                                     route_retrieved │
+                                               ┌─"no_sources"────────┤
+                                               ▼                      │
+                                      no_sources_empty ─► END          └─"generate"─► generate_answer ─► END
+    """
+    graph = StateGraph(QAState)
+    graph.add_node("classify_message", _classify_node)
+    graph.add_node("non_substantive_response", _non_substantive_node)
+    graph.add_node("condense_question", _condense_node)
+    graph.add_node("retrieve", _retrieve_node)
+    graph.add_node("generate_answer", _generate_node)
+    graph.add_node("no_sources_initial", _no_sources_initial_node)
+    graph.add_node("no_sources_empty", _no_sources_empty_node)
+
+    graph.add_edge(START, "classify_message")
+    graph.add_conditional_edges("classify_message", _route_after_classify, {
+        "non_substantive": "non_substantive_response",
+        "no_sources": "no_sources_initial",
+        "condense": "condense_question",
+        "retrieve": "retrieve",
+    })
+    graph.add_edge("condense_question", "retrieve")
+    graph.add_conditional_edges("retrieve", _route_retrieved, {
+        "no_sources": "no_sources_empty",
+        "generate": "generate_answer",
+    })
+    graph.add_edge("non_substantive_response", END)
+    graph.add_edge("no_sources_initial", END)
+    graph.add_edge("no_sources_empty", END)
+    graph.add_edge("generate_answer", END)
+
+    return graph.compile(checkpointer=checkpointer)
+
+
+# Compiled once at import time, no checkpointer — matches today's fully
+# stateless-per-call behavior. ask() invokes this by default.
+_DEFAULT_GRAPH = build_qa_graph()
+
+
+@contextmanager
+def sqlite_checkpointer(path: Path = QA_CHECKPOINT_DB_PATH):
+    """Not used by ask() today — persistence is deliberately opt-in for now
+    (see module docstring). Available for a future phase to activate real
+    cross-request conversation memory via
+    build_qa_graph(checkpointer=saver). Lives in its own physical .sqlite
+    file, separate from storage.py's history.sqlite by design.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with SqliteSaver.from_conn_string(str(path)) as saver:
+        yield saver
+
+
+@observe(name="ask", capture_input=False, capture_output=False)
+def ask(
+    session: ChatSession,
+    question: str,
+    client: OpenAI | None = None,
+    top_k: int = TOP_K_DEFAULT,
+) -> dict:
+    """Answer a question grounded in session.papers and session.web_articles,
+    using session.history for follow-up context. Appends the turn to
+    session.history and returns {"answer", "answerable",
+    "cited_papers": [Paper...], "retrieved_papers": [Paper...],
+    "cited_web_articles": [WebArticle...], "retrieved_web_articles": [WebArticle...]}.
+
+    Runs on _DEFAULT_GRAPH (see build_qa_graph) internally as of
+    qa-langgraph-conversion — this wrapper's signature and return shape are
+    unchanged so every existing caller (api.py's /chat endpoint, RAGAS eval
+    scripts) keeps working as-is.
+    """
+    client = client or OpenAI()
+    recent_history = _recent_history(session.history)
+
+    initial_state: QAState = {
+        "session": session,
+        "question": question,
+        "recent_history": recent_history,
+        "client": client,
+        "top_k": top_k,
+        "is_non_substantive": False,
+        "standalone_query": None,
+        "retrieved_papers": [],
+        "retrieved_web_articles": [],
+        "result": {},
+    }
+    final_state = _DEFAULT_GRAPH.invoke(initial_state)
+    result = dict(final_state["result"])
+    # Stamped once here regardless of which node produced the result — see
+    # _no_sources_result's matching comment for why the per-node paths
+    # don't set this themselves. Relies on ask()'s own @observe span still
+    # being the current span once graph.invoke() returns, verified against
+    # real Langfuse traces in Phase 4 rather than assumed.
+    result["trace_id"] = get_client().get_current_trace_id()
+    return result

@@ -1,7 +1,9 @@
 """Deterministic tests for qa.py's non-LLM logic: schema constraints, the
-defensive "no citations if unanswerable" override, empty-pool handling, and
-condense-question being skipped on the first turn. The OpenAI calls are
-mocked so these run without network access or billing.
+defensive "no citations if unanswerable" override, empty-pool handling,
+condense-question being skipped on the first turn, and the
+classify_message non-substantive-message gate (qa-langgraph-conversion
+Phase 2). The OpenAI calls are mocked so these run without network access
+or billing.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch
 
-from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _condense_question, _recent_history, ask
+from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _condense_question, _is_non_substantive, _recent_history, ask
 from research_agent.schema import Paper, WebArticle
 
 
@@ -137,6 +139,108 @@ def test_ask_forces_empty_citations_when_model_marks_unanswerable():
     assert result["cited_papers"] == []  # forced empty despite model returning an id
 
 
+# --- classify_message: non-substantive-message gate (qa-langgraph-conversion Phase 2) ---
+#
+# "Should skip" cases prove the happy path works; the "should NOT skip"
+# cases are the actual point of this test file — each one isolates a
+# DIFFERENT one of the three independent guards (question mark / word
+# count / exact-phrase match) so a bug in any single guard shows up as a
+# specific failing test, not just "something's wrong somewhere."
+
+def test_is_non_substantive_recognizes_plain_closers():
+    for message in ["thanks!", "Thank you so much!", "ok", "makes sense", "Cool.", "  Got it  "]:
+        assert _is_non_substantive(message) is True, f"expected {message!r} to be treated as non-substantive"
+
+
+def test_is_non_substantive_never_skips_a_real_question_with_a_question_mark():
+    """The canonical trap: a real follow-up question that happens to open
+    with a closer phrase. The question mark alone must be enough to save it."""
+    assert _is_non_substantive("Thanks, but what about its limitations?") is False
+
+
+def test_is_non_substantive_never_skips_a_long_message_even_without_a_question_mark():
+    """Isolates the word-count gate: no question mark present, so this
+    relies entirely on the message being too long to be a bare closer."""
+    assert _is_non_substantive("thanks but can you also compare it to BERT") is False
+    assert _is_non_substantive("ok what does the paper say about this") is False
+
+
+def test_is_non_substantive_question_mark_veto_beats_an_otherwise_exact_match():
+    """Isolates the question-mark veto specifically: "ok" alone is an exact
+    phrase match, but "ok?" must not skip — genuine confirmation-seeking,
+    not a closer."""
+    assert _is_non_substantive("ok?") is False
+
+
+def test_is_non_substantive_rejects_short_non_closer_phrases():
+    """Isolates the exact-phrase gate: short and question-mark-free is not
+    sufficient on its own — the phrase itself must be a known closer."""
+    assert _is_non_substantive("yes please continue") is False
+    assert _is_non_substantive("tell me more") is False
+
+
+def test_is_non_substantive_empty_message_does_not_skip():
+    assert _is_non_substantive("") is False
+    assert _is_non_substantive("   ") is False
+
+
+def test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrieval_call():
+    papers = [_paper("1111", "Paper One")]
+    session = ChatSession(papers=papers, history=[
+        {"role": "user", "content": "what is RoCoFT?"},
+        {"role": "assistant", "content": "RoCoFT is a parameter-efficient fine-tuning method."},
+    ])
+    mock_client = MagicMock()
+
+    with patch("research_agent.qa.embed_and_index_papers") as mock_embed, \
+         patch("research_agent.qa.get_chroma_collection") as mock_collection, \
+         patch("research_agent.qa.semantic_search") as mock_search:
+        result = ask(session, "Thanks!", client=mock_client)
+
+    assert result["answerable"] is True
+    assert result["answer"] == "You're welcome! Let me know if you have any more questions about these papers."
+    mock_client.chat.completions.create.assert_not_called()  # condense_question never ran
+    mock_client.chat.completions.parse.assert_not_called()  # generate_answer never ran
+    mock_embed.assert_not_called()
+    mock_collection.assert_not_called()
+    mock_search.assert_not_called()
+    assert session.history[-2:] == [
+        {"role": "user", "content": "Thanks!"},
+        {"role": "assistant", "content": "You're welcome! Let me know if you have any more questions about these papers."},
+    ]
+
+
+def test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question():
+    """The real regression test: a message opening with a closer phrase but
+    containing an actual follow-up question must go through the full
+    condense/retrieve/generate pipeline, not the canned response."""
+    papers = [_paper("1111", "Paper One")]
+    session = ChatSession(papers=papers, history=[
+        {"role": "user", "content": "what is RoCoFT?"},
+        {"role": "assistant", "content": "RoCoFT is a parameter-efficient fine-tuning method."},
+    ])
+    schema = _build_answer_schema(["1111"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="What are RoCoFT's limitations?"))],
+        usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+    )
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="RoCoFT's main limitation is X [Paper 1].", cited_paper_ids=["1111"],
+    )
+
+    with patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        result = ask(session, "Thanks, but what about its limitations?", client=mock_client)
+
+    assert result["answerable"] is True
+    assert len(result["cited_papers"]) == 1
+    mock_client.chat.completions.create.assert_called_once()  # condense_question DID run
+    mock_client.chat.completions.parse.assert_called_once()  # generate_answer DID run
+
+
 def test_recent_history_keeps_only_last_n_turns():
     history = []
     for i in range(12):
@@ -208,6 +312,14 @@ if __name__ == "__main__":
     test_ask_with_only_web_articles_no_papers_still_answers()
     test_ask_forces_empty_web_citations_when_model_marks_unanswerable()
     test_ask_forces_empty_citations_when_model_marks_unanswerable()
+    test_is_non_substantive_recognizes_plain_closers()
+    test_is_non_substantive_never_skips_a_real_question_with_a_question_mark()
+    test_is_non_substantive_never_skips_a_long_message_even_without_a_question_mark()
+    test_is_non_substantive_question_mark_veto_beats_an_otherwise_exact_match()
+    test_is_non_substantive_rejects_short_non_closer_phrases()
+    test_is_non_substantive_empty_message_does_not_skip()
+    test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrieval_call()
+    test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question()
     test_recent_history_keeps_only_last_n_turns()
     test_recent_history_is_a_no_op_below_the_cap()
     test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model()
