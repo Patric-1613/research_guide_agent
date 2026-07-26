@@ -312,6 +312,11 @@ def semantic_search(
         get_client().update_current_span(output={"count": 0, "papers": []})
         return []
 
+    if where and any(v == {"$in": []} for v in where.values()):
+        logger.warning("semantic_search: where clause scopes to an empty candidate set (e.g. every upstream search failed), nothing to retrieve")
+        get_client().update_current_span(output={"count": 0, "papers": []})
+        return []
+
     query_vector, tokens_billed = _embed_texts(client, [query])
     cost = tokens_billed / 1_000_000 * PRICE_PER_1M_TOKENS
     logger.info("Embedded query %r: %d tokens billed (~$%.6f)", query, tokens_billed, cost)
