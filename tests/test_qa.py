@@ -1,9 +1,12 @@
 """Deterministic tests for qa.py's non-LLM logic: schema constraints, the
 defensive "no citations if unanswerable" override, empty-pool handling,
 condense-question being skipped on the first turn, and the
-classify_message non-substantive-message gate (qa-langgraph-conversion
-Phase 2). The OpenAI calls are mocked so these run without network access
-or billing.
+classify_message non-substantive-message gate (semantic-classify-message:
+embedding similarity, not exact-match). The OpenAI calls are mocked so
+these run without network access or billing — real embedding similarity
+scores for the adversarial cases live in
+scripts/test_semantic_classify_live.py instead, since that needs a real
+embedding call to mean anything.
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
 from unittest.mock import patch
 
-from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _condense_question, _is_non_substantive, _recent_history, ask
+from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, _condense_question, _recent_history, ask
 from research_agent.schema import Paper, WebArticle
 
 
@@ -111,7 +115,8 @@ def test_ask_forces_empty_web_citations_when_model_marks_unanswerable():
         schema, answerable=False, answer="Can't answer.", cited_paper_ids=[], cited_web_urls=["https://x.com/a"],
     )
 
-    result = ask(session, "unanswerable", client=mock_client)
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)):
+        result = ask(session, "unanswerable", client=mock_client)
 
     assert result["answerable"] is False
     assert result["cited_web_articles"] == []  # forced empty despite model returning a url
@@ -130,7 +135,8 @@ def test_ask_forces_empty_citations_when_model_marks_unanswerable():
         schema, answerable=False, answer="I can't answer this.", cited_paper_ids=["1111"],
     )
 
-    with patch("research_agent.qa.embed_and_index_papers"), \
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
          patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
         result = ask(session, "unanswerable question", client=mock_client)
@@ -139,52 +145,106 @@ def test_ask_forces_empty_citations_when_model_marks_unanswerable():
     assert result["cited_papers"] == []  # forced empty despite model returning an id
 
 
-# --- classify_message: non-substantive-message gate (qa-langgraph-conversion Phase 2) ---
+# --- classify_message: semantic non-substantive-message gate ---
 #
-# "Should skip" cases prove the happy path works; the "should NOT skip"
-# cases are the actual point of this test file — each one isolates a
-# DIFFERENT one of the three independent guards (question mark / word
-# count / exact-phrase match) so a bug in any single guard shows up as a
-# specific failing test, not just "something's wrong somewhere."
+# Two layers of tests. The gating tests below (question mark / word count
+# / empty) are pure, deterministic, and must short-circuit BEFORE any
+# embedding call is made — asserted directly via a MagicMock client whose
+# .embeddings.create is never touched. The threshold-decision tests mock
+# _get_reference_embeddings/_embed_with_cache with small hand-picked
+# vectors so the >=threshold boundary itself is deterministically
+# testable without a real embedding call. Real similarity scores for the
+# actual adversarial phrases ("hii", "thnak you", "thx", ...) are in
+# scripts/test_semantic_classify_live.py — a mocked vector can prove the
+# threshold LOGIC is correct, but only a real embedding call can prove
+# real typos land above it.
 
-def test_is_non_substantive_recognizes_plain_closers():
-    for message in ["thanks!", "Thank you so much!", "ok", "makes sense", "Cool.", "  Got it  "]:
-        assert _is_non_substantive(message) is True, f"expected {message!r} to be treated as non-substantive"
-
-
-def test_is_non_substantive_never_skips_a_real_question_with_a_question_mark():
+def test_classify_non_substantive_question_mark_veto_short_circuits_before_any_embedding_call():
     """The canonical trap: a real follow-up question that happens to open
-    with a closer phrase. The question mark alone must be enough to save it."""
-    assert _is_non_substantive("Thanks, but what about its limitations?") is False
+    with a closer phrase. The question mark alone must be enough to save
+    it — and must never even reach the embedding call."""
+    mock_client = MagicMock()
+    is_skip, category, score = _classify_non_substantive("Thanks, but what about its limitations?", mock_client)
+    assert (is_skip, category, score) == (False, None, 0.0)
+    mock_client.embeddings.create.assert_not_called()
 
 
-def test_is_non_substantive_never_skips_a_long_message_even_without_a_question_mark():
+def test_classify_non_substantive_length_gate_short_circuits_before_any_embedding_call():
     """Isolates the word-count gate: no question mark present, so this
-    relies entirely on the message being too long to be a bare closer."""
-    assert _is_non_substantive("thanks but can you also compare it to BERT") is False
-    assert _is_non_substantive("ok what does the paper say about this") is False
+    relies entirely on the message being too long to be a bare closer —
+    and, same as the question-mark veto, must never reach the embedding
+    call (a real follow-up shouldn't cost an embedding call it can't use)."""
+    mock_client = MagicMock()
+    for message in ["thanks but can you also compare it to BERT", "ok what does the paper say about this"]:
+        is_skip, category, score = _classify_non_substantive(message, mock_client)
+        assert (is_skip, category, score) == (False, None, 0.0), f"expected {message!r} to fail the length gate"
+    mock_client.embeddings.create.assert_not_called()
 
 
-def test_is_non_substantive_question_mark_veto_beats_an_otherwise_exact_match():
-    """Isolates the question-mark veto specifically: "ok" alone is an exact
-    phrase match, but "ok?" must not skip — genuine confirmation-seeking,
-    not a closer."""
-    assert _is_non_substantive("ok?") is False
+def test_classify_non_substantive_content_override_word_short_circuits_before_any_embedding_call():
+    """Isolates the wh-word/imperative-verb guard specifically: short
+    (<=5 words), no question mark — so neither of the other two guards
+    would catch these — real measured evidence showed similarity alone
+    scores these HIGHER than genuine closers ("thanks so explain" 0.6104
+    vs. "sup" 0.5406), so this guard is the only thing protecting them."""
+    mock_client = MagicMock()
+    for message in ["Thanks explain", "Ok cool but why", "Hi define overfitting", "Great but how"]:
+        is_skip, category, score = _classify_non_substantive(message, mock_client)
+        assert (is_skip, category, score) == (False, None, 0.0), f"expected {message!r} to be caught by the content-override guard"
+    mock_client.embeddings.create.assert_not_called()
 
 
-def test_is_non_substantive_rejects_short_non_closer_phrases():
-    """Isolates the exact-phrase gate: short and question-mark-free is not
-    sufficient on its own — the phrase itself must be a known closer."""
-    assert _is_non_substantive("yes please continue") is False
-    assert _is_non_substantive("tell me more") is False
+def test_classify_non_substantive_empty_message_does_not_skip_and_skips_embedding_call():
+    mock_client = MagicMock()
+    for message in ["", "   "]:
+        is_skip, category, score = _classify_non_substantive(message, mock_client)
+        assert (is_skip, category, score) == (False, None, 0.0)
+    mock_client.embeddings.create.assert_not_called()
 
 
-def test_is_non_substantive_empty_message_does_not_skip():
-    assert _is_non_substantive("") is False
-    assert _is_non_substantive("   ") is False
+def test_classify_non_substantive_similarity_at_or_above_threshold_skips_with_matched_category():
+    mock_client = MagicMock()
+    # [0.45, 0.8930] is unit-length (0.45^2 + 0.8930^2 ~= 1), so its cosine
+    # similarity against [1.0, 0.0] is exactly ~0.45 — the real threshold
+    # itself (see _NON_SUBSTANTIVE_SIMILARITY_THRESHOLD's own comment for
+    # how that value was derived from real scores), deliberately chosen to
+    # test the boundary (>=), not just comfortably above it.
+    with patch("research_agent.qa._get_reference_embeddings", return_value={"acknowledgment": [("thanks", [0.45, 0.8930])]}), \
+         patch("research_agent.qa._embed_with_cache", return_value=[1.0, 0.0]):
+        is_skip, category, score = _classify_non_substantive("thnx", mock_client)
+    assert score == pytest.approx(0.45, abs=1e-3)
+    assert category == "acknowledgment"
+    assert is_skip is True
+
+
+def test_classify_non_substantive_similarity_below_threshold_does_not_skip():
+    mock_client = MagicMock()
+    with patch("research_agent.qa._get_reference_embeddings", return_value={"greeting": [("hi", [1.0, 0.0])]}), \
+         patch("research_agent.qa._embed_with_cache", return_value=[0.0, 1.0]):  # orthogonal -> similarity 0.0
+        is_skip, category, score = _classify_non_substantive("what is transfer learning", mock_client)
+    assert score == pytest.approx(0.0)
+    assert category is None
+    assert is_skip is False
+
+
+def test_classify_non_substantive_picks_the_best_scoring_category_across_multiple():
+    mock_client = MagicMock()
+    with patch("research_agent.qa._get_reference_embeddings", return_value={
+        "greeting": [("hi", [0.0, 1.0])],
+        "acknowledgment": [("thanks", [1.0, 0.0])],
+    }), patch("research_agent.qa._embed_with_cache", return_value=[1.0, 0.0]):
+        is_skip, category, score = _classify_non_substantive("thanks", mock_client)
+    assert category == "acknowledgment"  # exact match (similarity 1.0), not greeting (similarity 0.0)
+    assert score == pytest.approx(1.0)
+    assert is_skip is True
 
 
 def test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrieval_call():
+    """Mocks _classify_non_substantive directly rather than the embedding
+    call it makes internally — this test's job is proving ask() reacts
+    correctly to a "skip" verdict, not re-proving the classifier's own
+    similarity math (that's the dedicated _classify_non_substantive tests
+    above, plus real scores in scripts/test_semantic_classify_live.py)."""
     papers = [_paper("1111", "Paper One")]
     session = ChatSession(papers=papers, history=[
         {"role": "user", "content": "what is RoCoFT?"},
@@ -192,7 +252,8 @@ def test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrie
     ])
     mock_client = MagicMock()
 
-    with patch("research_agent.qa.embed_and_index_papers") as mock_embed, \
+    with patch("research_agent.qa._classify_non_substantive", return_value=(True, "acknowledgment", 0.91)), \
+         patch("research_agent.qa.embed_and_index_papers") as mock_embed, \
          patch("research_agent.qa.get_chroma_collection") as mock_collection, \
          patch("research_agent.qa.semantic_search") as mock_search:
         result = ask(session, "Thanks!", client=mock_client)
@@ -279,7 +340,8 @@ def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
         schema, answerable=True, answer="Final answer [Paper 1].", cited_paper_ids=["1111"],
     )
 
-    with patch("research_agent.qa.embed_and_index_papers"), \
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
          patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
         ask(session, "new question", client=mock_client)
@@ -312,12 +374,13 @@ if __name__ == "__main__":
     test_ask_with_only_web_articles_no_papers_still_answers()
     test_ask_forces_empty_web_citations_when_model_marks_unanswerable()
     test_ask_forces_empty_citations_when_model_marks_unanswerable()
-    test_is_non_substantive_recognizes_plain_closers()
-    test_is_non_substantive_never_skips_a_real_question_with_a_question_mark()
-    test_is_non_substantive_never_skips_a_long_message_even_without_a_question_mark()
-    test_is_non_substantive_question_mark_veto_beats_an_otherwise_exact_match()
-    test_is_non_substantive_rejects_short_non_closer_phrases()
-    test_is_non_substantive_empty_message_does_not_skip()
+    test_classify_non_substantive_question_mark_veto_short_circuits_before_any_embedding_call()
+    test_classify_non_substantive_length_gate_short_circuits_before_any_embedding_call()
+    test_classify_non_substantive_content_override_word_short_circuits_before_any_embedding_call()
+    test_classify_non_substantive_empty_message_does_not_skip_and_skips_embedding_call()
+    test_classify_non_substantive_similarity_at_or_above_threshold_skips_with_matched_category()
+    test_classify_non_substantive_similarity_below_threshold_does_not_skip()
+    test_classify_non_substantive_picks_the_best_scoring_category_across_multiple()
     test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrieval_call()
     test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question()
     test_recent_history_keeps_only_last_n_turns()
