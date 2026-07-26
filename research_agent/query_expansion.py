@@ -563,6 +563,12 @@ class PaperPoolSession:
     replaces the reserve — the original Paper objects for already-served
     items aren't stored anywhere else, but suggest_related_titles's
     exclude_titles (Phase 1c) needs the actual title strings, not ids.
+    stage (curation-checkpointer Phase 2): which part of the curation flow
+    this session is in — "curate" (still picking papers), "synthesize"
+    (report generation, Phase 4's future job), or "chat" (Phase 5's future
+    job). Added now, alongside real persistence, since a session's stage
+    is exactly the kind of thing that must survive a process restart —
+    not used by any logic yet in this phase.
     """
 
     topic: str
@@ -570,6 +576,7 @@ class PaperPoolSession:
     cursor: int = 0
     seen_paper_ids: set[str] = field(default_factory=set)
     seen_titles: set[str] = field(default_factory=set)
+    stage: str = "curate"
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""
