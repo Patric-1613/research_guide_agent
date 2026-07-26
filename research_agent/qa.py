@@ -72,7 +72,16 @@ from langgraph.graph import END, START, StateGraph
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
-from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
+from research_agent.embeddings import (
+    _embed_texts,
+    _get_cached,
+    _hash_text,
+    _init_cache_db,
+    _set_cached,
+    embed_and_index_papers,
+    get_chroma_collection,
+    semantic_search,
+)
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import paper_metadata
 
@@ -202,56 +211,162 @@ def _recent_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> 
     return history[-2 * max_turns:]
 
 
-# Phase 2 (qa-langgraph-conversion): a fixed, deterministic set of short
-# conversational closers/acknowledgments. Deliberately an EXACT-match
-# allowlist, not a "starts with" or fuzzy check — "thanks, but can you also
-# tell me about its limitations?" must NOT match, since only the bare
-# closer itself is safe to skip retrieval/generation for. Anything not in
-# this exact set (after normalization) falls through to the real answer
-# path — a false negative here just costs one ordinary LLM call; a false
-# positive means silently never answering a real question.
-_NON_SUBSTANTIVE_PHRASES = {
-    "thanks", "thank you",
-    "thanks a lot", "thanks so much", "thank you so much", "many thanks",
-    "much appreciated", "appreciate it", "appreciated",
-    "ok", "okay", "k", "kk",
-    "cool", "great", "nice", "perfect", "awesome", "cheers", "alright",
-    "got it", "gotcha", "noted", "understood",
-    "sounds good", "makes sense", "good to know",
-    "that helps", "that works", "will do", "sure thing", "no worries", "all good", "fair enough",
+# semantic-classify-message: replaces the old exact-match allowlist with
+# embedding similarity — catches typos ("thnak you"), shorthand ("thx"),
+# and casual variants ("okayy") the old list missed by construction,
+# without enumerating every variant by hand. Deliberately a SMALL, fixed
+# reference set per category, not one entry per typo — the point of using
+# embeddings is that near-paraphrases should land close to their canonical
+# form in vector space on their own. "greeting" is a new category the old
+# exact-match version never covered at all (only closers/acknowledgments
+# were ever in scope).
+_NON_SUBSTANTIVE_REFERENCE_EXAMPLES = {
+    "acknowledgment": [
+        "thank you", "thanks so much", "thanks a lot", "ok got it",
+        "perfect, thanks", "sounds good", "cool, appreciate it",
+    ],
+    "greeting": [
+        "hi", "hello", "hey there", "hi there", "hey",
+    ],
 }
 
-# Independent of the phrase list above — a real follow-up question is
-# almost always longer than this, so anything over the cap is never
-# treated as non-substantive even if it happens to start with a closer
-# phrase (same "thanks, but ..." trap case).
+# Cosine similarity against text-embedding-3-small (embeddings.py's own
+# EMBEDDING_MODEL, same model used everywhere else in this project).
+# NOT the originally-proposed 0.80 — real measured scores showed that
+# guess was badly wrong for short informal phrases: genuine variants like
+# "hii" (0.6349), "ok" (0.5942), and "thnak you" (0.7592) scored nowhere
+# near 0.85+. 0.45 is the evidence-based choice instead: the highest score
+# found among every should-NOT-skip case not already caught by the
+# question-mark/length/content-override guards was 0.4075 ("More
+# please") — 0.45 keeps real margin above that floor while still catching
+# 15/19 tested closer/greeting variants, including every case reported
+# broken. Genuinely ambiguous terse shorthand below the floor ("kk",
+# "coolio") is accepted as a miss — costs one ordinary LLM call, the safe
+# direction. See scripts/test_semantic_classify_live.py for the full
+# real-score dataset this was derived from.
+_NON_SUBSTANTIVE_SIMILARITY_THRESHOLD = 0.45
+
+# Independent of similarity — a real follow-up question is almost always
+# longer than this, so anything over the cap is never treated as
+# non-substantive even if it embeds close to a trivial-message category
+# (same "thanks, but ..." trap case as before).
 _NON_SUBSTANTIVE_MAX_WORDS = 5
 
 _NON_SUBSTANTIVE_RESPONSE = "You're welcome! Let me know if you have any more questions about these papers."
 
+# Fourth, independent guard, added after real measured evidence (not
+# speculative) showed a genuine gap: pure cosine similarity does not
+# reliably separate a real short imperative follow-up ("thanks, explain")
+# from a genuine closer ("gotcha thanks") — "thanks so explain" scored
+# HIGHER (0.6104) than several real closers ("sup" 0.5406, "yo" 0.5737),
+# and neither the length gate (both are well under the word cap) nor the
+# question-mark veto (neither has one) can catch this. A small closed set
+# of wh-words/imperative content-verbs anywhere in the message means
+# "don't skip," regardless of similarity or length — checked against
+# every genuine closer/greeting variant tested (see
+# tests/test_qa.py/scripts/test_semantic_classify_live.py): zero
+# collisions in either direction.
+_NON_SUBSTANTIVE_CONTENT_OVERRIDE_WORDS = {
+    "what", "why", "how", "when", "where", "who", "which",
+    "explain", "describe", "define", "compare", "elaborate",
+    "clarify", "continue", "expand", "tell",
+}
 
-def _is_non_substantive(question: str) -> bool:
-    """Deterministic, deliberately conservative classifier for messages
-    that need neither retrieval nor an LLM call at all (a bare "thanks!"
-    after a real answer). Three independent signals must ALL agree to
-    skip: (1) no question mark anywhere in the raw text, (2) short enough
-    (word-count gate), (3) the normalized text is an EXACT match against a
-    fixed closer-phrase allowlist. Any one of them failing means "don't
-    skip" — biased hard against false positives: wrongly skipping a real
-    question is a far worse failure than occasionally spending a real LLM
-    call on a message that turns out to be a plain acknowledgment.
+# Reference-example embeddings never change at runtime, so they're
+# computed once per process (module-level memoization) rather than
+# re-embedded on every incoming message.
+_reference_embeddings_cache: dict[str, list[tuple[str, list[float]]]] | None = None
+
+
+def _contains_content_override_word(normalized: str) -> bool:
+    for token in normalized.split():
+        stripped = token.rstrip("?!.,;:")
+        if stripped.endswith("'s"):
+            stripped = stripped[:-2]
+        if stripped in _NON_SUBSTANTIVE_CONTENT_OVERRIDE_WORDS:
+            return True
+    return False
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _embed_with_cache(client: OpenAI, text: str) -> list[float]:
+    """Single-string embed that goes through embeddings.py's own
+    persistent, content-hash-keyed cache — the exact same DB
+    embed_and_index_papers() uses, not a second embedding pathway.
+    Classify messages repeat constantly across users/sessions ("thanks",
+    "hi", ...), so after the very first time any given message is ever
+    seen, this is a cache hit: a local SQLite lookup, not a billed API
+    call.
+    """
+    cache_conn = _init_cache_db()
+    try:
+        text_hash = _hash_text(text)
+        cached = _get_cached(cache_conn, text_hash)
+        if cached is not None:
+            return cached
+        (vector,), _ = _embed_texts(client, [text])
+        _set_cached(cache_conn, text_hash, vector, len(text))
+        return vector
+    finally:
+        cache_conn.close()
+
+
+def _get_reference_embeddings(client: OpenAI) -> dict[str, list[tuple[str, list[float]]]]:
+    global _reference_embeddings_cache
+    if _reference_embeddings_cache is not None:
+        return _reference_embeddings_cache
+
+    cache: dict[str, list[tuple[str, list[float]]]] = {}
+    for category, examples in _NON_SUBSTANTIVE_REFERENCE_EXAMPLES.items():
+        cache[category] = [(example, _embed_with_cache(client, example)) for example in examples]
+    _reference_embeddings_cache = cache
+    return cache
+
+
+def _classify_non_substantive(question: str, client: OpenAI) -> tuple[bool, str | None, float]:
+    """Embedding-similarity classifier — same safety principle throughout:
+    a message must satisfy high similarity to a known trivial-message
+    category AND the strict length gate AND have no question mark AND
+    contain no wh-word/imperative content-verb. Four independent guards,
+    all required together; any one failing means "don't skip" — still
+    biased hard against false positives.
+
+    Returns (is_non_substantive, matched_category_or_None,
+    best_similarity_score). The score is returned even on a "don't skip"
+    verdict so callers can log/trace it — visibility into near-misses is
+    what makes the threshold choice tunable rather than a guess.
     """
     if "?" in question:
-        return False
+        return False, None, 0.0
 
     normalized = " ".join(question.strip().lower().split())
     if not normalized:
-        return False
+        return False, None, 0.0
     if len(normalized.split()) > _NON_SUBSTANTIVE_MAX_WORDS:
-        return False
+        return False, None, 0.0
+    if _contains_content_override_word(normalized):
+        return False, None, 0.0
 
-    stripped = normalized.rstrip("!.,;: ")
-    return stripped in _NON_SUBSTANTIVE_PHRASES
+    reference_embeddings = _get_reference_embeddings(client)
+    question_vector = _embed_with_cache(client, normalized)
+
+    best_category, best_score = None, 0.0
+    for category, examples in reference_embeddings.items():
+        for _example, vector in examples:
+            score = _cosine_similarity(question_vector, vector)
+            if score > best_score:
+                best_category, best_score = category, score
+
+    is_skip = best_score >= _NON_SUBSTANTIVE_SIMILARITY_THRESHOLD
+    return is_skip, (best_category if is_skip else None), best_score
 
 
 def _no_sources_result(session: ChatSession, question: str, answer: str) -> dict:
@@ -332,15 +447,22 @@ class QAState(TypedDict):
 
 def _classify_node(state: QAState) -> dict:
     """The graph's first real node (per the Phase 0 design) — runs before
-    even the "do we have any sources" check, since a bare "thanks!" should
-    short-circuit regardless of whether papers exist for this session."""
-    is_skip = _is_non_substantive(state["question"])
+    even the "do we have any sources" check, since a bare "thanks!"/"hi"
+    should short-circuit regardless of whether papers exist for this
+    session."""
+    is_skip, category, score = _classify_non_substantive(state["question"], state["client"])
     if is_skip:
         logger.info(
-            "classify_message: treating %r as non-substantive — skipping retrieval/LLM calls",
-            state["question"],
+            "classify_message: treating %r as non-substantive (category=%r, similarity=%.4f) — "
+            "skipping retrieval/LLM calls",
+            state["question"], category, score,
         )
-        get_client().update_current_span(metadata={"non_substantive_skip": True})
+    # Metadata set on every call, not just when it fires — the score on a
+    # "don't skip" verdict is exactly what makes the threshold tunable
+    # later (how close did real questions get?), not just a pass/fail log.
+    get_client().update_current_span(
+        metadata={"non_substantive_skip": is_skip, "matched_category": category, "similarity_score": round(score, 4)}
+    )
     return {"is_non_substantive": is_skip}
 
 
