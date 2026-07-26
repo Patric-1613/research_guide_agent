@@ -569,6 +569,12 @@ class PaperPoolSession:
     job). Added now, alongside real persistence, since a session's stage
     is exactly the kind of thing that must survive a process restart —
     not used by any logic yet in this phase.
+    target_count/selected_paper_ids (curation-interrupt-loop Phase 3):
+    loop-control bookkeeping, not new pool/ranking/refill logic —
+    target_count is how many papers the user wants total (set once at
+    session start); selected_paper_ids is which of the seen papers were
+    actually picked (ordered, a list not a set, so a UI can show pick
+    order), distinct from seen_paper_ids (shown OR picked).
     """
 
     topic: str
@@ -577,6 +583,8 @@ class PaperPoolSession:
     seen_paper_ids: set[str] = field(default_factory=set)
     seen_titles: set[str] = field(default_factory=set)
     stage: str = "curate"
+    target_count: int = 10
+    selected_paper_ids: list[str] = field(default_factory=list)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

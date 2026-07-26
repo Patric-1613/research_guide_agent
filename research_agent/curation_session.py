@@ -61,6 +61,8 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "seen_paper_ids": list(session.seen_paper_ids),
         "seen_titles": list(session.seen_titles),
         "stage": session.stage,
+        "target_count": session.target_count,
+        "selected_paper_ids": list(session.selected_paper_ids),
     }
 
 
@@ -72,6 +74,8 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         seen_paper_ids=set(d["seen_paper_ids"]),
         seen_titles=set(d["seen_titles"]),
         stage=d["stage"],
+        target_count=d.get("target_count", 10),
+        selected_paper_ids=list(d.get("selected_paper_ids", [])),
     )
 
 
