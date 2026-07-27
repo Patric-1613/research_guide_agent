@@ -41,7 +41,7 @@ from research_agent.ingestion import (
     search_openalex,
     search_semantic_scholar,
 )
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import ranked_paper_metadata, tag_current_trace
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ class _TitleSuggestions(BaseModel):
 @observe(name="suggest_related_titles", as_type="generation", capture_input=False, capture_output=False)
 def suggest_related_titles(
     topic: str, max_titles: int = 5, client: OpenAI | None = None,
-    exclude_titles: list[str] | None = None,
+    exclude_titles: list[str] | None = None, refinement_notes: list[str] | None = None,
 ) -> list[str]:
     """One LLM call. Returns up to max_titles well-known real paper titles
     related to topic, or fewer if the model isn't confident about that many
@@ -130,6 +130,15 @@ def suggest_related_titles(
     (belt and suspenders, same pattern as this project's other
     defensive/enforced-not-just-instructed checks) in case the model
     still repeats one despite being told not to.
+
+    refinement_notes (curation-refinement-and-auto-offer Phase 6f):
+    free-text steering the user typed mid-curation (e.g. "focus on more
+    recent work") — same prompt-level mechanism as exclude_titles above,
+    not post-filtering, since this is genuinely LLM-appropriate guidance
+    (unlike the direct arXiv/Semantic Scholar query, a literal keyword
+    search that natural-language steering would only dilute, not help).
+    Cumulative across the session (never cleared), same growth semantics
+    as exclude_titles' own seen_titles source.
 
     Defensive like the rest of the project's ingestion layer (ingestion.py):
     any failure (API error, malformed/empty response) logs and returns an
@@ -149,6 +158,12 @@ def suggest_related_titles(
             "Suggest DIFFERENT real papers instead. If you genuinely don't know any other well-known, "
             "verbatim-titled real papers on this specific topic beyond the ones listed above, return "
             "fewer titles (even zero) rather than repeating one of them."
+        )
+    if refinement_notes:
+        notes_list = "\n".join(f"- {n}" for n in refinement_notes)
+        user_content += (
+            f"\n\nThe user has additionally asked you to refine your suggestions with this guidance:\n{notes_list}\n\n"
+            "Take this into account when choosing which papers to suggest."
         )
     messages = [
         {"role": "system", "content": SUGGEST_TITLES_SYSTEM_PROMPT},
@@ -325,7 +340,7 @@ async def _search_title_pairs_bounded(
 def build_candidate_pool(
     topic: str, k: int, s2_api_key: str | None = None, client: OpenAI | None = None,
     use_openalex_fallback: bool = False, openalex_mailto: str | None = None,
-    exclude_titles: list[str] | None = None,
+    exclude_titles: list[str] | None = None, refinement_notes: list[str] | None = None,
 ) -> list[Paper]:
     """Steps 1-4 of the pipeline documented on expanded_search() below:
     direct topic search widened to 3xk (floor 15, cap 40) + LLM-suggested-
@@ -372,7 +387,9 @@ def build_candidate_pool(
     )
     original_results = original_arxiv + original_s2
 
-    suggested_titles = suggest_related_titles(topic, client=client, exclude_titles=exclude_titles)
+    suggested_titles = suggest_related_titles(
+        topic, client=client, exclude_titles=exclude_titles, refinement_notes=refinement_notes,
+    )
 
     # Phase 2 (parallelize-search-calls): different titles' pairs now run
     # concurrently too, bounded by _MAX_CONCURRENT_TITLE_PAIRS (see its own
@@ -599,6 +616,37 @@ class PaperPoolSession:
     target_count: int = 10
     selected_paper_ids: list[str] = field(default_factory=list)
     selected_papers: list[Paper] = field(default_factory=list)
+    # curation-chat-web-escalation Phase 5: report is Phase 4's own gap —
+    # generate_report_for_session() produced a report but nothing
+    # persisted it anywhere; this is the running/current report
+    # (regenerated in place as web sources get approved into it), same
+    # dict shape generate_report() returns. chat_history mirrors
+    # qa.ChatSession.history exactly, so each chat turn constructs a real
+    # qa.ChatSession and calls qa.ask() unmodified. web_articles_added is
+    # the running set of web sources ever approved — feeds both ongoing
+    # chat citations (qa.ask()'s existing dual paper+web mechanism) and
+    # report regeneration's expanded source set. pending_web_offer/
+    # pending_report_update are the two "offer, then decide" moments —
+    # set when an offer is made, cleared once the next turn resolves it.
+    report: dict | None = None
+    chat_history: list[dict] = field(default_factory=list)
+    web_articles_added: list[WebArticle] = field(default_factory=list)
+    pending_web_offer: dict | None = None
+    pending_report_update: dict | None = None
+    # curation-refinement-and-auto-offer Phase 6f: free-text guidance the
+    # user typed mid-curation (e.g. "focus on more recent work"),
+    # cumulative like seen_titles above -- flows into
+    # suggest_related_titles' prompt via build_candidate_pool's own
+    # refinement_notes param (see refill_pool), never the literal
+    # arXiv/Semantic Scholar query string. report_covered_web_article_count
+    # is the persisted version of what Phase 6c's frontend banner
+    # originally tracked client-side only (and got wrong): how many of
+    # web_articles_added the CURRENT report actually reflects, so a
+    # report-update offer can be triggered by comparing this against
+    # len(web_articles_added) rather than a "have any ever been added"
+    # check that stays true forever after the first approval.
+    refinement_notes: list[str] = field(default_factory=list)
+    report_covered_web_article_count: int = 0
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""
@@ -647,6 +695,19 @@ def refill_pool(
     exclude_titles can't reach since that only constrains the LLM's own
     title suggestions).
 
+    session.refinement_notes (curation-refinement-and-auto-offer Phase
+    6f) flows into build_candidate_pool()'s refinement_notes the same
+    way seen_titles flows into exclude_titles above — read straight off
+    the session already passed in, no new parameter needed here. Also
+    folded into the RANKING query below (topic + refinement_notes, not
+    bare topic) — confirmed necessary by a real, live e2e run, not
+    assumed: refinement-influenced candidates were genuinely being
+    added to the pool, but rank_full_pool still ranked purely against
+    the original topic, so they could rank below the existing top
+    candidates and never actually surface in the served batch, making
+    the feature look like a no-op to a real user even though the
+    underlying pool had measurably changed.
+
     Returns how many genuinely new (not already in the reserve or seen)
     papers this refill found — 0 is a real, valid signal that the topic
     is exhausted, not an error; callers should surface that to the user
@@ -660,12 +721,16 @@ def refill_pool(
         session.topic, k_for_widening, s2_api_key=s2_api_key, client=client,
         use_openalex_fallback=use_openalex_fallback, openalex_mailto=openalex_mailto,
         exclude_titles=list(session.seen_titles) or None,
+        refinement_notes=list(session.refinement_notes) or None,
     )
     exclude_ids = session.seen_paper_ids | unserved_ids
     genuinely_new = [p for p in fresh_pool if p.paper_id not in exclude_ids]
 
     combined_papers = [p for p, _ in unserved_tail] + genuinely_new
-    ranked, _ = rank_full_pool(session.topic, combined_papers, client=client)
+    ranking_query = session.topic
+    if session.refinement_notes:
+        ranking_query = f"{session.topic}. {' '.join(session.refinement_notes)}"
+    ranked, _ = rank_full_pool(ranking_query, combined_papers, client=client)
 
     session.reserve = ranked
     session.cursor = 0

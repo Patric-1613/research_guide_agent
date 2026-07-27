@@ -1,0 +1,332 @@
+"""curation-chat-web-escalation Phase 5b/5c: baseline chat grounded in a
+curation session's exact selected_papers set (5b), plus the
+offer-and-decide web escalation mechanism on top (5c).
+
+Per the approved Phase 5a design, this is deliberately plain functions,
+not a graph node -- there's no pause/resume/branch decision that needs
+interrupt() here (that's what Phase 3's interrupt-based loop already
+resolved by the time session.stage == "synthesize"), matching
+report.py's own plain-function precedent. The grounding mechanism
+itself is not reimplemented: this module constructs a real
+qa.ChatSession from the session's own state and calls qa.ask()
+completely unmodified, so it inherits qa.py's existing
+Literal-constrained citation guarantee for free instead of re-deriving
+it.
+
+Phase 5c's offer-and-decide design: qa.ask()'s existing answerable=False
+signal (papers/web don't cover the question -- qa.py already computes
+this for its own refusal behavior) is reused as the trigger for
+offering a web search, rather than inventing a second "does this need
+the web" classifier. When answerable is False, chat_turn() appends a
+web-search offer to the answer and records it on
+session.pending_web_offer (just the question -- enough to resume
+without needing interrupt()/a graph). The NEXT chat_turn() call, if a
+pending offer exists, classifies the new message as accept/decline/
+"other" (a genuinely new/unrelated question -- neither yes nor no) via
+a small LLM call, since keyword-matching yes/no phrasing is exactly the
+kind of thing real conversational language breaks in both directions
+(matching qa.py's own reasoning for using embedding similarity instead
+of an exact-match allowlist for acknowledgments). "other" is also the
+safe fallback if the classifier itself refuses to answer -- an
+unresolved offer must never silently persist and get misread as a
+yes/no on some later, unrelated turn.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Literal
+
+from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from research_agent import qa
+from research_agent.query_expansion import PaperPoolSession
+from research_agent.report import regenerate_report_with_new_sources
+from research_agent.web_search import search_web
+
+logger = logging.getLogger(__name__)
+
+
+def _build_chat_session(session: PaperPoolSession) -> qa.ChatSession:
+    """session.chat_history is passed by reference, not copied -- qa.ask()
+    appends turns directly onto the ChatSession's .history list, so this
+    is the same list object as session.chat_history, and the explicit
+    reassignment in ask_in_session() below (rather than relying on that
+    aliasing) is what actually keeps the two in sync regardless of
+    whether qa.py's internals ever start reassigning the list instead of
+    mutating it in place."""
+    return qa.ChatSession(
+        papers=session.selected_papers,
+        web_articles=session.web_articles_added,
+        history=session.chat_history,
+    )
+
+
+def ask_in_session(
+    session: PaperPoolSession,
+    question: str,
+    client: OpenAI | None = None,
+    top_k: int = qa.TOP_K_DEFAULT,
+) -> dict:
+    """Answers `question` grounded in session.selected_papers (and any
+    web_articles_added), updating session.chat_history with the new
+    turn. Returns qa.ask()'s own result dict unchanged: {"answer",
+    "answerable", "cited_papers", "retrieved_papers",
+    "cited_web_articles", "retrieved_web_articles", "trace_id"}.
+
+    No empty-selection guard here -- qa.ask() already handles the
+    no-papers-and-no-web-articles case cleanly (routes to its own
+    "no_sources" path), so re-checking it here would just duplicate
+    that behavior instead of reusing it.
+    """
+    chat_session = _build_chat_session(session)
+    result = qa.ask(chat_session, question, client=client, top_k=top_k)
+    session.chat_history = chat_session.history
+    return result
+
+
+_WEB_OFFER_SUFFIX = " Would you like me to search the web for more on this?"
+
+
+class _OfferResponseIntent(BaseModel):
+    """Fixed 3-way choice, unlike qa.py's per-call dynamic Literals
+    (paper_ids/web_urls) -- there's nothing data-dependent about this
+    schema, so a plain static model is enough. Shared verbatim between
+    the web-search offer (Phase 5c) and the report-update offer (Phase
+    6f) -- not a second classifier, just called with a different
+    offer_description each time (see _classify_offer_response below)."""
+
+    intent: Literal["accept", "decline", "other"] = Field(
+        description=(
+            "accept: the user clearly wants the offer carried out (e.g. 'yes', 'sure', 'go ahead'). "
+            "decline: the user clearly does not want it (e.g. 'no thanks', 'not necessary'). "
+            "other: the message is neither -- a new or unrelated question/statement, not a reply "
+            "to the offer at all. Prefer 'other' whenever it's ambiguous."
+        )
+    )
+
+
+_OFFER_CLASSIFIER_SYSTEM_PROMPT = """You are classifying how a user responded to an assistant's offer.
+
+Classify the user's next message as exactly one of:
+- "accept": clearly wants the offer carried out.
+- "decline": clearly does not want it carried out.
+- "other": neither -- e.g. a new or unrelated question, a change of subject, or anything that isn't primarily a reply to the offer itself.
+
+When in doubt, choose "other" -- only choose accept/decline when the message is unambiguously a response to the offer."""
+
+
+def _classify_offer_response(offer_description: str, message: str, client: OpenAI, model: str = qa.CONDENSE_MODEL) -> str:
+    """curation-refinement-and-auto-offer Phase 6f: generalized from
+    Phase 5c's web-search-only version to take a plain-language
+    description of WHATEVER is being offered, rather than assuming it's
+    always a web search -- reused as-is for the report-update offer
+    (chat_turn() below), not duplicated into a second classifier."""
+    messages = [
+        {"role": "system", "content": _OFFER_CLASSIFIER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"The pending offer was to: {offer_description}\n\n"
+                f"The user's next message: {message!r}"
+            ),
+        },
+    ]
+    response = client.chat.completions.parse(model=model, messages=messages, response_format=_OfferResponseIntent)
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        # Same reasoning as qa.py's own refusal handling: a classifier that
+        # can't decide must not be silently treated as an "accept" (would
+        # trigger an unrequested action) or a "decline" (would silently
+        # drop a real pending offer) -- "other" clears the offer and falls
+        # through to answering the message as an ordinary fresh question,
+        # the same outcome the user gets when their message genuinely was
+        # unrelated to begin with.
+        return "other"
+    return parsed.intent
+
+
+def _maybe_set_web_offer(session: PaperPoolSession, question: str, result: dict) -> dict:
+    if result["answerable"]:
+        return result
+    session.pending_web_offer = {"question": question}
+    augmented_answer = result["answer"] + _WEB_OFFER_SUFFIX
+    if session.chat_history and session.chat_history[-1]["role"] == "assistant":
+        session.chat_history[-1] = {"role": "assistant", "content": augmented_answer}
+    return {**result, "answer": augmented_answer, "web_offer_made": True}
+
+
+def _accept_web_offer(session: PaperPoolSession, client: OpenAI, top_k: int) -> dict:
+    question = session.pending_web_offer["question"]
+    session.pending_web_offer = None
+
+    existing_urls = {a.url for a in session.web_articles_added}
+    try:
+        found = search_web(question)
+    except Exception:
+        # search_web()'s own docstring promises it never raises -- degrades
+        # to [] on missing key, zero results, or any API/network error --
+        # but this project has hit real, recurring flakiness from external
+        # search APIs all session (arXiv, Semantic Scholar), so trusting
+        # that contract alone here would be exactly the kind of assumption
+        # this project's discipline says not to make. Same degrade-to-empty
+        # outcome as a documented failure, just reached defensively instead
+        # of by trusting the callee never to violate its own contract.
+        logger.warning("search_web raised unexpectedly for query %r -- treating as no new results", question, exc_info=True)
+        found = []
+    new_articles = [a for a in found if a.url not in existing_urls]
+    session.web_articles_added.extend(new_articles)
+
+    # Deliberately does NOT run back through _maybe_set_web_offer: if the
+    # re-asked question is still unanswerable even with fresh web results
+    # (or search_web found nothing new at all -- it degrades to [] rather
+    # than raising, see web_search.py), immediately re-offering the same
+    # search the user just accepted would loop pointlessly. A still-open
+    # information gap after a genuine web search attempt is reported
+    # plainly instead.
+    result = ask_in_session(session, question, client=client, top_k=top_k)
+    result = {**result, "web_search_used": True, "new_web_articles_found": len(new_articles)}
+    # curation-refinement-and-auto-offer Phase 6f-3: the "immediately, as
+    # soon as the trigger condition is true" point this design settled
+    # on -- right after new web articles land, not deferred/batched.
+    return _maybe_set_report_update_offer(session, result)
+
+
+_REPORT_UPDATE_OFFER_SUFFIX = " I also found new web source(s) since the report was last generated — want me to update it to include them?"
+
+
+def _maybe_set_report_update_offer(session: PaperPoolSession, result: dict) -> dict:
+    """session.report_covered_web_article_count is the persisted
+    equivalent of what Phase 6c's frontend originally tracked
+    client-side only (and got wrong -- the banner never cleared after
+    regenerating, since "any web article ever added" stays true
+    forever). Comparing it against the CURRENT web_articles_added count
+    is what actually answers "does the report on hand reflect what's
+    been approved so far," not just "has anything ever been approved."
+    """
+    if session.report is None or len(session.web_articles_added) <= session.report_covered_web_article_count:
+        return result
+    session.pending_report_update = {
+        "new_article_count": len(session.web_articles_added) - session.report_covered_web_article_count,
+    }
+    augmented_answer = result["answer"] + _REPORT_UPDATE_OFFER_SUFFIX
+    if session.chat_history and session.chat_history[-1]["role"] == "assistant":
+        session.chat_history[-1] = {"role": "assistant", "content": augmented_answer}
+    return {**result, "answer": augmented_answer, "report_update_offer_made": True}
+
+
+def _accept_report_update(session: PaperPoolSession, message: str, client: OpenAI) -> dict:
+    """Unlike _accept_web_offer, doesn't route through ask_in_session at
+    all -- there's no user question to re-answer here, just a report to
+    regenerate -- so the user/assistant turn is appended directly,
+    mirroring what ask_in_session would have done for any other turn."""
+    session.pending_report_update = None
+    session.report = regenerate_report_with_new_sources(session, client=client)
+    session.report_covered_web_article_count = len(session.web_articles_added)
+
+    answer = "Done — I've updated the report to include the newly approved web source(s)."
+    session.chat_history.append({"role": "user", "content": message})
+    session.chat_history.append({"role": "assistant", "content": answer})
+    return {
+        "answer": answer,
+        "answerable": True,
+        "cited_papers": [],
+        "cited_web_articles": [],
+        "report_updated": True,
+    }
+
+
+def chat_turn(
+    session: PaperPoolSession,
+    message: str,
+    client: OpenAI | None = None,
+    top_k: int = qa.TOP_K_DEFAULT,
+) -> dict:
+    """The Phase 5c entry point: wraps ask_in_session() with the
+    offer-and-decide web escalation mechanism, plus (Phase 6f-3) the
+    same offer-and-decide shape reused for the automatic report-update
+    offer. At most one of pending_web_offer/pending_report_update is
+    ever set at once in practice (the latter is only set from inside
+    _accept_web_offer, by which point the former has already resolved),
+    checked in that order below. If either is currently pending, the
+    message is first classified as accept/decline/other before anything
+    else happens.
+
+    decline and other both route through ask_in_session() rather than a
+    canned short-circuit for decline -- a message the classifier reads
+    as "decline" is not guaranteed to be JUST a decline: "no wait, what
+    about vector databases instead?" starts exactly like a decline but
+    carries a real, unrelated question a canned "ok, sticking to the
+    selected papers" ack would have silently swallowed. qa.ask()'s own
+    classify_message gate -- already proven against this precise kind of
+    trap phrasing via its question-mark veto and content-override words,
+    see qa.py's "thanks, but explain" case -- is what decides whether
+    there's a real question left to answer, not a second, redundant
+    classifier bolted on here that could get it wrong the same way
+    _classify_offer_response just did.
+
+    decline deliberately does NOT then run through _maybe_set_web_offer,
+    unlike other -- confirmed by real testing (not assumed): a decline
+    phrase qa.py's non-substantive gate doesn't happen to recognize
+    (e.g. "nah, papers are enough") falls through to a real answer
+    attempt, which naturally comes back unanswerable since it isn't a
+    real question -- and re-offering a web search built from the
+    decline text itself would be a nonsensical loop. A genuinely new
+    question attached to a decline still gets answered (that's the bug
+    this design fixes); it just doesn't also get its own fresh web
+    offer within the same turn -- asking it again on a later turn will.
+
+    Refuses cleanly if the session hasn't finished curation yet, same
+    guard pattern as report.py's generate_report_for_session(). Guards
+    on stage == "synthesize", not the "chat" value query_expansion.py's
+    own PaperPoolSession docstring names as this phase's stage -- checked
+    directly against the actual state machine (not assumed): nothing in
+    the codebase has ever transitioned a session into "chat"; curation_
+    loop.py only ever sets stage to "synthesize" once curation finishes,
+    the exact same point report.py already treats as "ready." Guarding
+    on a value nothing ever reaches would make chat permanently
+    unusable, so this mirrors report.py's real, reachable gate instead.
+    """
+    if session.stage != "synthesize":
+        raise ValueError(
+            f"Session is not ready for chat (stage={session.stage!r}, expected 'synthesize') -- "
+            "curation must finish (target met, user stopped, or topic exhausted) before chatting."
+        )
+    client = client or OpenAI()
+
+    if session.pending_web_offer is not None:
+        offer_description = f"search the web for more on: {session.pending_web_offer['question']!r}"
+        intent = _classify_offer_response(offer_description, message, client)
+        if intent == "accept":
+            return _accept_web_offer(session, client, top_k)
+        # decline or other: clear the stale offer either way -- neither
+        # case may leave it lingering for a later turn to misread.
+        session.pending_web_offer = None
+        result = ask_in_session(session, message, client=client, top_k=top_k)
+        if intent == "decline":
+            return {**result, "web_offer_declined": True}
+        return _maybe_set_web_offer(session, message, result)
+
+    # curation-refinement-and-auto-offer Phase 6f-3: the SAME
+    # accept/decline/other classifier as above, just a different
+    # offer_description -- reused, not duplicated. Same "unrelated
+    # message must clear the offer" discipline applies here too (the
+    # exact bug class the web offer hit once already): decline and
+    # other both route through ask_in_session() rather than a canned
+    # reply, so a trailing real question attached to either isn't
+    # silently dropped.
+    if session.pending_report_update is not None:
+        new_count = session.pending_report_update.get("new_article_count", 1)
+        offer_description = f"regenerate the literature review report to include {new_count} newly approved web source(s)"
+        intent = _classify_offer_response(offer_description, message, client)
+        if intent == "accept":
+            return _accept_report_update(session, message, client)
+        session.pending_report_update = None
+        result = ask_in_session(session, message, client=client, top_k=top_k)
+        if intent == "decline":
+            return {**result, "report_update_declined": True}
+        return _maybe_set_web_offer(session, message, result)
+
+    result = ask_in_session(session, message, client=client, top_k=top_k)
+    return _maybe_set_web_offer(session, message, result)

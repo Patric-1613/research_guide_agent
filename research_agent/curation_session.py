@@ -40,7 +40,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 # Distinct prefix so curation-session rows in the shared
 # data/qa_checkpoints.sqlite file are easy to identify/scope separately
@@ -51,6 +51,43 @@ THREAD_ID_PREFIX = "curation-session:"
 
 def curation_thread_id(session_id: str) -> str:
     return f"{THREAD_ID_PREFIX}{session_id}"
+
+
+_REPORT_SECTION_NAMES = ("findings", "limitations", "future_scope")
+
+
+def _serialize_report(report: dict | None) -> dict | None:
+    """report.py's generate_report() return shape nests raw Paper objects
+    in each section's cited_papers and in the top-level skipped_papers --
+    not JSON-native, so (same reasoning as every other field here) they
+    must become plain dicts before a checkpointer sees them."""
+    if report is None:
+        return None
+    return {
+        **{
+            name: {
+                "content": report[name]["content"],
+                "cited_papers": [p.to_dict() for p in report[name]["cited_papers"]],
+            }
+            for name in _REPORT_SECTION_NAMES
+        },
+        "skipped_papers": [p.to_dict() for p in report["skipped_papers"]],
+    }
+
+
+def _deserialize_report(d: dict | None) -> dict | None:
+    if d is None:
+        return None
+    return {
+        **{
+            name: {
+                "content": d[name]["content"],
+                "cited_papers": [Paper(**p) for p in d[name]["cited_papers"]],
+            }
+            for name in _REPORT_SECTION_NAMES
+        },
+        "skipped_papers": [Paper(**p) for p in d["skipped_papers"]],
+    }
 
 
 def _session_to_dict(session: PaperPoolSession) -> dict:
@@ -64,6 +101,13 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "target_count": session.target_count,
         "selected_paper_ids": list(session.selected_paper_ids),
         "selected_papers": [paper.to_dict() for paper in session.selected_papers],
+        "report": _serialize_report(session.report),
+        "chat_history": list(session.chat_history),
+        "web_articles_added": [a.to_dict() for a in session.web_articles_added],
+        "pending_web_offer": session.pending_web_offer,
+        "pending_report_update": session.pending_report_update,
+        "refinement_notes": list(session.refinement_notes),
+        "report_covered_web_article_count": session.report_covered_web_article_count,
     }
 
 
@@ -78,6 +122,13 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         target_count=d.get("target_count", 10),
         selected_paper_ids=list(d.get("selected_paper_ids", [])),
         selected_papers=[Paper(**paper_dict) for paper_dict in d.get("selected_papers", [])],
+        report=_deserialize_report(d.get("report")),
+        chat_history=list(d.get("chat_history", [])),
+        web_articles_added=[WebArticle(**a) for a in d.get("web_articles_added", [])],
+        pending_web_offer=d.get("pending_web_offer"),
+        pending_report_update=d.get("pending_report_update"),
+        refinement_notes=list(d.get("refinement_notes", [])),
+        report_covered_web_article_count=d.get("report_covered_web_article_count", 0),
     )
 
 
@@ -124,3 +175,46 @@ def load_curation_session(session_id: str, checkpointer: BaseCheckpointSaver) ->
     if not state.values:
         return None
     return _dict_to_session(state.values["session"])
+
+
+def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:
+    """curation-api-and-ui Phase 6b/6c: powers the frontend's "reviews
+    list" panel — every session ever saved to this checkpointer, as a
+    lightweight summary (not a full PaperPoolSession reconstruction;
+    listing potentially many sessions doesn't need every selected
+    Paper's full data, just enough for a picker UI).
+
+    Verified directly (not assumed) that checkpointer.list(None)
+    enumerates checkpoints across EVERY thread_id in the store, ordered
+    newest-first globally (confirmed against langgraph's real SqliteSaver,
+    not just its docstring) — so deduping to the first-seen row per
+    thread_id gives that thread's latest checkpoint (confirmed against a
+    real resumed session, not just a single-checkpoint one), AND that
+    first-seen order across distinct thread_ids is itself already sorted
+    by each thread's own most-recent activity, descending — no separate
+    sort needed, this is a property of the global newest-first iteration
+    order, not an assumption.
+
+    Returns [] if nothing has ever been saved -- not an error.
+    """
+    seen: dict[str, dict] = {}
+    for tup in checkpointer.list(None):
+        thread_id = tup.config["configurable"]["thread_id"]
+        if not thread_id.startswith(THREAD_ID_PREFIX) or thread_id in seen:
+            continue
+        session_dict = tup.checkpoint.get("channel_values", {}).get("session")
+        if session_dict is not None:
+            seen[thread_id] = session_dict
+
+    return [
+        {
+            "session_id": thread_id[len(THREAD_ID_PREFIX):],
+            "topic": session_dict["topic"],
+            "stage": session_dict["stage"],
+            "selected_count": len(session_dict.get("selected_paper_ids", [])),
+            "target_count": session_dict.get("target_count", 10),
+            "has_report": session_dict.get("report") is not None,
+            "has_chat": len(session_dict.get("chat_history", [])) > 0,
+        }
+        for thread_id, session_dict in seen.items()
+    ]
