@@ -40,7 +40,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 # Distinct prefix so curation-session rows in the shared
 # data/qa_checkpoints.sqlite file are easy to identify/scope separately
@@ -51,6 +51,43 @@ THREAD_ID_PREFIX = "curation-session:"
 
 def curation_thread_id(session_id: str) -> str:
     return f"{THREAD_ID_PREFIX}{session_id}"
+
+
+_REPORT_SECTION_NAMES = ("findings", "limitations", "future_scope")
+
+
+def _serialize_report(report: dict | None) -> dict | None:
+    """report.py's generate_report() return shape nests raw Paper objects
+    in each section's cited_papers and in the top-level skipped_papers --
+    not JSON-native, so (same reasoning as every other field here) they
+    must become plain dicts before a checkpointer sees them."""
+    if report is None:
+        return None
+    return {
+        **{
+            name: {
+                "content": report[name]["content"],
+                "cited_papers": [p.to_dict() for p in report[name]["cited_papers"]],
+            }
+            for name in _REPORT_SECTION_NAMES
+        },
+        "skipped_papers": [p.to_dict() for p in report["skipped_papers"]],
+    }
+
+
+def _deserialize_report(d: dict | None) -> dict | None:
+    if d is None:
+        return None
+    return {
+        **{
+            name: {
+                "content": d[name]["content"],
+                "cited_papers": [Paper(**p) for p in d[name]["cited_papers"]],
+            }
+            for name in _REPORT_SECTION_NAMES
+        },
+        "skipped_papers": [Paper(**p) for p in d["skipped_papers"]],
+    }
 
 
 def _session_to_dict(session: PaperPoolSession) -> dict:
@@ -64,6 +101,11 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "target_count": session.target_count,
         "selected_paper_ids": list(session.selected_paper_ids),
         "selected_papers": [paper.to_dict() for paper in session.selected_papers],
+        "report": _serialize_report(session.report),
+        "chat_history": list(session.chat_history),
+        "web_articles_added": [a.to_dict() for a in session.web_articles_added],
+        "pending_web_offer": session.pending_web_offer,
+        "pending_report_update": session.pending_report_update,
     }
 
 
@@ -78,6 +120,11 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         target_count=d.get("target_count", 10),
         selected_paper_ids=list(d.get("selected_paper_ids", [])),
         selected_papers=[Paper(**paper_dict) for paper_dict in d.get("selected_papers", [])],
+        report=_deserialize_report(d.get("report")),
+        chat_history=list(d.get("chat_history", [])),
+        web_articles_added=[WebArticle(**a) for a in d.get("web_articles_added", [])],
+        pending_web_offer=d.get("pending_web_offer"),
+        pending_report_update=d.get("pending_report_update"),
     )
 
 

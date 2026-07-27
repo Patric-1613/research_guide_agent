@@ -41,7 +41,7 @@ from research_agent.ingestion import (
     search_openalex,
     search_semantic_scholar,
 )
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import ranked_paper_metadata, tag_current_trace
 
 logger = logging.getLogger(__name__)
@@ -599,6 +599,23 @@ class PaperPoolSession:
     target_count: int = 10
     selected_paper_ids: list[str] = field(default_factory=list)
     selected_papers: list[Paper] = field(default_factory=list)
+    # curation-chat-web-escalation Phase 5: report is Phase 4's own gap —
+    # generate_report_for_session() produced a report but nothing
+    # persisted it anywhere; this is the running/current report
+    # (regenerated in place as web sources get approved into it), same
+    # dict shape generate_report() returns. chat_history mirrors
+    # qa.ChatSession.history exactly, so each chat turn constructs a real
+    # qa.ChatSession and calls qa.ask() unmodified. web_articles_added is
+    # the running set of web sources ever approved — feeds both ongoing
+    # chat citations (qa.ask()'s existing dual paper+web mechanism) and
+    # report regeneration's expanded source set. pending_web_offer/
+    # pending_report_update are the two "offer, then decide" moments —
+    # set when an offer is made, cleared once the next turn resolves it.
+    report: dict | None = None
+    chat_history: list[dict] = field(default_factory=list)
+    web_articles_added: list[WebArticle] = field(default_factory=list)
+    pending_web_offer: dict | None = None
+    pending_report_update: dict | None = None
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

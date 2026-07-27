@@ -21,7 +21,7 @@ from research_agent.curation_session import (
 )
 from research_agent.qa import sqlite_checkpointer
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 
 def _paper(pid: str) -> Paper:
@@ -114,6 +114,60 @@ def test_saving_again_under_the_same_session_id_updates_not_duplicates():
         assert loaded.seen_paper_ids == {"p0"}
 
 
+def test_phase5_fields_roundtrip_including_nested_papers_inside_report():
+    """curation-chat-web-escalation Phase 5b: report/chat_history/
+    web_articles_added/pending_web_offer/pending_report_update are new
+    fields on PaperPoolSession. report specifically nests raw Paper
+    objects inside each section's cited_papers and in skipped_papers --
+    the same deprecation-warning trap Phase 2 already solved for the
+    top-level fields, so this test exists to prove
+    _serialize_report/_deserialize_report actually close that gap rather
+    than just trusting the round-trip API worked."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited = _paper("p0")
+        skipped = _paper("p1")
+        report = {
+            "findings": {"content": "papers show X", "cited_papers": [cited]},
+            "limitations": {"content": "no major gaps", "cited_papers": []},
+            "future_scope": {"content": "future work on Y", "cited_papers": [cited]},
+            "skipped_papers": [skipped],
+        }
+        web_article = WebArticle(
+            title="A Survey", url="https://example.com/survey",
+            snippet="a snippet", published_date="2024-01-01", source_domain="example.com",
+        )
+        session = PaperPoolSession(
+            topic="parameter-efficient fine-tuning",
+            reserve=[(_paper("p0"), 0.9), (_paper("p1"), 0.8)],
+            stage="synthesize",
+            selected_paper_ids=["p0", "p1"],
+            selected_papers=[cited, skipped],
+            report=report,
+            chat_history=[{"role": "user", "content": "what do these papers find?"}],
+            web_articles_added=[web_article],
+            pending_web_offer={"question": "what about scaling laws?"},
+            pending_report_update={"reason": "new web source approved"},
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-phase5", cp)
+            loaded = load_curation_session("session-phase5", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert loaded.report["findings"]["content"] == "papers show X"
+        assert all(isinstance(p, Paper) for p in loaded.report["findings"]["cited_papers"])
+        assert [p.paper_id for p in loaded.report["findings"]["cited_papers"]] == ["p0"]
+        assert [p.paper_id for p in loaded.report["skipped_papers"]] == ["p1"]
+        assert loaded.chat_history == [{"role": "user", "content": "what do these papers find?"}]
+        assert len(loaded.web_articles_added) == 1
+        assert isinstance(loaded.web_articles_added[0], WebArticle)
+        assert loaded.web_articles_added[0].url == "https://example.com/survey"
+        assert loaded.pending_web_offer == {"question": "what about scaling laws?"}
+        assert loaded.pending_report_update == {"reason": "new web source approved"}
+
+
 def test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wrong_data():
     """Simulates a crash mid-write by truncating the file after a real
     save — the point isn't that this must not error (a genuinely
@@ -142,5 +196,6 @@ if __name__ == "__main__":
     test_load_nonexistent_session_returns_none_not_an_error()
     test_two_sessions_do_not_cross_contaminate()
     test_saving_again_under_the_same_session_id_updates_not_duplicates()
+    test_phase5_fields_roundtrip_including_nested_papers_inside_report()
     test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wrong_data()
     print("All curation_session tests passed.")
