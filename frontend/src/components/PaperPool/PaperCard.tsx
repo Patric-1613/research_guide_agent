@@ -3,13 +3,18 @@ import type { PaperOut } from '../../api/types'
 interface PaperCardProps {
   paper: PaperOut
   isNew?: boolean
+  // Phase 7: shown in the Review-mode candidate browser (the whole point
+  // of that panel is picking papers with enough information to actually
+  // judge them), omitted in compact contexts like the pool summary's
+  // Selected list, where just the title is enough.
+  showAbstract?: boolean
   action:
     | { kind: 'add'; onAdd: () => void }
     | { kind: 'remove'; onRemove: () => void }
     | { kind: 'none' }
 }
 
-export function PaperCard({ paper, isNew, action }: PaperCardProps) {
+export function PaperCard({ paper, isNew, showAbstract, action }: PaperCardProps) {
   const metaParts = [paper.venue, paper.year != null ? String(paper.year) : null].filter(Boolean)
   return (
     <div data-testid={`paper-card-${paper.paper_id}`} className="relative flex flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5">
@@ -35,6 +40,11 @@ export function PaperCard({ paper, isNew, action }: PaperCardProps) {
         {metaParts.join(' · ')}
         {paper.citation_count != null && <span className="text-text-muted"> · {paper.citation_count} citations</span>}
       </p>
+      {showAbstract && (
+        <p className="text-xs leading-relaxed text-text-secondary">
+          {paper.abstract || 'No abstract available.'}
+        </p>
+      )}
       {action.kind === 'add' && (
         <button
           type="button"

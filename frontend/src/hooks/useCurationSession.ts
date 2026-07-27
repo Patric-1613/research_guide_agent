@@ -41,7 +41,7 @@ interface UseCurationSessionResult {
   turnEvents: TurnEvent[]
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
-  submitPicks: (pickedIds: string[], stop?: boolean) => Promise<void>
+  submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string) => Promise<void>
   // Return the freshly-loaded state (not void) so a caller can react to
   // exactly what changed as a RESULT of this action -- e.g. App.tsx uses
   // this to know how many web_articles_added a report generation/
@@ -119,7 +119,7 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   const submitPicks = useCallback(
-    (pickedIds: string[], stop = false) =>
+    (pickedIds: string[], stop = false, refinement?: string) =>
       runAction(async () => {
         if (!sessionId || !state) return
         const completedTurn: TurnEvent = {
@@ -129,7 +129,7 @@ export function useCurationSession(): UseCurationSessionResult {
           reserveRemainingAfter: state.reserve_remaining,
           pickedPaperIds: pickedIds,
         }
-        await curationApi.picks(sessionId, { picked_paper_ids: pickedIds, stop })
+        await curationApi.picks(sessionId, { picked_paper_ids: pickedIds, stop, refinement })
         setTurnEvents((prev) => [...prev, completedTurn])
         await loadState(sessionId)
       }),

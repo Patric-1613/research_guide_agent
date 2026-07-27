@@ -6,7 +6,7 @@ interface ReviewCardProps {
   onSelect: () => void
 }
 
-function statusLabel(review: CurationReviewSummary): { text: string; tone: 'muted' | 'accent' | 'success' } {
+export function statusLabel(review: CurationReviewSummary): { text: string; tone: 'muted' | 'accent' | 'success' } {
   if (review.has_report && review.has_chat) return { text: 'Report + Chat', tone: 'success' }
   if (review.has_report) return { text: 'Report', tone: 'accent' }
   if (review.stage === 'curate') return { text: 'Curating', tone: 'muted' }

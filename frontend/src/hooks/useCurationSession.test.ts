@@ -20,7 +20,7 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
   return {
     session_id: 's1', topic: 'transformers', stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
-    reserve_remaining: 0, report: null, chat_history: [], web_articles_added: [],
+    reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null,
     ...overrides,
   }
@@ -60,7 +60,7 @@ describe('useCurationSession', () => {
     const turnResponse: CurationTurnResponse = {
       session_id: 'new-session', stage: 'curate', target_count: 10,
       selected_paper_ids: [], batch: [{ paper_id: 'p1' } as never], stop_reason: null,
-      refilled: false, reserve_remaining: 5,
+      refilled: false, reserve_remaining: 5, refinement_notes: [],
     }
     vi.mocked(curationApi.start).mockResolvedValue(turnResponse)
     vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'new-session' }))
@@ -89,7 +89,7 @@ describe('useCurationSession', () => {
 
     vi.mocked(curationApi.picks).mockResolvedValue({
       session_id: 's1', stage: 'curate', target_count: 10, selected_paper_ids: ['p1'],
-      batch: [], stop_reason: null, refilled: false, reserve_remaining: 6,
+      batch: [], stop_reason: null, refilled: false, reserve_remaining: 6, refinement_notes: [],
     })
     vi.mocked(curationApi.getState).mockResolvedValue(fullState({ selected_paper_ids: ['p1'] }))
 

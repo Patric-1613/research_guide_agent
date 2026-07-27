@@ -52,6 +52,7 @@ export interface CurationTurnResponse {
   stop_reason: string | null
   refilled: boolean
   reserve_remaining: number
+  refinement_notes: string[]
 }
 
 export interface ReportSectionOut {
@@ -77,6 +78,7 @@ export interface CurationStateResponse {
   pending_batch: PaperOut[] | null
   refilled: boolean
   reserve_remaining: number
+  refinement_notes: string[]
   report: ReportOut | null
   chat_history: ChatTurn[]
   web_articles_added: WebArticleOut[]
@@ -93,6 +95,9 @@ export interface CurationChatResponse {
   web_offer_declined: boolean
   web_search_used: boolean
   new_web_articles_found: number | null
+  report_update_offer_made: boolean
+  report_update_declined: boolean
+  report_updated: boolean
   chat_history: ChatTurn[]
 }
 
@@ -115,6 +120,7 @@ export interface CurationStartRequest {
 export interface CurationPicksRequest {
   picked_paper_ids: string[]
   stop?: boolean
+  refinement?: string | null
 }
 
 export interface CurationChatRequest {
