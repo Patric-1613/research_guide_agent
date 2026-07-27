@@ -239,6 +239,50 @@ def test_refill_pool_excludes_seen_papers_and_merges_with_unserved_tail():
     assert session.cursor == 0  # reset — new reserve is guaranteed seen-free
 
 
+def test_refill_pool_ranks_against_topic_plus_refinement_when_notes_are_present():
+    """curation-refinement-and-auto-offer Phase 6f-2 follow-up: caught by
+    a real, live e2e run (not assumed) -- ranking purely against the bare
+    topic could leave refinement-influenced candidates ranked below the
+    existing top results, so the served batch never actually changed even
+    though the underlying pool did. Ranking against topic + refinement
+    notes instead gives newly-relevant candidates a real chance to
+    surface."""
+    from research_agent.query_expansion import PaperPoolSession, refill_pool
+
+    reserve = [(_paper(f"p{i}"), 1.0 - i * 0.01) for i in range(12)]
+    session = PaperPoolSession(
+        topic="parameter-efficient fine-tuning", reserve=reserve, cursor=10,
+        refinement_notes=["focus on more recent work"],
+    )
+    fresh_papers = [_paper("new1")]
+
+    with patch("research_agent.query_expansion.build_candidate_pool", return_value=fresh_papers), \
+         patch("research_agent.query_expansion.rank_full_pool", side_effect=_identity_rank) as mock_rank:
+        refill_pool(session, client=MagicMock())
+
+    mock_rank.assert_called_once()
+    ranking_query = mock_rank.call_args.args[0]
+    assert ranking_query == "parameter-efficient fine-tuning. focus on more recent work"
+
+
+def test_refill_pool_ranks_against_bare_topic_when_no_refinement_notes():
+    """Regression proof: a session with no refinement (the default,
+    every existing caller) must rank byte-identically to before this
+    fix -- the bare topic string, not something silently different."""
+    from research_agent.query_expansion import PaperPoolSession, refill_pool
+
+    reserve = [(_paper(f"p{i}"), 1.0 - i * 0.01) for i in range(12)]
+    session = PaperPoolSession(topic="parameter-efficient fine-tuning", reserve=reserve, cursor=10)
+    fresh_papers = [_paper("new1")]
+
+    with patch("research_agent.query_expansion.build_candidate_pool", return_value=fresh_papers), \
+         patch("research_agent.query_expansion.rank_full_pool", side_effect=_identity_rank) as mock_rank:
+        refill_pool(session, client=MagicMock())
+
+    ranking_query = mock_rank.call_args.args[0]
+    assert ranking_query == "parameter-efficient fine-tuning"
+
+
 # --- Phase 1c: suggest_related_titles's exclude_titles ---
 
 def _fake_title_suggestion_client(titles: list[str]) -> MagicMock:
@@ -286,6 +330,47 @@ def test_suggest_related_titles_defensively_filters_repeated_titles_despite_prom
     client = _fake_title_suggestion_client(["Attention Is All You Need", "A Genuinely New Paper"])
     titles = suggest_related_titles("topic", client=client, exclude_titles=["Attention Is All You Need"])
     assert titles == ["A Genuinely New Paper"]
+
+
+# --- curation-refinement-and-auto-offer Phase 6f: refinement_notes ---
+# Same prompt-level mechanism as exclude_titles above (not post-filtering)
+# -- mirrors that phase's own three tests exactly: real guidance reaches
+# the prompt, omitting it changes nothing, and it composes with
+# exclude_titles rather than replacing it.
+
+def test_suggest_related_titles_prompt_includes_refinement_guidance_when_provided():
+    client = _fake_title_suggestion_client(["A New Paper"])
+    suggest_related_titles("topic", client=client, refinement_notes=["focus on more recent work"])
+
+    sent_messages = client.chat.completions.parse.call_args.kwargs["messages"]
+    user_content = sent_messages[-1]["content"]
+    assert "focus on more recent work" in user_content
+    assert "refine your suggestions" in user_content
+
+
+def test_suggest_related_titles_no_refinement_prompt_unchanged_from_before():
+    """Regression proof: omitting refinement_notes (the default) must
+    send the EXACT prompt text this function always sent."""
+    client = _fake_title_suggestion_client(["A New Paper"])
+    suggest_related_titles("my topic", max_titles=5, client=client)
+
+    sent_messages = client.chat.completions.parse.call_args.kwargs["messages"]
+    user_content = sent_messages[-1]["content"]
+    assert user_content == "Topic: my topic\n\nSuggest up to 5 well-known real papers on this topic."
+
+
+def test_suggest_related_titles_refinement_and_exclusion_both_present_when_both_given():
+    client = _fake_title_suggestion_client(["A New Paper"])
+    suggest_related_titles(
+        "topic", client=client,
+        exclude_titles=["Attention Is All You Need"],
+        refinement_notes=["focus on more recent work"],
+    )
+
+    sent_messages = client.chat.completions.parse.call_args.kwargs["messages"]
+    user_content = sent_messages[-1]["content"]
+    assert "Attention Is All You Need" in user_content
+    assert "focus on more recent work" in user_content
 
 
 # --- Phase 1d: adversarial edge cases ---
@@ -372,9 +457,14 @@ if __name__ == "__main__":
     test_serve_next_batch_returns_non_overlapping_batches_and_advances_cursor()
     test_needs_refill_triggers_exactly_when_remaining_drops_below_batch_size()
     test_refill_pool_excludes_seen_papers_and_merges_with_unserved_tail()
+    test_refill_pool_ranks_against_topic_plus_refinement_when_notes_are_present()
+    test_refill_pool_ranks_against_bare_topic_when_no_refinement_notes()
     test_suggest_related_titles_prompt_includes_exclusion_list_when_provided()
     test_suggest_related_titles_no_exclusion_list_prompt_unchanged_from_before()
     test_suggest_related_titles_defensively_filters_repeated_titles_despite_prompt()
+    test_suggest_related_titles_prompt_includes_refinement_guidance_when_provided()
+    test_suggest_related_titles_no_refinement_prompt_unchanged_from_before()
+    test_suggest_related_titles_refinement_and_exclusion_both_present_when_both_given()
     test_needs_refill_is_true_from_the_start_when_initial_pool_is_smaller_than_batch_size()
     test_serve_next_batch_on_empty_reserve_returns_empty_list_without_crashing()
     test_refill_pool_when_topic_genuinely_exhausted_returns_zero_without_crashing()

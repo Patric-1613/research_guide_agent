@@ -393,6 +393,92 @@ def test_get_curation_state_surfaces_refilled_for_the_currently_pending_batch():
         assert state["refilled"] is False
 
 
+def test_refinement_forces_a_refill_even_when_the_pool_does_not_need_one():
+    """curation-refinement-and-auto-offer Phase 6f: refinement is a
+    "change the search now" request -- it must force a refill on the
+    SAME turn it's submitted, not wait for the reserve to naturally run
+    low. Reserve here is large enough (25 papers, 10 served) that
+    needs_refill() alone would say False."""
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks1 = batch1_ids[:2]  # remaining after: 25-10=15, well above BATCH_SIZE=10
+
+            mock_build.assert_not_called()
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=picks1, refinement="focus on more recent work",
+                config={"client": MagicMock()},
+            )
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["refinement_notes"] == ["focus on more recent work"]
+        assert result["session"]["refinement_notes"] == ["focus on more recent work"]
+
+
+def test_refinement_notes_accumulate_across_multiple_refinements():
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=batch1_ids[:1], refinement="focus on more recent work",
+                config={"client": MagicMock()},
+            )
+            assert result["session"]["refinement_notes"] == ["focus on more recent work"]
+
+            batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=batch2_ids[:1], refinement="prefer applied over theoretical work",
+                config={"client": MagicMock()},
+            )
+
+        assert result["session"]["refinement_notes"] == [
+            "focus on more recent work", "prefer applied over theoretical work",
+        ]
+        # both accumulated notes reach the SECOND refill's build_candidate_pool call
+        assert mock_build.call_args.kwargs["refinement_notes"] == [
+            "focus on more recent work", "prefer applied over theoretical work",
+        ]
+
+
+def test_no_refinement_does_not_force_a_refill_or_touch_refinement_notes():
+    """Regression proof: a resume with no refinement text (the default,
+    every existing caller) behaves byte-identically to before this
+    feature existed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2])
+
+        assert result["refilled"] is False
+        assert result["session"]["refinement_notes"] == []
+
+
 if __name__ == "__main__":
     test_single_turn_interrupt_then_resume_reaches_target()
     test_multi_turn_loop_continues_across_batches_until_target_met()
@@ -410,4 +496,7 @@ if __name__ == "__main__":
     test_refilled_is_false_on_the_first_turn_when_the_pool_is_already_large_enough()
     test_refilled_is_true_exactly_on_the_turn_that_triggers_a_real_refill_and_resets_after()
     test_get_curation_state_surfaces_refilled_for_the_currently_pending_batch()
+    test_refinement_forces_a_refill_even_when_the_pool_does_not_need_one()
+    test_refinement_notes_accumulate_across_multiple_refinements()
+    test_no_refinement_does_not_force_a_refill_or_touch_refinement_notes()
     print("All curation_loop tests passed.")

@@ -429,3 +429,250 @@ def test_chat_turn_refuses_when_session_has_not_finished_curation():
     except ValueError as e:
         assert "curate" in str(e)
     mock_client.chat.completions.parse.assert_not_called()
+
+
+# --- curation-refinement-and-auto-offer Phase 6f-3: automatic report-update offer ---
+# Same rigor as Phase 5c's web-offer testing above, including the exact
+# bug classes found there (an ignored offer must not persist; a
+# decline-shaped message with a real trailing question must not be
+# silently dropped).
+
+def _report_stub(cited_papers: list[Paper] | None = None) -> dict:
+    section = {"content": "content", "cited_papers": cited_papers or []}
+    return {
+        "findings": section, "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []}, "skipped_papers": [],
+    }
+
+
+def test_accept_web_offer_sets_pending_report_update_when_report_becomes_stale():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "what's new in 2026?"},
+        report=_report_stub(), report_covered_web_article_count=0,
+    )
+    new_article = WebArticle(title="2026 roundup", url="https://x.com/roundup", snippet="s", published_date=None, source_domain="x.com")
+    schema = _build_answer_schema(["p1"], ["https://x.com/roundup"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=True, answer="Per [Web 1], ...", cited_paper_ids=[], cited_web_urls=["https://x.com/roundup"]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[new_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert result["report_update_offer_made"] is True
+    assert result["answer"].endswith("want me to update it to include them?")
+    assert session.pending_report_update == {"new_article_count": 1}
+    assert session.chat_history[-1]["content"] == result["answer"]
+
+
+def test_accept_web_offer_does_not_offer_report_update_when_no_report_exists():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "what's new in 2026?"}, report=None,
+    )
+    new_article = WebArticle(title="2026 roundup", url="https://x.com/roundup", snippet="s", published_date=None, source_domain="x.com")
+    schema = _build_answer_schema(["p1"], ["https://x.com/roundup"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=True, answer="Per [Web 1], ...", cited_paper_ids=[], cited_web_urls=["https://x.com/roundup"]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[new_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert "report_update_offer_made" not in result
+    assert session.pending_report_update is None
+
+
+def test_accept_web_offer_does_not_offer_report_update_when_report_already_covers_current_articles():
+    """search_web() finds nothing genuinely NEW (already-known URL) --
+    web_articles_added doesn't grow past what the report already
+    covers, so no offer should fire even though a report exists."""
+    papers = [_paper("p1", "RoCoFT")]
+    existing_article = WebArticle(title="Old roundup", url="https://x.com/old", snippet="s", published_date=None, source_domain="x.com")
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "what's new in 2026?"},
+        report=_report_stub(), report_covered_web_article_count=1,
+        web_articles_added=[existing_article],
+    )
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Still not covered.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert "report_update_offer_made" not in result
+    assert session.pending_report_update is None
+
+
+def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
+    papers = [_paper("p1", "RoCoFT")]
+    new_article = WebArticle(title="2026 roundup", url="https://x.com/roundup", snippet="s", published_date=None, source_domain="x.com")
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        report=_report_stub(), report_covered_web_article_count=0,
+        web_articles_added=[new_article],
+        pending_report_update={"new_article_count": 1},
+    )
+    updated_report = _report_stub(cited_papers=[papers[0]])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_intent_response("accept")
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources", return_value=updated_report) as mock_regen:
+        result = chat_turn(session, "yes, please update it", client=mock_client)
+
+    mock_regen.assert_called_once_with(session, client=mock_client)
+    assert session.pending_report_update is None
+    assert session.report is updated_report
+    assert session.report_covered_web_article_count == 1
+    assert result["report_updated"] is True
+    assert session.chat_history[-2:] == [
+        {"role": "user", "content": "yes, please update it"},
+        {"role": "assistant", "content": result["answer"]},
+    ]
+
+
+def test_chat_turn_report_update_decline_clears_offer_without_regenerating():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        report=_report_stub(), report_covered_web_article_count=0,
+        pending_report_update={"new_article_count": 1},
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_intent_response("decline")
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources") as mock_regen, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(True, "acknowledgment", 0.9)):
+        result = chat_turn(session, "no thanks", client=mock_client)
+
+    mock_regen.assert_not_called()
+    assert session.pending_report_update is None
+    assert result["report_update_declined"] is True
+    assert session.report_covered_web_article_count == 0  # unchanged -- report is still the old one
+
+
+def test_chat_turn_report_update_decline_with_trailing_real_question_does_not_silently_drop_it():
+    """Reapplies the EXACT Phase 5c fix to the report-update offer: a
+    message that reads as "decline" is not guaranteed to be JUST a
+    decline."""
+    papers = [_paper("p1", "RoCoFT"), _paper("p2", "Vector DB Survey")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1", "p2"], selected_papers=papers, stage="synthesize",
+        report=_report_stub(), report_covered_web_article_count=0,
+        pending_report_update={"new_article_count": 1},
+    )
+    schema = _build_answer_schema(["p1", "p2"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("decline"),
+        _mock_parse_response(schema, answerable=True, answer="Vector DBs are covered in [Paper 2].", cited_paper_ids=["p2"]),
+    ]
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources") as mock_regen, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[1], 0.9)]):
+        result = chat_turn(session, "no wait, what about vector databases instead?", client=mock_client)
+
+    mock_regen.assert_not_called()
+    assert session.pending_report_update is None
+    assert result["report_update_declined"] is True
+    assert result["answerable"] is True
+    assert [p.paper_id for p in result["cited_papers"]] == ["p2"]
+
+
+def test_chat_turn_report_update_decline_never_rearms_any_offer_even_if_the_decline_text_comes_back_unanswerable():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        report=_report_stub(), report_covered_web_article_count=0,
+        pending_report_update={"new_article_count": 1},
+    )
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("decline"),
+        _mock_parse_response(schema, answerable=False, answer="Not a question I can answer.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources") as mock_regen, \
+         patch("research_agent.curation_chat.search_web") as mock_search, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        result = chat_turn(session, "nah, don't bother", client=mock_client)
+
+    mock_regen.assert_not_called()
+    mock_search.assert_not_called()
+    assert session.pending_report_update is None
+    assert session.pending_web_offer is None  # not re-armed from the decline text either
+    assert "report_update_offer_made" not in result
+    assert "web_offer_made" not in result
+
+
+def test_chat_turn_report_update_unrelated_message_clears_offer_and_answers_new_question():
+    """The exact Phase 6f constraint 2 requirement: a next message that
+    neither clearly accepts nor declines a pending report-update offer
+    must still clear pending_report_update -- not leave it lingering to
+    be misread as a yes/no on some later, unrelated turn. Mirrors Phase
+    5c's own web-offer "other" test exactly."""
+    papers = [_paper("p1", "RoCoFT"), _paper("p2", "LoRA")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1", "p2"], selected_papers=papers, stage="synthesize",
+        report=_report_stub(), report_covered_web_article_count=0,
+        pending_report_update={"new_article_count": 1},
+    )
+    schema = _build_answer_schema(["p1", "p2"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("other"),
+        _mock_parse_response(schema, answerable=True, answer="LoRA injects low-rank matrices [Paper 2].", cited_paper_ids=["p2"]),
+    ]
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources") as mock_regen, \
+         patch("research_agent.curation_chat.search_web") as mock_search, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[1], 0.9)]):
+        result = chat_turn(session, "actually, what does LoRA inject into each layer?", client=mock_client)
+
+    mock_regen.assert_not_called()
+    mock_search.assert_not_called()
+    assert session.pending_report_update is None
+    assert result["answerable"] is True
+    assert [p.paper_id for p in result["cited_papers"]] == ["p2"]
+    assert "report_update_offer_made" not in result
+    assert "report_update_declined" not in result

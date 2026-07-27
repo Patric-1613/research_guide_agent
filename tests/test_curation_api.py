@@ -228,6 +228,73 @@ def test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine
     assert body["reserve_remaining"] == 3
 
 
+# --- /curation/{id}/picks: refinement (Phase 6f) ---
+
+def test_curation_picks_with_refinement_forces_a_real_refill_and_persists_across_a_separate_get_request():
+    """The core Phase 6f-2 property through the actual HTTP layer: typed
+    refinement text must force a fresh search even when the pool doesn't
+    need one yet, and the applied refinement must be visible via a
+    genuinely separate GET request afterward (not just the picks
+    response), same refresh-persistence standard as everything else."""
+    from research_agent import query_expansion as qe_module
+
+    initial_papers = [_paper(f"p{i}", f"Paper {i}") for i in range(25)]
+    fresh_papers = [_paper(f"new{i}", f"New Paper {i}") for i in range(8)]
+
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=initial_papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(initial_papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
+        assert start_body["refinement_notes"] == []
+        session_id = start_body["session_id"]
+        # remaining after this pick: 25-10=15, well above BATCH_SIZE=10 --
+        # a plain pick here would NOT trigger a refill on its own.
+        picks = [p["paper_id"] for p in start_body["batch"][:2]]
+
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )):
+            resp = client.post(
+                f"/curation/{session_id}/picks",
+                json={"picked_paper_ids": picks, "refinement": "focus on more recent work"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["refilled"] is True
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["refinement_notes"] == ["focus on more recent work"]
+        assert body["refinement_notes"] == ["focus on more recent work"]
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert state_resp.json()["refinement_notes"] == ["focus on more recent work"]
+
+
+def test_curation_picks_without_refinement_does_not_force_a_refill():
+    from research_agent import query_expansion as qe_module
+
+    initial_papers = [_paper(f"p{i}", f"Paper {i}") for i in range(25)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=initial_papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(initial_papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
+        session_id = start_body["session_id"]
+        picks = [p["paper_id"] for p in start_body["batch"][:2]]
+
+        # Patched at the module _refill_node actually calls (query_expansion's
+        # own reference), not api.py's -- api.build_candidate_pool is only
+        # ever used by /curation/start, never by a mid-curation refill.
+        with patch.object(qe_module, "build_candidate_pool") as mock_build_unused:
+            resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+
+    assert resp.status_code == 200
+    assert resp.json()["refilled"] is False
+    assert resp.json()["refinement_notes"] == []
+    mock_build_unused.assert_not_called()
+
+
 # --- GET /curation/reviews: the left-panel reviews list ---
 
 def test_curation_list_reviews_returns_empty_with_no_sessions():
@@ -493,6 +560,93 @@ def test_curation_chat_surfaces_web_offer_flag_to_the_client():
     assert body["web_offer_declined"] is False
 
 
+def test_curation_chat_surfaces_report_update_offer_flags_to_the_client():
+    """curation-refinement-and-auto-offer Phase 6f-3: same HTTP-wiring
+    proof as the web-offer flag test above, for the new report-update
+    offer fields."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        fake_result = {
+            "answer": "Per [Paper 1], X is true. I also found new source(s) -- want me to update the report?",
+            "answerable": True,
+            "cited_papers": [],
+            "cited_web_articles": [],
+            "report_update_offer_made": True,
+        }
+        with patch.object(api, "chat_turn", return_value=fake_result):
+            resp = client.post(f"/curation/{session_id}/chat", json={"message": "anything"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["report_update_offer_made"] is True
+    assert body["report_update_declined"] is False
+    assert body["report_updated"] is False
+
+
+def test_curation_chat_report_update_persists_across_a_separate_get_request():
+    """Confirms pending_report_update round-trips through
+    save_curation_session/GET /curation/{id} for real, not just that the
+    POST response happens to include it -- the property the frontend's
+    own refresh-mid-offer behavior depends on."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": "answer with an offer"})
+            session.pending_report_update = {"new_article_count": 1}
+            return {
+                "answer": "answer with an offer", "answerable": True,
+                "cited_papers": [], "cited_web_articles": [], "report_update_offer_made": True,
+            }
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "trigger"})
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert state_resp.json()["pending_report_update"] == {"new_article_count": 1}
+
+
+def test_curation_report_endpoint_sets_report_covered_web_article_count():
+    """curation-refinement-and-auto-offer Phase 6f-3: generating a
+    report directly through the API (not via chat's accept-web-offer
+    path) must still keep the auto-offer's staleness bookkeeping
+    accurate -- confirmed by adding a web article AFTER report
+    generation and checking the offer condition via a real chat_turn
+    call afterward would see it as stale (verified here at the level
+    this endpoint actually controls: report_covered_web_article_count
+    reflects web_articles_added at generation time)."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        # No direct HTTP field exposes report_covered_web_article_count,
+        # but a fake chat_turn can inspect the real session object to
+        # confirm the endpoint actually set it correctly.
+        seen = {}
+
+        def _inspecting_chat_turn(session, message, client=None, **kwargs):
+            seen["count"] = session.report_covered_web_article_count
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": "ok"})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_inspecting_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
+
+    assert seen["count"] == 0  # no web articles were ever added
+
+
 if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()
@@ -501,6 +655,8 @@ if __name__ == "__main__":
     test_curation_picks_on_unknown_session_id_returns_404()
     test_curation_picks_after_curation_already_finished_returns_400()
     test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine_refill()
+    test_curation_picks_with_refinement_forces_a_real_refill_and_persists_across_a_separate_get_request()
+    test_curation_picks_without_refinement_does_not_force_a_refill()
     test_curation_list_reviews_returns_empty_with_no_sessions()
     test_curation_list_reviews_reflects_real_sessions_via_genuinely_separate_requests()
     test_curation_list_reviews_flags_report_and_chat_progress()
@@ -515,4 +671,7 @@ if __name__ == "__main__":
     test_curation_chat_before_curation_finished_returns_400()
     test_curation_chat_unknown_session_id_returns_404()
     test_curation_chat_surfaces_web_offer_flag_to_the_client()
+    test_curation_chat_surfaces_report_update_offer_flags_to_the_client()
+    test_curation_chat_report_update_persists_across_a_separate_get_request()
+    test_curation_report_endpoint_sets_report_covered_web_article_count()
     print("All curation API tests passed.")

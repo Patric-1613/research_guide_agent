@@ -686,6 +686,12 @@ class CurationStartRequest(BaseModel):
 class CurationPicksRequest(BaseModel):
     picked_paper_ids: list[str] = []
     stop: bool = False
+    # curation-refinement-and-auto-offer Phase 6f: optional free-text
+    # steering (e.g. "focus on more recent work"), carried into the
+    # SAME resume payload picked_paper_ids/stop already use -- see
+    # resume_curation_turn's own docstring for why it can't be a
+    # separate out-of-band call instead.
+    refinement: str | None = None
 
 
 class CurationTurnResponse(BaseModel):
@@ -707,6 +713,9 @@ class CurationTurnResponse(BaseModel):
     # already fetched" status line without the frontend having to infer
     # it from anything.
     reserve_remaining: int = 0
+    # Phase 6f: every refinement note applied so far this session, so the
+    # UI can show what's currently steering the search.
+    refinement_notes: list[str] = []
 
 
 class ReportSectionOut(BaseModel):
@@ -735,6 +744,7 @@ class CurationStateResponse(BaseModel):
     pending_batch: list[PaperOut] | None = None
     refilled: bool = False
     reserve_remaining: int = 0
+    refinement_notes: list[str] = []
     report: ReportOut | None = None
     chat_history: list[ChatTurn] = []
     web_articles_added: list[WebArticleOut] = []
@@ -755,6 +765,10 @@ class CurationChatResponse(BaseModel):
     web_offer_declined: bool = False
     web_search_used: bool = False
     new_web_articles_found: int | None = None
+    # curation-refinement-and-auto-offer Phase 6f-3
+    report_update_offer_made: bool = False
+    report_update_declined: bool = False
+    report_updated: bool = False
     chat_history: list[ChatTurn]
 
 
@@ -791,6 +805,7 @@ def _turn_result_to_response(session_id: str, target_count: int, result: dict) -
         # not via _dict_to_session -- no need to reconstruct every
         # reserve Paper's full data just to subtract two lengths.
         reserve_remaining=max(0, len(session_dict["reserve"]) - session_dict["cursor"]),
+        refinement_notes=list(session_dict.get("refinement_notes", [])),
     )
 
 
@@ -839,7 +854,8 @@ def curation_picks(session_id: str, req: CurationPicksRequest, cp=Depends(get_cu
 
         target_count = state["session"].target_count
         result = resume_curation_turn(
-            session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop, config=_curation_config(),
+            session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
+            refinement=req.refinement, config=_curation_config(),
         )
         return _turn_result_to_response(session_id, target_count, result)
 
@@ -881,6 +897,7 @@ def curation_get_state(session_id: str, cp=Depends(get_curation_checkpointer)) -
         pending_batch=[_paper_out_from_batch_entry(e) for e in pending_batch] if pending_batch is not None else None,
         refilled=state.get("refilled", False),
         reserve_remaining=max(0, session.remaining()),
+        refinement_notes=list(session.refinement_notes),
         report=_report_to_out(session.report) if session.report is not None else None,
         chat_history=[ChatTurn(**turn) for turn in session.chat_history],
         web_articles_added=[_web_article_to_out(a) for a in session.web_articles_added],
@@ -903,6 +920,11 @@ def curation_report(session_id: str, cp=Depends(get_curation_checkpointer)) -> R
                 session.report = generate_report_for_session(session, client=_state["client"])
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # curation-refinement-and-auto-offer Phase 6f-3: keeps the
+            # auto-offer's staleness check accurate even when a report is
+            # generated straight through this endpoint rather than via
+            # chat's accept-web-offer path.
+            session.report_covered_web_article_count = len(session.web_articles_added)
             save_curation_session(session, session_id, cp)
         return _report_to_out(session.report)
 
@@ -917,6 +939,7 @@ def curation_report_regenerate(session_id: str, cp=Depends(get_curation_checkpoi
             session.report = regenerate_report_with_new_sources(session, client=_state["client"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        session.report_covered_web_article_count = len(session.web_articles_added)
         save_curation_session(session, session_id, cp)
         return _report_to_out(session.report)
 
@@ -941,5 +964,8 @@ def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(get
             web_offer_declined=result.get("web_offer_declined", False),
             web_search_used=result.get("web_search_used", False),
             new_web_articles_found=result.get("new_web_articles_found"),
+            report_update_offer_made=result.get("report_update_offer_made", False),
+            report_update_declined=result.get("report_update_declined", False),
+            report_updated=result.get("report_updated", False),
             chat_history=[ChatTurn(**turn) for turn in session.chat_history],
         )

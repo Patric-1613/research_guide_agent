@@ -106,6 +106,8 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "web_articles_added": [a.to_dict() for a in session.web_articles_added],
         "pending_web_offer": session.pending_web_offer,
         "pending_report_update": session.pending_report_update,
+        "refinement_notes": list(session.refinement_notes),
+        "report_covered_web_article_count": session.report_covered_web_article_count,
     }
 
 
@@ -125,6 +127,8 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         web_articles_added=[WebArticle(**a) for a in d.get("web_articles_added", [])],
         pending_web_offer=d.get("pending_web_offer"),
         pending_report_update=d.get("pending_report_update"),
+        refinement_notes=list(d.get("refinement_notes", [])),
+        report_covered_web_article_count=d.get("report_covered_web_article_count", 0),
     )
 
 

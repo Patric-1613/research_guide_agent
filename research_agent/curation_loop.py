@@ -76,11 +76,24 @@ class CurationLoopState(TypedDict):
     # existing pool" without inferring it from reserve-size deltas across
     # separate requests.
     refilled: bool
+    # curation-refinement-and-auto-offer Phase 6f: unlike refilled above,
+    # deliberately NOT reset by _check_pool_node -- present_and_apply sets
+    # this to an explicit True/False on EVERY resume (never stale/carried
+    # over), and check_pool runs strictly BETWEEN present_and_apply's
+    # write and _route_entry's read in the same invoke (the "continue"
+    # loop-back), so resetting it there would erase the signal before
+    # _route_entry ever sees it -- confirmed by tracing the actual node
+    # order, not assumed from refilled's superficially similar shape.
+    # Only the stop nodes reset it (for the same "never revisited"
+    # reason as refilled), since nothing reads it once curation ends.
+    force_refill: bool
 
 
 def _route_entry(state: CurationLoopState) -> str:
     session = _dict_to_session(state["session"])
-    return "refill" if session.needs_refill(batch_size=BATCH_SIZE) else "serve"
+    if session.needs_refill(batch_size=BATCH_SIZE) or state.get("force_refill"):
+        return "refill"
+    return "serve"
 
 
 def _refill_node(state: CurationLoopState, config) -> dict:
@@ -120,6 +133,7 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
 
     picked_paper_ids = resume.get("picked_paper_ids", [])
     stop = bool(resume.get("stop", False))
+    refinement = resume.get("refinement")
 
     # Validate against the ACTUALLY-presented batch — never trust the
     # resume payload blindly. Anything not in current_batch is silently
@@ -139,7 +153,12 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
             session.selected_paper_ids.append(pid)
             session.selected_papers.append(Paper(**presented_by_id[pid]))
 
-    return {"session": _session_to_dict(session), "should_stop": stop}
+    force_refill = False
+    if refinement:
+        session.refinement_notes.append(refinement)
+        force_refill = True
+
+    return {"session": _session_to_dict(session), "should_stop": stop, "force_refill": force_refill}
 
 
 def _route_after_picks(state: CurationLoopState) -> str:
@@ -155,15 +174,18 @@ def _make_stop_node(reason: str):
     def _stop_node(state: CurationLoopState) -> dict:
         session = _dict_to_session(state["session"])
         session.stage = "synthesize"
-        # refilled must not be left carrying a stale value from whichever
-        # turn last passed through check_pool -- a stop reached via
-        # present_and_apply's "target_met"/"user_stopped" routes straight
-        # here WITHOUT re-visiting check_pool (interrupt-resume restarts
-        # execution AT present_and_apply, not from check_pool; confirmed
-        # by hitting exactly this stale-True case in testing), and there
-        # is no current batch left for "was it a fresh search" to
-        # describe once curation has stopped anyway.
-        return {"session": _session_to_dict(session), "stop_reason": reason, "refilled": False}
+        # refilled/force_refill must not be left carrying a stale value
+        # from whichever turn last passed through check_pool -- a stop
+        # reached via present_and_apply's "target_met"/"user_stopped"
+        # routes straight here WITHOUT re-visiting check_pool
+        # (interrupt-resume restarts execution AT present_and_apply, not
+        # from check_pool; confirmed by hitting exactly this stale-True
+        # case in testing), and there is no current batch left for
+        # either flag to meaningfully describe once curation has stopped.
+        return {
+            "session": _session_to_dict(session), "stop_reason": reason,
+            "refilled": False, "force_refill": False,
+        }
     return _stop_node
 
 
@@ -224,14 +246,25 @@ def start_curation_turn(session_id: str, checkpointer: BaseCheckpointSaver, init
 
 def resume_curation_turn(
     session_id: str, checkpointer: BaseCheckpointSaver,
-    picked_paper_ids: list[str], stop: bool = False, config: dict | None = None,
+    picked_paper_ids: list[str], stop: bool = False, refinement: str | None = None,
+    config: dict | None = None,
 ):
     """Resumes a paused curation session with the user's picks. Returns
-    the raw invoke() result, same convention as start_curation_turn()."""
+    the raw invoke() result, same convention as start_curation_turn().
+
+    refinement (curation-refinement-and-auto-offer Phase 6f): optional
+    free-text steering, carried in the SAME resume payload
+    picked_paper_ids/stop already use -- confirmed necessary (not just
+    convenient) during Phase 6f-1's design: mutating a mid-curation
+    session out-of-band via curation_session.py's smaller graph while a
+    real interrupt is pending corrupts that pending task's bookkeeping,
+    so refinement has to flow through this exact channel, not a
+    separate one.
+    """
     graph = build_curation_loop_graph(checkpointer)
     thread_config = {"configurable": {"thread_id": curation_thread_id(session_id), **(config or {})}}
     return graph.invoke(
-        Command(resume={"picked_paper_ids": picked_paper_ids, "stop": stop}),
+        Command(resume={"picked_paper_ids": picked_paper_ids, "stop": stop, "refinement": refinement}),
         config=thread_config,
     )
 
