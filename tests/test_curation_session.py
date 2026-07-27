@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.curation_session import (
     curation_thread_id,
+    list_curation_sessions,
     load_curation_session,
     save_curation_session,
 )
@@ -168,6 +169,74 @@ def test_phase5_fields_roundtrip_including_nested_papers_inside_report():
         assert loaded.pending_report_update == {"reason": "new web source approved"}
 
 
+def test_list_curation_sessions_returns_empty_for_no_sessions():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            assert list_curation_sessions(cp) == []
+
+
+def test_list_curation_sessions_returns_a_summary_per_session_most_recently_touched_first():
+    """curation-api-and-ui Phase 6b/6c: powers the frontend's reviews
+    list. Confirms both the summary fields AND the ordering claim (most
+    recently touched thread first) against real, separately-timed
+    writes -- not just trusting the underlying checkpointer.list()
+    docstring."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session_a = PaperPoolSession(topic="Topic A", reserve=[(_paper("a0"), 0.9)], target_count=5)
+        session_b = PaperPoolSession(topic="Topic B", reserve=[(_paper("b0"), 0.9)], target_count=3)
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session_a, "session-a", cp)
+            save_curation_session(session_b, "session-b", cp)
+            # Touch session-a again, most recently -- it should now sort first.
+            session_a.selected_paper_ids = ["a0"]
+            save_curation_session(session_a, "session-a", cp)
+
+            summaries = list_curation_sessions(cp)
+
+        assert [s["session_id"] for s in summaries] == ["session-a", "session-b"]
+        assert summaries[0]["topic"] == "Topic A"
+        assert summaries[0]["selected_count"] == 1
+        assert summaries[0]["target_count"] == 5
+        assert summaries[1]["topic"] == "Topic B"
+        assert summaries[1]["selected_count"] == 0
+
+
+def test_list_curation_sessions_flags_has_report_and_has_chat_correctly():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        bare = PaperPoolSession(topic="bare", reserve=[(_paper("p0"), 0.9)], stage="curate")
+        with_chat_only = PaperPoolSession(
+            topic="chatty", reserve=[(_paper("p1"), 0.9)], stage="synthesize",
+            chat_history=[{"role": "user", "content": "hi"}],
+        )
+        with_report_and_chat = PaperPoolSession(
+            topic="full", reserve=[(_paper("p2"), 0.9)], stage="synthesize",
+            report={
+                "findings": {"content": "f", "cited_papers": []},
+                "limitations": {"content": "", "cited_papers": []},
+                "future_scope": {"content": "", "cited_papers": []},
+                "skipped_papers": [],
+            },
+            chat_history=[{"role": "user", "content": "hi"}],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(bare, "bare-id", cp)
+            save_curation_session(with_chat_only, "chatty-id", cp)
+            save_curation_session(with_report_and_chat, "full-id", cp)
+            summaries = {s["session_id"]: s for s in list_curation_sessions(cp)}
+
+        assert summaries["bare-id"]["has_report"] is False
+        assert summaries["bare-id"]["has_chat"] is False
+        assert summaries["chatty-id"]["has_report"] is False
+        assert summaries["chatty-id"]["has_chat"] is True
+        assert summaries["full-id"]["has_report"] is True
+        assert summaries["full-id"]["has_chat"] is True
+
+
 def test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wrong_data():
     """Simulates a crash mid-write by truncating the file after a real
     save — the point isn't that this must not error (a genuinely
@@ -197,5 +266,8 @@ if __name__ == "__main__":
     test_two_sessions_do_not_cross_contaminate()
     test_saving_again_under_the_same_session_id_updates_not_duplicates()
     test_phase5_fields_roundtrip_including_nested_papers_inside_report()
+    test_list_curation_sessions_returns_empty_for_no_sessions()
+    test_list_curation_sessions_returns_a_summary_per_session_most_recently_touched_first()
+    test_list_curation_sessions_flags_has_report_and_has_chat_correctly()
     test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wrong_data()
     print("All curation_session tests passed.")

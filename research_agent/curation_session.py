@@ -171,3 +171,46 @@ def load_curation_session(session_id: str, checkpointer: BaseCheckpointSaver) ->
     if not state.values:
         return None
     return _dict_to_session(state.values["session"])
+
+
+def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:
+    """curation-api-and-ui Phase 6b/6c: powers the frontend's "reviews
+    list" panel — every session ever saved to this checkpointer, as a
+    lightweight summary (not a full PaperPoolSession reconstruction;
+    listing potentially many sessions doesn't need every selected
+    Paper's full data, just enough for a picker UI).
+
+    Verified directly (not assumed) that checkpointer.list(None)
+    enumerates checkpoints across EVERY thread_id in the store, ordered
+    newest-first globally (confirmed against langgraph's real SqliteSaver,
+    not just its docstring) — so deduping to the first-seen row per
+    thread_id gives that thread's latest checkpoint (confirmed against a
+    real resumed session, not just a single-checkpoint one), AND that
+    first-seen order across distinct thread_ids is itself already sorted
+    by each thread's own most-recent activity, descending — no separate
+    sort needed, this is a property of the global newest-first iteration
+    order, not an assumption.
+
+    Returns [] if nothing has ever been saved -- not an error.
+    """
+    seen: dict[str, dict] = {}
+    for tup in checkpointer.list(None):
+        thread_id = tup.config["configurable"]["thread_id"]
+        if not thread_id.startswith(THREAD_ID_PREFIX) or thread_id in seen:
+            continue
+        session_dict = tup.checkpoint.get("channel_values", {}).get("session")
+        if session_dict is not None:
+            seen[thread_id] = session_dict
+
+    return [
+        {
+            "session_id": thread_id[len(THREAD_ID_PREFIX):],
+            "topic": session_dict["topic"],
+            "stage": session_dict["stage"],
+            "selected_count": len(session_dict.get("selected_paper_ids", [])),
+            "target_count": session_dict.get("target_count", 10),
+            "has_report": session_dict.get("report") is not None,
+            "has_chat": len(session_dict.get("chat_history", [])) > 0,
+        }
+        for thread_id, session_dict in seen.items()
+    ]

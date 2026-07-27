@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.curation_loop import (
+    get_curation_state,
     resume_curation_turn,
     start_curation_turn,
 )
@@ -297,6 +298,101 @@ def test_selected_papers_and_selected_paper_ids_stay_in_sync_across_a_refill():
         assert result["session"]["selected_paper_ids"] == picks1 + picks2
 
 
+def test_get_curation_state_returns_none_for_a_never_started_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            assert get_curation_state("never-started", cp) is None
+
+
+def test_get_curation_state_exposes_pending_batch_mid_interrupt():
+    """curation-api-and-ui Phase 6a: the property GET /curation/{id} needs
+    for a page refresh mid-curation -- the presented-but-not-yet-picked
+    batch must be recoverable from the checkpointer alone, not from
+    anything the caller still had in memory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            state = get_curation_state("s1", cp)
+
+        assert state is not None
+        assert state["session"].stage == "curate"
+        assert state["pending_batch"] is not None
+        assert len(state["pending_batch"]) == 10
+
+
+def test_get_curation_state_pending_batch_is_none_once_curation_finishes():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            batch = result["__interrupt__"][0].value["batch"]
+            picks = [p[0]["paper_id"] for p in batch[:5]]
+            resume_curation_turn("s1", cp, picked_paper_ids=picks)
+            state = get_curation_state("s1", cp)
+
+        assert state["pending_batch"] is None
+        assert state["session"].stage == "synthesize"
+        assert state["session"].selected_paper_ids == picks
+
+
+def test_refilled_is_false_on_the_first_turn_when_the_pool_is_already_large_enough():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+        assert result["refilled"] is False
+
+
+def test_refilled_is_true_exactly_on_the_turn_that_triggers_a_real_refill_and_resets_after():
+    """curation-api-and-ui Phase 6c: the frontend's turn-feed divider
+    needs to say "from existing pool" vs "triggered a new search"
+    correctly per turn -- confirmed here against a session that
+    genuinely refills partway through, reusing the exact same
+    refill-triggering setup as the sync-invariant test above, not a
+    contrived one."""
+    from research_agent import query_expansion as qe_module
+
+    def _identity_rank(topic, papers, client=None, **kwargs):
+        return [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers), \
+             patch.object(qe_module, "rank_full_pool", side_effect=_identity_rank), \
+             sqlite_checkpointer(db_path) as cp:
+
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=100)))
+            assert result["refilled"] is False  # turn 1: 15 papers, no refill needed yet
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks1 = batch1_ids[:5]
+
+            # remaining=5 < BATCH_SIZE=10 -> this resume triggers refill_pool for real.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=picks1, config={"client": MagicMock()})
+            assert result["refilled"] is True
+            assert "__interrupt__" in result
+            batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks2 = batch2_ids[:2]
+
+            # Next turn: freshly-refilled reserve should be well above
+            # BATCH_SIZE again -- refilled must reset to False, not stay
+            # stuck True from the prior turn.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=picks2, stop=True)
+            assert result["refilled"] is False
+
+
+def test_get_curation_state_surfaces_refilled_for_the_currently_pending_batch():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            state = get_curation_state("s1", cp)
+        assert state["refilled"] is False
+
+
 if __name__ == "__main__":
     test_single_turn_interrupt_then_resume_reaches_target()
     test_multi_turn_loop_continues_across_batches_until_target_met()
@@ -308,4 +404,10 @@ if __name__ == "__main__":
     test_target_hit_exactly_on_a_batch_boundary()
     test_target_hit_mid_batch()
     test_selected_papers_and_selected_paper_ids_stay_in_sync_across_a_refill()
+    test_get_curation_state_returns_none_for_a_never_started_session()
+    test_get_curation_state_exposes_pending_batch_mid_interrupt()
+    test_get_curation_state_pending_batch_is_none_once_curation_finishes()
+    test_refilled_is_false_on_the_first_turn_when_the_pool_is_already_large_enough()
+    test_refilled_is_true_exactly_on_the_turn_that_triggers_a_real_refill_and_resets_after()
+    test_get_curation_state_surfaces_refilled_for_the_currently_pending_batch()
     print("All curation_loop tests passed.")

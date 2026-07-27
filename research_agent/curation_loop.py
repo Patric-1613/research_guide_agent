@@ -68,6 +68,14 @@ class CurationLoopState(TypedDict):
     current_batch: list  # this turn's presented batch: [[paper_dict, score], ...]
     stop_reason: str | None  # None while looping; set by whichever stop_* node ends the graph
     should_stop: bool  # transient: set by present_and_apply, read once by route_after_picks
+    # curation-api-and-ui Phase 6c: transient like should_stop above -- reset
+    # to False by _check_pool_node at the START of every turn (the loop-back
+    # anchor every turn passes through, including the very first), then set
+    # True only if _refill_node actually runs that same turn. Lets a client
+    # distinguish "this turn triggered a fresh search" from "served from the
+    # existing pool" without inferring it from reserve-size deltas across
+    # separate requests.
+    refilled: bool
 
 
 def _route_entry(state: CurationLoopState) -> str:
@@ -85,7 +93,7 @@ def _refill_node(state: CurationLoopState, config) -> dict:
         use_openalex_fallback=configurable.get("use_openalex_fallback", False),
         openalex_mailto=configurable.get("openalex_mailto"),
     )
-    return {"session": _session_to_dict(session)}
+    return {"session": _session_to_dict(session), "refilled": True}
 
 
 def _serve_batch_node(state: CurationLoopState) -> dict:
@@ -147,18 +155,28 @@ def _make_stop_node(reason: str):
     def _stop_node(state: CurationLoopState) -> dict:
         session = _dict_to_session(state["session"])
         session.stage = "synthesize"
-        return {"session": _session_to_dict(session), "stop_reason": reason}
+        # refilled must not be left carrying a stale value from whichever
+        # turn last passed through check_pool -- a stop reached via
+        # present_and_apply's "target_met"/"user_stopped" routes straight
+        # here WITHOUT re-visiting check_pool (interrupt-resume restarts
+        # execution AT present_and_apply, not from check_pool; confirmed
+        # by hitting exactly this stale-True case in testing), and there
+        # is no current batch left for "was it a fresh search" to
+        # describe once curation has stopped anyway.
+        return {"session": _session_to_dict(session), "stop_reason": reason, "refilled": False}
     return _stop_node
 
 
 def _check_pool_node(state: CurationLoopState) -> dict:
-    """Real no-op passthrough node — exists only as a loop-back anchor.
-    Verified directly (not assumed) that a conditional edge cannot target
-    START itself (LangGraph raises "unknown target '__start__'" at
-    compile time) — this node is what present_and_apply's "continue"
-    branch actually loops back to.
+    """Loop-back anchor — exists because a conditional edge cannot target
+    START itself (verified directly, not assumed: LangGraph raises
+    "unknown target '__start__'" at compile time). No longer a pure
+    no-op as of Phase 6c: also resets `refilled` to False here, since
+    this is the one node every turn passes through before the
+    refill-or-serve routing decision, first turn included — so a stale
+    True from a PRIOR turn can never leak into this turn's result.
     """
-    return {}
+    return {"refilled": False}
 
 
 def build_curation_loop_graph(checkpointer: BaseCheckpointSaver):
@@ -216,3 +234,46 @@ def resume_curation_turn(
         Command(resume={"picked_paper_ids": picked_paper_ids, "stop": stop}),
         config=thread_config,
     )
+
+
+def get_curation_state(session_id: str, checkpointer: BaseCheckpointSaver) -> dict | None:
+    """curation-api-and-ui Phase 6a: the read path the GET session-state
+    endpoint needs, and the one curation_session.py's own
+    load_curation_session() genuinely cannot provide -- a batch that's
+    currently pending (presented, not yet picked) lives in the
+    interrupt's own payload, not in PaperPoolSession's serialized
+    fields, so recovering it after e.g. a page refresh requires this
+    graph's own get_state(), not the smaller sync-only graph
+    curation_session.py compiles.
+
+    Verified directly (not assumed) that this graph's get_state() stays
+    correct to read from even after curation_chat.py/report.py's own
+    save_curation_session() writes onto the same thread_id via that
+    smaller graph in between (see scratch verification during Phase 6a
+    design) -- the two graphs' checkpoints interoperate safely because
+    LangGraph checkpoints are keyed by thread_id, not by which compiled
+    graph object wrote them.
+
+    Returns None if session_id was never started. Otherwise
+    {"session": PaperPoolSession, "pending_batch": [[paper_dict, score],
+    ...] | None, "refilled": bool} -- pending_batch is None once
+    curation has finished (session.stage == "synthesize") or hasn't
+    started serving yet. refilled (Phase 6c) reflects whether the turn
+    that produced the CURRENT pending_batch triggered a fresh search --
+    reliably present here too, not just on start/resume's own raw
+    result, since only curation_loop.py's own graph ever writes to a
+    thread_id while curation is still active (chat/report don't touch a
+    session until stage == "synthesize", past the point pending_batch
+    exists at all).
+    """
+    graph = build_curation_loop_graph(checkpointer)
+    config = {"configurable": {"thread_id": curation_thread_id(session_id)}}
+    snap = graph.get_state(config)
+    if not snap.values:
+        return None
+
+    session = _dict_to_session(snap.values["session"])
+    pending_batch = None
+    if snap.next and snap.tasks and snap.tasks[0].interrupts:
+        pending_batch = snap.tasks[0].interrupts[0].value["batch"]
+    return {"session": session, "pending_batch": pending_batch, "refilled": snap.values.get("refilled", False)}

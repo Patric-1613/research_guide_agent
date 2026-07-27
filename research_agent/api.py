@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import uuid
 from contextlib import asynccontextmanager, contextmanager
 from typing import Literal
 
@@ -31,16 +32,21 @@ import arxiv
 import requests
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field
 
 from research_agent.agent import _merge_web_articles, run_research_agent
 from research_agent.citations import CitationStyle, select_citation
+from research_agent.curation_chat import chat_turn
+from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
+from research_agent.curation_session import _session_to_dict, list_curation_sessions, load_curation_session, save_curation_session
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.enrichment import enrich_missing_abstracts
-from research_agent.qa import ChatSession, ask
-from research_agent.query_expansion import expanded_search
+from research_agent.qa import ChatSession, ask, sqlite_checkpointer
+from research_agent.query_expansion import PaperPoolSession, build_candidate_pool, expanded_search, rank_full_pool
+from research_agent.report import generate_report_for_session, regenerate_report_with_new_sources
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search, update_summary, update_web_summary
 from research_agent.summarize import generate_summary, generate_web_summary
@@ -71,6 +77,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
+
+# curation-api-and-ui Phase 6c: the new React frontend runs as its own
+# Vite dev-server process (a genuinely separate origin from this API),
+# unlike the existing Streamlit app which doesn't make browser-side fetch
+# calls at all -- additive (touches the shared app object, not any
+# existing route's behavior), flagged explicitly per the Phase 6b
+# approval. FRONTEND_ORIGIN lets a non-default dev-server port/deployed
+# origin be configured without a code change, same convention as this
+# file's other env-var-driven config (e.g. SEMANTIC_SCHOLAR_API_KEY).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"), "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -624,3 +645,301 @@ def library_detail(search_id: int, db: sqlite3.Connection = Depends(get_db_conne
         papers=[_paper_to_out(p, scores_by_id.get(p.paper_id)) for p in papers],
         web_articles=[_web_article_to_out(a) for a in _web_articles_from_saved(saved)],
     )
+
+
+# =================================================================================
+# curation-api-and-ui Phase 6a: HTTP exposure for the curation/report/chat
+# backend built in Phases 1-5. Purely additive — nothing above this line is
+# touched. A curation session lives in its own checkpointer-backed store
+# (qa.py's sqlite_checkpointer/QA_CHECKPOINT_DB_PATH, the same file
+# curation_session.py already used), addressed by a server-issued
+# session_id (a uuid4 hex string), not storage.py's SQLite search_id — a
+# genuinely different persistence mechanism from /search's, reused as-is
+# rather than adapted to fit the existing one.
+#
+# The interrupt/resume HTTP shape (the brief's "least obvious" part): both
+# /curation/start and /curation/{id}/picks return the SAME
+# CurationTurnResponse shape — either a fresh `batch` to present (still
+# curating) or a `stop_reason` (curation finished, batch always []). A
+# client never needs to special-case "first turn" vs. "a later turn"; the
+# response shape alone tells it what to render next.
+# =================================================================================
+
+def get_curation_checkpointer():
+    """FastAPI dependency: a fresh SqliteSaver-backed checkpointer per
+    request, same per-request-not-shared rationale as get_db_connection()
+    above (a single shared connection is not safe across FastAPI's
+    threadpool) — just wrapping sqlite_checkpointer()'s own contextmanager
+    instead of a raw sqlite3.connect() call."""
+    with sqlite_checkpointer() as cp:
+        yield cp
+
+
+class CurationStartRequest(BaseModel):
+    topic: str
+    # 1-30: matches report.py's own documented 30-paper cap; target_count
+    # is "how many picks the user wants total," not a per-batch size.
+    target_count: int = Field(default=10, ge=1, le=30)
+    use_openalex_fallback: bool = False
+
+
+class CurationPicksRequest(BaseModel):
+    picked_paper_ids: list[str] = []
+    stop: bool = False
+
+
+class CurationTurnResponse(BaseModel):
+    session_id: str
+    stage: str
+    target_count: int
+    selected_paper_ids: list[str]
+    batch: list[PaperOut] = []
+    stop_reason: str | None = None
+    # Phase 6c: whether THIS turn's batch came from a fresh search
+    # (refill_pool ran) vs. serving from the already-fetched pool —
+    # meaningless once stop_reason is set (batch is always [] then), where
+    # it's always False rather than a stale carry-over value.
+    refilled: bool = False
+    # How many already-fetched, not-yet-served candidates remain in the
+    # pool after this turn's batch — PaperPoolSession.remaining(), the
+    # exact number that decides whether the NEXT turn needs a fresh
+    # search at all. Surfaces the pool panel's "N more candidates
+    # already fetched" status line without the frontend having to infer
+    # it from anything.
+    reserve_remaining: int = 0
+
+
+class ReportSectionOut(BaseModel):
+    content: str
+    cited_papers: list[CitedPaperOut]
+    cited_web_articles: list[CitedWebArticleOut] = []
+
+
+class ReportOut(BaseModel):
+    findings: ReportSectionOut
+    limitations: ReportSectionOut
+    future_scope: ReportSectionOut
+    skipped_paper_ids: list[str]
+
+
+class CurationStateResponse(BaseModel):
+    session_id: str
+    topic: str
+    stage: str
+    target_count: int
+    selected_paper_ids: list[str]
+    selected_papers: list[PaperOut]
+    # Only non-None mid-curation, with a genuinely pending interrupt — the
+    # exact property a page refresh during curation needs to recover from
+    # the backend, not from anything held only in browser memory (Phase 6d).
+    pending_batch: list[PaperOut] | None = None
+    refilled: bool = False
+    reserve_remaining: int = 0
+    report: ReportOut | None = None
+    chat_history: list[ChatTurn] = []
+    web_articles_added: list[WebArticleOut] = []
+    pending_web_offer: dict | None = None
+    pending_report_update: dict | None = None
+
+
+class CurationChatRequest(BaseModel):
+    message: str
+
+
+class CurationChatResponse(BaseModel):
+    answer: str
+    answerable: bool
+    cited_papers: list[CitedPaperOut]
+    cited_web_articles: list[CitedWebArticleOut]
+    web_offer_made: bool = False
+    web_offer_declined: bool = False
+    web_search_used: bool = False
+    new_web_articles_found: int | None = None
+    chat_history: list[ChatTurn]
+
+
+def _paper_out_from_batch_entry(entry) -> PaperOut:
+    paper_dict, score = entry
+    return _paper_to_out(Paper(**paper_dict), score)
+
+
+def _report_to_out(report: dict) -> ReportOut:
+    def _section(name: str) -> ReportSectionOut:
+        s = report[name]
+        return ReportSectionOut(
+            content=s["content"],
+            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in s["cited_papers"]],
+            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in s.get("cited_web_articles", [])],
+        )
+
+    return ReportOut(
+        findings=_section("findings"), limitations=_section("limitations"), future_scope=_section("future_scope"),
+        skipped_paper_ids=[p.paper_id for p in report["skipped_papers"]],
+    )
+
+
+def _turn_result_to_response(session_id: str, target_count: int, result: dict) -> CurationTurnResponse:
+    session_dict = result["session"]
+    batch = result["__interrupt__"][0].value["batch"] if "__interrupt__" in result else []
+    return CurationTurnResponse(
+        session_id=session_id, stage=session_dict["stage"], target_count=target_count,
+        selected_paper_ids=session_dict["selected_paper_ids"],
+        batch=[_paper_out_from_batch_entry(e) for e in batch],
+        stop_reason=result.get("stop_reason"),
+        refilled=result.get("refilled", False),
+        # Computed straight off the raw serialized dict (reserve/cursor),
+        # not via _dict_to_session -- no need to reconstruct every
+        # reserve Paper's full data just to subtract two lengths.
+        reserve_remaining=max(0, len(session_dict["reserve"]) - session_dict["cursor"]),
+    )
+
+
+def _curation_config() -> dict:
+    """refill_pool() (called from inside the graph whenever the reserve
+    runs low, on ANY turn, not just the first) requires "client" present
+    with direct key access, not .get() — confirmed by hitting a real
+    KeyError during Phase 6a's own design verification when it was
+    omitted. Built fresh per request rather than cached in _state,
+    since s2_api_key/openalex_mailto are read from the environment the
+    same way /search already does, not assumed constant."""
+    return {
+        "client": _state["client"],
+        "s2_api_key": os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
+        "openalex_mailto": os.getenv("OPENALEX_MAILTO") or None,
+    }
+
+
+@app.post("/curation/start", response_model=CurationTurnResponse)
+def curation_start(req: CurationStartRequest, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
+    with _upstream_error_guard("curation_start"):
+        client = _state["client"]
+        s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+        deduped = build_candidate_pool(
+            req.topic, req.target_count, s2_api_key=s2_key, client=client,
+            use_openalex_fallback=req.use_openalex_fallback, openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
+        )
+        ranked, _ = rank_full_pool(req.topic, deduped, client=client, collection=_state["collection"])
+        if not ranked:
+            raise HTTPException(status_code=404, detail="No papers found for this topic.")
+
+        session_id = uuid.uuid4().hex
+        session = PaperPoolSession(topic=req.topic, reserve=ranked, target_count=req.target_count)
+        result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
+        return _turn_result_to_response(session_id, req.target_count, result)
+
+
+@app.post("/curation/{session_id}/picks", response_model=CurationTurnResponse)
+def curation_picks(session_id: str, req: CurationPicksRequest, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
+    with _upstream_error_guard("curation_picks"):
+        state = get_curation_state(session_id, cp)
+        if state is None:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        if state["pending_batch"] is None:
+            raise HTTPException(status_code=400, detail="Session is not awaiting picks (curation already finished).")
+
+        target_count = state["session"].target_count
+        result = resume_curation_turn(
+            session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop, config=_curation_config(),
+        )
+        return _turn_result_to_response(session_id, target_count, result)
+
+
+class CurationReviewSummary(BaseModel):
+    session_id: str
+    topic: str
+    stage: str
+    selected_count: int
+    target_count: int
+    has_report: bool
+    has_chat: bool
+
+
+# Registered BEFORE GET /curation/{session_id} below — Starlette matches
+# routes in registration order, so /curation/reviews must come first or a
+# request for it would match {session_id}="reviews" instead of this route.
+@app.get("/curation/reviews", response_model=list[CurationReviewSummary])
+def curation_list_reviews(cp=Depends(get_curation_checkpointer)) -> list[CurationReviewSummary]:
+    return [CurationReviewSummary(**s) for s in list_curation_sessions(cp)]
+
+
+@app.get("/curation/{session_id}", response_model=CurationStateResponse)
+def curation_get_state(session_id: str, cp=Depends(get_curation_checkpointer)) -> CurationStateResponse:
+    """The refresh-persistence endpoint (Phase 6d's whole point): every
+    field a client needs to fully redraw the UI comes from here, read
+    straight from the checkpointer — nothing about this response depends
+    on any prior request having happened in the same browser session."""
+    state = get_curation_state(session_id, cp)
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_id not found")
+
+    session = state["session"]
+    pending_batch = state["pending_batch"]
+    return CurationStateResponse(
+        session_id=session_id, topic=session.topic, stage=session.stage, target_count=session.target_count,
+        selected_paper_ids=session.selected_paper_ids,
+        selected_papers=[_paper_to_out(p) for p in session.selected_papers],
+        pending_batch=[_paper_out_from_batch_entry(e) for e in pending_batch] if pending_batch is not None else None,
+        refilled=state.get("refilled", False),
+        reserve_remaining=max(0, session.remaining()),
+        report=_report_to_out(session.report) if session.report is not None else None,
+        chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+        web_articles_added=[_web_article_to_out(a) for a in session.web_articles_added],
+        pending_web_offer=session.pending_web_offer,
+        pending_report_update=session.pending_report_update,
+    )
+
+
+@app.post("/curation/{session_id}/report", response_model=ReportOut)
+def curation_report(session_id: str, cp=Depends(get_curation_checkpointer)) -> ReportOut:
+    """Generate-or-get, same cache-then-generate convention /summarize
+    already uses for its own report-like artifact — a second call for the
+    same session_id doesn't re-bill the LLM."""
+    with _upstream_error_guard("curation_report"):
+        session = load_curation_session(session_id, cp)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        if session.report is None:
+            try:
+                session.report = generate_report_for_session(session, client=_state["client"])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            save_curation_session(session, session_id, cp)
+        return _report_to_out(session.report)
+
+
+@app.post("/curation/{session_id}/report/regenerate", response_model=ReportOut)
+def curation_report_regenerate(session_id: str, cp=Depends(get_curation_checkpointer)) -> ReportOut:
+    with _upstream_error_guard("curation_report_regenerate"):
+        session = load_curation_session(session_id, cp)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        try:
+            session.report = regenerate_report_with_new_sources(session, client=_state["client"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        save_curation_session(session, session_id, cp)
+        return _report_to_out(session.report)
+
+
+@app.post("/curation/{session_id}/chat", response_model=CurationChatResponse)
+def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(get_curation_checkpointer)) -> CurationChatResponse:
+    with _upstream_error_guard("curation_chat"):
+        session = load_curation_session(session_id, cp)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        try:
+            result = chat_turn(session, req.message, client=_state["client"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        save_curation_session(session, session_id, cp)
+
+        return CurationChatResponse(
+            answer=result["answer"], answerable=result["answerable"],
+            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in result["cited_papers"]],
+            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in result["cited_web_articles"]],
+            web_offer_made=result.get("web_offer_made", False),
+            web_offer_declined=result.get("web_offer_declined", False),
+            web_search_used=result.get("web_search_used", False),
+            new_web_articles_found=result.get("new_web_articles_found"),
+            chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+        )
