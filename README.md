@@ -72,12 +72,6 @@ Topic
                           │ /chat /export /library │
                           │ upstream errors →      │
                           │ clean 503, no raw 500  │
-                          └───────────┬──────────┘
-                                       ▼
-                          ┌──────────────────────┐
-                          │ app.py (Streamlit)     │
-                          │ topic input, results,  │
-                          │ summary, chat, export   │
                           └──────────────────────┘
 ```
 
@@ -115,18 +109,25 @@ Edit `.env` and set:
 Two processes, in separate terminals:
 
 ```bash
-uv run uvicorn research_agent.api:app --reload --reload-exclude "app.py"
-uv run streamlit run research_agent/app.py
+uv run uvicorn research_agent.api:app --reload --reload-exclude "frontend/*"
 ```
 
-Then open the URL Streamlit prints (typically `http://localhost:8501`).
-Interactive API docs are at `http://localhost:8000/docs`.
+```bash
+cd frontend
+npm install   # first time only
+npm run dev
+```
 
-`--reload-exclude "app.py"` matters: by default `--reload` watches every
-file in the project, including `app.py` (the Streamlit frontend, which the
-FastAPI backend never imports). Without the exclude, editing the frontend
-mid-request restarts the backend and kills whatever request was in flight —
-easy to mistake for a hang or timeout.
+Open `http://localhost:5173` for the app. Interactive API docs (including
+the original one-shot `/search`/`/summarize`/`/chat`/`/export`/`/library`
+endpoints, still available directly — there's no dedicated frontend for
+them anymore) are at `http://localhost:8000/docs`.
+
+`--reload-exclude "frontend/*"` matters: by default `--reload` watches
+every file in the project, including the entire `frontend/` tree (source,
+`node_modules`, build output). Without the exclude, saving a frontend file
+mid-request restarts the backend and kills whatever request was in
+flight — easy to mistake for a hang or timeout.
 
 ## Project structure
 
@@ -150,7 +151,7 @@ research_agent/
   tracing.py         shared Langfuse helpers (redacted paper/trace metadata
                      views) — see "Observability" below
   api.py             FastAPI backend
-  app.py             Streamlit frontend
+frontend/          React + Vite UI (curation/report/chat) — see frontend/README.md
 scripts/           runnable CLI demos for each phase (see below), plus two
                    real-pipeline evaluation harnesses: eval_retrieval.py
                    (retrieval precision/recall + ranking-mode experiments)
@@ -230,10 +231,6 @@ of real tokens; see "Try each phase individually" above.
   forward per-request; only *searches* are saved to SQLite, per the brief.
 - **`/summarize` and `/export` reuse a previously generated summary** for a
   given `search_id` instead of re-billing the LLM on repeat calls.
-- **Every LLM-backed call in the Streamlit app is gated behind an explicit
-  button/chat-input action.** Streamlit reruns the entire script on every
-  widget interaction, so an unguarded call would silently re-trigger (and
-  re-bill) on unrelated clicks.
 
 ## Robustness & reliability pass
 
