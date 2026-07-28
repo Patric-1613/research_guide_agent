@@ -41,11 +41,23 @@ from research_agent.agent import _merge_web_articles, run_research_agent
 from research_agent.citations import CitationStyle, select_citation
 from research_agent.curation_chat import chat_turn
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
-from research_agent.curation_session import _session_to_dict, list_curation_sessions, load_curation_session, save_curation_session
+from research_agent.curation_session import (
+    _session_to_dict,
+    delete_curation_session,
+    list_curation_sessions,
+    load_curation_session,
+    save_curation_session,
+)
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.enrichment import enrich_missing_abstracts
 from research_agent.qa import ChatSession, ask, sqlite_checkpointer
-from research_agent.query_expansion import PaperPoolSession, build_candidate_pool, expanded_search, rank_full_pool
+from research_agent.query_expansion import (
+    PaperPoolSession,
+    build_candidate_pool,
+    canonicalize_topic,
+    expanded_search,
+    rank_full_pool,
+)
 from research_agent.report import generate_report_for_session, regenerate_report_with_new_sources
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search, update_summary, update_web_summary
@@ -732,6 +744,10 @@ class ReportOut(BaseModel):
 class CurationStateResponse(BaseModel):
     session_id: str
     topic: str
+    # curation-review-management Phase 8, item 5: canonicalize_topic()'s
+    # restatement of `topic`, for display only -- `topic` above is
+    # unchanged and still what actually drives search/ranking/refinement.
+    display_title: str
     stage: str
     target_count: int
     selected_paper_ids: list[str]
@@ -835,8 +851,15 @@ def curation_start(req: CurationStartRequest, cp=Depends(get_curation_checkpoint
         if not ranked:
             raise HTTPException(status_code=404, detail="No papers found for this topic.")
 
+        # curation-review-management Phase 8, item 5: after confirming
+        # papers actually exist for this topic (no point spending an LLM
+        # call otherwise), produce a clean display title. Never touches
+        # req.topic itself -- that's still what search/ranking/refinement
+        # keep using for the rest of this session's life.
+        display_title = canonicalize_topic(req.topic, client=client)
+
         session_id = uuid.uuid4().hex
-        session = PaperPoolSession(topic=req.topic, reserve=ranked, target_count=req.target_count)
+        session = PaperPoolSession(topic=req.topic, display_title=display_title, reserve=ranked, target_count=req.target_count)
         result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
         return _turn_result_to_response(session_id, req.target_count, result)
 
@@ -861,6 +884,11 @@ def curation_picks(session_id: str, req: CurationPicksRequest, cp=Depends(get_cu
 class CurationReviewSummary(BaseModel):
     session_id: str
     topic: str
+    # curation-review-management Phase 8, item 5: same display-only
+    # restatement as CurationStateResponse.display_title -- this is what
+    # the left panel's review list should actually show as each review's
+    # name.
+    display_title: str
     stage: str
     selected_count: int
     target_count: int
@@ -889,7 +917,8 @@ def curation_get_state(session_id: str, cp=Depends(get_curation_checkpointer)) -
     session = state["session"]
     pending_batch = state["pending_batch"]
     return CurationStateResponse(
-        session_id=session_id, topic=session.topic, stage=session.stage, target_count=session.target_count,
+        session_id=session_id, topic=session.topic, display_title=session.display_title,
+        stage=session.stage, target_count=session.target_count,
         selected_paper_ids=session.selected_paper_ids,
         selected_papers=[_paper_to_out(p) for p in session.selected_papers],
         pending_batch=[_paper_out_from_batch_entry(e) for e in pending_batch] if pending_batch is not None else None,
@@ -902,6 +931,27 @@ def curation_get_state(session_id: str, cp=Depends(get_curation_checkpointer)) -
         pending_web_offer=session.pending_web_offer,
         pending_report_update=session.pending_report_update,
     )
+
+
+class CurationDeleteResponse(BaseModel):
+    session_id: str
+    deleted: bool = True
+
+
+@app.delete("/curation/{session_id}", response_model=CurationDeleteResponse)
+def curation_delete(session_id: str, cp=Depends(get_curation_checkpointer)) -> CurationDeleteResponse:
+    """curation-review-management Phase 8, item 1: permanently deletes a
+    review -- confirmed no delete/abandon concept existed anywhere in the
+    codebase before this. 404s on an unknown session_id first (same
+    existence-check convention as report/chat below), rather than silently
+    "succeeding" on a delete_thread() call that would have matched zero
+    rows either way -- a caller should be told the id it tried to act on
+    doesn't exist."""
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session_id not found")
+    delete_curation_session(session_id, cp)
+    return CurationDeleteResponse(session_id=session_id, deleted=True)
 
 
 @app.post("/curation/{session_id}/report", response_model=ReportOut)

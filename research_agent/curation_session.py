@@ -93,6 +93,7 @@ def _deserialize_report(d: dict | None) -> dict | None:
 def _session_to_dict(session: PaperPoolSession) -> dict:
     return {
         "topic": session.topic,
+        "display_title": session.display_title,
         "reserve": [[paper.to_dict(), score] for paper, score in session.reserve],
         "cursor": session.cursor,
         "seen_paper_ids": list(session.seen_paper_ids),
@@ -114,6 +115,11 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
 def _dict_to_session(d: dict) -> PaperPoolSession:
     return PaperPoolSession(
         topic=d["topic"],
+        # Older sessions saved before Phase 8's display_title field existed
+        # fall back to their own raw topic -- a sensible default, not a
+        # crash, matching every other backward-compat .get() in this
+        # function.
+        display_title=d.get("display_title") or d["topic"],
         reserve=[(Paper(**paper_dict), score) for paper_dict, score in d["reserve"]],
         cursor=d["cursor"],
         seen_paper_ids=set(d["seen_paper_ids"]),
@@ -177,6 +183,18 @@ def load_curation_session(session_id: str, checkpointer: BaseCheckpointSaver) ->
     return _dict_to_session(state.values["session"])
 
 
+def delete_curation_session(session_id: str, checkpointer: BaseCheckpointSaver) -> None:
+    """curation-review-management Phase 8, item 1: permanently removes every
+    checkpoint and write ever recorded for this session_id -- delete_thread()
+    is a real, built-in BaseCheckpointSaver method (confirmed directly
+    against the installed langgraph-checkpoint-sqlite package, not assumed),
+    already scoped to exactly this thread_id via curation_thread_id()'s
+    prefix, same as every other function in this module. Safe to call even
+    if session_id was never saved -- delete_thread() is a plain DELETE...
+    WHERE thread_id = ?, which matches zero rows without erroring."""
+    checkpointer.delete_thread(curation_thread_id(session_id))
+
+
 def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:
     """curation-api-and-ui Phase 6b/6c: powers the frontend's "reviews
     list" panel — every session ever saved to this checkpointer, as a
@@ -210,6 +228,7 @@ def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:
         {
             "session_id": thread_id[len(THREAD_ID_PREFIX):],
             "topic": session_dict["topic"],
+            "display_title": session_dict.get("display_title") or session_dict["topic"],
             "stage": session_dict["stage"],
             "selected_count": len(session_dict.get("selected_paper_ids", [])),
             "target_count": session_dict.get("target_count", 10),

@@ -449,6 +449,92 @@ def test_repeated_refill_on_exhausted_topic_stays_at_zero_idempotently():
     assert session.reserve == []
 
 
+# --- canonicalize_topic (curation-review-management Phase 8, item 5) ---
+
+def _fake_canonicalize_client(canonical_topic: str | None) -> MagicMock:
+    client = MagicMock()
+    parsed = MagicMock(canonical_topic=canonical_topic) if canonical_topic is not None else None
+    message = MagicMock(parsed=parsed)
+    response = MagicMock(usage=MagicMock(total_tokens=20, prompt_tokens=15, completion_tokens=5))
+    response.choices = [MagicMock(message=message)]
+    client.chat.completions.parse.return_value = response
+    return client
+
+
+def test_canonicalize_topic_returns_the_models_restatement_on_success():
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = _fake_canonicalize_client("Automotive Engine Cooling Systems")
+    result = canonicalize_topic("cars cooling system", client=client)
+
+    assert result == "Automotive Engine Cooling Systems"
+
+
+def test_canonicalize_topic_sends_the_raw_topic_in_the_prompt():
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = _fake_canonicalize_client("Whatever")
+    canonicalize_topic("cars cooling system", client=client)
+
+    sent_messages = client.chat.completions.parse.call_args.kwargs["messages"]
+    assert "cars cooling system" in sent_messages[-1]["content"]
+
+
+def test_canonicalize_topic_empty_input_returns_unchanged_without_calling_the_model():
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = MagicMock()
+    result = canonicalize_topic("   ", client=client)
+
+    assert result == "   "
+    client.chat.completions.parse.assert_not_called()
+
+
+def test_canonicalize_topic_falls_back_to_raw_topic_when_the_llm_call_fails():
+    """Defensive like every other LLM-touching function in this module --
+    a failure here must degrade to "no cleanup", never block review
+    creation."""
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = MagicMock()
+    client.chat.completions.parse.side_effect = RuntimeError("API down")
+
+    result = canonicalize_topic("cars cooling system", client=client)
+
+    assert result == "cars cooling system"
+
+
+def test_canonicalize_topic_falls_back_to_raw_topic_when_the_model_refuses():
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = _fake_canonicalize_client(None)
+    result = canonicalize_topic("cars cooling system", client=client)
+
+    assert result == "cars cooling system"
+
+
+def test_canonicalize_topic_falls_back_to_raw_topic_on_an_empty_parsed_result():
+    from research_agent.query_expansion import canonicalize_topic
+
+    client = _fake_canonicalize_client("   ")
+    result = canonicalize_topic("cars cooling system", client=client)
+
+    assert result == "cars cooling system"
+
+
+def test_canonicalize_topic_never_mutates_the_raw_topic_it_was_given():
+    """The approved design's core invariant: this function is display-only
+    -- the caller's own `topic` variable/session field must be provably
+    unaffected by calling this, not just "probably fine"."""
+    from research_agent.query_expansion import canonicalize_topic
+
+    raw_topic = "cars cooling system"
+    client = _fake_canonicalize_client("Automotive Engine Cooling Systems")
+    canonicalize_topic(raw_topic, client=client)
+
+    assert raw_topic == "cars cooling system"
+
+
 if __name__ == "__main__":
     test_rank_full_pool_returns_every_candidate_not_just_k()
     test_rank_full_pool_empty_input_returns_empty_without_touching_chroma()
@@ -470,4 +556,11 @@ if __name__ == "__main__":
     test_refill_pool_when_topic_genuinely_exhausted_returns_zero_without_crashing()
     test_refill_pool_when_search_finds_only_already_seen_papers_returns_zero()
     test_repeated_refill_on_exhausted_topic_stays_at_zero_idempotently()
+    test_canonicalize_topic_returns_the_models_restatement_on_success()
+    test_canonicalize_topic_sends_the_raw_topic_in_the_prompt()
+    test_canonicalize_topic_empty_input_returns_unchanged_without_calling_the_model()
+    test_canonicalize_topic_falls_back_to_raw_topic_when_the_llm_call_fails()
+    test_canonicalize_topic_falls_back_to_raw_topic_when_the_model_refuses()
+    test_canonicalize_topic_falls_back_to_raw_topic_on_an_empty_parsed_result()
+    test_canonicalize_topic_never_mutates_the_raw_topic_it_was_given()
     print("All query_expansion tests passed.")

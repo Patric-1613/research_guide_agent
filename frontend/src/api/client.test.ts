@@ -67,6 +67,15 @@ describe('curationApi', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://test-api.local/curation/s1', expect.not.objectContaining({ method: 'POST' }))
   })
 
+  it('deleteReview() issues a DELETE to the session-scoped path', async () => {
+    const fetchMock = mockFetchOnce(200, { session_id: 's1', deleted: true })
+
+    const result = await curationApi.deleteReview('s1')
+
+    expect(fetchMock).toHaveBeenCalledWith('http://test-api.local/curation/s1', expect.objectContaining({ method: 'DELETE' }))
+    expect(result).toEqual({ session_id: 's1', deleted: true })
+  })
+
   it('throws an ApiError carrying the status and parsed detail on a non-2xx response', async () => {
     mockFetchOnce(404, { detail: 'session_id not found' })
 

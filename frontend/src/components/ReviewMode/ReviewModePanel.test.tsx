@@ -15,7 +15,7 @@ function paper(id: string, title: string, abstract: string | null = null): Paper
 
 function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
   return {
-    session_id: 's1', topic: 't', stage: 'curate', target_count: 10,
+    session_id: 's1', topic: 't', display_title: 't', stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null,
@@ -97,11 +97,11 @@ describe('ReviewModePanel', () => {
     expect(screen.getByTestId('review-stop')).toBeDisabled()
   })
 
-  it('no pending batch (curation finished): shows a completion message, not the candidate list', () => {
+  it('no pending batch (curation finished, or a completed review reopened): shows the completion message AND the selected papers themselves (Phase 8, item 3)', () => {
     const state = baseState({
       stage: 'synthesize',
       pending_batch: null,
-      selected_papers: [paper('p1', 'Paper One'), paper('p2', 'Paper Two')],
+      selected_papers: [paper('p1', 'Paper One', 'An abstract about Y.'), paper('p2', 'Paper Two')],
       selected_paper_ids: ['p1', 'p2'],
     })
     render(
@@ -113,7 +113,15 @@ describe('ReviewModePanel', () => {
 
     expect(screen.getByText(/Curation complete/)).toBeInTheDocument()
     expect(screen.getByText(/2 papers selected/)).toBeInTheDocument()
-    expect(screen.queryByText('Paper One')).not.toBeInTheDocument()
+    // The whole point of the fix: the papers themselves render, with their
+    // abstracts, not just a count -- this is what a reopened completed
+    // review was previously missing entirely.
+    expect(screen.getByText('Paper One')).toBeInTheDocument()
+    expect(screen.getByText('An abstract about Y.')).toBeInTheDocument()
+    expect(screen.getByText('Paper Two')).toBeInTheDocument()
+    // Already-confirmed picks have no add/remove affordance -- curation is over.
+    expect(screen.queryByRole('button', { name: '+ Add to review' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
   })
 
   it('renders past TurnBlocks above the current batch, with correct turn numbering', () => {

@@ -32,12 +32,25 @@ export function ReviewModePanel({
   const totalSelected = state.selected_paper_ids.length + stagedPickIds.length
 
   if (!pendingBatch) {
+    // Phase 8, item 3: true both right after curation just finished AND
+    // every time an already-completed review is reopened -- state.selected_papers
+    // is already in the API response either way, it just wasn't being
+    // rendered here before.
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-        <p className="text-sm text-text-secondary">
-          Curation complete — {state.selected_papers.length} papers selected.
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          <p className="mb-3 text-center text-sm text-text-secondary">
+            Curation complete — {state.selected_papers.length} papers selected.
+          </p>
+          <div className="flex flex-col gap-2">
+            {state.selected_papers.map((paper) => (
+              <PaperCard key={paper.paper_id} paper={paper} showAbstract action={{ kind: 'none' }} />
+            ))}
+          </div>
+        </div>
+        <p className="border-t border-border bg-panel px-4 py-3 text-center text-sm text-text-muted">
+          Switch to the Report tab on the left to generate your literature review.
         </p>
-        <p className="text-sm text-text-muted">Switch to the Report tab on the left to generate your literature review.</p>
       </div>
     )
   }

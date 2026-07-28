@@ -71,6 +71,10 @@ export interface ReportOut {
 export interface CurationStateResponse {
   session_id: string
   topic: string
+  // Phase 8, item 5: a canonicalize_topic() restatement of `topic`, for
+  // display only -- `topic` above is unchanged and still what actually
+  // drove search/ranking/refinement when this review was created.
+  display_title: string
   stage: string
   target_count: number
   selected_paper_ids: string[]
@@ -104,6 +108,7 @@ export interface CurationChatResponse {
 export interface CurationReviewSummary {
   session_id: string
   topic: string
+  display_title: string
   stage: string
   selected_count: number
   target_count: number
@@ -125,6 +130,11 @@ export interface CurationPicksRequest {
 
 export interface CurationChatRequest {
   message: string
+}
+
+export interface CurationDeleteResponse {
+  session_id: string
+  deleted: boolean
 }
 
 export interface ApiErrorBody {
