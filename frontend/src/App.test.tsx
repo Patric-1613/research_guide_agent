@@ -14,8 +14,12 @@ vi.mock('./api/client', () => ({
 }))
 
 function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
+  // display_title defaults to whatever topic ends up being unless
+  // separately overridden -- TopicHeader now renders display_title, not
+  // topic, so tests that only override `topic` still see that text.
+  const topic = overrides.topic ?? 'transformers'
   return {
-    session_id: 's1', topic: 'transformers', stage: 'curate', target_count: 10,
+    session_id: 's1', topic, display_title: topic, stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: [], refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null,
@@ -36,6 +40,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     generateReport: vi.fn(),
     regenerateReport: vi.fn(),
     sendChatMessage: vi.fn(),
+    deleteReview: vi.fn(),
     refresh: vi.fn(),
     ...overrides,
   })
@@ -50,6 +55,14 @@ describe('App', () => {
     mockSession(fullState())
     render(<App />)
     expect(screen.getByText('Research Helper Agent')).toBeInTheDocument()
+  })
+
+  it('shows the canonicalized display_title in the topic header, not the raw topic (Phase 8, item 5)', () => {
+    mockSession(fullState({ topic: 'cars cooling system', display_title: 'Automotive Engine Cooling Systems' }))
+    render(<App />)
+
+    expect(screen.getByText('Automotive Engine Cooling Systems')).toBeInTheDocument()
+    expect(screen.queryByText('cars cooling system')).not.toBeInTheDocument()
   })
 
   it('review mode: shows the candidate browser center panel and the pool summary on the right', () => {
@@ -74,6 +87,38 @@ describe('App', () => {
     expect(screen.queryByTestId('stat-selected')).not.toBeInTheDocument()
   })
 
+  it('reopening an already-finished review (mode reset to review by handleSelectReview) stays on Review, not bounced to Report (Phase 8, item 3 fallout)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([
+      { session_id: 's2', topic: 'already done', display_title: 'already done', stage: 'synthesize', selected_count: 3, target_count: 3, has_report: true, has_chat: false },
+    ])
+    // Mount already on a DIFFERENT, still-in-progress session first -- the
+    // bug only reproduces when a session that's unlocked from the moment
+    // it's opened lands in 'review' mode, as handleSelectReview does.
+    mockSession(fullState({ session_id: 's1', stage: 'curate', pending_batch: [] }))
+    render(<App />)
+    expect(screen.getByTestId('review-continue')).toBeInTheDocument()
+
+    // Reopen an already-finished review: same shape handleSelectReview
+    // produces (mode reset to 'review', state already unlocked).
+    mockSession(fullState({
+      session_id: 's2', stage: 'synthesize', pending_batch: null,
+      selected_papers: [{
+        paper_id: 'p1', title: 'Already Selected', authors: [], year: null, venue: null,
+        abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
+        source_urls: {}, score: null,
+      }],
+      selected_paper_ids: ['p1'],
+    }))
+    await user.click(await screen.findByTestId('review-card-s2'))
+
+    // Must show the papers in Review mode -- NOT get bounced to Report.
+    // (Renders in both the center card and the right-panel selected list,
+    // hence findAllByText rather than a single-match query.)
+    expect((await screen.findAllByText('Already Selected')).length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('generate-report')).not.toBeInTheDocument()
+  })
+
   it('chat mode: the center panel shows only the conversation, no paper pool alongside it', async () => {
     const user = userEvent.setup()
     mockSession(fullState({ stage: 'synthesize', pending_batch: null, report: {
@@ -95,8 +140,8 @@ describe('App', () => {
     const user = userEvent.setup()
     const openReview = vi.fn()
     vi.mocked(curationApi.listReviews).mockResolvedValue([
-      { session_id: 's1', topic: 'transformers', stage: 'synthesize', selected_count: 5, target_count: 5, has_report: false, has_chat: false },
-      { session_id: 's2', topic: 'other', stage: 'curate', selected_count: 0, target_count: 5, has_report: false, has_chat: false },
+      { session_id: 's1', topic: 'transformers', display_title: 'transformers', stage: 'synthesize', selected_count: 5, target_count: 5, has_report: false, has_chat: false },
+      { session_id: 's2', topic: 'other', display_title: 'other', stage: 'curate', selected_count: 0, target_count: 5, has_report: false, has_chat: false },
     ])
     mockSession(fullState({ stage: 'synthesize', pending_batch: null }), { openReview })
     render(<App />)

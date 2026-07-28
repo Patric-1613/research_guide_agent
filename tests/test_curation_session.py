@@ -15,7 +15,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.curation_session import (
+    build_curation_graph,
     curation_thread_id,
+    delete_curation_session,
     list_curation_sessions,
     load_curation_session,
     save_curation_session,
@@ -260,6 +262,119 @@ def test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wr
                 load_curation_session("session-1", cp)
 
 
+# --- display_title (curation-review-management Phase 8, item 5) ---
+
+def test_display_title_roundtrips_through_real_sqlite_distinct_from_topic():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="cars cooling system",
+            display_title="Automotive Engine Cooling Systems",
+            reserve=[(_paper("p0"), 0.9)],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+
+        with sqlite_checkpointer(db_path) as cp2:
+            loaded = load_curation_session("session-1", cp2)
+
+        assert loaded.topic == "cars cooling system"
+        assert loaded.display_title == "Automotive Engine Cooling Systems"
+
+
+def test_loading_a_pre_phase8_session_without_display_title_falls_back_to_its_own_topic():
+    """A checkpoint saved before this field existed has no "display_title"
+    key in its dict at all -- simulated here by invoking the graph
+    directly with a hand-built dict, bypassing _session_to_dict (which
+    would always include the key for a session built today)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_format_dict = {
+            "topic": "old style session", "reserve": [], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+            "selected_paper_ids": [], "selected_papers": [], "report": None, "chat_history": [],
+            "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+            "refinement_notes": [], "report_covered_web_article_count": 0,
+            # deliberately no "display_title" key
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-id", cp)
+
+        assert loaded.topic == "old style session"
+        assert loaded.display_title == "old style session"
+
+
+def test_list_curation_sessions_includes_display_title():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="cars cooling system", display_title="Automotive Engine Cooling Systems",
+            reserve=[(_paper("p0"), 0.9)],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+            summaries = list_curation_sessions(cp)
+
+        assert summaries[0]["topic"] == "cars cooling system"
+        assert summaries[0]["display_title"] == "Automotive Engine Cooling Systems"
+
+
+# --- delete_curation_session (curation-review-management Phase 8, item 1) ---
+
+def test_delete_curation_session_removes_it_for_real():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(topic="to be deleted", reserve=[(_paper("p0"), 0.9)])
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+            assert load_curation_session("session-1", cp) is not None
+
+            delete_curation_session("session-1", cp)
+
+            assert load_curation_session("session-1", cp) is None
+            assert list_curation_sessions(cp) == []
+
+        # Real SQLite read confirming the rows are actually gone from
+        # disk, not just unreachable through the checkpointer API.
+        conn = sqlite3.connect(db_path)
+        remaining = list(conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (curation_thread_id("session-1"),),
+        ))
+        conn.close()
+        assert remaining == [(0,)]
+
+
+def test_delete_curation_session_on_unknown_id_does_not_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            delete_curation_session("never-existed", cp)  # must not raise
+
+
+def test_delete_curation_session_does_not_affect_other_sessions():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session_a = PaperPoolSession(topic="Topic A", reserve=[(_paper("a0"), 0.9)])
+        session_b = PaperPoolSession(topic="Topic B", reserve=[(_paper("b0"), 0.9)])
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session_a, "session-a", cp)
+            save_curation_session(session_b, "session-b", cp)
+
+            delete_curation_session("session-a", cp)
+
+            assert load_curation_session("session-a", cp) is None
+            assert load_curation_session("session-b", cp) is not None
+
+
 if __name__ == "__main__":
     test_save_then_load_roundtrips_all_fields_verified_via_real_sqlite_read()
     test_load_nonexistent_session_returns_none_not_an_error()
@@ -270,4 +385,10 @@ if __name__ == "__main__":
     test_list_curation_sessions_returns_a_summary_per_session_most_recently_touched_first()
     test_list_curation_sessions_flags_has_report_and_has_chat_correctly()
     test_corrupted_database_file_raises_cleanly_instead_of_silently_returning_wrong_data()
+    test_display_title_roundtrips_through_real_sqlite_distinct_from_topic()
+    test_loading_a_pre_phase8_session_without_display_title_falls_back_to_its_own_topic()
+    test_list_curation_sessions_includes_display_title()
+    test_delete_curation_session_removes_it_for_real()
+    test_delete_curation_session_on_unknown_id_does_not_error()
+    test_delete_curation_session_does_not_affect_other_sessions()
     print("All curation_session tests passed.")

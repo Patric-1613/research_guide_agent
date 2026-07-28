@@ -9,6 +9,7 @@ interface ReviewsListProps {
   activeSessionId: string | null
   onSelectReview: (sessionId: string) => void
   onStartReview: (topic: string, targetCount: number) => void
+  onDeleteReview: (sessionId: string) => void
   // Bumping this triggers a refetch -- the caller increments it after any
   // action that could change a review's summary (a pick, a report, a chat
   // turn), so the list reflects real backend state, not a client guess.
@@ -23,13 +24,17 @@ interface ReviewsListProps {
 
 // Fixed section order, most-active-first -- matches the natural
 // curate -> report -> chat progression, not alphabetical or insertion
-// order.
-const SECTION_ORDER = ['Curating', 'Ready for report', 'Report', 'Report + Chat'] as const
+// order. "Chatted" sits between "Ready for report" and "Report" -- it's
+// a real, reachable state (chat_turn() only guards on stage, never on
+// report existence) where the user engaged via chat before ever
+// generating a report.
+const SECTION_ORDER = ['Curating', 'Ready for report', 'Chatted', 'Report', 'Report + Chat'] as const
 
 export function ReviewsList({
   activeSessionId,
   onSelectReview,
   onStartReview,
+  onDeleteReview,
   refreshToken,
   workspaceMode,
   workspaceUnlocked,
@@ -96,6 +101,7 @@ export function ReviewsList({
                 review={review}
                 active={review.session_id === activeSessionId}
                 onSelect={() => onSelectReview(review.session_id)}
+                onDelete={onDeleteReview}
               />
             ))}
           </div>

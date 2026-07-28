@@ -13,12 +13,13 @@ vi.mock('../api/client', () => ({
     regenerateReport: vi.fn(),
     chat: vi.fn(),
     listReviews: vi.fn(),
+    deleteReview: vi.fn(),
   },
 }))
 
 function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
   return {
-    session_id: 's1', topic: 'transformers', stage: 'curate', target_count: 10,
+    session_id: 's1', topic: 'transformers', display_title: 'transformers', stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null,
@@ -129,5 +130,41 @@ describe('useCurationSession', () => {
 
     await waitFor(() => expect(result.current.error).toBe('Error: network down'))
     expect(result.current.loading).toBe(false)
+  })
+
+  it('deleteReview: deleting the CURRENTLY OPEN session clears sessionId/state and the URL (Phase 8, item 1)', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+    vi.mocked(curationApi.deleteReview).mockResolvedValue({ session_id: 's1', deleted: true })
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    await act(async () => {
+      await result.current.deleteReview('s1')
+    })
+
+    expect(curationApi.deleteReview).toHaveBeenCalledWith('s1')
+    expect(result.current.sessionId).toBeNull()
+    expect(result.current.state).toBeNull()
+    expect(getSessionIdFromUrl()).toBeNull()
+  })
+
+  it('deleteReview: deleting a DIFFERENT session leaves the currently open one untouched', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+    vi.mocked(curationApi.deleteReview).mockResolvedValue({ session_id: 's2', deleted: true })
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    await act(async () => {
+      await result.current.deleteReview('s2')
+    })
+
+    expect(curationApi.deleteReview).toHaveBeenCalledWith('s2')
+    expect(result.current.sessionId).toBe('s1')
+    expect(result.current.state?.session_id).toBe('s1')
+    expect(getSessionIdFromUrl()).toBe('s1')
   })
 })

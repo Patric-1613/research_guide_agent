@@ -33,6 +33,12 @@ function setSessionIdInUrl(sessionId: string): void {
   window.history.pushState({}, '', url)
 }
 
+function clearSessionIdInUrl(): void {
+  const url = new URL(window.location.href)
+  url.searchParams.delete(SESSION_PARAM)
+  window.history.pushState({}, '', url)
+}
+
 interface UseCurationSessionResult {
   sessionId: string | null
   state: CurationStateResponse | null
@@ -49,6 +55,13 @@ interface UseCurationSessionResult {
   generateReport: () => Promise<CurationStateResponse | undefined>
   regenerateReport: () => Promise<CurationStateResponse | undefined>
   sendChatMessage: (message: string) => Promise<void>
+  // curation-review-management Phase 8, item 1: deletes for real via the
+  // backend, then -- ONLY if the deleted id was the currently-open
+  // session -- clears sessionId/state/URL so the UI falls back to the
+  // empty "select a review" state instead of showing a session that no
+  // longer exists. Deleting a DIFFERENT review while one is open must not
+  // disturb the open one at all.
+  deleteReview: (sessionId: string) => Promise<void>
   refresh: () => Promise<void>
 }
 
@@ -175,8 +188,21 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  const deleteReview = useCallback(
+    (idToDelete: string) =>
+      runAction(async () => {
+        await curationApi.deleteReview(idToDelete)
+        if (idToDelete === sessionId) {
+          clearSessionIdInUrl()
+          setSessionIdState(null)
+          setState(null)
+        }
+      }),
+    [runAction, sessionId],
+  )
+
   return {
     sessionId, state, loading, error, turnEvents,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, refresh,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview, refresh,
   }
 }

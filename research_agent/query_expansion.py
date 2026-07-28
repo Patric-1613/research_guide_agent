@@ -232,6 +232,102 @@ def suggest_related_titles(
     return titles
 
 
+# Cheap, cost-tiered model, same reasoning as TITLE_SUGGESTION_MODEL above --
+# a narrow, low-stakes rewording task, not the quality-sensitive step.
+CANONICALIZE_TOPIC_MODEL = "gpt-4.1-mini"
+# Same reasoning as TITLE_SUGGESTION_TEMPERATURE: a display-title restatement
+# should be stable for the same input, not creatively varied run to run.
+CANONICALIZE_TOPIC_TEMPERATURE = 0.1
+
+CANONICALIZE_TOPIC_SYSTEM_PROMPT = """You rewrite a user's raw, possibly informal research-topic input into a short, well-formed restatement of the SAME topic -- for display as a review's title, not as a search query or a paper title.
+
+Rules:
+- Preserve the exact subject matter and scope. Never broaden, narrow, or reinterpret what the user asked about.
+- Fix casing, spelling, and grammar; make it read as a clean, professional topic label (e.g. "cars cooling system" -> "Automotive engine cooling systems").
+- Do not add information the input didn't contain. Do not turn it into a question, a sentence, or the title of a specific paper -- a short, well-formed topic phrase, like a real topic label.
+- If the input is already clean and well-formed, return it unchanged or with only trivial casing/spelling fixes."""
+
+
+class _CanonicalTopic(BaseModel):
+    canonical_topic: str = Field(
+        description="A short, well-formed restatement of the same topic -- not a paper title, not a search query, not a question.",
+    )
+
+
+@observe(name="canonicalize_topic", as_type="generation", capture_input=False, capture_output=False)
+def canonicalize_topic(topic: str, client: OpenAI | None = None) -> str:
+    """curation-review-management Phase 8, item 5: produces a clean DISPLAY
+    title for a review from the user's raw, possibly-informal input -- e.g.
+    "cars cooling system" -> "Automotive engine cooling systems". Display-
+    only: the raw `topic` string is still what actually drives search/
+    ranking/refinement everywhere else in the curation flow (PaperPoolSession
+    .topic is never touched by this) -- the returned string is meant to be
+    stored in a SEPARATE display_title field, per the approved design.
+
+    Confirmed before writing this that no existing step produced anything
+    like it: suggest_related_titles() (above) returns candidate PAPER
+    titles to search for, not a restatement of the topic itself -- wrong
+    shape of data for this job. Neither search_arxiv nor
+    search_semantic_scholar (ingestion.py) ever return a corrected/resolved
+    query either; the raw string is passed straight through to both.
+
+    Defensive like every other LLM-touching function in this module: any
+    failure (API error, empty/malformed response) logs and returns the raw
+    topic unchanged, so a failure here degrades to "no cleanup" rather than
+    blocking review creation.
+    """
+    if not topic.strip():
+        return topic
+
+    client = client or OpenAI()
+    messages = [
+        {"role": "system", "content": CANONICALIZE_TOPIC_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Raw input: {topic}"},
+    ]
+    langfuse = get_client()
+    langfuse.update_current_generation(
+        input=messages,
+        model=CANONICALIZE_TOPIC_MODEL,
+        model_parameters={"temperature": CANONICALIZE_TOPIC_TEMPERATURE},
+    )
+
+    try:
+        response = client.chat.completions.parse(
+            model=CANONICALIZE_TOPIC_MODEL,
+            temperature=CANONICALIZE_TOPIC_TEMPERATURE,
+            messages=messages,
+            response_format=_CanonicalTopic,
+        )
+    except Exception:
+        logger.warning("canonicalize_topic: LLM call failed for topic %r", topic, exc_info=True)
+        langfuse.update_current_generation(output={"canonical_topic": topic}, level="WARNING", status_message="LLM call failed")
+        return topic
+
+    usage = response.usage
+    if usage is not None:
+        logger.info(
+            "canonicalize_topic: %d tokens billed (prompt=%d, completion=%d)",
+            usage.total_tokens, usage.prompt_tokens, usage.completion_tokens,
+        )
+        langfuse.update_current_generation(
+            usage_details={
+                "input_tokens": usage.prompt_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            },
+        )
+
+    parsed = response.choices[0].message.parsed
+    if parsed is None or not parsed.canonical_topic.strip():
+        logger.warning("canonicalize_topic: model refused/returned empty content for topic %r", topic)
+        langfuse.update_current_generation(output={"canonical_topic": topic})
+        return topic
+
+    canonical = parsed.canonical_topic.strip()
+    langfuse.update_current_generation(output={"canonical_topic": canonical})
+    return canonical
+
+
 def _search_semantic_scholar_with_openalex_fallback(
     query: str, max_results: int, s2_api_key: str | None, openalex_mailto: str | None,
 ) -> list[Paper]:
@@ -647,6 +743,16 @@ class PaperPoolSession:
     # check that stays true forever after the first approval.
     refinement_notes: list[str] = field(default_factory=list)
     report_covered_web_article_count: int = 0
+    # curation-review-management Phase 8, item 5: a canonicalize_topic()
+    # restatement of `topic` for DISPLAY only (review titles/headers) --
+    # `topic` itself is untouched and still what actually drives search/
+    # ranking/refinement everywhere. Empty default here is never the real
+    # value in practice: api.py's curation_start() always sets this
+    # explicitly at session creation, the only place a fresh session is
+    # built. Deserializing an OLDER session saved before this field
+    # existed falls back to its own `topic` (see _dict_to_session) rather
+    # than an empty string.
+    display_title: str = ""
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

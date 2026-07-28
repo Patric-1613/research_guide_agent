@@ -89,7 +89,8 @@ def _client():
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
              patch.object(api, "search_web", return_value=[]), \
-             patch.object(api, "OpenAI", return_value=MagicMock()):
+             patch.object(api, "OpenAI", return_value=MagicMock()), \
+             patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
             api.app.dependency_overrides[api.get_curation_checkpointer] = _make_test_checkpointer_override(cp_db_path)
             try:
@@ -128,6 +129,57 @@ def test_curation_start_with_no_papers_returns_404():
          patch.object(api, "rank_full_pool", return_value=([], {})):
         resp = client.post("/curation/start", json={"topic": "nonexistent topic"})
     assert resp.status_code == 404
+
+
+# --- display_title (curation-review-management Phase 8, item 5) ---
+
+def test_curation_get_state_returns_canonicalized_display_title_distinct_from_raw_topic():
+    """The approved design's core property: display_title is a SEPARATE
+    field from topic, and topic itself is never touched by
+    canonicalize_topic -- proven end-to-end through real HTTP requests,
+    not just at the function level."""
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})), \
+         patch.object(api, "canonicalize_topic", return_value="Automotive Engine Cooling Systems"):
+        start_body = client.post("/curation/start", json={"topic": "cars cooling system", "target_count": 5}).json()
+        session_id = start_body["session_id"]
+
+        resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["topic"] == "cars cooling system"
+    assert body["display_title"] == "Automotive Engine Cooling Systems"
+
+
+def test_curation_start_does_not_canonicalize_when_no_papers_are_found():
+    """Ordering choice: canonicalize_topic runs AFTER confirming papers
+    actually exist for this topic, so a topic that returns nothing never
+    spends an extra LLM call for a session that's about to 404 anyway."""
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=[]), \
+         patch.object(api, "rank_full_pool", return_value=([], {})), \
+         patch.object(api, "canonicalize_topic") as mock_canonicalize:
+        client.post("/curation/start", json={"topic": "nonexistent topic"})
+
+    mock_canonicalize.assert_not_called()
+
+
+def test_curation_list_reviews_includes_display_title():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})), \
+         patch.object(api, "canonicalize_topic", return_value="Automotive Engine Cooling Systems"):
+        client.post("/curation/start", json={"topic": "cars cooling system", "target_count": 5})
+
+        resp = client.get("/curation/reviews")
+
+    assert resp.status_code == 200
+    reviews = resp.json()
+    assert any(r["topic"] == "cars cooling system" and r["display_title"] == "Automotive Engine Cooling Systems" for r in reviews)
 
 
 def test_curation_picks_resumes_the_real_interrupt_and_returns_the_next_batch():
@@ -399,6 +451,50 @@ def test_curation_get_state_unknown_session_id_returns_404():
     with _client() as client:
         resp = client.get("/curation/does-not-exist")
     assert resp.status_code == 404
+
+
+# --- DELETE /curation/{id}: delete/abandon a review (curation-review-management Phase 8, item 1) ---
+
+def test_curation_delete_removes_the_session_for_real():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        session_id = client.post("/curation/start", json={"topic": "t", "target_count": 5}).json()["session_id"]
+
+        # It's real and gettable before deletion.
+        assert client.get(f"/curation/{session_id}").status_code == 200
+
+        resp = client.delete(f"/curation/{session_id}")
+        assert resp.status_code == 200
+        assert resp.json() == {"session_id": session_id, "deleted": True}
+
+        # Gone for real, via a genuinely separate GET request -- not just a
+        # client-side assumption.
+        assert client.get(f"/curation/{session_id}").status_code == 404
+        # Also gone from the reviews list, not just the direct-get endpoint.
+        reviews = client.get("/curation/reviews").json()
+        assert all(r["session_id"] != session_id for r in reviews)
+
+
+def test_curation_delete_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.delete("/curation/does-not-exist")
+    assert resp.status_code == 404
+
+
+def test_curation_delete_does_not_affect_other_sessions():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        session_a = client.post("/curation/start", json={"topic": "Topic A", "target_count": 5}).json()["session_id"]
+        session_b = client.post("/curation/start", json={"topic": "Topic B", "target_count": 5}).json()["session_id"]
+
+        client.delete(f"/curation/{session_a}")
+
+        assert client.get(f"/curation/{session_a}").status_code == 404
+        assert client.get(f"/curation/{session_b}").status_code == 200
 
 
 # --- /curation/{id}/report + /report/regenerate ---

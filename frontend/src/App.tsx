@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useCurationSession } from './hooks/useCurationSession'
 import { AppHeader } from './components/AppHeader/AppHeader'
 import { ReviewsList } from './components/ReviewsList/ReviewsList'
@@ -31,7 +31,7 @@ function setModeInUrl(mode: WorkspaceMode): void {
 export default function App() {
   const {
     sessionId, state, loading, error, turnEvents,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -68,11 +68,27 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
-  // Two safety/UX rules, both keyed off `unlocked`:
-  //  - The moment curation finishes, jump straight to Report -- that's
-  //    the natural next step, and Review mode has nothing left to do (no
-  //    pending batch). Never clobber a manual Chat/Report navigation the
-  //    user already made.
+  // Phase 8, item 3 fallout: the auto-jump-to-Report below must fire
+  // EXACTLY ONCE, at the live moment a session transitions from
+  // in-progress to just-finished -- not every time this effect happens to
+  // re-run while already unlocked. It used to fire unconditionally
+  // whenever (unlocked && workspaceMode === 'review'), which meant a
+  // completed review could never actually be VIEWED in Review mode at
+  // all: reopening one (handleSelectReview resets mode to 'review'),
+  // deep-linking with ?mode=review, or manually clicking the Review tab
+  // all got instantly bounced back to Report before render even settled
+  // -- silently making ReviewModePanel's now-fixed selected-papers view
+  // unreachable through any normal navigation path. Tracked per
+  // session_id so opening a DIFFERENT already-finished review doesn't
+  // read as a "live transition" either.
+  const prevUnlockRef = useRef<{ sessionId: string | null; unlocked: boolean }>({ sessionId: null, unlocked: false })
+
+  // Two safety/UX rules:
+  //  - The moment curation finishes WHILE THIS SESSION IS ALREADY OPEN,
+  //    jump straight to Report once -- that's the natural next step right
+  //    after the last pick. Never clobber a manual Chat/Report navigation,
+  //    and never re-fire just because the review happens to still be
+  //    unlocked on a later render.
   //  - If Chat/Report is showing but curation ISN'T actually finished
   //    (e.g. a stale/bookmarked `?mode=chat` URL from before this review
   //    reached that stage), fall back to Review rather than rendering a
@@ -83,9 +99,14 @@ export default function App() {
     // clamping here would force a `?mode=chat` reload back to Review
     // before the real (possibly-unlocked) state ever arrives.
     if (!state) return
+
+    const sameSession = prevUnlockRef.current.sessionId === state.session_id
+    const justUnlocked = sameSession && !prevUnlockRef.current.unlocked && unlocked
+    prevUnlockRef.current = { sessionId: state.session_id, unlocked }
+
     if (!unlocked && workspaceMode !== 'review') {
       setWorkspaceMode('review')
-    } else if (unlocked && workspaceMode === 'review') {
+    } else if (justUnlocked && workspaceMode === 'review') {
       setWorkspaceMode('report')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,6 +121,11 @@ export default function App() {
   async function handleStartReview(topic: string, targetCount: number) {
     setWorkspaceMode('review')
     await startReview(topic, targetCount)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleDeleteReview(id: string) {
+    await deleteReview(id)
     setReviewsRefreshToken((t) => t + 1)
   }
 
@@ -150,6 +176,7 @@ export default function App() {
           activeSessionId={sessionId}
           onSelectReview={handleSelectReview}
           onStartReview={handleStartReview}
+          onDeleteReview={handleDeleteReview}
           refreshToken={reviewsRefreshToken}
           workspaceMode={workspaceMode}
           workspaceUnlocked={unlocked}
@@ -167,7 +194,7 @@ export default function App() {
           )}
           {state && (
             <>
-              <TopicHeader topic={state.topic} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
+              <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
               {workspaceMode === 'review' && (
                 <ReviewModePanel
                   state={state}
