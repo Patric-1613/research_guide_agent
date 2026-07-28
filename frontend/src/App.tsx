@@ -33,7 +33,7 @@ export default function App() {
   const {
     sessionId, state, loading, error, turnEvents,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
-    selectFromHistory,
+    selectFromHistory, reopenReview,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -51,6 +51,16 @@ export default function App() {
   // dependency on a report existing yet, so gating on has_report would
   // be stricter than what the backend actually requires.
   const unlocked = state?.stage === 'synthesize'
+
+  // curation-editable-until-locked Phase 10e: the ONLY gate on going
+  // back to active curation, mirroring reopen_curation_session()'s own
+  // server-side check exactly (research_agent/curation_session.py) --
+  // this is just the UI-hiding half, the backend re-validates for real.
+  // Once reopened, `unlocked` above naturally goes back to false on the
+  // next loadState() (stage flips back to "curate"), which the existing
+  // effect below already handles by bouncing workspaceMode back to
+  // 'review' -- no separate re-lock logic needed here.
+  const reopenEligible = !!state && state.stage === 'synthesize' && state.report === null && state.chat_history.length === 0
 
   // Staged ("+ Add to review") picks are scoped to whichever batch is
   // CURRENTLY pending -- reset whenever the pending batch's identity
@@ -175,6 +185,11 @@ export default function App() {
     setReviewsRefreshToken((t) => t + 1)
   }
 
+  async function handleReopenReview() {
+    await reopenReview()
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
   function handleAdd(paperId: string) {
     setStagedPickIds((prev) => (prev.includes(paperId) ? prev : [...prev, paperId]))
   }
@@ -210,16 +225,31 @@ export default function App() {
           {state && (
             <>
               <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
-              {state.turn_history.length > 0 && !showHistory && (
-                <div className="flex items-center justify-end border-b border-border bg-panel px-4 py-1.5">
-                  <button
-                    type="button"
-                    data-testid="open-turn-history"
-                    onClick={() => setShowHistory(true)}
-                    className="text-xs text-text-secondary underline decoration-dotted hover:text-accent"
-                  >
-                    Browse past turns ({state.turn_history.length})
-                  </button>
+              {!showHistory && (reopenEligible || state.turn_history.length > 0) && (
+                <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-1.5">
+                  <div>
+                    {reopenEligible && (
+                      <button
+                        type="button"
+                        data-testid="reopen-review"
+                        onClick={handleReopenReview}
+                        disabled={loading}
+                        className="text-xs text-text-secondary underline decoration-dotted hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Reopen for more curation
+                      </button>
+                    )}
+                  </div>
+                  {state.turn_history.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="open-turn-history"
+                      onClick={() => setShowHistory(true)}
+                      className="text-xs text-text-secondary underline decoration-dotted hover:text-accent"
+                    >
+                      Browse past turns ({state.turn_history.length})
+                    </button>
+                  )}
                 </div>
               )}
               {showHistory ? (

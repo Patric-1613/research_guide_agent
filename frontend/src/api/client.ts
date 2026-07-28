@@ -74,4 +74,12 @@ export const curationApi = {
   // paper in turn_history, not just the current batch -- Phase 9d).
   selectFromHistory: (sessionId: string, paperId: string): Promise<CurationSelectFromHistoryResponse> =>
     postJson(`/curation/${sessionId}/select-from-history`, { paper_id: paperId }),
+
+  // curation-editable-until-locked Phase 10c/10e: only valid on a review
+  // that's stopped (stage=="synthesize") but hasn't been chatted/
+  // reported yet -- reopen_curation_session()'s own docstring (research_
+  // agent/curation_session.py) has the full reasoning. Backend is the
+  // authoritative check; the frontend just hides the action otherwise.
+  reopen: (sessionId: string): Promise<CurationTurnResponse> =>
+    postJson(`/curation/${sessionId}/reopen`, {}),
 }

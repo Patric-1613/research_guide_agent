@@ -215,6 +215,67 @@ describe('ReviewModePanel', () => {
     expect(screen.queryByText(/^Curation complete/)).not.toBeInTheDocument()
   })
 
+  it('curation-editable-until-locked Phase 10d: an empty batch (search came back dry, still curating) shows a clear message and no PaperCards, not a silent blank list', () => {
+    const state = baseState({ pending_batch: [], target_count: 10, selected_paper_ids: ['p1'] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/No new candidates found for this search/)).toBeInTheDocument()
+    expect(screen.getByText(/Try refining below/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '+ Add to review' })).not.toBeInTheDocument()
+    // The primary action relabels to reflect there's nothing to "get next" --
+    // it's a retry, reusing the same refinement bar to search again.
+    expect(screen.getByTestId('review-continue')).toHaveTextContent('Try again')
+  })
+
+  it('curation-editable-until-locked Phase 10d: an empty batch still stays fully editable -- "I\'m done" and "Search for more" remain available', () => {
+    const state = baseState({ pending_batch: [], selected_paper_ids: ['p1'] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('review-stop')).toBeEnabled()
+    expect(screen.getByTestId('review-request-refill')).toBeEnabled()
+  })
+
+  it('curation-editable-until-locked Phase 10d: reaching target_count while still curating shows a nudge banner, not a lock', () => {
+    const state = baseState({
+      pending_batch: [paper('p1', 'Paper One')], target_count: 2, selected_paper_ids: ['a', 'b'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('review-target-reached-banner')).toHaveTextContent("reached your target of 2")
+    // Still fully editable -- the new batch is still shown, picks still work.
+    expect(screen.getByText('Paper One')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Add to review' })).toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10d: no nudge banner while still short of target_count', () => {
+    const state = baseState({
+      pending_batch: [paper('p1', 'Paper One')], target_count: 10, selected_paper_ids: ['a'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('review-target-reached-banner')).not.toBeInTheDocument()
+  })
+
   it('a clean finish (target_met) still shows the plain "Curation complete" message', () => {
     const state = baseState({
       stage: 'synthesize', pending_batch: null, stop_reason: 'target_met', target_count: 1,

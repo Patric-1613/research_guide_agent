@@ -42,6 +42,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     sendChatMessage: vi.fn(),
     deleteReview: vi.fn(),
     selectFromHistory: vi.fn(),
+    reopenReview: vi.fn(),
     refresh: vi.fn(),
     ...overrides,
   })
@@ -181,6 +182,52 @@ describe('App', () => {
     }))
     rerender(<App />)
     expect(screen.getByText('Browse past turns (1)')).toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10e: "Reopen for more curation" appears once stopped, as long as nothing has been chatted/reported yet', () => {
+    mockSession(fullState({ stage: 'synthesize', pending_batch: null, report: null, chat_history: [] }))
+    render(<App />)
+    expect(screen.getByTestId('reopen-review')).toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10e: no reopen action while still curating', () => {
+    mockSession(fullState({ stage: 'curate' }))
+    render(<App />)
+    expect(screen.queryByTestId('reopen-review')).not.toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10e: no reopen action once a report exists', () => {
+    mockSession(fullState({
+      stage: 'synthesize', pending_batch: null, chat_history: [],
+      report: {
+        findings: { content: 'f', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: '', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: '', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+      },
+    }))
+    render(<App />)
+    expect(screen.queryByTestId('reopen-review')).not.toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10e: no reopen action once chat has started', () => {
+    mockSession(fullState({
+      stage: 'synthesize', pending_batch: null, report: null,
+      chat_history: [{ role: 'user', content: 'hi' }],
+    }))
+    render(<App />)
+    expect(screen.queryByTestId('reopen-review')).not.toBeInTheDocument()
+  })
+
+  it('curation-editable-until-locked Phase 10e: clicking "Reopen for more curation" calls reopenReview()', async () => {
+    const user = userEvent.setup()
+    const reopenReview = vi.fn().mockResolvedValue(undefined)
+    mockSession(fullState({ stage: 'synthesize', pending_batch: null, report: null, chat_history: [] }), { reopenReview })
+    render(<App />)
+
+    await user.click(screen.getByTestId('reopen-review'))
+
+    expect(reopenReview).toHaveBeenCalled()
   })
 
   it('opening turn history replaces the mode panel AND hides the pool summary, from any workspace mode (Phase 9f)', async () => {

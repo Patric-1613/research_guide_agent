@@ -46,6 +46,7 @@ from research_agent.curation_session import (
     delete_curation_session,
     list_curation_sessions,
     load_curation_session,
+    reopen_curation_session,
     save_curation_session,
     select_paper_from_history,
 )
@@ -1018,6 +1019,34 @@ def curation_select_from_history(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     save_curation_session(session, session_id, cp)
     return CurationSelectFromHistoryResponse(session_id=session_id, selected_paper_ids=session.selected_paper_ids)
+
+
+@app.post("/curation/{session_id}/reopen", response_model=CurationTurnResponse)
+def curation_reopen(session_id: str, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
+    """curation-editable-until-locked Phase 10c: reopens a review that WAS
+    explicitly stopped (stage=="synthesize") back into active curation --
+    the counterpart to Phase 10b's routing change, which made stopping
+    the ONLY thing that ever locks a review. Gated on reopen_curation_
+    session()'s own rules (still curating / report already generated /
+    chat already started, in that order) -- see its docstring for why. On
+    success, re-invokes start_curation_turn() fresh on the same
+    thread_id: not a Command(resume=...) (there's no pending interrupt
+    to resume once a real stop has already run through END), just a
+    plain graph.invoke() that picks up from wherever cursor/
+    selected_paper_ids left off, verified empirically before this was
+    implemented."""
+    with _upstream_error_guard("curation_reopen"):
+        session = load_curation_session(session_id, cp)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_id not found")
+        try:
+            reopen_curation_session(session)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        target_count = session.target_count
+        result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
+        return _turn_result_to_response(session_id, target_count, result)
 
 
 @app.post("/curation/{session_id}/report", response_model=ReportOut)

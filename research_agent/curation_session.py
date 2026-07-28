@@ -264,6 +264,47 @@ def select_paper_from_history(session: PaperPoolSession, paper_id: str) -> None:
     session.selected_papers.append(Paper(**paper_dict))
 
 
+def reopen_curation_session(session: PaperPoolSession) -> None:
+    """curation-editable-until-locked Phase 10c: lets a review that WAS
+    explicitly stopped (stage=="synthesize") go back to active curation,
+    as long as chat/report hasn't started yet -- the ONLY gate on
+    editability as of Phase 10b (target_count/exhaustion no longer lock
+    anything on their own).
+
+    Mutates `session` in place: resets stage back to "curate" and clears
+    stop_reason. Deliberately does NOT itself re-invoke
+    start_curation_turn() on the checkpointer -- this module can't
+    import curation_loop.py (curation_loop.py already imports FROM this
+    module; importing back the other way would be circular), so the
+    caller (api.py, which already imports both) is responsible for that
+    afterward, exactly the same "mutate here, save/resume there"
+    division of labor select_paper_from_history() above and
+    save_curation_session() already use.
+
+    Empirically verified before implementing this: a fresh
+    start_curation_turn() call on a thread_id whose prior invocation
+    already reached END (via an explicit stop) works cleanly as a
+    reopen mechanism -- it's a plain graph.invoke(), not
+    Command(resume=...), so it needs no pending task to exist. It just
+    needs a session dict with stage reset to "curate", and correctly
+    resumes serving from wherever cursor/selected_paper_ids left off,
+    never restarting.
+
+    Raises ValueError (api.py converts to 400, same convention as
+    select_paper_from_history above) if there's nothing to reopen
+    (still curating) or if the review is genuinely locked (report or
+    chat already started).
+    """
+    if session.stage != "synthesize":
+        raise ValueError("Session is still curating -- there is nothing to reopen.")
+    if session.report is not None:
+        raise ValueError("Cannot reopen: a report has already been generated for this review.")
+    if session.chat_history:
+        raise ValueError("Cannot reopen: chat has already started for this review.")
+    session.stage = "curate"
+    session.stop_reason = None
+
+
 def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:
     """curation-api-and-ui Phase 6b/6c: powers the frontend's "reviews
     list" panel — every session ever saved to this checkpointer, as a

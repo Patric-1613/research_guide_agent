@@ -20,6 +20,7 @@ from research_agent.curation_session import (
     delete_curation_session,
     list_curation_sessions,
     load_curation_session,
+    reopen_curation_session,
     save_curation_session,
     select_paper_from_history,
 )
@@ -535,6 +536,72 @@ def test_select_paper_from_history_persists_through_real_sqlite():
         assert final.selected_paper_ids == ["p1"]
 
 
+# --- reopen_curation_session (curation-editable-until-locked Phase 10c) ---
+
+def test_reopen_curation_session_resets_stage_and_stop_reason_when_eligible():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", stop_reason="user_stopped",
+        selected_paper_ids=["p0"], selected_papers=[_paper("p0")],
+    )
+
+    reopen_curation_session(session)
+
+    assert session.stage == "curate"
+    assert session.stop_reason is None
+    assert session.selected_paper_ids == ["p0"]  # untouched
+
+
+def test_reopen_curation_session_refuses_while_still_curating():
+    session = PaperPoolSession(topic="q", stage="curate")
+
+    import pytest
+    with pytest.raises(ValueError, match="nothing to reopen"):
+        reopen_curation_session(session)
+
+
+def test_reopen_curation_session_refuses_if_report_already_generated():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        report={"findings": {"content": "f", "cited_papers": []}},
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="report has already been generated"):
+        reopen_curation_session(session)
+
+    assert session.stage == "synthesize"  # unchanged on refusal
+
+
+def test_reopen_curation_session_refuses_if_chat_already_started():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        chat_history=[{"role": "user", "content": "hi"}],
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="chat has already started"):
+        reopen_curation_session(session)
+
+    assert session.stage == "synthesize"  # unchanged on refusal
+
+
+def test_reopen_curation_session_persists_through_real_sqlite():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(topic="q", stage="synthesize", stop_reason="user_stopped")
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+            reloaded = load_curation_session("session-1", cp)
+            reopen_curation_session(reloaded)
+            save_curation_session(reloaded, "session-1", cp)
+
+            final = load_curation_session("session-1", cp)
+
+        assert final.stage == "curate"
+        assert final.stop_reason is None
+
+
 if __name__ == "__main__":
     test_save_then_load_roundtrips_all_fields_verified_via_real_sqlite_read()
     test_load_nonexistent_session_returns_none_not_an_error()
@@ -560,4 +627,9 @@ if __name__ == "__main__":
     test_select_paper_from_history_finds_a_paper_from_an_earlier_turn_not_just_the_latest()
     test_select_paper_from_history_can_exceed_target_count()
     test_select_paper_from_history_persists_through_real_sqlite()
+    test_reopen_curation_session_resets_stage_and_stop_reason_when_eligible()
+    test_reopen_curation_session_refuses_while_still_curating()
+    test_reopen_curation_session_refuses_if_report_already_generated()
+    test_reopen_curation_session_refuses_if_chat_already_started()
+    test_reopen_curation_session_persists_through_real_sqlite()
     print("All curation_session tests passed.")
