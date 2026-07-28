@@ -47,7 +47,7 @@ interface UseCurationSessionResult {
   turnEvents: TurnEvent[]
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
-  submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string) => Promise<void>
+  submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
   // Return the freshly-loaded state (not void) so a caller can react to
   // exactly what changed as a RESULT of this action -- e.g. App.tsx uses
   // this to know how many web_articles_added a report generation/
@@ -62,6 +62,9 @@ interface UseCurationSessionResult {
   // longer exists. Deleting a DIFFERENT review while one is open must not
   // disturb the open one at all.
   deleteReview: (sessionId: string) => Promise<void>
+  // curation-turn-history Phase 9c: synthesize-stage only (enforced
+  // server-side) -- see client.ts's own comment for why.
+  selectFromHistory: (paperId: string) => Promise<void>
   refresh: () => Promise<void>
 }
 
@@ -132,7 +135,7 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   const submitPicks = useCallback(
-    (pickedIds: string[], stop = false, refinement?: string) =>
+    (pickedIds: string[], stop = false, refinement?: string, requestRefill?: boolean) =>
       runAction(async () => {
         if (!sessionId || !state) return
         const completedTurn: TurnEvent = {
@@ -142,7 +145,7 @@ export function useCurationSession(): UseCurationSessionResult {
           reserveRemainingAfter: state.reserve_remaining,
           pickedPaperIds: pickedIds,
         }
-        await curationApi.picks(sessionId, { picked_paper_ids: pickedIds, stop, refinement })
+        await curationApi.picks(sessionId, { picked_paper_ids: pickedIds, stop, refinement, request_refill: requestRefill })
         setTurnEvents((prev) => [...prev, completedTurn])
         await loadState(sessionId)
       }),
@@ -201,8 +204,24 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId],
   )
 
+  // Phase 9c/9f: the SYNTHESIZE-STAGE-ONLY way to add a paper from an
+  // earlier turn -- immediate, no "next turn" wait. Picking from history
+  // WHILE stage=="curate" instead bundles the paper_id into submitPicks'
+  // pickedIds (see App.tsx's turn history browser), since that's the
+  // only channel safe to use while a real interrupt is pending.
+  const selectFromHistory = useCallback(
+    (paperId: string) =>
+      runAction(async () => {
+        if (!sessionId) return
+        await curationApi.selectFromHistory(sessionId, paperId)
+        await loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   return {
     sessionId, state, loading, error, turnEvents,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview, refresh,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
+    selectFromHistory, refresh,
   }
 }

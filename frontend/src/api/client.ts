@@ -5,6 +5,7 @@ import type {
   CurationDeleteResponse,
   CurationPicksRequest,
   CurationReviewSummary,
+  CurationSelectFromHistoryResponse,
   CurationStartRequest,
   CurationStateResponse,
   CurationTurnResponse,
@@ -64,4 +65,13 @@ export const curationApi = {
 
   deleteReview: (sessionId: string): Promise<CurationDeleteResponse> =>
     deleteRequest(`/curation/${sessionId}`),
+
+  // Phase 9c: synthesize-stage only -- see select_paper_from_history()'s
+  // docstring (research_agent/curation_session.py) for exactly why this
+  // is unsafe while stage=="curate" (a real interrupt pending on the
+  // OTHER graph). Picking from history while still curating goes
+  // through picks() above instead (picked_paper_ids may reference any
+  // paper in turn_history, not just the current batch -- Phase 9d).
+  selectFromHistory: (sessionId: string, paperId: string): Promise<CurationSelectFromHistoryResponse> =>
+    postJson(`/curation/${sessionId}/select-from-history`, { paper_id: paperId }),
 }

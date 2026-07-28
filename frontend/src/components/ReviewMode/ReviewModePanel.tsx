@@ -4,6 +4,12 @@ import type { TurnEvent } from '../../hooks/useCurationSession'
 import { TurnBlock, TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'
 
+// Mirrors research_agent/query_expansion.py's BATCH_SIZE -- not exposed
+// by the API (nothing currently needs it to be), so kept here as the
+// one place the frontend needs to know "is this a full batch or a
+// partial one" for the turn-divider messaging below.
+const BATCH_SIZE = 10
+
 interface ReviewModePanelProps {
   state: CurationStateResponse
   turnEvents: TurnEvent[]
@@ -14,7 +20,20 @@ interface ReviewModePanelProps {
   // stop=true submits whatever's staged and ends curation right away --
   // the backend (submitPicks) already supports this; the old UI never
   // exposed it, forcing users to keep hitting target_count exactly.
-  onSubmitPicks: (refinement: string | undefined, stop: boolean) => Promise<void>
+  // requestRefill (Phase 9d): the explicit "search for more now" action --
+  // forces a fresh search even when the pool isn't truly exhausted yet.
+  onSubmitPicks: (refinement: string | undefined, stop: boolean, requestRefill?: boolean) => Promise<void>
+}
+
+function stopReasonMessage(state: CurationStateResponse): string {
+  const count = state.selected_papers.length
+  if (state.stop_reason === 'exhausted' && count < state.target_count) {
+    // Phase 9d, the actual reported bug: this used to look identical to a
+    // clean finish, with no way to tell "the search ran dry" apart from
+    // "you reached your target" -- and no recourse either way.
+    return `The search ran out of new candidates at ${count} of ${state.target_count} selected — nothing more to fetch right now.`
+  }
+  return `Curation complete — ${count} papers selected.`
 }
 
 export function ReviewModePanel({
@@ -39,9 +58,7 @@ export function ReviewModePanel({
     return (
       <div className="flex flex-1 flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          <p className="mb-3 text-center text-sm text-text-secondary">
-            Curation complete — {state.selected_papers.length} papers selected.
-          </p>
+          <p className="mb-3 text-center text-sm text-text-secondary">{stopReasonMessage(state)}</p>
           <div className="flex flex-col gap-2">
             {state.selected_papers.map((paper) => (
               <PaperCard key={paper.paper_id} paper={paper} showAbstract action={{ kind: 'none' }} />
@@ -65,6 +82,24 @@ export function ReviewModePanel({
     setRefinement('')
   }
 
+  async function handleRequestRefill() {
+    await onSubmitPicks(refinement.trim() || undefined, false, true)
+    setRefinement('')
+  }
+
+  // Phase 9d/9e, the actual reported bug: a partial batch (fewer than
+  // BATCH_SIZE, not refilled this turn) used to be indistinguishable
+  // from "the pool ran fully dry" -- and the old auto-refill-below-
+  // BATCH_SIZE behavior meant this message rarely even had a chance to
+  // show. Now that a partial batch serves as-is, say so plainly, and
+  // point at the explicit action instead of implying one already happened.
+  const isPartialBatch = !state.refilled && pendingBatch.length < BATCH_SIZE
+  const turnMessage = state.refilled
+    ? `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
+    : isPartialBatch
+      ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
+      : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -73,10 +108,7 @@ export function ReviewModePanel({
         ))}
         <TurnDivider turnNumber={turnEvents.length + 1} refilled={state.refilled} />
         <p className="mb-3 text-sm text-text-secondary">
-          {state.refilled
-            ? `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
-            : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`}
-          {' '}Select the ones you want, then continue.
+          {turnMessage} Select the ones you want, then continue{isPartialBatch ? ', or search for more below' : ''}.
         </p>
         <div className="flex flex-col gap-2">
           {pendingBatch.map((paper) =>
@@ -119,15 +151,27 @@ export function ReviewModePanel({
           >
             I&apos;m done — finish with {totalSelected} selected
           </button>
-          <button
-            type="button"
-            data-testid="review-continue"
-            onClick={handleContinue}
-            disabled={disabled}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
-          >
-            {stagedPickIds.length > 0 ? `Continue with ${stagedPickIds.length} added` : 'Get next batch'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="review-request-refill"
+              onClick={handleRequestRefill}
+              disabled={disabled}
+              title="Search for more candidates now, even though the current pool isn't empty"
+              className="rounded-md border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Search for more candidates
+            </button>
+            <button
+              type="button"
+              data-testid="review-continue"
+              onClick={handleContinue}
+              disabled={disabled}
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
+            >
+              {stagedPickIds.length > 0 ? `Continue with ${stagedPickIds.length} added` : 'Get next batch'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

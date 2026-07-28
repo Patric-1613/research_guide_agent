@@ -22,7 +22,7 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     session_id: 's1', topic, display_title: topic, stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: [], refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
-    pending_web_offer: null, pending_report_update: null,
+    pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
     ...overrides,
   }
 }
@@ -41,6 +41,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     regenerateReport: vi.fn(),
     sendChatMessage: vi.fn(),
     deleteReview: vi.fn(),
+    selectFromHistory: vi.fn(),
     refresh: vi.fn(),
     ...overrides,
   })
@@ -167,6 +168,57 @@ describe('App', () => {
     mockSession(fullState({ stage: 'curate', pending_batch: [] }))
     render(<App />)
 
+    expect(screen.getByTestId('review-continue')).toBeInTheDocument()
+  })
+
+  it('the "Browse past turns" toggle only appears when there is real turn history', () => {
+    mockSession(fullState({ turn_history: [] }))
+    const { rerender } = render(<App />)
+    expect(screen.queryByTestId('open-turn-history')).not.toBeInTheDocument()
+
+    mockSession(fullState({
+      turn_history: [{ turn_number: 1, refilled: false, batch: [] }],
+    }))
+    rerender(<App />)
+    expect(screen.getByText('Browse past turns (1)')).toBeInTheDocument()
+  })
+
+  it('opening turn history replaces the mode panel AND hides the pool summary, from any workspace mode (Phase 9f)', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      turn_history: [{
+        turn_number: 1, refilled: false,
+        batch: [{
+          paper_id: 'p0', title: 'Historical Paper', authors: [], year: null, venue: null,
+          abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
+          source_urls: {}, score: null,
+        }],
+      }],
+    }))
+    render(<App />)
+
+    expect(screen.getByTestId('stat-selected')).toBeInTheDocument() // review mode's pool summary, present initially
+
+    await user.click(screen.getByTestId('open-turn-history'))
+
+    expect(screen.getByText('Historical Paper')).toBeInTheDocument()
+    expect(screen.getByTestId('close-turn-history')).toBeInTheDocument()
+    // Review mode's own panel and pool summary are both gone while browsing history.
+    expect(screen.queryByTestId('review-continue')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('stat-selected')).not.toBeInTheDocument()
+  })
+
+  it('closing turn history returns to the previously-active workspace mode', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      turn_history: [{ turn_number: 1, refilled: false, batch: [] }],
+    }))
+    render(<App />)
+
+    await user.click(screen.getByTestId('open-turn-history'))
+    expect(screen.queryByTestId('review-continue')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('close-turn-history'))
     expect(screen.getByTestId('review-continue')).toBeInTheDocument()
   })
 })

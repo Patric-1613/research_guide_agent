@@ -68,6 +68,12 @@ export interface ReportOut {
   skipped_paper_ids: string[]
 }
 
+export interface TurnHistoryEntryOut {
+  turn_number: number
+  batch: PaperOut[]
+  refilled: boolean
+}
+
 export interface CurationStateResponse {
   session_id: string
   topic: string
@@ -88,6 +94,12 @@ export interface CurationStateResponse {
   web_articles_added: WebArticleOut[]
   pending_web_offer: { question: string } | null
   pending_report_update: Record<string, unknown> | null
+  // Phase 9b: every batch ever served, in order -- lets the UI redraw
+  // ANY past turn's cards/abstracts, not just the currently-pending one.
+  turn_history: TurnHistoryEntryOut[]
+  // Persisted so a reload/reopen can still show WHY curation stopped
+  // (target_met / user_stopped / exhausted). None while stage=="curate".
+  stop_reason: string | null
 }
 
 export interface CurationChatResponse {
@@ -126,6 +138,18 @@ export interface CurationPicksRequest {
   picked_paper_ids: string[]
   stop?: boolean
   refinement?: string | null
+  // Phase 9d: the explicit "search for more now" action -- forces a
+  // refill even when the reserve isn't truly exhausted yet.
+  request_refill?: boolean
+}
+
+export interface CurationSelectFromHistoryRequest {
+  paper_id: string
+}
+
+export interface CurationSelectFromHistoryResponse {
+  session_id: string
+  selected_paper_ids: string[]
 }
 
 export interface CurationChatRequest {

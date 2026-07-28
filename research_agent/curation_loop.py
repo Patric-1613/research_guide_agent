@@ -91,7 +91,17 @@ class CurationLoopState(TypedDict):
 
 def _route_entry(state: CurationLoopState) -> str:
     session = _dict_to_session(state["session"])
-    if session.needs_refill(batch_size=BATCH_SIZE) or state.get("force_refill"):
+    # curation-turn-history Phase 9d: auto-refill ONLY at true exhaustion
+    # (remaining()==0), not whenever remaining()<BATCH_SIZE (this used
+    # needs_refill() before -- that method itself is unchanged and still
+    # correctly means "< batch_size" for whatever else might use it, this
+    # routing decision just no longer uses it). A partial batch (e.g. 6-7)
+    # now serves as-is instead of forcing a fresh, possibly-disappointing
+    # search the user never asked for -- request_refill (below, via
+    # force_refill) is the explicit, user-controlled way to top up before
+    # that point. refinement's own force_refill trigger is unaffected --
+    # still forces a refill on demand regardless of remaining count.
+    if session.remaining() == 0 or state.get("force_refill"):
         return "refill"
     return "serve"
 
@@ -113,6 +123,18 @@ def _serve_batch_node(state: CurationLoopState) -> dict:
     session = _dict_to_session(state["session"])
     batch = serve_next_batch(session, batch_size=BATCH_SIZE)
     serialized_batch = [[paper.to_dict(), score] for paper, score in batch]
+    # curation-turn-history Phase 9b: this node has no interrupt() inside
+    # it, so (unlike present_and_apply below) it only ever runs ONCE per
+    # real turn -- never re-executed on resume -- safe to append here
+    # without double-recording. An empty batch (about to route to
+    # "exhausted") isn't a real turn a user could browse back to, so it's
+    # not logged.
+    if serialized_batch:
+        session.turn_history.append({
+            "turn_number": len(session.turn_history) + 1,
+            "batch": serialized_batch,
+            "refilled": state.get("refilled", False),
+        })
     return {"session": _session_to_dict(session), "current_batch": serialized_batch}
 
 
@@ -134,19 +156,36 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
     picked_paper_ids = resume.get("picked_paper_ids", [])
     stop = bool(resume.get("stop", False))
     refinement = resume.get("refinement")
-
-    # Validate against the ACTUALLY-presented batch — never trust the
-    # resume payload blindly. Anything not in current_batch is silently
-    # dropped, not applied and not an error (a stale/malformed client
-    # payload shouldn't corrupt session state).
-    presented_by_id = {paper_dict["paper_id"]: paper_dict for paper_dict, _ in state["current_batch"]}
-    valid_picks = [pid for pid in picked_paper_ids if pid in presented_by_id]
+    # curation-turn-history Phase 9d: the explicit, user-controlled way
+    # to top up the pool on demand -- reuses the SAME force_refill
+    # mechanism refinement already triggers, not a second one.
+    request_refill = bool(resume.get("request_refill", False))
 
     session = _dict_to_session(state["session"])
+
+    # Validate against every paper EVER served this session (session.
+    # turn_history), not just this turn's current_batch -- this is what
+    # makes it safe to pick a paper from an earlier turn while
+    # stage=="curate" (a real interrupt is pending here; the OTHER way to
+    # pick from history, select_paper_from_history(), is only safe once
+    # stage=="synthesize" -- see its own docstring for exactly why an
+    # out-of-band write would corrupt this pending interrupt's
+    # bookkeeping). turn_history already includes THIS turn's own batch
+    # by the time this node runs (_serve_batch_node appends to it first,
+    # same turn, before present_and_apply ever starts), so nothing from
+    # current_batch is missed by validating against turn_history alone.
+    # Never trust the resume payload blindly either way: anything not in
+    # ANY served batch is silently dropped, not applied and not an error.
+    presented_by_id: dict[str, dict] = {}
+    for entry in session.turn_history:
+        for paper_dict, _ in entry["batch"]:
+            presented_by_id[paper_dict["paper_id"]] = paper_dict
+    valid_picks = [pid for pid in picked_paper_ids if pid in presented_by_id]
+
     for pid in valid_picks:
         if pid not in session.selected_paper_ids:
             # Both lists updated together, in the same node, from the
-            # same current_batch data -- kept in sync by construction, and
+            # same turn_history data -- kept in sync by construction, and
             # verified explicitly (not just assumed) by
             # tests/test_curation_loop.py's sync-invariant test across a
             # session that includes a refill.
@@ -156,6 +195,8 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
     force_refill = False
     if refinement:
         session.refinement_notes.append(refinement)
+        force_refill = True
+    if request_refill:
         force_refill = True
 
     return {"session": _session_to_dict(session), "should_stop": stop, "force_refill": force_refill}
@@ -174,6 +215,11 @@ def _make_stop_node(reason: str):
     def _stop_node(state: CurationLoopState) -> dict:
         session = _dict_to_session(state["session"])
         session.stage = "synthesize"
+        # curation-turn-history Phase 9b: persisted so a reload/reopen can
+        # still show WHY curation stopped -- previously this only ever
+        # existed in the one HTTP response of the turn that caused it.
+        # Set exactly once, same one-way semantics as `stage` itself.
+        session.stop_reason = reason
         # refilled/force_refill must not be left carrying a stale value
         # from whichever turn last passed through check_pool -- a stop
         # reached via present_and_apply's "target_met"/"user_stopped"
@@ -247,7 +293,7 @@ def start_curation_turn(session_id: str, checkpointer: BaseCheckpointSaver, init
 def resume_curation_turn(
     session_id: str, checkpointer: BaseCheckpointSaver,
     picked_paper_ids: list[str], stop: bool = False, refinement: str | None = None,
-    config: dict | None = None,
+    request_refill: bool = False, config: dict | None = None,
 ):
     """Resumes a paused curation session with the user's picks. Returns
     the raw invoke() result, same convention as start_curation_turn().
@@ -260,11 +306,21 @@ def resume_curation_turn(
     real interrupt is pending corrupts that pending task's bookkeeping,
     so refinement has to flow through this exact channel, not a
     separate one.
+
+    request_refill (curation-turn-history Phase 9d): the explicit,
+    user-controlled "search for more now" action -- same force_refill
+    mechanism refinement already triggers, same reason it has to ride in
+    this exact payload rather than a separate call. picked_paper_ids may
+    also reference a paper from an EARLIER turn (not just the batch this
+    interrupt presented) -- see _present_and_apply_node's own docstring.
     """
     graph = build_curation_loop_graph(checkpointer)
     thread_config = {"configurable": {"thread_id": curation_thread_id(session_id), **(config or {})}}
     return graph.invoke(
-        Command(resume={"picked_paper_ids": picked_paper_ids, "stop": stop, "refinement": refinement}),
+        Command(resume={
+            "picked_paper_ids": picked_paper_ids, "stop": stop,
+            "refinement": refinement, "request_refill": request_refill,
+        }),
         config=thread_config,
     )
 

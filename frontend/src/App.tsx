@@ -7,6 +7,7 @@ import { ReviewModePanel } from './components/ReviewMode/ReviewModePanel'
 import { PoolSummaryPanel } from './components/ReviewMode/PoolSummaryPanel'
 import { ChatModePanel } from './components/ChatMode/ChatModePanel'
 import { ReportModePanel } from './components/ReportMode/ReportModePanel'
+import { TurnHistoryBrowser } from './components/TurnHistory/TurnHistoryBrowser'
 import type { WorkspaceMode } from './components/WorkspaceMode/WorkspaceModeSwitcher'
 
 const MODE_PARAM = 'mode'
@@ -32,11 +33,18 @@ export default function App() {
   const {
     sessionId, state, loading, error, turnEvents,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
+    selectFromHistory,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
   const [reviewsRefreshToken, setReviewsRefreshToken] = useState(0)
   const [workspaceMode, setWorkspaceModeState] = useState<WorkspaceMode>(() => getModeFromUrl())
+  // curation-turn-history Phase 9f: deliberately NOT a 4th WorkspaceMode --
+  // reachable from Review/Chat/Report alike (the whole point: being
+  // "stuck" in Report mode no longer means the earlier turns are gone),
+  // so it's an overlay toggle on top of whichever mode is active, not a
+  // peer of the tri-tab switcher's own lock semantics.
+  const [showHistory, setShowHistory] = useState(false)
 
   // Chat and Report unlock together, purely on curation being finished
   // (stage === "synthesize") -- chat_turn()'s own guard has no
@@ -115,11 +123,13 @@ export default function App() {
   function handleSelectReview(id: string) {
     setStagedPickIds([])
     setWorkspaceMode('review')
+    setShowHistory(false)
     openReview(id)
   }
 
   async function handleStartReview(topic: string, targetCount: number) {
     setWorkspaceMode('review')
+    setShowHistory(false)
     await startReview(topic, targetCount)
     setReviewsRefreshToken((t) => t + 1)
   }
@@ -133,8 +143,8 @@ export default function App() {
   // any was typed) rides in the SAME picks submission, forcing a fresh,
   // refinement-guided search on this turn rather than waiting for the
   // pool to run low on its own.
-  async function handleSubmitPicks(refinement: string | undefined, stop: boolean) {
-    await submitPicks(stagedPickIds, stop, refinement)
+  async function handleSubmitPicks(refinement: string | undefined, stop: boolean, requestRefill?: boolean) {
+    await submitPicks(stagedPickIds, stop, refinement, requestRefill)
     setReviewsRefreshToken((t) => t + 1)
   }
 
@@ -157,6 +167,11 @@ export default function App() {
   // web-search offer, not a separate mechanism.
   async function handleSendMessage(message: string) {
     await sendChatMessage(message)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleSelectFromHistory(paperId: string) {
+    await selectFromHistory(paperId)
     setReviewsRefreshToken((t) => t + 1)
   }
 
@@ -195,33 +210,59 @@ export default function App() {
           {state && (
             <>
               <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
-              {workspaceMode === 'review' && (
-                <ReviewModePanel
+              {state.turn_history.length > 0 && !showHistory && (
+                <div className="flex items-center justify-end border-b border-border bg-panel px-4 py-1.5">
+                  <button
+                    type="button"
+                    data-testid="open-turn-history"
+                    onClick={() => setShowHistory(true)}
+                    className="text-xs text-text-secondary underline decoration-dotted hover:text-accent"
+                  >
+                    Browse past turns ({state.turn_history.length})
+                  </button>
+                </div>
+              )}
+              {showHistory ? (
+                <TurnHistoryBrowser
                   state={state}
-                  turnEvents={turnEvents}
                   stagedPickIds={stagedPickIds}
                   disabled={loading}
                   onAdd={handleAdd}
                   onRemoveStaged={handleRemoveStaged}
-                  onSubmitPicks={handleSubmitPicks}
+                  onSelectFromHistory={handleSelectFromHistory}
+                  onClose={() => setShowHistory(false)}
                 />
-              )}
-              {workspaceMode === 'chat' && (
-                <ChatModePanel state={state} disabled={loading} onSendMessage={handleSendMessage} />
-              )}
-              {workspaceMode === 'report' && (
-                <ReportModePanel
-                  state={state}
-                  disabled={loading}
-                  onGenerateReport={handleGenerateReport}
-                  onRegenerateReport={handleRegenerateReport}
-                />
+              ) : (
+                <>
+                  {workspaceMode === 'review' && (
+                    <ReviewModePanel
+                      state={state}
+                      turnEvents={turnEvents}
+                      stagedPickIds={stagedPickIds}
+                      disabled={loading}
+                      onAdd={handleAdd}
+                      onRemoveStaged={handleRemoveStaged}
+                      onSubmitPicks={handleSubmitPicks}
+                    />
+                  )}
+                  {workspaceMode === 'chat' && (
+                    <ChatModePanel state={state} disabled={loading} onSendMessage={handleSendMessage} />
+                  )}
+                  {workspaceMode === 'report' && (
+                    <ReportModePanel
+                      state={state}
+                      disabled={loading}
+                      onGenerateReport={handleGenerateReport}
+                      onRegenerateReport={handleRegenerateReport}
+                    />
+                  )}
+                </>
               )}
             </>
           )}
         </main>
 
-        {state && workspaceMode === 'review' && (
+        {state && workspaceMode === 'review' && !showHistory && (
           <PoolSummaryPanel state={state} stagedPickIds={stagedPickIds} />
         )}
       </div>

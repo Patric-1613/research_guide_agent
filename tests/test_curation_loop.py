@@ -268,16 +268,21 @@ def test_selected_papers_and_selected_paper_ids_stay_in_sync_across_a_refill():
              patch.object(qe_module, "rank_full_pool", side_effect=_identity_rank), \
              sqlite_checkpointer(db_path) as cp:
 
-            # reserve=15, target_count=100 (unreachable) -- forces a
-            # refill after turn 1 drains the reserve below batch size,
-            # and lets natural exhaustion end the test rather than an
+            # reserve=10 (exactly one batch): serving turn 1's entire
+            # batch drains the reserve to remaining=0 regardless of how
+            # many of it get picked -- curation-turn-history Phase 9d
+            # narrowed the auto-refill trigger to true exhaustion
+            # (remaining()==0), not just "< BATCH_SIZE" -- so this is now
+            # what it takes to force a real refill without an explicit
+            # request_refill. target_count=100 (unreachable) lets natural
+            # exhaustion/continuation end the test rather than an
             # artificial target.
-            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=100)))
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
             _assert_selected_lists_in_sync(result["session"])
             batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
             picks1 = batch1_ids[:5]
 
-            # This resume triggers the refill internally (remaining=5 < 10)
+            # This resume triggers the refill internally (remaining=0)
             # before serving turn 2's batch -- confirmed by the mocked
             # build_candidate_pool having been called. refill_pool() itself
             # runs for real (only its own internals are mocked above), so
@@ -365,12 +370,15 @@ def test_refilled_is_true_exactly_on_the_turn_that_triggers_a_real_refill_and_re
              patch.object(qe_module, "rank_full_pool", side_effect=_identity_rank), \
              sqlite_checkpointer(db_path) as cp:
 
-            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=100)))
-            assert result["refilled"] is False  # turn 1: 15 papers, no refill needed yet
+            # reserve=10 (exactly one batch): serving it all drains
+            # remaining to 0 -- curation-turn-history Phase 9d narrowed
+            # the auto-refill trigger to true exhaustion, not "< BATCH_SIZE".
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            assert result["refilled"] is False  # turn 1: reserve exactly covers one batch, no refill needed yet
             batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
             picks1 = batch1_ids[:5]
 
-            # remaining=5 < BATCH_SIZE=10 -> this resume triggers refill_pool for real.
+            # remaining=0 -> this resume triggers refill_pool for real.
             result = resume_curation_turn("s1", cp, picked_paper_ids=picks1, config={"client": MagicMock()})
             assert result["refilled"] is True
             assert "__interrupt__" in result
@@ -479,6 +487,256 @@ def test_no_refinement_does_not_force_a_refill_or_touch_refinement_notes():
         assert result["session"]["refinement_notes"] == []
 
 
+# --- curation-turn-history Phase 9b: turn_history + stop_reason ---
+
+def test_turn_history_records_each_served_batch_with_turn_number_and_refilled_flag():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2], stop=True)
+
+        history = result["session"]["turn_history"]
+        assert len(history) == 1
+        assert history[0]["turn_number"] == 1
+        assert history[0]["refilled"] is False
+        assert [p["paper_id"] for p, _ in history[0]["batch"]] == batch1_ids
+
+
+def test_turn_history_accumulates_across_multiple_turns_including_a_real_refill():
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers), \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            # reserve=10 (exactly one batch) -- remaining hits 0 after
+            # turn 1's serve regardless of pick count, the only auto-
+            # refill trigger as of Phase 9d.
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            picks1 = batch1_ids[:5]
+
+            # remaining=0 -> real refill on this resume.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=picks1, config={"client": MagicMock()})
+            batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch2_ids[:1], stop=True)
+
+        history = result["session"]["turn_history"]
+        assert len(history) == 2
+        assert [entry["turn_number"] for entry in history] == [1, 2]
+        assert history[0]["refilled"] is False
+        assert history[1]["refilled"] is True  # the turn that actually triggered the refill
+        assert [p["paper_id"] for p, _ in history[0]["batch"]] == batch1_ids
+        assert [p["paper_id"] for p, _ in history[1]["batch"]] == batch2_ids
+
+
+def test_turn_history_does_not_log_an_exhausted_empty_batch():
+    """An empty batch (about to route to "exhausted") isn't a real turn a
+    user could browse back to -- must not appear as a hollow entry."""
+    from research_agent import query_expansion as qe_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=[]), \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            result = start_curation_turn(
+                "s1", cp, _session_to_dict(_session(5, target_count=100)), config={"client": MagicMock()},
+            )
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            assert len(batch1_ids) == 5  # entire tiny reserve served in one go
+
+            # Nothing new to find -> reserve empties out -> exhausted, no interrupt.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=[], config={"client": MagicMock()})
+
+        assert "__interrupt__" not in result
+        assert result["stop_reason"] == "exhausted"
+        history = result["session"]["turn_history"]
+        assert len(history) == 1  # only the real turn 1, no hollow "turn 2" entry
+        assert history[0]["turn_number"] == 1
+
+
+def test_stop_reason_persists_on_the_session_readable_via_get_curation_state():
+    """Previously only ever existed in the one HTTP response of the turn
+    that caused it -- now must survive independently, readable from the
+    session even in a genuinely separate call."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            batch = result["__interrupt__"][0].value["batch"]
+            resume_curation_turn("s1", cp, picked_paper_ids=[batch[0][0]["paper_id"]], stop=True)
+
+            state = get_curation_state("s1", cp)
+
+        assert state["session"].stop_reason == "user_stopped"
+
+
+def test_stop_reason_is_none_while_curation_is_still_in_progress():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            state = get_curation_state("s1", cp)
+
+        assert state["session"].stop_reason is None
+
+
+# --- curation-turn-history Phase 9d: explicit refill, narrowed auto-refill, curate-stage history picks ---
+
+def test_partial_batch_serves_as_is_without_an_automatic_refill():
+    """The actual reported bug's fix: remaining()==6 (nonzero, but well
+    below the old BATCH_SIZE threshold) must NOT force a search -- the
+    partial batch is presented as-is."""
+    from research_agent import query_expansion as qe_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool") as mock_build, \
+             sqlite_checkpointer(db_path) as cp:
+
+            # reserve=16: turn 1 serves 10, remaining=6 -- nonzero, so no
+            # auto-refill under the new remaining()==0 rule.
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(16, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2])
+
+        mock_build.assert_not_called()
+        assert result["refilled"] is False
+        assert "__interrupt__" in result
+        batch2 = result["__interrupt__"][0].value["batch"]
+        assert len(batch2) == 6  # the entire remaining partial batch, served as-is
+
+
+def test_true_exhaustion_still_triggers_one_automatic_refill_attempt():
+    """Design decision 2 (approved): remaining()==0 still gets one
+    automatic refill attempt -- least surprising default, not silence."""
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            # reserve=10: turn 1 serves exactly all of it, remaining=0.
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2], config={"client": MagicMock()})
+
+        mock_build.assert_called_once()
+        assert result["refilled"] is True
+        assert "__interrupt__" in result
+
+
+def test_request_refill_forces_a_search_even_with_a_comfortable_reserve():
+    """The new explicit, user-controlled action -- reuses force_refill,
+    same mechanism refinement text already triggers."""
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            # reserve=25: remaining after turn 1 is 15, comfortably above
+            # zero -- request_refill must force a search anyway.
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            mock_build.assert_not_called()
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=batch1_ids[:2], request_refill=True, config={"client": MagicMock()},
+            )
+
+        mock_build.assert_called_once()
+        assert result["refilled"] is True
+
+
+def test_request_refill_false_is_the_default_and_does_not_force_anything():
+    """Regression proof: every existing caller (request_refill omitted)
+    behaves byte-identically to before this feature existed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2])
+
+        assert result["refilled"] is False
+
+
+def test_picks_can_reference_a_paper_from_an_earlier_turn_while_still_curating():
+    """The curate-stage-safe channel for picking from history: bundled
+    into the SAME /picks resume call, validated against the whole
+    turn_history, not just current_batch -- the only channel safe to use
+    while a real interrupt is pending (see _present_and_apply_node's own
+    docstring for why select_paper_from_history's out-of-band write
+    can't be used here instead)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(25, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            turn1_unpicked = batch1_ids[3]  # seen in turn 1, deliberately never picked there
+
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2])  # turn 1 picks
+            assert "__interrupt__" in result
+            batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            assert turn1_unpicked not in batch2_ids  # confirms it's genuinely from an EARLIER turn
+
+            # Turn 2's picks include one paper from turn 2's own batch AND
+            # one from turn 1's -- both in the SAME resume call.
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=[batch2_ids[0], turn1_unpicked], stop=True,
+            )
+
+        assert set(result["session"]["selected_paper_ids"]) == {batch1_ids[0], batch1_ids[1], batch2_ids[0], turn1_unpicked}
+
+
+def test_picks_referencing_a_paper_never_served_at_all_are_still_silently_rejected():
+    """Regression proof for the existing validation guarantee, now that
+    it checks turn_history instead of just current_batch: a fabricated
+    id must still be dropped, not corrupt selected_paper_ids."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=1)))
+            batch = result["__interrupt__"][0].value["batch"]
+            real_id = batch[0][0]["paper_id"]
+
+            result = resume_curation_turn(
+                "s1", cp, picked_paper_ids=[real_id, "does-not-exist-anywhere"],
+            )
+
+        assert result["session"]["selected_paper_ids"] == [real_id]
+
+
 if __name__ == "__main__":
     test_single_turn_interrupt_then_resume_reaches_target()
     test_multi_turn_loop_continues_across_batches_until_target_met()
@@ -499,4 +757,15 @@ if __name__ == "__main__":
     test_refinement_forces_a_refill_even_when_the_pool_does_not_need_one()
     test_refinement_notes_accumulate_across_multiple_refinements()
     test_no_refinement_does_not_force_a_refill_or_touch_refinement_notes()
+    test_turn_history_records_each_served_batch_with_turn_number_and_refilled_flag()
+    test_turn_history_accumulates_across_multiple_turns_including_a_real_refill()
+    test_turn_history_does_not_log_an_exhausted_empty_batch()
+    test_stop_reason_persists_on_the_session_readable_via_get_curation_state()
+    test_stop_reason_is_none_while_curation_is_still_in_progress()
+    test_partial_batch_serves_as_is_without_an_automatic_refill()
+    test_true_exhaustion_still_triggers_one_automatic_refill_attempt()
+    test_request_refill_forces_a_search_even_with_a_comfortable_reserve()
+    test_request_refill_false_is_the_default_and_does_not_force_anything()
+    test_picks_can_reference_a_paper_from_an_earlier_turn_while_still_curating()
+    test_picks_referencing_a_paper_never_served_at_all_are_still_silently_rejected()
     print("All curation_loop tests passed.")

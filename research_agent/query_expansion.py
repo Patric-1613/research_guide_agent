@@ -753,6 +753,27 @@ class PaperPoolSession:
     # existed falls back to its own `topic` (see _dict_to_session) rather
     # than an empty string.
     display_title: str = ""
+    # curation-turn-history Phase 9b: every batch ever served, in order --
+    # NOT just seen_paper_ids/seen_titles (those only ever held bare
+    # ids/strings, enough for search exclusion but not enough to redraw a
+    # past turn's cards). Each entry: {"turn_number": int, "batch":
+    # [[paper_dict, score], ...], "refilled": bool} -- turn_number is
+    # derived from list position at append-time (len(turn_history) + 1),
+    # not stored redundantly as its own counter. Intentionally unbounded
+    # for now: no truncation/retention policy. Real cost, stated not
+    # hidden -- this makes every future checkpoint snapshot strictly
+    # larger over a session's life, compounding the same full-state-per-
+    # checkpoint growth already observed in data/qa_checkpoints.sqlite. A
+    # retention policy is a reasonable separate follow-up if this becomes
+    # a real problem, not built preemptively here.
+    turn_history: list[dict] = field(default_factory=list)
+    # Persisted so a reload/reopen can still show WHY curation stopped
+    # (target_met / user_stopped / exhausted) -- previously only ever
+    # existed transiently in the one HTTP response of the turn that
+    # caused it (CurationTurnResponse.stop_reason), never survived a
+    # reload. None while stage == "curate"; set exactly once, in
+    # _make_stop_node, same one-way semantics as `stage` itself.
+    stop_reason: str | None = None
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

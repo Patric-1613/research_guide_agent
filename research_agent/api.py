@@ -47,6 +47,7 @@ from research_agent.curation_session import (
     list_curation_sessions,
     load_curation_session,
     save_curation_session,
+    select_paper_from_history,
 )
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.enrichment import enrich_missing_abstracts
@@ -702,6 +703,11 @@ class CurationPicksRequest(BaseModel):
     # resume_curation_turn's own docstring for why it can't be a
     # separate out-of-band call instead.
     refinement: str | None = None
+    # curation-turn-history Phase 9d: explicit "search for more now"
+    # request -- reuses the SAME force_refill mechanism refinement above
+    # already triggers, not a second one. False (the default) preserves
+    # every existing caller's exact behavior unchanged.
+    request_refill: bool = False
 
 
 class CurationTurnResponse(BaseModel):
@@ -741,6 +747,12 @@ class ReportOut(BaseModel):
     skipped_paper_ids: list[str]
 
 
+class TurnHistoryEntryOut(BaseModel):
+    turn_number: int
+    batch: list[PaperOut]
+    refilled: bool
+
+
 class CurationStateResponse(BaseModel):
     session_id: str
     topic: str
@@ -764,6 +776,13 @@ class CurationStateResponse(BaseModel):
     web_articles_added: list[WebArticleOut] = []
     pending_web_offer: dict | None = None
     pending_report_update: dict | None = None
+    # curation-turn-history Phase 9b: every batch ever served, in order --
+    # lets a client redraw ANY past turn's cards/abstracts, not just the
+    # currently-pending one. Unbounded (see PaperPoolSession.turn_history).
+    turn_history: list[TurnHistoryEntryOut] = []
+    # Persisted so a reload/reopen can still show WHY curation stopped
+    # (target_met / user_stopped / exhausted) -- None while stage=="curate".
+    stop_reason: str | None = None
 
 
 class CurationChatRequest(BaseModel):
@@ -789,6 +808,17 @@ class CurationChatResponse(BaseModel):
 def _paper_out_from_batch_entry(entry) -> PaperOut:
     paper_dict, score = entry
     return _paper_to_out(Paper(**paper_dict), score)
+
+
+def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
+    return [
+        TurnHistoryEntryOut(
+            turn_number=entry["turn_number"],
+            batch=[_paper_out_from_batch_entry(e) for e in entry["batch"]],
+            refilled=entry["refilled"],
+        )
+        for entry in turn_history
+    ]
 
 
 def _report_to_out(report: dict) -> ReportOut:
@@ -876,7 +906,7 @@ def curation_picks(session_id: str, req: CurationPicksRequest, cp=Depends(get_cu
         target_count = state["session"].target_count
         result = resume_curation_turn(
             session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
-            refinement=req.refinement, config=_curation_config(),
+            refinement=req.refinement, request_refill=req.request_refill, config=_curation_config(),
         )
         return _turn_result_to_response(session_id, target_count, result)
 
@@ -930,6 +960,8 @@ def curation_get_state(session_id: str, cp=Depends(get_curation_checkpointer)) -
         web_articles_added=[_web_article_to_out(a) for a in session.web_articles_added],
         pending_web_offer=session.pending_web_offer,
         pending_report_update=session.pending_report_update,
+        turn_history=_turn_history_out(session.turn_history),
+        stop_reason=session.stop_reason,
     )
 
 
@@ -952,6 +984,40 @@ def curation_delete(session_id: str, cp=Depends(get_curation_checkpointer)) -> C
         raise HTTPException(status_code=404, detail="session_id not found")
     delete_curation_session(session_id, cp)
     return CurationDeleteResponse(session_id=session_id, deleted=True)
+
+
+class CurationSelectFromHistoryRequest(BaseModel):
+    paper_id: str
+
+
+class CurationSelectFromHistoryResponse(BaseModel):
+    session_id: str
+    selected_paper_ids: list[str]
+
+
+@app.post("/curation/{session_id}/select-from-history", response_model=CurationSelectFromHistoryResponse)
+def curation_select_from_history(
+    session_id: str, req: CurationSelectFromHistoryRequest, cp=Depends(get_curation_checkpointer),
+) -> CurationSelectFromHistoryResponse:
+    """curation-turn-history Phase 9c: retroactively add a paper seen in
+    an earlier turn, without a new search -- lets a user unstuck from a
+    curation that ended short of their target (e.g. the pool genuinely
+    ran dry) by picking from what they already saw, even from Report/Chat
+    mode. SYNTHESIZE-STAGE ONLY -- see select_paper_from_history()'s own
+    docstring for exactly why (out-of-band writes while a real interrupt
+    is pending corrupt its bookkeeping, the same failure mode
+    curation-refinement-and-auto-offer Phase 6f already found once).
+    Picking from history while still curating goes through
+    /curation/{session_id}/picks instead (Phase 9d)."""
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session_id not found")
+    try:
+        select_paper_from_history(session, req.paper_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_curation_session(session, session_id, cp)
+    return CurationSelectFromHistoryResponse(session_id=session_id, selected_paper_ids=session.selected_paper_ids)
 
 
 @app.post("/curation/{session_id}/report", response_model=ReportOut)
