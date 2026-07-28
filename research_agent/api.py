@@ -78,14 +78,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
 
-# curation-api-and-ui Phase 6c: the new React frontend runs as its own
-# Vite dev-server process (a genuinely separate origin from this API),
-# unlike the existing Streamlit app which doesn't make browser-side fetch
-# calls at all -- additive (touches the shared app object, not any
-# existing route's behavior), flagged explicitly per the Phase 6b
-# approval. FRONTEND_ORIGIN lets a non-default dev-server port/deployed
-# origin be configured without a code change, same convention as this
-# file's other env-var-driven config (e.g. SEMANTIC_SCHOLAR_API_KEY).
+# curation-api-and-ui Phase 6c: the React frontend runs as its own Vite
+# dev-server process -- a genuinely separate origin from this API, so
+# CORS is required for its browser-side fetch calls. FRONTEND_ORIGIN lets
+# a non-default dev-server port/deployed origin be configured without a
+# code change, same convention as this file's other env-var-driven config
+# (e.g. SEMANTIC_SCHOLAR_API_KEY).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"), "http://127.0.0.1:5173"],
@@ -96,8 +94,8 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    """Cheap connectivity check for the phase-8 Streamlit frontend — no DB
-    or LLM calls, just confirms the process is up."""
+    """Cheap connectivity check -- no DB or LLM calls, just confirms the
+    process is up."""
     return {"status": "ok"}
 
 
@@ -105,8 +103,8 @@ def health() -> dict:
 
 class SearchRequest(BaseModel):
     topic: str
-    # 3-30 mirrors the Streamlit number input's bounds (app.py) — kept here
-    # too so a direct API call gets the same guarantee, not just the UI.
+    # 3-30: a deliberate, code-enforced bound on how many results a single
+    # request can ask for, independent of any particular frontend.
     top_k: int = Field(default=10, ge=3, le=30)
     # Round-2 enhancement 2: surfaces doi/citation_count metadata that's
     # already stored per-paper in Chroma (embeddings.py) — no re-indexing
