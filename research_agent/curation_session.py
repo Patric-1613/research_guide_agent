@@ -109,6 +109,13 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "pending_report_update": session.pending_report_update,
         "refinement_notes": list(session.refinement_notes),
         "report_covered_web_article_count": session.report_covered_web_article_count,
+        # curation-turn-history Phase 9b: entries are already JSON-native
+        # ({"turn_number": int, "batch": [[paper_dict, score], ...],
+        # "refilled": bool} -- paper_dict is a plain dict, never a real
+        # Paper object here), so this passes through as-is, same
+        # convention as chat_history above -- no hydration step needed.
+        "turn_history": list(session.turn_history),
+        "stop_reason": session.stop_reason,
     }
 
 
@@ -135,6 +142,12 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         pending_report_update=d.get("pending_report_update"),
         refinement_notes=list(d.get("refinement_notes", [])),
         report_covered_web_article_count=d.get("report_covered_web_article_count", 0),
+        # Older sessions saved before Phase 9b's turn_history/stop_reason
+        # fields existed simply have neither -- an empty history and "no
+        # reason recorded" are both sensible, non-crashing defaults, same
+        # backward-compat convention as display_title above.
+        turn_history=list(d.get("turn_history", [])),
+        stop_reason=d.get("stop_reason"),
     )
 
 
@@ -193,6 +206,62 @@ def delete_curation_session(session_id: str, checkpointer: BaseCheckpointSaver) 
     if session_id was never saved -- delete_thread() is a plain DELETE...
     WHERE thread_id = ?, which matches zero rows without erroring."""
     checkpointer.delete_thread(curation_thread_id(session_id))
+
+
+def _find_paper_in_turn_history(session: PaperPoolSession, paper_id: str) -> dict | None:
+    for entry in session.turn_history:
+        for paper_dict, _ in entry["batch"]:
+            if paper_dict["paper_id"] == paper_id:
+                return paper_dict
+    return None
+
+
+def select_paper_from_history(session: PaperPoolSession, paper_id: str) -> None:
+    """curation-turn-history Phase 9c: adds a previously-served-but-not-
+    yet-selected paper directly to selected_paper_ids/selected_papers.
+    Mutates `session` in place -- caller is responsible for
+    save_curation_session() afterward, same convention report.py/
+    curation_chat.py's mutating functions already use.
+
+    SYNTHESIZE-STAGE ONLY, enforced here, not just documented in a
+    comment. Reason, traced precisely (not just cited as a rule): while
+    stage == "curate", a real LangGraph interrupt is pending on
+    curation_loop.py's OWN graph -- a different compiled graph object
+    than this module's. Writing a new checkpoint onto the same thread_id
+    via THIS module's simpler sync-only graph (as save_curation_session()
+    does) would become the "latest" checkpoint for that thread, but it
+    carries no pending-task information at all -- the next
+    resume_curation_turn() call would find nothing to resume against.
+    This is the exact corruption curation-refinement-and-auto-offer
+    Phase 6f already discovered once (which is why refinement text rides
+    inside Command(resume=...) instead of a separate out-of-band write),
+    not a new concern invented for this feature. Picking from history
+    WHILE stage == "curate" must go through /curation/{id}/picks instead
+    (curation_loop.py's widened pick-validation, Phase 9d) -- the only
+    channel safe to use while an interrupt is pending.
+
+    Silently a no-op if paper_id is already selected -- same duplicate-
+    pick tolerance curation_loop.py's own present_and_apply_node already
+    has (`if pid not in session.selected_paper_ids`), not an error here
+    either.
+
+    Raises ValueError (api.py converts to 400, same convention as
+    report.py/curation_chat.py's own "not ready" checks) if stage isn't
+    "synthesize" yet, or if paper_id was never actually served in any
+    past turn of THIS session.
+    """
+    if session.stage != "synthesize":
+        raise ValueError(
+            f"Session is not ready to select from history (stage={session.stage!r}, expected 'synthesize') -- "
+            "curation must finish first; while still curating, submit this paper_id via /curation/{session_id}/picks instead."
+        )
+    if paper_id in session.selected_paper_ids:
+        return
+    paper_dict = _find_paper_in_turn_history(session, paper_id)
+    if paper_dict is None:
+        raise ValueError(f"paper_id {paper_id!r} was not found in this session's turn history")
+    session.selected_paper_ids.append(paper_id)
+    session.selected_papers.append(Paper(**paper_dict))
 
 
 def list_curation_sessions(checkpointer: BaseCheckpointSaver) -> list[dict]:

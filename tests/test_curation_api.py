@@ -251,7 +251,11 @@ def test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine
     just curation_loop.py's own unit test for the same property."""
     from research_agent import query_expansion as qe_module
 
-    initial_papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
+    # Exactly BATCH_SIZE papers: serving turn 1's entire batch drains
+    # remaining to 0 regardless of pick count -- curation-turn-history
+    # Phase 9d narrowed the auto-refill trigger to true exhaustion, not
+    # just "< BATCH_SIZE".
+    initial_papers = [_paper(f"p{i}", f"Paper {i}") for i in range(10)]
     fresh_papers = [_paper(f"new{i}", f"New Paper {i}") for i in range(8)]
 
     with _client() as client, \
@@ -261,10 +265,10 @@ def test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine
         # with only 5 picks below, so the turn genuinely continues into a
         # refill rather than hitting target_met first.
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
-        assert start_body["refilled"] is False  # 15 papers >= BATCH_SIZE, no refill needed yet
-        assert start_body["reserve_remaining"] == 5  # 15 total - 10 served this turn
+        assert start_body["refilled"] is False  # reserve exactly covers one batch, no refill needed yet
+        assert start_body["reserve_remaining"] == 0  # 10 total - 10 served this turn
         session_id = start_body["session_id"]
-        picks = [p["paper_id"] for p in start_body["batch"][:5]]  # remaining after: 15-10=5 < BATCH_SIZE
+        picks = [p["paper_id"] for p in start_body["batch"][:5]]  # remaining after: 10-10=0
 
         with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers), \
              patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
@@ -275,9 +279,10 @@ def test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine
     assert resp.status_code == 200
     body = resp.json()
     assert body["refilled"] is True
-    # refill_pool merges the 5 unserved + 8 genuinely-new fresh papers ->
-    # reserve of 13, cursor resets to 0, this turn serves 10 -> 3 remain.
-    assert body["reserve_remaining"] == 3
+    # refill_pool merges the 0 unserved (reserve was fully drained) + 8
+    # genuinely-new fresh papers -> reserve of 8, cursor resets to 0, this
+    # turn serves all 8 (fewer than BATCH_SIZE exist) -> 0 remain.
+    assert body["reserve_remaining"] == 0
 
 
 # --- /curation/{id}/picks: refinement (Phase 6f) ---
@@ -345,6 +350,38 @@ def test_curation_picks_without_refinement_does_not_force_a_refill():
     assert resp.json()["refilled"] is False
     assert resp.json()["refinement_notes"] == []
     mock_build_unused.assert_not_called()
+
+
+def test_curation_picks_with_request_refill_forces_a_search_through_the_real_http_layer():
+    """curation-turn-history Phase 9d: the explicit "search for more now"
+    action, confirmed through the actual HTTP layer, not just
+    curation_loop.py's own unit test for the same property."""
+    from research_agent import query_expansion as qe_module
+
+    initial_papers = [_paper(f"p{i}", f"Paper {i}") for i in range(25)]
+    fresh_papers = [_paper(f"new{i}", f"New Paper {i}") for i in range(8)]
+
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=initial_papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(initial_papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
+        session_id = start_body["session_id"]
+        # remaining after this pick: 25-10=15, comfortably above zero --
+        # a plain pick here would NOT trigger a refill on its own.
+        picks = [p["paper_id"] for p in start_body["batch"][:2]]
+
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers) as mock_build, \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )):
+            resp = client.post(
+                f"/curation/{session_id}/picks",
+                json={"picked_paper_ids": picks, "request_refill": True},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["refilled"] is True
+    mock_build.assert_called_once()
 
 
 # --- GET /curation/reviews: the left-panel reviews list ---
@@ -451,6 +488,139 @@ def test_curation_get_state_unknown_session_id_returns_404():
     with _client() as client:
         resp = client.get("/curation/does-not-exist")
     assert resp.status_code == 404
+
+
+# --- turn_history + stop_reason (curation-turn-history Phase 9b) ---
+
+def test_curation_get_state_exposes_turn_history_and_stop_reason():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 2}).json()
+        session_id = start_body["session_id"]
+        picks = [p["paper_id"] for p in start_body["batch"][:2]]
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+
+        resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stop_reason"] == "target_met"
+    assert len(body["turn_history"]) == 1
+    assert body["turn_history"][0]["turn_number"] == 1
+    assert body["turn_history"][0]["refilled"] is False
+    assert sorted(p["paper_id"] for p in body["turn_history"][0]["batch"]) == sorted(
+        p["paper_id"] for p in start_body["batch"]
+    )
+
+
+def test_curation_get_state_stop_reason_is_none_mid_curation():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        session_id = client.post("/curation/start", json={"topic": "t", "target_count": 12}).json()["session_id"]
+
+        resp = client.get(f"/curation/{session_id}")
+
+    assert resp.json()["stop_reason"] is None
+
+
+# --- POST /curation/{id}/select-from-history (curation-turn-history Phase 9c) ---
+
+def test_select_from_history_adds_a_paper_after_curation_finished_short_of_target():
+    """The exact real-world scenario reported: the pool ran genuinely dry
+    (exhausted) short of target_count, ending curation -- select-from-
+    history is what lets the user still grab a paper they saw earlier."""
+    from research_agent import query_expansion as qe_module
+
+    # Exactly BATCH_SIZE papers: the very first batch consumes the ENTIRE
+    # reserve (remaining=0), so the refill this pick triggers has an
+    # empty unserved_tail to merge with -- if it also finds nothing new
+    # (mocked below), the result is a genuinely empty next batch, not
+    # just a small one.
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(10)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 20}).json()
+        session_id = start_body["session_id"]
+        served_ids = [p["paper_id"] for p in start_body["batch"]]
+        picks = served_ids[:3]  # pick only 3 -- well short of target_count=20
+
+        # remaining after this pick: 10-10=0 < BATCH_SIZE=10 -> refill_pool
+        # runs internally; mocked here (via query_expansion's own module
+        # reference, not api's) to find nothing new -> merged reserve is
+        # genuinely empty -> the next batch is empty -> exhausted, ending
+        # curation short of target.
+        with patch.object(qe_module, "build_candidate_pool", return_value=[]), \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )):
+            picks_resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks}).json()
+        assert picks_resp["stop_reason"] == "exhausted"
+
+        not_yet_picked = [pid for pid in served_ids if pid not in picks][0]
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": not_yet_picked})
+
+        state = client.get(f"/curation/{session_id}").json()
+
+    assert resp.status_code == 200
+    assert resp.json()["selected_paper_ids"] == picks + [not_yet_picked]
+    assert sorted(p["paper_id"] for p in state["selected_papers"]) == sorted(picks + [not_yet_picked])
+
+
+def test_select_from_history_refuses_while_curation_still_in_progress():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 20}).json()
+        session_id = start_body["session_id"]
+        served_id = start_body["batch"][0]["paper_id"]
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": served_id})
+
+    assert resp.status_code == 400
+    assert "not ready" in resp.json()["detail"]
+
+
+def test_select_from_history_unknown_paper_id_returns_400():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 1}).json()
+        session_id = start_body["session_id"]
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [start_body["batch"][0]["paper_id"]]})
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": "never-served"})
+
+    assert resp.status_code == 400
+    assert "was not found" in resp.json()["detail"]
+
+
+def test_select_from_history_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/select-from-history", json={"paper_id": "p0"})
+    assert resp.status_code == 404
+
+
+def test_select_from_history_can_exceed_target_count():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 1}).json()
+        session_id = start_body["session_id"]
+        served_ids = [p["paper_id"] for p in start_body["batch"]]
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [served_ids[0]]})  # meets target_count=1
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": served_ids[1]})
+
+    assert resp.status_code == 200
+    assert resp.json()["selected_paper_ids"] == [served_ids[0], served_ids[1]]
 
 
 # --- DELETE /curation/{id}: delete/abandon a review (curation-review-management Phase 8, item 1) ---
@@ -770,4 +940,12 @@ if __name__ == "__main__":
     test_curation_chat_surfaces_report_update_offer_flags_to_the_client()
     test_curation_chat_report_update_persists_across_a_separate_get_request()
     test_curation_report_endpoint_sets_report_covered_web_article_count()
+    test_curation_get_state_exposes_turn_history_and_stop_reason()
+    test_curation_get_state_stop_reason_is_none_mid_curation()
+    test_select_from_history_adds_a_paper_after_curation_finished_short_of_target()
+    test_select_from_history_refuses_while_curation_still_in_progress()
+    test_select_from_history_unknown_paper_id_returns_400()
+    test_select_from_history_unknown_session_id_returns_404()
+    test_select_from_history_can_exceed_target_count()
+    test_curation_picks_with_request_refill_forces_a_search_through_the_real_http_layer()
     print("All curation API tests passed.")

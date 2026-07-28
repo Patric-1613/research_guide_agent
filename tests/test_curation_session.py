@@ -21,6 +21,7 @@ from research_agent.curation_session import (
     list_curation_sessions,
     load_curation_session,
     save_curation_session,
+    select_paper_from_history,
 )
 from research_agent.qa import sqlite_checkpointer
 from research_agent.query_expansion import PaperPoolSession
@@ -375,6 +376,165 @@ def test_delete_curation_session_does_not_affect_other_sessions():
             assert load_curation_session("session-b", cp) is not None
 
 
+# --- turn_history + stop_reason (curation-turn-history Phase 9b) ---
+
+def test_turn_history_and_stop_reason_roundtrip_through_real_sqlite():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", reserve=[(_paper("p0"), 0.9)], stage="synthesize", stop_reason="user_stopped",
+            turn_history=[
+                {"turn_number": 1, "batch": [[_paper("p0").to_dict(), 0.9]], "refilled": False},
+                {"turn_number": 2, "batch": [[_paper("p1").to_dict(), 0.8]], "refilled": True},
+            ],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+
+        with sqlite_checkpointer(db_path) as cp2:
+            loaded = load_curation_session("session-1", cp2)
+
+        assert loaded.stop_reason == "user_stopped"
+        assert len(loaded.turn_history) == 2
+        assert loaded.turn_history[0]["turn_number"] == 1
+        assert loaded.turn_history[0]["refilled"] is False
+        assert loaded.turn_history[1]["refilled"] is True
+        assert loaded.turn_history[0]["batch"][0][0]["paper_id"] == "p0"
+
+
+def test_loading_a_pre_phase9b_session_without_turn_history_falls_back_to_empty():
+    """A checkpoint saved before this field existed has neither key at
+    all -- simulated the same way the Phase 8 display_title backward-
+    compat test does: invoking the graph directly with a hand-built dict."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_format_dict = {
+            "topic": "old style session", "display_title": "old style session",
+            "reserve": [], "cursor": 0, "seen_paper_ids": [], "seen_titles": [], "stage": "curate",
+            "target_count": 10, "selected_paper_ids": [], "selected_papers": [], "report": None,
+            "chat_history": [], "web_articles_added": [], "pending_web_offer": None,
+            "pending_report_update": None, "refinement_notes": [], "report_covered_web_article_count": 0,
+            # deliberately no "turn_history" or "stop_reason" keys
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-id", cp)
+
+        assert loaded.turn_history == []
+        assert loaded.stop_reason is None
+
+
+# --- select_paper_from_history (curation-turn-history Phase 9c) ---
+
+def _history_entry(turn_number: int, papers: list[Paper], refilled: bool = False) -> dict:
+    return {
+        "turn_number": turn_number,
+        "batch": [[p.to_dict(), 1.0] for p in papers],
+        "refilled": refilled,
+    }
+
+
+def test_select_paper_from_history_adds_it_to_selection_when_synthesize():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+    )
+
+    select_paper_from_history(session, "p1")
+
+    assert session.selected_paper_ids == ["p1"]
+    assert [p.paper_id for p in session.selected_papers] == ["p1"]
+
+
+def test_select_paper_from_history_refuses_while_still_curating():
+    """The architectural core of Phase 9c: this out-of-band mutation is
+    only safe once the interrupt loop has actually ended."""
+    session = PaperPoolSession(
+        topic="q", stage="curate",
+        turn_history=[_history_entry(1, [_paper("p0")])],
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="not ready"):
+        select_paper_from_history(session, "p0")
+
+    assert session.selected_paper_ids == []
+
+
+def test_select_paper_from_history_raises_for_a_paper_never_actually_served():
+    session = PaperPoolSession(topic="q", stage="synthesize", turn_history=[_history_entry(1, [_paper("p0")])])
+
+    import pytest
+    with pytest.raises(ValueError, match="was not found"):
+        select_paper_from_history(session, "never-served")
+
+
+def test_select_paper_from_history_is_a_silent_no_op_if_already_selected():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_paper_ids=["p0"], selected_papers=[_paper("p0")],
+        turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+    )
+
+    select_paper_from_history(session, "p0")  # already selected -- must not duplicate
+
+    assert session.selected_paper_ids == ["p0"]
+    assert len(session.selected_papers) == 1
+
+
+def test_select_paper_from_history_finds_a_paper_from_an_earlier_turn_not_just_the_latest():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        turn_history=[
+            _history_entry(1, [_paper("p0")]),
+            _history_entry(2, [_paper("p1")], refilled=True),
+        ],
+    )
+
+    select_paper_from_history(session, "p0")  # turn 1, not the most recent turn
+
+    assert session.selected_paper_ids == ["p0"]
+
+
+def test_select_paper_from_history_can_exceed_target_count():
+    """Approved design decision: no cap -- selection is free to exceed
+    target_count when browsing history."""
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", target_count=1,
+        selected_paper_ids=["p0"], selected_papers=[_paper("p0")],
+        turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+    )
+
+    select_paper_from_history(session, "p1")
+
+    assert session.selected_paper_ids == ["p0", "p1"]
+    assert len(session.selected_paper_ids) > session.target_count
+
+
+def test_select_paper_from_history_persists_through_real_sqlite():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", stage="synthesize",
+            turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-1", cp)
+            reloaded = load_curation_session("session-1", cp)
+            select_paper_from_history(reloaded, "p1")
+            save_curation_session(reloaded, "session-1", cp)
+
+            final = load_curation_session("session-1", cp)
+
+        assert final.selected_paper_ids == ["p1"]
+
+
 if __name__ == "__main__":
     test_save_then_load_roundtrips_all_fields_verified_via_real_sqlite_read()
     test_load_nonexistent_session_returns_none_not_an_error()
@@ -391,4 +551,13 @@ if __name__ == "__main__":
     test_delete_curation_session_removes_it_for_real()
     test_delete_curation_session_on_unknown_id_does_not_error()
     test_delete_curation_session_does_not_affect_other_sessions()
+    test_turn_history_and_stop_reason_roundtrip_through_real_sqlite()
+    test_loading_a_pre_phase9b_session_without_turn_history_falls_back_to_empty()
+    test_select_paper_from_history_adds_it_to_selection_when_synthesize()
+    test_select_paper_from_history_refuses_while_still_curating()
+    test_select_paper_from_history_raises_for_a_paper_never_actually_served()
+    test_select_paper_from_history_is_a_silent_no_op_if_already_selected()
+    test_select_paper_from_history_finds_a_paper_from_an_earlier_turn_not_just_the_latest()
+    test_select_paper_from_history_can_exceed_target_count()
+    test_select_paper_from_history_persists_through_real_sqlite()
     print("All curation_session tests passed.")

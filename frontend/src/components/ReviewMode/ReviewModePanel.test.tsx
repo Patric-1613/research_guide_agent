@@ -18,7 +18,7 @@ function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     session_id: 's1', topic: 't', display_title: 't', stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
-    pending_web_offer: null, pending_report_update: null,
+    pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
     ...overrides,
   }
 }
@@ -65,6 +65,22 @@ describe('ReviewModePanel', () => {
     await user.click(screen.getByTestId('review-continue'))
 
     expect(onSubmitPicks).toHaveBeenCalledWith('focus on recent work', false)
+  })
+
+  it('clicking "Search for more candidates" submits with requestRefill=true (Phase 9d/9e)', async () => {
+    const user = userEvent.setup()
+    const onSubmitPicks = vi.fn().mockResolvedValue(undefined)
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={onSubmitPicks}
+      />,
+    )
+
+    await user.click(screen.getByTestId('review-request-refill'))
+
+    expect(onSubmitPicks).toHaveBeenCalledWith(undefined, false, true)
   })
 
   it('clicking "I\'m done" submits with stop=true, and is disabled when nothing is selected yet', async () => {
@@ -138,5 +154,79 @@ describe('ReviewModePanel', () => {
 
     expect(screen.getByText(/Turn 1/)).toBeInTheDocument()
     expect(screen.getByText('Turn 2 — new search')).toBeInTheDocument()
+  })
+
+  it('a partial batch (fewer than BATCH_SIZE, not refilled) gets a distinct message pointing at "search for more" (Phase 9e)', () => {
+    const state = baseState({
+      pending_batch: [paper('p1', 'Paper One'), paper('p2', 'Paper Two')], // only 2, refilled: false
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Only 2 candidates left in the already-fetched pool/)).toBeInTheDocument()
+    expect(screen.getByText(/search for more below/)).toBeInTheDocument()
+    expect(screen.queryByText(/no new search needed/)).not.toBeInTheDocument()
+  })
+
+  it('a full batch (exactly BATCH_SIZE, not refilled) keeps the existing "no new search needed" message unchanged', () => {
+    const fullBatch = Array.from({ length: 10 }, (_, i) => paper(`p${i}`, `Paper ${i}`))
+    const state = baseState({ pending_batch: fullBatch })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/no new search needed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Only \d+ candidates left/)).not.toBeInTheDocument()
+  })
+
+  it('a refilled batch keeps the existing "searched for more" message regardless of size', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One'), paper('p2', 'Paper Two')], refilled: true })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Searched for more candidates and found 2/)).toBeInTheDocument()
+    expect(screen.queryByText(/Only \d+ candidates left/)).not.toBeInTheDocument()
+  })
+
+  it('stopped short of target due to exhaustion: shows a distinct message, not indistinguishable from a clean finish (Phase 9e, the actual reported bug)', () => {
+    const state = baseState({
+      stage: 'synthesize', pending_batch: null, stop_reason: 'exhausted', target_count: 10,
+      selected_papers: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/ran out of new candidates at 1 of 10/)).toBeInTheDocument()
+    expect(screen.queryByText(/^Curation complete/)).not.toBeInTheDocument()
+  })
+
+  it('a clean finish (target_met) still shows the plain "Curation complete" message', () => {
+    const state = baseState({
+      stage: 'synthesize', pending_batch: null, stop_reason: 'target_met', target_count: 1,
+      selected_papers: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Curation complete — 1 papers selected/)).toBeInTheDocument()
   })
 })

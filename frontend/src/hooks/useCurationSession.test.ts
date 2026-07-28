@@ -22,7 +22,7 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     session_id: 's1', topic: 'transformers', display_title: 'transformers', stage: 'curate', target_count: 10,
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
-    pending_web_offer: null, pending_report_update: null,
+    pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
     ...overrides,
   }
 }
