@@ -76,6 +76,21 @@ describe('curationApi', () => {
     expect(result).toEqual({ session_id: 's1', deleted: true })
   })
 
+  it('reopen() posts to the session-scoped /reopen path with no body payload beyond {}', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      session_id: 's1', stage: 'curate', target_count: 10,
+      selected_paper_ids: ['p1'], batch: [], stop_reason: null, refilled: false,
+    })
+
+    const result = await curationApi.reopen('s1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/reopen',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+    expect(result.stage).toBe('curate')
+  })
+
   it('throws an ApiError carrying the status and parsed detail on a non-2xx response', async () => {
     mockFetchOnce(404, { detail: 'session_id not found' })
 

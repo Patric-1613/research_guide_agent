@@ -17,17 +17,35 @@ approved before implementation:
                 |                                        |
                 +--"serve"-------------------------------+
                                                            v
-                                                   route_after_serve --"exhausted"--> stop_exhausted (END)
-                                                           |
-                                                     "present"
+                                                     serve_batch always
+                                                     routes to "present"
+                                                     -- even an EMPTY batch
+                                                     (curation-editable-
+                                                     until-locked Phase 10b:
+                                                     there is no more
+                                                     "exhausted" stop --
+                                                     see below)
                                                            v
                                                 present_and_apply  <-- interrupt() lives here, ALONE
                                                            |
                                                            v
                                                   route_after_picks
-                                                     +-"target_met"----> stop_target_met (END)
                                                      +-"user_stopped"--> stop_user_requested (END)
                                                      +-"continue"------> check_pool (loop back)
+
+    curation-editable-until-locked Phase 10b: reaching target_count or a
+    truly exhausted search no longer ends the graph. Both used to route
+    to their own stop_*/END node (stop_exhausted, stop_target_met),
+    which forced session.stage="synthesize" the moment either happened
+    -- locking the review out of further curation even if the user
+    never asked to stop. Per explicit user decision, editability is now
+    gated ONLY on whether chat/report has started, never on
+    target_count or pool exhaustion: an empty batch or a target-reached
+    batch is just presented to the user (via the SAME present_and_apply
+    interrupt, with current_batch possibly empty) with a message,
+    letting them refine/search again or explicitly stop. The ONLY way
+    to reach stage="synthesize" now is the explicit stop=True resume
+    payload -- stop_user_requested is the one remaining stop node.
 
 Verified directly against the installed langgraph==1.2.9 before designing
 this (not assumed from general knowledge):
@@ -126,9 +144,9 @@ def _serve_batch_node(state: CurationLoopState) -> dict:
     # curation-turn-history Phase 9b: this node has no interrupt() inside
     # it, so (unlike present_and_apply below) it only ever runs ONCE per
     # real turn -- never re-executed on resume -- safe to append here
-    # without double-recording. An empty batch (about to route to
-    # "exhausted") isn't a real turn a user could browse back to, so it's
-    # not logged.
+    # without double-recording. An empty batch isn't a real turn a user
+    # could browse back to (no papers were shown), so it's not logged --
+    # still true under Phase 10b's "present even if empty" routing.
     if serialized_batch:
         session.turn_history.append({
             "turn_number": len(session.turn_history) + 1,
@@ -139,7 +157,12 @@ def _serve_batch_node(state: CurationLoopState) -> dict:
 
 
 def _route_after_serve(state: CurationLoopState) -> str:
-    return "exhausted" if not state["current_batch"] else "present"
+    # curation-editable-until-locked Phase 10b: always present, even an
+    # empty batch -- there is no more "exhausted" stop (see module
+    # docstring). A degenerate empty-batch interrupt lets the frontend
+    # show a clear "no new candidates" message while leaving the user in
+    # full control (refine and search again, or explicitly stop).
+    return "present"
 
 
 def _present_and_apply_node(state: CurationLoopState) -> dict:
@@ -203,11 +226,14 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
 
 
 def _route_after_picks(state: CurationLoopState) -> str:
+    # curation-editable-until-locked Phase 10b: reaching target_count no
+    # longer forces a stop (see module docstring) -- the ONLY way to
+    # reach stop_user_requested is an explicit stop=True resume payload.
+    # Whether the target's been hit is still fully derivable by the
+    # caller from session.selected_paper_ids vs. session.target_count;
+    # it just no longer gates anything here.
     if state.get("should_stop"):
         return "user_stopped"
-    session = _dict_to_session(state["session"])
-    if len(session.selected_paper_ids) >= session.target_count:
-        return "target_met"
     return "continue"
 
 
@@ -253,24 +279,18 @@ def build_curation_loop_graph(checkpointer: BaseCheckpointSaver):
     graph.add_node("refill", _refill_node)
     graph.add_node("serve_batch", _serve_batch_node)
     graph.add_node("present_and_apply", _present_and_apply_node)
-    graph.add_node("stop_exhausted", _make_stop_node("exhausted"))
-    graph.add_node("stop_target_met", _make_stop_node("target_met"))
     graph.add_node("stop_user_requested", _make_stop_node("user_stopped"))
 
     graph.add_edge(START, "check_pool")
     graph.add_conditional_edges("check_pool", _route_entry, {"refill": "refill", "serve": "serve_batch"})
     graph.add_edge("refill", "serve_batch")
     graph.add_conditional_edges("serve_batch", _route_after_serve, {
-        "exhausted": "stop_exhausted",
         "present": "present_and_apply",
     })
     graph.add_conditional_edges("present_and_apply", _route_after_picks, {
-        "target_met": "stop_target_met",
         "user_stopped": "stop_user_requested",
         "continue": "check_pool",
     })
-    graph.add_edge("stop_exhausted", END)
-    graph.add_edge("stop_target_met", END)
     graph.add_edge("stop_user_requested", END)
 
     return graph.compile(checkpointer=checkpointer)

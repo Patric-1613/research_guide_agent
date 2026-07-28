@@ -65,6 +65,11 @@ interface UseCurationSessionResult {
   // curation-turn-history Phase 9c: synthesize-stage only (enforced
   // server-side) -- see client.ts's own comment for why.
   selectFromHistory: (paperId: string) => Promise<void>
+  // curation-editable-until-locked Phase 10e: reopens a stopped-but-
+  // untouched review back into active curation -- server-side gated
+  // (stage=="synthesize", no report, no chat yet), see client.ts's
+  // reopen() for the full reasoning.
+  reopenReview: () => Promise<void>
   refresh: () => Promise<void>
 }
 
@@ -219,9 +224,19 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  const reopenReview = useCallback(
+    () =>
+      runAction(async () => {
+        if (!sessionId) return
+        await curationApi.reopen(sessionId)
+        await loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   return {
     sessionId, state, loading, error, turnEvents,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
-    selectFromHistory, refresh,
+    selectFromHistory, reopenReview, refresh,
   }
 }

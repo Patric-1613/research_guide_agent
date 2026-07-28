@@ -204,7 +204,11 @@ def test_curation_picks_resumes_the_real_interrupt_and_returns_the_next_batch():
     assert len(body["batch"]) == 10  # next batch presented
 
 
-def test_curation_picks_reaching_target_transitions_to_synthesize():
+def test_curation_picks_reaching_target_does_not_transition_to_synthesize():
+    """curation-editable-until-locked Phase 10b: hitting target_count is
+    no longer a hard stop -- only an explicit stop=True locks the review
+    into synthesize stage. Reaching target just keeps curation open, with
+    a fresh batch still presented."""
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
     with _client() as client, \
          patch.object(api, "build_candidate_pool", return_value=papers), \
@@ -217,8 +221,29 @@ def test_curation_picks_reaching_target_transitions_to_synthesize():
 
     assert resp.status_code == 200
     body = resp.json()
+    assert body["stage"] == "curate"
+    assert body["stop_reason"] is None
+    assert len(body["batch"]) == 5  # 15 total - 10 served turn 1 = 5 left, still curating
+    assert body["selected_paper_ids"] == picks
+
+
+def test_curation_picks_with_explicit_stop_transitions_to_synthesize():
+    """The ONLY way to lock a review into synthesize stage now: an
+    explicit stop=True, regardless of whether target_count was reached."""
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 3}).json()
+        session_id = start_body["session_id"]
+        picks = [p["paper_id"] for p in start_body["batch"][:3]]
+
+        resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks, "stop": True})
+
+    assert resp.status_code == 200
+    body = resp.json()
     assert body["stage"] == "synthesize"
-    assert body["stop_reason"] == "target_met"
+    assert body["stop_reason"] == "user_stopped"
     assert body["batch"] == []
     assert body["selected_paper_ids"] == picks
 
@@ -237,7 +262,7 @@ def test_curation_picks_after_curation_already_finished_returns_400():
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 2}).json()
         session_id = start_body["session_id"]
         picks = [p["paper_id"] for p in start_body["batch"][:2]]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})  # finishes curation
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks, "stop": True})  # finishes curation
 
         resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": []})
 
@@ -473,7 +498,7 @@ def test_curation_get_state_after_finishing_has_no_pending_batch():
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 2}).json()
         session_id = start_body["session_id"]
         picks = [p["paper_id"] for p in start_body["batch"][:2]]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks, "stop": True})
 
         resp = client.get(f"/curation/{session_id}")
 
@@ -500,13 +525,13 @@ def test_curation_get_state_exposes_turn_history_and_stop_reason():
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 2}).json()
         session_id = start_body["session_id"]
         picks = [p["paper_id"] for p in start_body["batch"][:2]]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks, "stop": True})
 
         resp = client.get(f"/curation/{session_id}")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["stop_reason"] == "target_met"
+    assert body["stop_reason"] == "user_stopped"
     assert len(body["turn_history"]) == 1
     assert body["turn_history"][0]["turn_number"] == 1
     assert body["turn_history"][0]["refilled"] is False
@@ -531,8 +556,11 @@ def test_curation_get_state_stop_reason_is_none_mid_curation():
 
 def test_select_from_history_adds_a_paper_after_curation_finished_short_of_target():
     """The exact real-world scenario reported: the pool ran genuinely dry
-    (exhausted) short of target_count, ending curation -- select-from-
-    history is what lets the user still grab a paper they saw earlier."""
+    (exhausted) short of target_count. curation-editable-until-locked
+    Phase 10b: that no longer auto-stops curation -- the search just
+    comes back with an empty batch, still open -- so the user has to
+    explicitly stop before select-from-history (synthesize-stage-only)
+    becomes usable."""
     from research_agent import query_expansion as qe_module
 
     # Exactly BATCH_SIZE papers: the very first batch consumes the ENTIRE
@@ -552,14 +580,21 @@ def test_select_from_history_adds_a_paper_after_curation_finished_short_of_targe
         # remaining after this pick: 10-10=0 < BATCH_SIZE=10 -> refill_pool
         # runs internally; mocked here (via query_expansion's own module
         # reference, not api's) to find nothing new -> merged reserve is
-        # genuinely empty -> the next batch is empty -> exhausted, ending
-        # curation short of target.
+        # genuinely empty -> the next batch is empty, but curation stays open.
         with patch.object(qe_module, "build_candidate_pool", return_value=[]), \
              patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
                  [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
              )):
             picks_resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks}).json()
-        assert picks_resp["stop_reason"] == "exhausted"
+        assert picks_resp["stop_reason"] is None
+        assert picks_resp["stage"] == "curate"
+        assert picks_resp["batch"] == []  # nothing new found, but still editable
+
+        # The user decides to stop here rather than keep searching.
+        stop_resp = client.post(
+            f"/curation/{session_id}/picks", json={"picked_paper_ids": [], "stop": True},
+        ).json()
+        assert stop_resp["stage"] == "synthesize"
 
         not_yet_picked = [pid for pid in served_ids if pid not in picks][0]
         resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": not_yet_picked})
@@ -593,7 +628,10 @@ def test_select_from_history_unknown_paper_id_returns_400():
          patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 1}).json()
         session_id = start_body["session_id"]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [start_body["batch"][0]["paper_id"]]})
+        client.post(
+            f"/curation/{session_id}/picks",
+            json={"picked_paper_ids": [start_body["batch"][0]["paper_id"]], "stop": True},
+        )
 
         resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": "never-served"})
 
@@ -615,12 +653,108 @@ def test_select_from_history_can_exceed_target_count():
         start_body = client.post("/curation/start", json={"topic": "t", "target_count": 1}).json()
         session_id = start_body["session_id"]
         served_ids = [p["paper_id"] for p in start_body["batch"]]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [served_ids[0]]})  # meets target_count=1
+        # meets target_count=1, but that alone no longer stops curation --
+        # stop explicitly to reach synthesize stage.
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [served_ids[0]], "stop": True})
 
         resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": served_ids[1]})
 
     assert resp.status_code == 200
     assert resp.json()["selected_paper_ids"] == [served_ids[0], served_ids[1]]
+
+
+# --- POST /curation/{id}/reopen (curation-editable-until-locked Phase 10c) ---
+
+def test_curation_reopen_resumes_active_curation_preserving_prior_state():
+    """The exact scenario this whole phase is for: a review stopped
+    short of target, with nothing chatted/reported yet, can go back to
+    active curation -- picking up from where cursor/selections left off,
+    not restarting."""
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(15)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 10}).json()
+        session_id = start_body["session_id"]
+        served_ids = [p["paper_id"] for p in start_body["batch"]]
+        picks = served_ids[:3]
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks, "stop": True})
+        assert client.get(f"/curation/{session_id}").json()["stage"] == "synthesize"
+
+        resp = client.post(f"/curation/{session_id}/reopen")
+
+        # Persisted for real, via a genuinely separate GET request.
+        state = client.get(f"/curation/{session_id}").json()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stage"] == "curate"
+    assert body["stop_reason"] is None
+    assert body["selected_paper_ids"] == picks
+    assert len(body["batch"]) == 5  # 15 total - 10 served turn 1 = 5 remain
+    assert state["stage"] == "curate"
+    assert state["pending_batch"] is not None
+
+
+def test_curation_reopen_while_still_curating_returns_400():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        session_id = client.post("/curation/start", json={"topic": "t", "target_count": 5}).json()["session_id"]
+
+        resp = client.post(f"/curation/{session_id}/reopen")
+
+    assert resp.status_code == 400
+    assert "nothing to reopen" in resp.json()["detail"]
+
+
+def test_curation_reopen_after_report_generated_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.post(f"/curation/{session_id}/reopen")
+
+    assert resp.status_code == 400
+    assert "report has already been generated" in resp.json()["detail"]
+
+
+def test_curation_reopen_after_chat_started_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        fake_result = {
+            "answer": "Per [Paper 1], X is true.", "answerable": True,
+            "cited_papers": [], "cited_web_articles": [],
+        }
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": fake_result["answer"]})
+            return fake_result
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
+
+        resp = client.post(f"/curation/{session_id}/reopen")
+
+    assert resp.status_code == 400
+    assert "chat has already started" in resp.json()["detail"]
+
+
+def test_curation_reopen_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/reopen")
+    assert resp.status_code == 404
 
 
 # --- DELETE /curation/{id}: delete/abandon a review (curation-review-management Phase 8, item 1) ---
@@ -670,6 +804,11 @@ def test_curation_delete_does_not_affect_other_sessions():
 # --- /curation/{id}/report + /report/regenerate ---
 
 def _finish_curation(client, target_count: int = 2, n_papers: int = 12) -> tuple[str, list[str]]:
+    """curation-editable-until-locked Phase 10b: reaching target_count no
+    longer ends curation on its own -- an explicit stop=True is now
+    required to reach stage="synthesize", so every caller that needs a
+    finished review (report/chat tests, etc.) must ask for that
+    explicitly rather than relying on target_count as a side effect."""
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(n_papers)]
     with patch.object(api, "build_candidate_pool", return_value=papers), \
          patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
@@ -677,7 +816,7 @@ def _finish_curation(client, target_count: int = 2, n_papers: int = 12) -> tuple
         session_id = start_body["session_id"]
         picks = start_body["batch"][:target_count]
         pick_ids = [p["paper_id"] for p in picks]
-        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": pick_ids})
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": pick_ids, "stop": True})
     return session_id, pick_ids
 
 
@@ -917,7 +1056,8 @@ if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()
     test_curation_picks_resumes_the_real_interrupt_and_returns_the_next_batch()
-    test_curation_picks_reaching_target_transitions_to_synthesize()
+    test_curation_picks_reaching_target_does_not_transition_to_synthesize()
+    test_curation_picks_with_explicit_stop_transitions_to_synthesize()
     test_curation_picks_on_unknown_session_id_returns_404()
     test_curation_picks_after_curation_already_finished_returns_400()
     test_curation_turn_response_surfaces_refilled_flag_for_real_across_a_genuine_refill()
@@ -948,4 +1088,9 @@ if __name__ == "__main__":
     test_select_from_history_unknown_session_id_returns_404()
     test_select_from_history_can_exceed_target_count()
     test_curation_picks_with_request_refill_forces_a_search_through_the_real_http_layer()
+    test_curation_reopen_resumes_active_curation_preserving_prior_state()
+    test_curation_reopen_while_still_curating_returns_400()
+    test_curation_reopen_after_report_generated_returns_400()
+    test_curation_reopen_after_chat_started_returns_400()
+    test_curation_reopen_unknown_session_id_returns_404()
     print("All curation API tests passed.")

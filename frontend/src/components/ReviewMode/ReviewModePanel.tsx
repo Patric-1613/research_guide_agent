@@ -87,18 +87,28 @@ export function ReviewModePanel({
     setRefinement('')
   }
 
+  // curation-editable-until-locked Phase 10b/10d: an exhausted search or
+  // a target-reached batch no longer ends curation -- the backend just
+  // presents an empty (or ordinary) batch and leaves the review open, so
+  // the frontend needs to spell out clearly what happened instead of
+  // silently rendering zero PaperCards.
+  const isEmptyBatch = pendingBatch.length === 0
+  const targetReached = totalSelected >= state.target_count
+
   // Phase 9d/9e, the actual reported bug: a partial batch (fewer than
   // BATCH_SIZE, not refilled this turn) used to be indistinguishable
   // from "the pool ran fully dry" -- and the old auto-refill-below-
   // BATCH_SIZE behavior meant this message rarely even had a chance to
   // show. Now that a partial batch serves as-is, say so plainly, and
   // point at the explicit action instead of implying one already happened.
-  const isPartialBatch = !state.refilled && pendingBatch.length < BATCH_SIZE
-  const turnMessage = state.refilled
-    ? `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
-    : isPartialBatch
-      ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
-      : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
+  const isPartialBatch = !state.refilled && !isEmptyBatch && pendingBatch.length < BATCH_SIZE
+  const turnMessage = isEmptyBatch
+    ? "No new candidates found for this search. Try refining below, or click \"I'm done\" if you're satisfied with what you have."
+    : state.refilled
+      ? `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
+      : isPartialBatch
+        ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
+        : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -107,29 +117,48 @@ export function ReviewModePanel({
           <TurnBlock key={event.turnNumber} event={event} />
         ))}
         <TurnDivider turnNumber={turnEvents.length + 1} refilled={state.refilled} />
-        <p className="mb-3 text-sm text-text-secondary">
-          {turnMessage} Select the ones you want, then continue{isPartialBatch ? ', or search for more below' : ''}.
-        </p>
-        <div className="flex flex-col gap-2">
-          {pendingBatch.map((paper) =>
-            stagedSet.has(paper.paper_id) ? (
-              <PaperCard
-                key={paper.paper_id}
-                paper={paper}
-                showAbstract
-                action={{ kind: 'remove', onRemove: () => onRemoveStaged(paper.paper_id) }}
-              />
-            ) : (
-              <PaperCard
-                key={paper.paper_id}
-                paper={paper}
-                isNew
-                showAbstract
-                action={{ kind: 'add', onAdd: () => onAdd(paper.paper_id) }}
-              />
-            ),
+        {targetReached && (
+          <p
+            data-testid="review-target-reached-banner"
+            className="mb-3 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm text-accent"
+          >
+            You&apos;ve reached your target of {state.target_count} papers ({totalSelected} selected). Keep
+            curating if you&apos;d like more, or click &quot;I&apos;m done&quot; below to finish.
+          </p>
+        )}
+        <p data-testid="review-turn-message" className="mb-3 text-sm text-text-secondary">
+          {isEmptyBatch ? (
+            turnMessage
+          ) : (
+            <>
+              {turnMessage} Select the ones you want, then continue{isPartialBatch ? ', or search for more below' : ''}.
+            </>
           )}
-        </div>
+        </p>
+        {isEmptyBatch ? (
+          <p className="text-center text-sm italic text-text-muted">No candidates to show for this search.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {pendingBatch.map((paper) =>
+              stagedSet.has(paper.paper_id) ? (
+                <PaperCard
+                  key={paper.paper_id}
+                  paper={paper}
+                  showAbstract
+                  action={{ kind: 'remove', onRemove: () => onRemoveStaged(paper.paper_id) }}
+                />
+              ) : (
+                <PaperCard
+                  key={paper.paper_id}
+                  paper={paper}
+                  isNew
+                  showAbstract
+                  action={{ kind: 'add', onAdd: () => onAdd(paper.paper_id) }}
+                />
+              ),
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-2 border-t border-border bg-panel p-3">
@@ -169,7 +198,11 @@ export function ReviewModePanel({
               disabled={disabled}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
             >
-              {stagedPickIds.length > 0 ? `Continue with ${stagedPickIds.length} added` : 'Get next batch'}
+              {stagedPickIds.length > 0
+                ? `Continue with ${stagedPickIds.length} added`
+                : isEmptyBatch
+                  ? 'Try again'
+                  : 'Get next batch'}
             </button>
           </div>
         </div>

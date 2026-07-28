@@ -42,7 +42,11 @@ def _session(n: int, target_count: int) -> PaperPoolSession:
     )
 
 
-def test_single_turn_interrupt_then_resume_reaches_target():
+def test_reaching_target_count_no_longer_stops_curation():
+    """curation-editable-until-locked Phase 10b: hitting target_count is
+    no longer a hard stop -- only an explicit stop=True ends the loop.
+    The user stays free to keep picking/searching past their original
+    target."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         with sqlite_checkpointer(db_path) as cp:
@@ -54,12 +58,14 @@ def test_single_turn_interrupt_then_resume_reaches_target():
             picks = [p[0]["paper_id"] for p in batch[:5]]
             result2 = resume_curation_turn("s1", cp, picked_paper_ids=picks)
 
-        assert result2["stop_reason"] == "target_met"
+        assert result2["stop_reason"] is None
         assert result2["session"]["selected_paper_ids"] == picks
-        assert result2["session"]["stage"] == "synthesize"
+        assert result2["session"]["stage"] == "curate"
+        assert "__interrupt__" in result2, "must keep curating past target, not auto-stop"
+        assert len(result2["__interrupt__"][0].value["batch"]) == 5  # 15 - 10 served turn 1
 
 
-def test_multi_turn_loop_continues_across_batches_until_target_met():
+def test_multi_turn_loop_continues_past_target_met_since_it_no_longer_stops():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         with sqlite_checkpointer(db_path) as cp:
@@ -76,9 +82,11 @@ def test_multi_turn_loop_continues_across_batches_until_target_met():
 
             result = resume_curation_turn("s1", cp, picked_paper_ids=picks2)
 
-        assert result["stop_reason"] == "target_met"
+        assert result["stop_reason"] is None
+        assert result["session"]["stage"] == "curate"
         assert set(result["session"]["selected_paper_ids"]) == set(picks1) | set(picks2)
         assert len(result["session"]["selected_paper_ids"]) == 12
+        assert "__interrupt__" in result, "target_met must not stop curation"
 
 
 def test_picks_not_in_presented_batch_are_silently_rejected():
@@ -87,9 +95,6 @@ def test_picks_not_in_presented_batch_are_silently_rejected():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         with sqlite_checkpointer(db_path) as cp:
-            # target_count=1 so the single valid pick below meets it
-            # immediately -- this test is about pick validation, not
-            # multi-turn looping/refill, so the loop must stop here.
             result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=1)))
             batch = result["__interrupt__"][0].value["batch"]
             real_id = batch[0][0]["paper_id"]
@@ -99,10 +104,10 @@ def test_picks_not_in_presented_batch_are_silently_rejected():
             not_in_batch_but_in_reserve = "p12"  # reserve has p0..p14, batch is only the first 10
             fabricated = "does-not-exist-anywhere"
             result2 = resume_curation_turn(
-                "s1", cp, picked_paper_ids=[real_id, not_in_batch_but_in_reserve, fabricated],
+                "s1", cp, picked_paper_ids=[real_id, not_in_batch_but_in_reserve, fabricated], stop=True,
             )
 
-        assert result2["stop_reason"] == "target_met"
+        assert result2["stop_reason"] == "user_stopped"
         assert result2["session"]["selected_paper_ids"] == [real_id]
 
 
@@ -124,9 +129,13 @@ def test_double_mutation_across_interrupt_resume_boundary():
         db_path = Path(tmp) / "checkpoints.sqlite"
         with patch.object(loop_module, "serve_next_batch", side_effect=_counting_serve_next_batch), \
              sqlite_checkpointer(db_path) as cp:
-            # target_count=3, picking 3 below meets it in one batch -- no
-            # second batch/refill needed, keeping this test isolated to
-            # exactly the interrupt/resume boundary it's meant to check.
+            # curation-editable-until-locked Phase 10b: target_count no
+            # longer stops the graph on its own, so an explicit stop=True
+            # below is what keeps this test isolated to exactly the
+            # interrupt/resume boundary it's meant to check -- otherwise
+            # the resume would loop back and genuinely serve a second
+            # batch (a real, separate call to serve_next_batch), which is
+            # not what this test is about.
             result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=3)))
             assert call_count["n"] == 1, "serve_next_batch must run exactly once on the halting call"
 
@@ -134,7 +143,7 @@ def test_double_mutation_across_interrupt_resume_boundary():
             cursor_after_halt = result["session"]["cursor"]
 
             picks = [p[0]["paper_id"] for p in batch[:3]]
-            result2 = resume_curation_turn("s1", cp, picked_paper_ids=picks)
+            result2 = resume_curation_turn("s1", cp, picked_paper_ids=picks, stop=True)
 
         # The real assertion: resuming present_and_apply must NOT have
         # re-invoked serve_next_batch (that node isn't the one re-executed
@@ -178,8 +187,12 @@ def test_user_picks_all_ten_from_a_batch():
 
             result = resume_curation_turn("s1", cp, picked_paper_ids=all_ids)
 
-        assert result["stop_reason"] == "target_met"
+        # target_count=10 hit exactly, but that no longer stops curation
+        # (curation-editable-until-locked Phase 10b) -- 15 papers remain.
+        assert result["stop_reason"] is None
+        assert result["session"]["stage"] == "curate"
         assert result["session"]["selected_paper_ids"] == all_ids
+        assert "__interrupt__" in result
 
 
 def test_user_stops_before_hitting_target():
@@ -200,8 +213,9 @@ def test_user_stops_before_hitting_target():
 
 def test_target_hit_exactly_on_a_batch_boundary():
     """target_count=20: turn 1 picks a full batch of 10 (10/20), turn 2
-    picks the ENTIRE second batch of 10 (20/20) -- target is met exactly
-    when the second batch is fully consumed, not mid-way through it."""
+    picks the ENTIRE second batch of 10 (20/20). curation-editable-
+    until-locked Phase 10b: hitting target exactly on a batch boundary
+    must still not stop curation -- 5 papers remain in the reserve."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         with sqlite_checkpointer(db_path) as cp:
@@ -214,14 +228,17 @@ def test_target_hit_exactly_on_a_batch_boundary():
             batch2_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
             result = resume_curation_turn("s1", cp, picked_paper_ids=batch2_ids)
 
-        assert result["stop_reason"] == "target_met"
+        assert result["stop_reason"] is None
+        assert result["session"]["stage"] == "curate"
         assert len(result["session"]["selected_paper_ids"]) == 20
+        assert "__interrupt__" in result, "target_met must not stop curation"
 
 
 def test_target_hit_mid_batch():
     """target_count=13: turn 1 picks a full batch of 10 (10/13), turn 2
     picks only 3 of the 10 presented -- target is met mid-batch, with 7
-    of turn 2's batch never picked."""
+    of turn 2's batch never picked. curation-editable-until-locked
+    Phase 10b: this must not stop curation either."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         with sqlite_checkpointer(db_path) as cp:
@@ -235,9 +252,11 @@ def test_target_hit_mid_batch():
             picks2 = [p[0]["paper_id"] for p in batch2[:3]]  # only 3 of 10
             result = resume_curation_turn("s1", cp, picked_paper_ids=picks2)
 
-        assert result["stop_reason"] == "target_met"
+        assert result["stop_reason"] is None
+        assert result["session"]["stage"] == "curate"
         assert len(result["session"]["selected_paper_ids"]) == 13
         assert result["session"]["selected_paper_ids"] == batch1_ids + picks2
+        assert "__interrupt__" in result, "target_met must not stop curation"
 
 
 # --- curation-report-synthesis Phase 4: selected_papers/selected_paper_ids sync invariant ---
@@ -334,7 +353,9 @@ def test_get_curation_state_pending_batch_is_none_once_curation_finishes():
             result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
             batch = result["__interrupt__"][0].value["batch"]
             picks = [p[0]["paper_id"] for p in batch[:5]]
-            resume_curation_turn("s1", cp, picked_paper_ids=picks)
+            # explicit stop=True: target_count alone no longer finishes
+            # curation (curation-editable-until-locked Phase 10b).
+            resume_curation_turn("s1", cp, picked_paper_ids=picks, stop=True)
             state = get_curation_state("s1", cp)
 
         assert state["pending_batch"] is None
@@ -540,9 +561,11 @@ def test_turn_history_accumulates_across_multiple_turns_including_a_real_refill(
         assert [p["paper_id"] for p, _ in history[1]["batch"]] == batch2_ids
 
 
-def test_turn_history_does_not_log_an_exhausted_empty_batch():
-    """An empty batch (about to route to "exhausted") isn't a real turn a
-    user could browse back to -- must not appear as a hollow entry."""
+def test_turn_history_does_not_log_an_empty_batch():
+    """curation-editable-until-locked Phase 10b: an exhausted search no
+    longer stops the graph -- it presents an empty batch instead, still
+    editable. Either way, an empty batch isn't a real turn a user could
+    browse back to, so it must not appear as a hollow turn_history entry."""
     from research_agent import query_expansion as qe_module
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -559,14 +582,58 @@ def test_turn_history_does_not_log_an_exhausted_empty_batch():
             batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
             assert len(batch1_ids) == 5  # entire tiny reserve served in one go
 
-            # Nothing new to find -> reserve empties out -> exhausted, no interrupt.
+            # Nothing new to find -> reserve empties out -> presented as an
+            # empty batch, curation stays open (no stop, no exhausted).
             result = resume_curation_turn("s1", cp, picked_paper_ids=[], config={"client": MagicMock()})
 
-        assert "__interrupt__" not in result
-        assert result["stop_reason"] == "exhausted"
+        assert "__interrupt__" in result
+        assert result["__interrupt__"][0].value["batch"] == []
+        assert result["stop_reason"] is None
+        assert result["session"]["stage"] == "curate"
         history = result["session"]["turn_history"]
         assert len(history) == 1  # only the real turn 1, no hollow "turn 2" entry
         assert history[0]["turn_number"] == 1
+
+
+def test_after_an_empty_batch_a_refinement_search_can_find_new_candidates():
+    """curation-editable-until-locked Phase 10b: the core point of not
+    locking on exhaustion -- the SAME refinement mechanism (Phase 6f)
+    already used to steer searches can pull the user out of an empty
+    batch by finding genuinely new candidates, no separate "unstick"
+    mechanism needed."""
+    from research_agent import query_expansion as qe_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=[]), \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+
+            result = start_curation_turn(
+                "s1", cp, _session_to_dict(_session(5, target_count=100)), config={"client": MagicMock()},
+            )
+            # First search comes back dry -> empty batch, still open.
+            result = resume_curation_turn("s1", cp, picked_paper_ids=[], config={"client": MagicMock()})
+            assert result["__interrupt__"][0].value["batch"] == []
+            assert result["session"]["stage"] == "curate"
+
+            new_papers = [_paper(f"new{i}") for i in range(6)]
+            with patch.object(qe_module, "build_candidate_pool", return_value=new_papers), \
+                 patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                     [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+                 )):
+                result = resume_curation_turn(
+                    "s1", cp, picked_paper_ids=[], refinement="try a different angle",
+                    config={"client": MagicMock()},
+                )
+
+        assert "__interrupt__" in result
+        new_batch = result["__interrupt__"][0].value["batch"]
+        assert len(new_batch) == 6
+        assert {p[0]["paper_id"] for p in new_batch} == {p.paper_id for p in new_papers}
+        assert result["session"]["refinement_notes"] == ["try a different angle"]
 
 
 def test_stop_reason_persists_on_the_session_readable_via_get_curation_state():
@@ -738,8 +805,8 @@ def test_picks_referencing_a_paper_never_served_at_all_are_still_silently_reject
 
 
 if __name__ == "__main__":
-    test_single_turn_interrupt_then_resume_reaches_target()
-    test_multi_turn_loop_continues_across_batches_until_target_met()
+    test_reaching_target_count_no_longer_stops_curation()
+    test_multi_turn_loop_continues_past_target_met_since_it_no_longer_stops()
     test_picks_not_in_presented_batch_are_silently_rejected()
     test_double_mutation_across_interrupt_resume_boundary()
     test_user_picks_zero_still_progresses_to_a_new_batch_not_a_stall()
@@ -759,7 +826,8 @@ if __name__ == "__main__":
     test_no_refinement_does_not_force_a_refill_or_touch_refinement_notes()
     test_turn_history_records_each_served_batch_with_turn_number_and_refilled_flag()
     test_turn_history_accumulates_across_multiple_turns_including_a_real_refill()
-    test_turn_history_does_not_log_an_exhausted_empty_batch()
+    test_turn_history_does_not_log_an_empty_batch()
+    test_after_an_empty_batch_a_refinement_search_can_find_new_candidates()
     test_stop_reason_persists_on_the_session_readable_via_get_curation_state()
     test_stop_reason_is_none_while_curation_is_still_in_progress()
     test_partial_batch_serves_as_is_without_an_automatic_refill()
