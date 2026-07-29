@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 import uuid
 
-from fastapi import HTTPException
-
 import research_agent.api as api
 from research_agent.api_app.schemas import CurationPicksRequest, CurationStartRequest, CurationTurnResponse
 from research_agent.api_app.serializers import _turn_result_to_response
@@ -12,6 +10,7 @@ from research_agent.curation_loop import get_curation_state, resume_curation_tur
 from research_agent.curation_session import _session_to_dict
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.services.curation_helpers import _curation_config
+from research_agent.services.errors import ServiceError
 
 
 def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
@@ -23,7 +22,7 @@ def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
     )
     ranked, _ = api.rank_full_pool(req.topic, deduped, client=client, collection=api._state["collection"])
     if not ranked:
-        raise HTTPException(status_code=404, detail="No papers found for this topic.")
+        raise ServiceError(404, "No papers found for this topic.")
 
     # curation-review-management Phase 8, item 5: after confirming
     # papers actually exist for this topic (no point spending an LLM
@@ -41,9 +40,9 @@ def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
 def submit_picks(session_id: str, req: CurationPicksRequest, cp) -> CurationTurnResponse:
     state = get_curation_state(session_id, cp)
     if state is None:
-        raise HTTPException(status_code=404, detail="session_id not found")
+        raise ServiceError(404, "session_id not found")
     if state["pending_batch"] is None:
-        raise HTTPException(status_code=400, detail="Session is not awaiting picks (curation already finished).")
+        raise ServiceError(400, "Session is not awaiting picks (curation already finished).")
 
     target_count = state["session"].target_count
     result = resume_curation_turn(

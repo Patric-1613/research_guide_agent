@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from fastapi import HTTPException
-
 import research_agent.api as api
 from research_agent.api_app.schemas import ChatTurn, CitedPaperOut, CitedWebArticleOut, CurationChatRequest, CurationChatResponse
 from research_agent.curation_session import load_curation_session, save_curation_session
+from research_agent.services.errors import ServiceError
 
 
 def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> CurationChatResponse:
     session = load_curation_session(session_id, cp)
     if session is None:
-        raise HTTPException(status_code=404, detail="session_id not found")
+        raise ServiceError(404, "session_id not found")
     try:
         result = api.chat_turn(session, req.message, client=api._state["client"])
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ServiceError(400, str(exc)) from exc
     save_curation_session(session, session_id, cp)
 
     return CurationChatResponse(

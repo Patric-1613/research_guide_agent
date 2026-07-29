@@ -3,12 +3,11 @@ from __future__ import annotations
 import os
 import sqlite3
 
-from fastapi import HTTPException
-
 import research_agent.api as api
 from research_agent.api_app.schemas import SearchRequest, SearchResponse
 from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out
 from research_agent.schema import WebArticle
+from research_agent.services.errors import ServiceError
 from research_agent.services.search_helpers import _filtered_candidate_count, _merge_web_articles, _server_side_rerank
 from research_agent.storage import save_search
 
@@ -28,7 +27,7 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
         )
         web_articles: list[WebArticle] = []
         if not ranked:
-            raise HTTPException(status_code=404, detail="No papers found for this topic.")
+            raise ServiceError(404, "No papers found for this topic.")
     else:
         session = api.run_research_agent(
             req.topic, s2_api_key=s2_key, top_k=req.top_k,
@@ -50,15 +49,13 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
 
         if not ranked:
             if session.papers and (req.doi_required or req.min_citation_count):
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"Found {len(session.papers)} paper(s) for this topic, but none matched the "
-                        f"active filters (DOI required: {req.doi_required}, "
-                        f"min citations: {req.min_citation_count}). Try relaxing the filters."
-                    ),
+                raise ServiceError(
+                    404,
+                    f"Found {len(session.papers)} paper(s) for this topic, but none matched the "
+                    f"active filters (DOI required: {req.doi_required}, "
+                    f"min citations: {req.min_citation_count}). Try relaxing the filters.",
                 )
-            raise HTTPException(status_code=404, detail="No papers found for this topic.")
+            raise ServiceError(404, "No papers found for this topic.")
 
         if len(session.web_articles) < req.web_max_results:
             # Whether to call search_web_tool at all is the agent's judgment
