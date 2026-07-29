@@ -1,0 +1,204 @@
+"""Pure output/serialization/rendering helpers for research_agent/api.py's
+endpoints — domain objects (Paper, WebArticle, raw dicts) in, response
+schema objects or plain strings out. No _state access, no DB/network
+calls, no LLM calls.
+
+Moved out of api.py (Phase 4) so these have a real, independent home —
+api.py re-exports every name here so `research_agent.api.<name>` and
+`patch.object(api, "<name>", ...)` keep working unchanged for anything
+still reaching them that way.
+"""
+
+from __future__ import annotations
+
+from research_agent.api_app.schemas import (
+    CitedPaperOut,
+    CitedWebArticleOut,
+    CurationTurnResponse,
+    PaperOut,
+    ReportOut,
+    ReportSectionOut,
+    TurnHistoryEntryOut,
+    WebArticleOut,
+)
+from research_agent.citations import CitationStyle, select_citation
+from research_agent.schema import Paper, WebArticle
+
+
+def _paper_to_out(paper: Paper, score: float | None = None) -> PaperOut:
+    return PaperOut(
+        paper_id=paper.paper_id, title=paper.title, authors=paper.authors,
+        year=paper.year, venue=paper.venue, abstract=paper.abstract,
+        url=paper.url, doi=paper.doi, citation_count=paper.citation_count,
+        source=paper.source, source_urls=paper.source_urls, score=score,
+    )
+
+
+def _web_article_to_out(article: WebArticle) -> WebArticleOut:
+    return WebArticleOut(
+        title=article.title, url=article.url, snippet=article.snippet,
+        published_date=article.published_date, source_domain=article.source_domain,
+    )
+
+
+def _web_articles_from_saved(saved) -> list[WebArticle]:
+    return [WebArticle(**a) for a in saved.web_articles]
+
+
+def _summary_to_json(result: dict, style: CitationStyle = "apa") -> dict:
+    """Adapt summarize.generate_summary()'s return value (which embeds Paper
+    objects) into a plain-JSON dict safe to store in SQLite and return over
+    HTTP.
+
+    Uses .get() defensively rather than direct key access for the round-2
+    citation-style fields: this also runs against hand-built dicts in tests
+    that mock generate_summary() and predate harvard_citation/citation, and
+    must degrade to an APA-based default rather than KeyError on those.
+    """
+    themes_out = []
+    for theme in result["themes"]:
+        papers_out = []
+        for entry in theme["papers"]:
+            apa_citation = entry.get("apa_citation", "")
+            harvard_citation = entry.get("harvard_citation") or apa_citation
+            bibtex = entry.get("bibtex", "")
+            citation = entry.get("citation") or select_citation(apa_citation, harvard_citation, bibtex, style)
+            papers_out.append({
+                "paper_id": entry["paper"].paper_id,
+                "title": entry["paper"].title,
+                "summary": entry["summary"],
+                "apa_citation": apa_citation,
+                "harvard_citation": harvard_citation,
+                "bibtex": bibtex,
+                "citation": citation,
+            })
+        themes_out.append({"theme_name": theme["theme_name"], "papers": papers_out})
+
+    return {
+        "themes": themes_out,
+        "gaps_and_disagreements": result["gaps_and_disagreements"],
+        "skipped_paper_ids": [p.paper_id for p in result["skipped_papers"]],
+    }
+
+
+def _web_summary_to_json(result: dict) -> dict:
+    """Adapt summarize.generate_web_summary()'s return value (which embeds
+    WebArticle objects) into a plain-JSON dict safe to store in SQLite and
+    return over HTTP — same purpose as _summary_to_json above, kept
+    separate since it has its own cache column (web_summary) and its own
+    shape (no themes, just a synthesis + the cited subset)."""
+    return {
+        "synthesis": result["synthesis"],
+        "cited_articles": [a.to_dict() for a in result["cited_articles"]],
+    }
+
+
+def _paper_out_from_batch_entry(entry) -> PaperOut:
+    paper_dict, score = entry
+    return _paper_to_out(Paper(**paper_dict), score)
+
+
+def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
+    return [
+        TurnHistoryEntryOut(
+            turn_number=entry["turn_number"],
+            batch=[_paper_out_from_batch_entry(e) for e in entry["batch"]],
+            refilled=entry["refilled"],
+        )
+        for entry in turn_history
+    ]
+
+
+def _report_to_out(report: dict) -> ReportOut:
+    def _section(name: str) -> ReportSectionOut:
+        s = report[name]
+        return ReportSectionOut(
+            content=s["content"],
+            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in s["cited_papers"]],
+            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in s.get("cited_web_articles", [])],
+        )
+
+    return ReportOut(
+        findings=_section("findings"), limitations=_section("limitations"), future_scope=_section("future_scope"),
+        skipped_paper_ids=[p.paper_id for p in report["skipped_papers"]],
+    )
+
+
+def _turn_result_to_response(session_id: str, target_count: int, result: dict) -> CurationTurnResponse:
+    session_dict = result["session"]
+    batch = result["__interrupt__"][0].value["batch"] if "__interrupt__" in result else []
+    return CurationTurnResponse(
+        session_id=session_id, stage=session_dict["stage"], target_count=target_count,
+        selected_paper_ids=session_dict["selected_paper_ids"],
+        batch=[_paper_out_from_batch_entry(e) for e in batch],
+        stop_reason=result.get("stop_reason"),
+        refilled=result.get("refilled", False),
+        # Computed straight off the raw serialized dict (reserve/cursor),
+        # not via _dict_to_session -- no need to reconstruct every
+        # reserve Paper's full data just to subtract two lengths.
+        reserve_remaining=max(0, len(session_dict["reserve"]) - session_dict["cursor"]),
+        refinement_notes=list(session_dict.get("refinement_notes", [])),
+    )
+
+
+_STYLE_LABELS: dict[str, str] = {"apa": "APA", "harvard": "Harvard", "bibtex": "BibTeX"}
+
+
+def _render_markdown(topic: str, summary_json: dict, style: CitationStyle = "apa", web_summary_json: dict | None = None) -> str:
+    lines = [f"# Literature Summary: {topic}", ""]
+    for theme in summary_json["themes"]:
+        lines.append(f"## {theme['theme_name']}")
+        lines.append("")
+        for p in theme["papers"]:
+            lines.append(f"- **{p['title']}**")
+            lines.append(f"  {p['summary']}")
+            lines.append("")
+
+    lines.append("## Gaps and Disagreements")
+    lines.append("")
+    lines.append(summary_json["gaps_and_disagreements"])
+    lines.append("")
+
+    if web_summary_json is not None:
+        # Its own section, positioned after the paper-themes summary but
+        # clearly separate from it — never folded into the themes above.
+        lines.append("## Web Context")
+        lines.append("")
+        lines.append(web_summary_json["synthesis"])
+        lines.append("")
+        for a in web_summary_json["cited_articles"]:
+            lines.append(f"- [{a['title']}]({a['url']}) — {a['source_domain']}")
+        lines.append("")
+
+    if style == "bibtex":
+        # BibTeX is already a structured export format, not prose — a
+        # "References (BibTeX)" section duplicating the BibTeX block below
+        # would just repeat it, so this is the one style that skips the
+        # separate References section entirely.
+        lines.append("## References (BibTeX)")
+        lines.append("")
+        lines.append("```bibtex")
+        for theme in summary_json["themes"]:
+            for p in theme["papers"]:
+                lines.append(p.get("bibtex", ""))
+                lines.append("")
+        lines.append("```")
+    else:
+        citation_key = "harvard_citation" if style == "harvard" else "apa_citation"
+        lines.append(f"## References ({_STYLE_LABELS.get(style, 'APA')})")
+        lines.append("")
+        for theme in summary_json["themes"]:
+            for p in theme["papers"]:
+                lines.append(f"- {p.get(citation_key) or p.get('apa_citation', '')}")
+        lines.append("")
+
+        lines.append("## BibTeX")
+        lines.append("")
+        lines.append("```bibtex")
+        for theme in summary_json["themes"]:
+            for p in theme["papers"]:
+                lines.append(p.get("bibtex", ""))
+                lines.append("")
+        lines.append("```")
+
+    return "\n".join(lines)

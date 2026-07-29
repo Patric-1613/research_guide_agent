@@ -26,7 +26,6 @@ import os
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from typing import Literal
 
 import arxiv
 import requests
@@ -35,7 +34,6 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, Field
 
 from research_agent.agent import _merge_web_articles, run_research_agent
 from research_agent.citations import CitationStyle, select_citation
@@ -61,10 +59,57 @@ from research_agent.query_expansion import (
     rank_full_pool,
 )
 from research_agent.report import generate_report_for_session, regenerate_report_with_new_sources
-from research_agent.schema import Paper, WebArticle
+from research_agent.schema import Paper
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search, update_summary, update_web_summary
 from research_agent.summarize import generate_summary, generate_web_summary
 from research_agent.web_search import search_web
+
+# Phase 4: request/response models and pure serialization/rendering helpers
+# now live in api_app/schemas.py and api_app/serializers.py — re-exported
+# here so `research_agent.api.<name>` and `patch.object(api, "<name>", ...)`
+# keep working unchanged for every existing caller/test.
+from research_agent.api_app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ChatTurn,
+    CitedPaperOut,
+    CitedWebArticleOut,
+    CurationChatRequest,
+    CurationChatResponse,
+    CurationDeleteResponse,
+    CurationPicksRequest,
+    CurationReviewSummary,
+    CurationSelectFromHistoryRequest,
+    CurationSelectFromHistoryResponse,
+    CurationStartRequest,
+    CurationStateResponse,
+    CurationTurnResponse,
+    LibraryItem,
+    PaperOut,
+    PaperSummaryOut,
+    ReportOut,
+    ReportSectionOut,
+    SearchRequest,
+    SearchResponse,
+    SummarizeRequest,
+    SummarizeResponse,
+    ThemeOut,
+    TurnHistoryEntryOut,
+    WebArticleOut,
+    WebSummaryOut,
+)
+from research_agent.api_app.serializers import (
+    _paper_out_from_batch_entry,
+    _paper_to_out,
+    _render_markdown,
+    _report_to_out,
+    _summary_to_json,
+    _turn_history_out,
+    _turn_result_to_response,
+    _web_article_to_out,
+    _web_articles_from_saved,
+    _web_summary_to_json,
+)
 
 load_dotenv()
 
@@ -111,199 +156,7 @@ from research_agent.api_app.routers.health import router as health_router
 app.include_router(health_router)
 
 
-# ---- request/response models -------------------------------------------------
-
-class SearchRequest(BaseModel):
-    topic: str
-    # 3-30: a deliberate, code-enforced bound on how many results a single
-    # request can ask for, independent of any particular frontend.
-    top_k: int = Field(default=10, ge=3, le=30)
-    # Round-2 enhancement 2: surfaces doi/citation_count metadata that's
-    # already stored per-paper in Chroma (embeddings.py) — no re-indexing
-    # needed. min_citation_count=0 means "no filter" per the brief.
-    doi_required: bool = False
-    min_citation_count: int = Field(default=0, ge=0)
-    # Round-2 enhancement 5: independent of top_k — web articles are a
-    # separate, smaller pool, never counted alongside the paper results.
-    web_max_results: int = Field(default=4, ge=1, le=10)
-    # LLM-assisted query expansion (query_expansion.py): default False so
-    # existing behavior is unchanged unless explicitly opted into. When
-    # True, bypasses the agent's own search/rerank entirely in favor of
-    # expanded_search() — see that function's docstring for why. Web
-    # article search is agent-only right now, so it's skipped (empty)
-    # whenever this is True; a known, deliberate gap for this phase.
-    use_query_expansion: bool = False
-
-
-class PaperOut(BaseModel):
-    paper_id: str
-    title: str
-    authors: list[str]
-    year: int | None
-    venue: str | None
-    abstract: str | None
-    url: str | None
-    doi: str | None
-    citation_count: int | None
-    source: str
-    source_urls: dict[str, str]
-    score: float | None = None
-
-
-class WebArticleOut(BaseModel):
-    title: str
-    url: str
-    snippet: str
-    published_date: str | None
-    source_domain: str
-
-
-class SearchResponse(BaseModel):
-    search_id: int
-    topic: str
-    created_at: str
-    papers: list[PaperOut]
-    # Round-2 enhancement 5: a genuinely separate section from `papers` —
-    # never interleaved with it, never counted toward top_k.
-    web_articles: list[WebArticleOut] = []
-
-
-class SummarizeRequest(BaseModel):
-    search_id: int
-    style: CitationStyle = "apa"
-
-
-class PaperSummaryOut(BaseModel):
-    paper_id: str
-    title: str
-    summary: str
-    apa_citation: str
-    harvard_citation: str
-    bibtex: str
-    citation: str  # whichever of the above matches the requested style
-
-
-class ThemeOut(BaseModel):
-    theme_name: str
-    papers: list[PaperSummaryOut]
-
-
-class WebSummaryOut(BaseModel):
-    synthesis: str
-    cited_articles: list[WebArticleOut]
-
-
-class SummarizeResponse(BaseModel):
-    search_id: int
-    topic: str
-    style: CitationStyle
-    themes: list[ThemeOut]
-    gaps_and_disagreements: str
-    skipped_paper_ids: list[str]
-    # Round-2 enhancement 5: its own block, never merged into the
-    # paper-themes summary above. None when this search found no web
-    # articles at all (nothing to summarize).
-    web_summary: WebSummaryOut | None = None
-
-
-class ChatTurn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class ChatRequest(BaseModel):
-    search_id: int
-    question: str
-    history: list[ChatTurn] = []
-
-
-class CitedPaperOut(BaseModel):
-    paper_id: str
-    title: str
-
-
-class CitedWebArticleOut(BaseModel):
-    url: str
-    title: str
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    answerable: bool
-    cited_papers: list[CitedPaperOut]
-    # Round-2 enhancement 5: kept as its own list (tagged [Web N] in the
-    # answer text) so the UI can render it distinguishably from cited_papers
-    # ([Paper N]), not merged into one generic citation list.
-    cited_web_articles: list[CitedWebArticleOut]
-    history: list[ChatTurn]
-
-
-class LibraryItem(BaseModel):
-    search_id: int
-    topic: str
-    created_at: str
-    paper_count: int
-    has_summary: bool
-    web_article_count: int
-
-
 # ---- helpers ------------------------------------------------------------------
-
-def _paper_to_out(paper: Paper, score: float | None = None) -> PaperOut:
-    return PaperOut(
-        paper_id=paper.paper_id, title=paper.title, authors=paper.authors,
-        year=paper.year, venue=paper.venue, abstract=paper.abstract,
-        url=paper.url, doi=paper.doi, citation_count=paper.citation_count,
-        source=paper.source, source_urls=paper.source_urls, score=score,
-    )
-
-
-def _web_article_to_out(article: WebArticle) -> WebArticleOut:
-    return WebArticleOut(
-        title=article.title, url=article.url, snippet=article.snippet,
-        published_date=article.published_date, source_domain=article.source_domain,
-    )
-
-
-def _web_articles_from_saved(saved) -> list[WebArticle]:
-    return [WebArticle(**a) for a in saved.web_articles]
-
-
-def _summary_to_json(result: dict, style: CitationStyle = "apa") -> dict:
-    """Adapt summarize.generate_summary()'s return value (which embeds Paper
-    objects) into a plain-JSON dict safe to store in SQLite and return over
-    HTTP.
-
-    Uses .get() defensively rather than direct key access for the round-2
-    citation-style fields: this also runs against hand-built dicts in tests
-    that mock generate_summary() and predate harvard_citation/citation, and
-    must degrade to an APA-based default rather than KeyError on those.
-    """
-    themes_out = []
-    for theme in result["themes"]:
-        papers_out = []
-        for entry in theme["papers"]:
-            apa_citation = entry.get("apa_citation", "")
-            harvard_citation = entry.get("harvard_citation") or apa_citation
-            bibtex = entry.get("bibtex", "")
-            citation = entry.get("citation") or select_citation(apa_citation, harvard_citation, bibtex, style)
-            papers_out.append({
-                "paper_id": entry["paper"].paper_id,
-                "title": entry["paper"].title,
-                "summary": entry["summary"],
-                "apa_citation": apa_citation,
-                "harvard_citation": harvard_citation,
-                "bibtex": bibtex,
-                "citation": citation,
-            })
-        themes_out.append({"theme_name": theme["theme_name"], "papers": papers_out})
-
-    return {
-        "themes": themes_out,
-        "gaps_and_disagreements": result["gaps_and_disagreements"],
-        "skipped_paper_ids": [p.paper_id for p in result["skipped_papers"]],
-    }
-
 
 def _reselect_style(summary_json: dict, style: CitationStyle) -> dict:
     """Re-picks the `citation` field for a cached summary against a
@@ -352,18 +205,6 @@ def _get_or_create_summary(db: sqlite3.Connection, search_id: int, saved, style:
     return summary_json
 
 
-def _web_summary_to_json(result: dict) -> dict:
-    """Adapt summarize.generate_web_summary()'s return value (which embeds
-    WebArticle objects) into a plain-JSON dict safe to store in SQLite and
-    return over HTTP — same purpose as _summary_to_json above, kept
-    separate since it has its own cache column (web_summary) and its own
-    shape (no themes, just a synthesis + the cited subset)."""
-    return {
-        "synthesis": result["synthesis"],
-        "cited_articles": [a.to_dict() for a in result["cited_articles"]],
-    }
-
-
 def _get_or_create_web_summary(db: sqlite3.Connection, search_id: int, saved) -> dict | None:
     """Mirrors _get_or_create_summary's cost-consciousness for the separate
     web-article corpus — its own cache column, never merged into the paper
@@ -379,69 +220,6 @@ def _get_or_create_web_summary(db: sqlite3.Connection, search_id: int, saved) ->
     web_summary_json = _web_summary_to_json(result)
     update_web_summary(db, search_id, web_summary_json)
     return web_summary_json
-
-
-_STYLE_LABELS: dict[str, str] = {"apa": "APA", "harvard": "Harvard", "bibtex": "BibTeX"}
-
-
-def _render_markdown(topic: str, summary_json: dict, style: CitationStyle = "apa", web_summary_json: dict | None = None) -> str:
-    lines = [f"# Literature Summary: {topic}", ""]
-    for theme in summary_json["themes"]:
-        lines.append(f"## {theme['theme_name']}")
-        lines.append("")
-        for p in theme["papers"]:
-            lines.append(f"- **{p['title']}**")
-            lines.append(f"  {p['summary']}")
-            lines.append("")
-
-    lines.append("## Gaps and Disagreements")
-    lines.append("")
-    lines.append(summary_json["gaps_and_disagreements"])
-    lines.append("")
-
-    if web_summary_json is not None:
-        # Its own section, positioned after the paper-themes summary but
-        # clearly separate from it — never folded into the themes above.
-        lines.append("## Web Context")
-        lines.append("")
-        lines.append(web_summary_json["synthesis"])
-        lines.append("")
-        for a in web_summary_json["cited_articles"]:
-            lines.append(f"- [{a['title']}]({a['url']}) — {a['source_domain']}")
-        lines.append("")
-
-    if style == "bibtex":
-        # BibTeX is already a structured export format, not prose — a
-        # "References (BibTeX)" section duplicating the BibTeX block below
-        # would just repeat it, so this is the one style that skips the
-        # separate References section entirely.
-        lines.append("## References (BibTeX)")
-        lines.append("")
-        lines.append("```bibtex")
-        for theme in summary_json["themes"]:
-            for p in theme["papers"]:
-                lines.append(p.get("bibtex", ""))
-                lines.append("")
-        lines.append("```")
-    else:
-        citation_key = "harvard_citation" if style == "harvard" else "apa_citation"
-        lines.append(f"## References ({_STYLE_LABELS.get(style, 'APA')})")
-        lines.append("")
-        for theme in summary_json["themes"]:
-            for p in theme["papers"]:
-                lines.append(f"- {p.get(citation_key) or p.get('apa_citation', '')}")
-        lines.append("")
-
-        lines.append("## BibTeX")
-        lines.append("")
-        lines.append("```bibtex")
-        for theme in summary_json["themes"]:
-            for p in theme["papers"]:
-                lines.append(p.get("bibtex", ""))
-                lines.append("")
-        lines.append("```")
-
-    return "\n".join(lines)
 
 
 # ---- endpoints ------------------------------------------------------------------
@@ -554,173 +332,6 @@ def get_curation_checkpointer():
         yield cp
 
 
-class CurationStartRequest(BaseModel):
-    topic: str
-    # 1-30: matches report.py's own documented 30-paper cap; target_count
-    # is "how many picks the user wants total," not a per-batch size.
-    target_count: int = Field(default=10, ge=1, le=30)
-    use_openalex_fallback: bool = False
-
-
-class CurationPicksRequest(BaseModel):
-    picked_paper_ids: list[str] = []
-    stop: bool = False
-    # curation-refinement-and-auto-offer Phase 6f: optional free-text
-    # steering (e.g. "focus on more recent work"), carried into the
-    # SAME resume payload picked_paper_ids/stop already use -- see
-    # resume_curation_turn's own docstring for why it can't be a
-    # separate out-of-band call instead.
-    refinement: str | None = None
-    # curation-turn-history Phase 9d: explicit "search for more now"
-    # request -- reuses the SAME force_refill mechanism refinement above
-    # already triggers, not a second one. False (the default) preserves
-    # every existing caller's exact behavior unchanged.
-    request_refill: bool = False
-
-
-class CurationTurnResponse(BaseModel):
-    session_id: str
-    stage: str
-    target_count: int
-    selected_paper_ids: list[str]
-    batch: list[PaperOut] = []
-    stop_reason: str | None = None
-    # Phase 6c: whether THIS turn's batch came from a fresh search
-    # (refill_pool ran) vs. serving from the already-fetched pool —
-    # meaningless once stop_reason is set (batch is always [] then), where
-    # it's always False rather than a stale carry-over value.
-    refilled: bool = False
-    # How many already-fetched, not-yet-served candidates remain in the
-    # pool after this turn's batch — PaperPoolSession.remaining(), the
-    # exact number that decides whether the NEXT turn needs a fresh
-    # search at all. Surfaces the pool panel's "N more candidates
-    # already fetched" status line without the frontend having to infer
-    # it from anything.
-    reserve_remaining: int = 0
-    # Phase 6f: every refinement note applied so far this session, so the
-    # UI can show what's currently steering the search.
-    refinement_notes: list[str] = []
-
-
-class ReportSectionOut(BaseModel):
-    content: str
-    cited_papers: list[CitedPaperOut]
-    cited_web_articles: list[CitedWebArticleOut] = []
-
-
-class ReportOut(BaseModel):
-    findings: ReportSectionOut
-    limitations: ReportSectionOut
-    future_scope: ReportSectionOut
-    skipped_paper_ids: list[str]
-
-
-class TurnHistoryEntryOut(BaseModel):
-    turn_number: int
-    batch: list[PaperOut]
-    refilled: bool
-
-
-class CurationStateResponse(BaseModel):
-    session_id: str
-    topic: str
-    # curation-review-management Phase 8, item 5: canonicalize_topic()'s
-    # restatement of `topic`, for display only -- `topic` above is
-    # unchanged and still what actually drives search/ranking/refinement.
-    display_title: str
-    stage: str
-    target_count: int
-    selected_paper_ids: list[str]
-    selected_papers: list[PaperOut]
-    # Only non-None mid-curation, with a genuinely pending interrupt — the
-    # exact property a page refresh during curation needs to recover from
-    # the backend, not from anything held only in browser memory (Phase 6d).
-    pending_batch: list[PaperOut] | None = None
-    refilled: bool = False
-    reserve_remaining: int = 0
-    refinement_notes: list[str] = []
-    report: ReportOut | None = None
-    chat_history: list[ChatTurn] = []
-    web_articles_added: list[WebArticleOut] = []
-    pending_web_offer: dict | None = None
-    pending_report_update: dict | None = None
-    # curation-turn-history Phase 9b: every batch ever served, in order --
-    # lets a client redraw ANY past turn's cards/abstracts, not just the
-    # currently-pending one. Unbounded (see PaperPoolSession.turn_history).
-    turn_history: list[TurnHistoryEntryOut] = []
-    # Persisted so a reload/reopen can still show WHY curation stopped
-    # (target_met / user_stopped / exhausted) -- None while stage=="curate".
-    stop_reason: str | None = None
-
-
-class CurationChatRequest(BaseModel):
-    message: str
-
-
-class CurationChatResponse(BaseModel):
-    answer: str
-    answerable: bool
-    cited_papers: list[CitedPaperOut]
-    cited_web_articles: list[CitedWebArticleOut]
-    web_offer_made: bool = False
-    web_offer_declined: bool = False
-    web_search_used: bool = False
-    new_web_articles_found: int | None = None
-    # curation-refinement-and-auto-offer Phase 6f-3
-    report_update_offer_made: bool = False
-    report_update_declined: bool = False
-    report_updated: bool = False
-    chat_history: list[ChatTurn]
-
-
-def _paper_out_from_batch_entry(entry) -> PaperOut:
-    paper_dict, score = entry
-    return _paper_to_out(Paper(**paper_dict), score)
-
-
-def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
-    return [
-        TurnHistoryEntryOut(
-            turn_number=entry["turn_number"],
-            batch=[_paper_out_from_batch_entry(e) for e in entry["batch"]],
-            refilled=entry["refilled"],
-        )
-        for entry in turn_history
-    ]
-
-
-def _report_to_out(report: dict) -> ReportOut:
-    def _section(name: str) -> ReportSectionOut:
-        s = report[name]
-        return ReportSectionOut(
-            content=s["content"],
-            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in s["cited_papers"]],
-            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in s.get("cited_web_articles", [])],
-        )
-
-    return ReportOut(
-        findings=_section("findings"), limitations=_section("limitations"), future_scope=_section("future_scope"),
-        skipped_paper_ids=[p.paper_id for p in report["skipped_papers"]],
-    )
-
-
-def _turn_result_to_response(session_id: str, target_count: int, result: dict) -> CurationTurnResponse:
-    session_dict = result["session"]
-    batch = result["__interrupt__"][0].value["batch"] if "__interrupt__" in result else []
-    return CurationTurnResponse(
-        session_id=session_id, stage=session_dict["stage"], target_count=target_count,
-        selected_paper_ids=session_dict["selected_paper_ids"],
-        batch=[_paper_out_from_batch_entry(e) for e in batch],
-        stop_reason=result.get("stop_reason"),
-        refilled=result.get("refilled", False),
-        # Computed straight off the raw serialized dict (reserve/cursor),
-        # not via _dict_to_session -- no need to reconstruct every
-        # reserve Paper's full data just to subtract two lengths.
-        reserve_remaining=max(0, len(session_dict["reserve"]) - session_dict["cursor"]),
-        refinement_notes=list(session_dict.get("refinement_notes", [])),
-    )
-
-
 def _curation_config() -> dict:
     """refill_pool() (called from inside the graph whenever the reserve
     runs low, on ANY turn, not just the first) requires "client" present
@@ -741,38 +352,9 @@ from research_agent.api_app.routers.curation_core import router as curation_core
 app.include_router(curation_core_router)
 
 
-class CurationReviewSummary(BaseModel):
-    session_id: str
-    topic: str
-    # curation-review-management Phase 8, item 5: same display-only
-    # restatement as CurationStateResponse.display_title -- this is what
-    # the left panel's review list should actually show as each review's
-    # name.
-    display_title: str
-    stage: str
-    selected_count: int
-    target_count: int
-    has_report: bool
-    has_chat: bool
-
-
-class CurationDeleteResponse(BaseModel):
-    session_id: str
-    deleted: bool = True
-
-
 from research_agent.api_app.routers.curation_sessions import router as curation_sessions_router
 
 app.include_router(curation_sessions_router)
-
-
-class CurationSelectFromHistoryRequest(BaseModel):
-    paper_id: str
-
-
-class CurationSelectFromHistoryResponse(BaseModel):
-    session_id: str
-    selected_paper_ids: list[str]
 
 
 from research_agent.api_app.routers.curation_history import router as curation_history_router
