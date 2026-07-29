@@ -44,7 +44,7 @@ from research_agent.curation_session import (
     select_paper_from_history,
 )
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
-from research_agent.qa import ChatSession, ask, sqlite_checkpointer
+from research_agent.qa import ChatSession, ask
 from research_agent.query_expansion import (
     PaperPoolSession,
     build_candidate_pool,
@@ -119,9 +119,20 @@ from research_agent.services.curation_helpers import _curation_config
 from research_agent.services.search_helpers import _filtered_candidate_count, _merge_web_articles, _server_side_rerank
 from research_agent.services.summary_cache import _get_or_create_summary, _get_or_create_web_summary, _reselect_style
 
-load_dotenv()
+# Phase 9: shared runtime state and the curation checkpointer dependency
+# now live in api_app/runtime.py — re-exported here (the same dict/
+# function objects, not wrappers) so `research_agent.api._state` and
+# `research_agent.api.get_curation_checkpointer` keep resolving exactly
+# as before. `_state` is a plain mutable dict; lifespan() below mutates
+# it in place, so every reader of `api._state` sees the same updates
+# regardless of which module holds the name. get_curation_checkpointer
+# is imported as-is (never wrapped), so
+# `app.dependency_overrides[api.get_curation_checkpointer]` (keyed by
+# callable identity) keeps matching every router's
+# `Depends(api.get_curation_checkpointer)` unchanged.
+from research_agent.api_app.runtime import _state, get_curation_checkpointer
 
-_state: dict = {}
+load_dotenv()
 
 
 @asynccontextmanager
@@ -199,16 +210,6 @@ app.include_router(library_router)
 # client never needs to special-case "first turn" vs. "a later turn"; the
 # response shape alone tells it what to render next.
 # =================================================================================
-
-def get_curation_checkpointer():
-    """FastAPI dependency: a fresh SqliteSaver-backed checkpointer per
-    request, same per-request-not-shared rationale as get_db_connection()
-    above (a single shared connection is not safe across FastAPI's
-    threadpool) — just wrapping sqlite_checkpointer()'s own contextmanager
-    instead of a raw sqlite3.connect() call."""
-    with sqlite_checkpointer() as cp:
-        yield cp
-
 
 from research_agent.api_app.routers.curation_core import router as curation_core_router
 
