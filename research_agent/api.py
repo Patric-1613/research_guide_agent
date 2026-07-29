@@ -106,11 +106,9 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
-def health() -> dict:
-    """Cheap connectivity check -- no DB or LLM calls, just confirms the
-    process is up."""
-    return {"status": "ok"}
+from research_agent.api_app.routers.health import router as health_router
+
+app.include_router(health_router)
 
 
 # ---- request/response models -------------------------------------------------
