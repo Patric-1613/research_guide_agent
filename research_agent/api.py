@@ -736,47 +736,9 @@ def _curation_config() -> dict:
     }
 
 
-@app.post("/curation/start", response_model=CurationTurnResponse)
-def curation_start(req: CurationStartRequest, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
-    with _upstream_error_guard("curation_start"):
-        client = _state["client"]
-        s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
-        deduped = build_candidate_pool(
-            req.topic, req.target_count, s2_api_key=s2_key, client=client,
-            use_openalex_fallback=req.use_openalex_fallback, openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
-        )
-        ranked, _ = rank_full_pool(req.topic, deduped, client=client, collection=_state["collection"])
-        if not ranked:
-            raise HTTPException(status_code=404, detail="No papers found for this topic.")
+from research_agent.api_app.routers.curation_core import router as curation_core_router
 
-        # curation-review-management Phase 8, item 5: after confirming
-        # papers actually exist for this topic (no point spending an LLM
-        # call otherwise), produce a clean display title. Never touches
-        # req.topic itself -- that's still what search/ranking/refinement
-        # keep using for the rest of this session's life.
-        display_title = canonicalize_topic(req.topic, client=client)
-
-        session_id = uuid.uuid4().hex
-        session = PaperPoolSession(topic=req.topic, display_title=display_title, reserve=ranked, target_count=req.target_count)
-        result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
-        return _turn_result_to_response(session_id, req.target_count, result)
-
-
-@app.post("/curation/{session_id}/picks", response_model=CurationTurnResponse)
-def curation_picks(session_id: str, req: CurationPicksRequest, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
-    with _upstream_error_guard("curation_picks"):
-        state = get_curation_state(session_id, cp)
-        if state is None:
-            raise HTTPException(status_code=404, detail="session_id not found")
-        if state["pending_batch"] is None:
-            raise HTTPException(status_code=400, detail="Session is not awaiting picks (curation already finished).")
-
-        target_count = state["session"].target_count
-        result = resume_curation_turn(
-            session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
-            refinement=req.refinement, request_refill=req.request_refill, config=_curation_config(),
-        )
-        return _turn_result_to_response(session_id, target_count, result)
+app.include_router(curation_core_router)
 
 
 class CurationReviewSummary(BaseModel):
