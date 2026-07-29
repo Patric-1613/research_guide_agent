@@ -9,6 +9,7 @@ import research_agent.api as api
 from research_agent.api_app.schemas import SearchRequest, SearchResponse
 from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out
 from research_agent.schema import WebArticle
+from research_agent.services.search_helpers import _filtered_candidate_count, _merge_web_articles, _server_side_rerank
 from research_agent.storage import save_search
 
 
@@ -36,7 +37,7 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
         )
 
         ranked = session.ranked
-        expected_count = min(req.top_k, api._filtered_candidate_count(session.papers, req.doi_required, req.min_citation_count))
+        expected_count = min(req.top_k, _filtered_candidate_count(session.papers, req.doi_required, req.min_citation_count))
         if session.papers and len(ranked) != expected_count:
             # The agent is prompted to rerank with exactly top_k results before
             # finishing, and its rerank tool applies the doi/citation filters
@@ -45,7 +46,7 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
             # server-side whenever what came back doesn't match what the user
             # asked for, so the returned count and filters are always
             # code-enforced rather than dependent on the model's behavior.
-            ranked = api._server_side_rerank(session, req.topic, req.top_k, req.doi_required, req.min_citation_count)
+            ranked = _server_side_rerank(session, req.topic, req.top_k, req.doi_required, req.min_citation_count)
 
         if not ranked:
             if session.papers and (req.doi_required or req.min_citation_count):
@@ -69,7 +70,7 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
             # Same code-enforced-count guarantee as top_k's server-side rerank
             # fallback above.
             fallback_articles = api.search_web(req.topic, max_results=req.web_max_results)
-            session.web_articles = api._merge_web_articles(session.web_articles, fallback_articles)
+            session.web_articles = _merge_web_articles(session.web_articles, fallback_articles)
         # The agent may have accumulated more than web_max_results across
         # multiple search_web_tool calls (deduped by URL, not by count) —
         # truncate here so the returned count is never silently uncontrolled,

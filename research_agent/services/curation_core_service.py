@@ -11,6 +11,7 @@ from research_agent.api_app.serializers import _turn_result_to_response
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
 from research_agent.curation_session import _session_to_dict
 from research_agent.query_expansion import PaperPoolSession
+from research_agent.services.curation_helpers import _curation_config
 
 
 def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
@@ -33,7 +34,7 @@ def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
 
     session_id = uuid.uuid4().hex
     session = PaperPoolSession(topic=req.topic, display_title=display_title, reserve=ranked, target_count=req.target_count)
-    result = start_curation_turn(session_id, cp, _session_to_dict(session), config=api._curation_config())
+    result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
     return _turn_result_to_response(session_id, req.target_count, result)
 
 
@@ -47,6 +48,6 @@ def submit_picks(session_id: str, req: CurationPicksRequest, cp) -> CurationTurn
     target_count = state["session"].target_count
     result = resume_curation_turn(
         session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
-        refinement=req.refinement, request_refill=req.request_refill, config=api._curation_config(),
+        refinement=req.refinement, request_refill=req.request_refill, config=_curation_config(),
     )
     return _turn_result_to_response(session_id, target_count, result)

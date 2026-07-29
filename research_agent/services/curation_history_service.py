@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-import research_agent.api as api
 from research_agent.api_app.schemas import CurationSelectFromHistoryRequest, CurationSelectFromHistoryResponse, CurationTurnResponse
 from research_agent.api_app.serializers import _turn_result_to_response
 from research_agent.curation_loop import start_curation_turn
@@ -13,6 +12,7 @@ from research_agent.curation_session import (
     save_curation_session,
     select_paper_from_history,
 )
+from research_agent.services.curation_helpers import _curation_config
 
 
 def select_from_history(session_id: str, req: CurationSelectFromHistoryRequest, cp) -> CurationSelectFromHistoryResponse:
@@ -59,5 +59,5 @@ def reopen_curation(session_id: str, cp) -> CurationTurnResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     target_count = session.target_count
-    result = start_curation_turn(session_id, cp, _session_to_dict(session), config=api._curation_config())
+    result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
     return _turn_result_to_response(session_id, target_count, result)
