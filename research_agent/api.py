@@ -21,13 +21,8 @@ second persistence concept for a single-user v1 app.
 
 from __future__ import annotations
 
-import os
-import uuid
-from contextlib import asynccontextmanager
-
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 
@@ -123,10 +118,10 @@ from research_agent.services.summary_cache import _get_or_create_summary, _get_o
 # now live in api_app/runtime.py — re-exported here (the same dict/
 # function objects, not wrappers) so `research_agent.api._state` and
 # `research_agent.api.get_curation_checkpointer` keep resolving exactly
-# as before. `_state` is a plain mutable dict; lifespan() below mutates
-# it in place, so every reader of `api._state` sees the same updates
-# regardless of which module holds the name. get_curation_checkpointer
-# is imported as-is (never wrapped), so
+# as before. `_state` is a plain mutable dict; api_app/app.py's
+# lifespan() mutates it in place, so every reader of `api._state` sees
+# the same updates regardless of which module holds the name.
+# get_curation_checkpointer is imported as-is (never wrapped), so
 # `app.dependency_overrides[api.get_curation_checkpointer]` (keyed by
 # callable identity) keeps matching every router's
 # `Depends(api.get_curation_checkpointer)` unchanged.
@@ -134,100 +129,14 @@ from research_agent.api_app.runtime import _state, get_curation_checkpointer
 
 load_dotenv()
 
+# Phase 10: FastAPI app creation, lifespan, CORS setup, and all
+# app.include_router(...) calls now live in api_app/app.py's
+# create_app() — research_agent.api:app remains the exact same public
+# ASGI entrypoint (`uvicorn research_agent.api:app` boots this object),
+# just constructed by create_app() instead of inline here. Router
+# registration order is unchanged (health, search, summarize, chat,
+# export, library, curation_core, curation_sessions, curation_history,
+# curation_reports, curation_chat).
+from research_agent.api_app.app import create_app
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Schema creation/migration only needs to happen once, on a throwaway
-    # connection — every request after this opens its own via get_db_connection
-    # (a FastAPI dependency, safe for the multi-threaded request handling a
-    # single shared connection was not).
-    init_db().close()
-    _state["client"] = OpenAI()
-    _state["collection"] = get_chroma_collection()
-    yield
-
-
-app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
-
-# curation-api-and-ui Phase 6c: the React frontend runs as its own Vite
-# dev-server process -- a genuinely separate origin from this API, so
-# CORS is required for its browser-side fetch calls. FRONTEND_ORIGIN lets
-# a non-default dev-server port/deployed origin be configured without a
-# code change, same convention as this file's other env-var-driven config
-# (e.g. SEMANTIC_SCHOLAR_API_KEY).
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"), "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-from research_agent.api_app.routers.health import router as health_router
-
-app.include_router(health_router)
-
-
-from research_agent.api_app.routers.search import router as search_router
-
-app.include_router(search_router)
-
-
-from research_agent.api_app.routers.summarize import router as summarize_router
-
-app.include_router(summarize_router)
-
-
-from research_agent.api_app.routers.chat import router as chat_router
-
-app.include_router(chat_router)
-
-
-from research_agent.api_app.routers.export import router as export_router
-
-app.include_router(export_router)
-
-
-from research_agent.api_app.routers.library import router as library_router
-
-app.include_router(library_router)
-
-
-# =================================================================================
-# curation-api-and-ui Phase 6a: HTTP exposure for the curation/report/chat
-# backend built in Phases 1-5. Purely additive — nothing above this line is
-# touched. A curation session lives in its own checkpointer-backed store
-# (qa.py's sqlite_checkpointer/QA_CHECKPOINT_DB_PATH, the same file
-# curation_session.py already used), addressed by a server-issued
-# session_id (a uuid4 hex string), not storage.py's SQLite search_id — a
-# genuinely different persistence mechanism from /search's, reused as-is
-# rather than adapted to fit the existing one.
-#
-# The interrupt/resume HTTP shape (the brief's "least obvious" part): both
-# /curation/start and /curation/{id}/picks return the SAME
-# CurationTurnResponse shape — either a fresh `batch` to present (still
-# curating) or a `stop_reason` (curation finished, batch always []). A
-# client never needs to special-case "first turn" vs. "a later turn"; the
-# response shape alone tells it what to render next.
-# =================================================================================
-
-from research_agent.api_app.routers.curation_core import router as curation_core_router
-
-app.include_router(curation_core_router)
-
-
-from research_agent.api_app.routers.curation_sessions import router as curation_sessions_router
-
-app.include_router(curation_sessions_router)
-
-
-from research_agent.api_app.routers.curation_history import router as curation_history_router
-from research_agent.api_app.routers.curation_reports import router as curation_reports_router
-
-app.include_router(curation_history_router)
-app.include_router(curation_reports_router)
-
-
-from research_agent.api_app.routers.curation_chat import router as curation_chat_router
-
-app.include_router(curation_chat_router)
+app = create_app()
