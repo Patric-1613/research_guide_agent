@@ -287,6 +287,113 @@ chat's own escalation logic on top of `qa.py`. This will be scoped as a
 separate, explicit go-ahead, not assumed as an automatic continuation of
 Phase 3 Steps 1–4.
 
+**Update: curation service extraction is done.** All five curation route
+groups now have a service module (`curation_session_service.py`,
+`curation_core_service.py`, `curation_history_service.py`,
+`curation_report_service.py`, `curation_chat_service.py`), completing
+Phase 3's route-group extraction for every endpoint in the API. See
+`specs/migration-plan.md`'s Phase 3 section for the full commit-by-commit
+record. `get_curation_checkpointer` was deliberately left in `api.py`,
+untouched — every curation router still declares
+`Depends(api.get_curation_checkpointer)` itself, so the
+`app.dependency_overrides`-keyed identity tests rely on stayed intact.
+
+### Phase 4 (schemas + serializers) — done
+
+Phase 4 moved the two remaining category of things Phase 3 identified as
+debt (see "Transition debt still remaining" above) that hadn't yet been
+given a real home: request/response Pydantic models, and pure output/
+serialization/rendering helpers.
+
+| New module | Owns |
+|---|---|
+| `research_agent/api_app/schemas.py` | All 28 request/response Pydantic models (`SearchRequest` … `CurationSelectFromHistoryResponse`) |
+| `research_agent/api_app/serializers.py` | Every pure output/serialization/rendering helper: `_paper_to_out`, `_web_article_to_out`, `_web_articles_from_saved`, `_summary_to_json`, `_web_summary_to_json`, `_paper_out_from_batch_entry`, `_turn_history_out`, `_report_to_out`, `_turn_result_to_response`, `_render_markdown` (plus `_STYLE_LABELS`) |
+
+`research_agent/api.py` shrank from 787 to 369 lines as a direct result.
+Neither new module imports `api.py` — `schemas.py` depends only on
+pydantic/typing/`citations.CitationStyle`; `serializers.py` depends on
+`schemas.py` plus `research_agent.schema`/`citations` directly. No
+circular imports were introduced.
+
+**`api.py` re-exports every moved name** at its top (`from
+research_agent.api_app.schemas import ...` / `from
+research_agent.api_app.serializers import ...`), so
+`research_agent.api.<Name>` and `patch.object(api, "<name>", ...)` keep
+resolving exactly as before — the patch mechanism mutates `api.py`'s own
+module dict regardless of whether a name was originally defined there or
+imported in, so this required no test changes.
+
+**Current architecture after Phase 4:**
+
+```
+api_app/routers/*.py     thin route adapters — unchanged since Phase 3
+        │
+        ▼
+services/*.py            orchestration for search, summary/export,
+                        library, regular chat, and all five curation
+                        groups — unchanged since Phase 3
+        │
+        ▼
+api_app/schemas.py        every request/response Pydantic model — NEW
+api_app/serializers.py    output conversion / markdown formatting — NEW
+        │
+        ▼
+api.py                    compatibility/composition entrypoint: app +
+                        lifespan + CORS + include_router wiring, _state,
+                        get_curation_checkpointer, _upstream_error_guard,
+                        _curation_config, _get_or_create_summary/
+                        _get_or_create_web_summary, _server_side_rerank,
+                        _filtered_candidate_count, _reselect_style, and
+                        re-exports of everything in schemas.py/
+                        serializers.py
+```
+
+**Why routers/services still call `api.<name>` rather than importing
+schemas.py/serializers.py directly** (a deliberate choice, not an
+oversight): every already-migrated router and service (~15 files) was
+left untouched in this same commit, for three reasons — (1) it keeps
+`patch.object(api, "<name>", ...)` working for every existing test
+without auditing each call site's patch sensitivity individually, (2) it
+keeps Phase 4's diff a strict, low-risk relocation with zero call-site
+changes elsewhere, and (3) it leaves a safe, well-scoped future cleanup:
+switching a call site to import directly from `schemas.py`/`serializers.py`
+is safe wherever that name is never patched in a test, and unsafe
+wherever it still is — that audit is future work, not assumed here.
+
+**Remaining debt after Phase 4:**
+
+1. `api.py` still owns app/lifespan/CORS/router composition — no `app.py`/
+   app-factory module exists yet.
+2. `api.py` still owns `_state`.
+3. `api.py` still owns the dependency provider `get_curation_checkpointer`
+   — not moved, to preserve `app.dependency_overrides` key identity.
+4. `api.py` still owns `_upstream_error_guard`, `_curation_config`,
+   `_get_or_create_summary`, `_get_or_create_web_summary`,
+   `_server_side_rerank`, `_filtered_candidate_count`, `_reselect_style`
+   — none of these are pure output serializers (they read `_state` or
+   call DB/LLM functions), so Phase 4 deliberately left them in place.
+5. `search_service.py` and all four of the curation-core/history/report/
+   chat services still raise `HTTPException` directly rather than
+   returning a uniform sentinel for the router to translate — flagged
+   since Phase 3, still true.
+6. `research_agent/api_app/` is still the interim package name chosen
+   specifically to avoid the `api.py`/`api/` import collision (see "Why
+   `research_agent/api_app/`, not `research_agent/api/`" above) — renaming
+   it to `api/` is deferred until `api.py`'s compatibility constraints are
+   deliberately retired, not before.
+
+**Recommended Phase 5 options, ranked by risk** (not yet started — each
+needs its own explicit go-ahead):
+
+| Risk | Option |
+|---|---|
+| Low | Update routers/services to import schemas and pure serializers directly where safe (i.e., the name is never patched in a test), keeping patched dependencies reached via `api.<name>`. |
+| Medium | Move dependency providers and error-guard helpers into `api_app/dependencies.py` / `api_app/errors.py`, preserving `api.py` re-exports the same way Phase 4 did. |
+| Medium/high | Move `_state` and lifespan/app creation into a real app-factory module. |
+| Higher | Convert services' direct-`HTTPException`-raising behavior into typed service results / domain errors that routers translate, rather than services reaching into the HTTP layer. |
+| Defer | Rename `api_app/` to `api/` — only once `api.py`'s own compatibility constraints (the `patch.object`/re-export surface) are deliberately retired, not as part of routine cleanup. |
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

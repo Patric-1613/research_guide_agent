@@ -217,6 +217,97 @@ generation/regeneration, history/reopen flows, and curation chat's own
 escalation logic on top of `qa.py`. Scoped as a separate, explicit
 go-ahead — not an automatic continuation of Steps 1–4.
 
+**Curation service extraction — done.** All five curation route groups
+now have a service module, completing Phase 3 for every endpoint:
+
+| Service | Backs |
+|---|---|
+| `curation_session_service.py` | `GET /curation/reviews`, `GET`/`DELETE /curation/{id}` |
+| `curation_core_service.py` | `POST /curation/start`, `POST /curation/{id}/picks` |
+| `curation_history_service.py` | `POST /curation/{id}/select-from-history`, `POST /curation/{id}/reopen` |
+| `curation_report_service.py` | `POST /curation/{id}/report`, `POST /curation/{id}/report/regenerate` |
+| `curation_chat_service.py` | `POST /curation/{id}/chat` |
+
+`get_curation_checkpointer` was deliberately left in `api.py` — every
+curation router still declares `Depends(api.get_curation_checkpointer)`
+itself, preserving the `app.dependency_overrides` key identity tests rely
+on. `curation_core_service.py`/`curation_history_service.py`/
+`curation_report_service.py`/`curation_chat_service.py` raise
+`HTTPException` directly (same accepted debt as `search_service.py`);
+`curation_session_service.py`'s three single-branch functions use the
+`None`-sentinel convention instead, matching `library_service.py`.
+Validation: `tests/test_curation_api.py` 49 passed; full backend suite
+342 passed; frontend `npm test` 98 passed; `npm run build` clean.
+
+## Phase 4 — Schemas and serializers (done)
+
+Resolves the last two categories of Phase 3's transition debt: request/
+response Pydantic models and pure output/serialization/rendering helpers
+were still living in `api.py`, un-relocated, even after every route's
+orchestration had moved to `services/`.
+
+Created:
+- `research_agent/api_app/schemas.py` — all 28 request/response Pydantic
+  models.
+- `research_agent/api_app/serializers.py` — `_paper_to_out`,
+  `_web_article_to_out`, `_web_articles_from_saved`, `_summary_to_json`,
+  `_web_summary_to_json`, `_paper_out_from_batch_entry`,
+  `_turn_history_out`, `_report_to_out`, `_turn_result_to_response`,
+  `_render_markdown` (plus `_STYLE_LABELS`).
+
+`research_agent/api.py` shrank from 787 to 369 lines. Neither new module
+imports `api.py` (no circular imports); `api.py` re-exports every moved
+name so `research_agent.api.<Name>` and `patch.object(api, "<name>",
+...)` keep working unchanged — the patch mechanism mutates `api.py`'s own
+module dict regardless of where a name was originally defined, so this
+required zero test changes.
+
+Kept in `api.py`, deliberately: app/lifespan/CORS/router composition,
+`_state`, `get_curation_checkpointer` (dependency-override identity),
+`_upstream_error_guard`, `_curation_config`, `_get_or_create_summary`/
+`_get_or_create_web_summary` (read `_state`, call DB/LLM — not pure),
+`_server_side_rerank`, `_filtered_candidate_count`, `_reselect_style`
+(not requested to move), and every patched upstream/agent/graph function
+import.
+
+Routers/services were deliberately left calling `api.<name>` rather than
+switched to import `schemas.py`/`serializers.py` directly — this kept
+Phase 4's diff a strict, zero-call-site-change relocation across the
+~15 already-migrated files. Direct-import cleanup wherever a name is
+never patched in a test is safe future work, not done here (see `docs/
+architecture.md`'s Phase 5 options table for the full risk ranking).
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean. Compatibility re-exports confirmed directly (`from research_agent.
+api import SearchRequest, SearchResponse, ChatResponse,
+CurationTurnResponse` and `from research_agent.api import _paper_to_out,
+_report_to_out, _render_markdown` both succeed).
+
+**Remaining debt after Phase 4** (see `docs/architecture.md` for the full
+list): `api.py` still owns app/lifespan/CORS composition, `_state`,
+`get_curation_checkpointer`, `_upstream_error_guard`, `_curation_config`,
+the two `_get_or_create_*` functions, `_server_side_rerank`,
+`_filtered_candidate_count`, and `_reselect_style`; several services still
+raise `HTTPException` directly instead of a uniform sentinel;
+`api_app/` remains the interim package name until `api.py`'s
+compatibility constraints are deliberately retired.
+
+**Recommended Phase 5 options, ranked by risk** (not yet started, each
+needs its own explicit go-ahead):
+1. **Low** — import schemas/pure serializers directly in routers/services
+   wherever a name is never patched in a test; keep `api.<name>` for
+   anything patched.
+2. **Medium** — move dependency providers and error-guard helpers into
+   `api_app/dependencies.py` / `api_app/errors.py`, preserving `api.py`
+   re-exports.
+3. **Medium/high** — move `_state` and lifespan/app creation into a real
+   app-factory module.
+4. **Higher** — convert services' direct-`HTTPException` behavior into
+   typed service results/domain errors that routers translate.
+5. **Defer** — rename `api_app/` to `api/` only once `api.py`'s
+   compatibility constraints are deliberately retired.
+
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
 Move (not rewrite) modules into their layer, per `docs/architecture.md`'s
