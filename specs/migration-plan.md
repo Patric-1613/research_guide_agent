@@ -356,21 +356,58 @@ directly; some service call sites still use `api.<helper>` re-exports for
 compatibility even though those helpers now live elsewhere; `api_app/`
 remains the interim package name.
 
-**Recommended Phase 7 options, ranked by risk** (not yet started, each
-needs its own explicit go-ahead):
-1. **Low/medium** — replace remaining `api.<helper>` references with
-   direct imports from `summary_cache.py`/`search_helpers.py`/
-   `curation_helpers.py` where no patchability or state-identity risk
-   exists (mirrors Phase 5's sweep, applied to Phase 6's new modules).
-2. **Medium** — normalize service error handling away from direct
-   `HTTPException` where practical, using typed service results or small
-   domain exceptions mapped in routers.
-3. **Medium/high** — move `get_curation_checkpointer` and dependency
-   wiring into `api_app/dependencies.py`, preserving
-   `app.dependency_overrides` compatibility.
-4. **High** — extract an app factory/lifespan/`_state` ownership module.
-5. **Defer** — rename `api_app/` to `api/` only once `api.py`'s
-   compatibility constraints are intentionally removed.
+## Phase 7 — Direct helper imports (done)
+
+Executed the "Low/medium" option from Phase 6's list above: every
+remaining safe `api.<helper>` reference (for helpers Phase 6 moved out of
+`api.py`) was replaced with a direct import from its new module.
+
+| File | Now imports directly | Still keeps `import research_agent.api as api` for |
+|---|---|---|
+| `search_service.py` | `_filtered_candidate_count`, `_server_side_rerank`, `_merge_web_articles` | `expanded_search`, `run_research_agent`, `search_web` |
+| `summary_service.py` | `_get_or_create_summary`, `_get_or_create_web_summary` | nothing — `api` import removed |
+| `curation_core_service.py` | `_curation_config` | `_state`, `build_candidate_pool`, `rank_full_pool`, `canonicalize_topic` |
+| `curation_history_service.py` | `_curation_config` | nothing — `api` import removed |
+
+`_upstream_error_guard` needed no changes — every router already
+imported it directly from `api_app/errors.py` as of Phase 6.
+
+**`api.<name>` references still remaining, and why** (the complete list,
+nothing else left to sweep): patch targets reached via `import
+research_agent.api as api` (`run_research_agent`, `expanded_search`,
+`search_web`, `ask`, `chat_turn`, `get_papers_by_ids`,
+`build_candidate_pool`, `rank_full_pool`, `canonicalize_topic`,
+`generate_report_for_session`, `regenerate_report_with_new_sources`,
+`generate_summary`, `generate_web_summary`, `semantic_search`,
+`embed_and_index_papers`, `OpenAI`, `init_db`) — these stay `api.<name>`
+permanently, since importing any of them directly would break
+`patch.object(api, "<name>", ...)`; `api._state` — the one piece of
+shared mutable state; `api.get_curation_checkpointer` — the
+dependency-override identity anchor, still declared via
+`Depends(api.get_curation_checkpointer)` in every curation router.
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean. Confirmed directly: `from research_agent.api import
+_upstream_error_guard, _get_or_create_summary, _server_side_rerank,
+_filtered_candidate_count, _curation_config` succeeds; targeted tests
+exercising every patch target above all pass.
+
+**Remaining debt after Phase 7** (down to exactly what Phase 6's table
+flagged as not "Low/medium" risk): `search_service.py` and the curation
+core/history/report/chat services still raise `HTTPException` directly;
+`api.py` still owns `_state`, `get_curation_checkpointer`, and
+app/lifespan/CORS/router composition; `api_app/` remains the interim
+package name.
+
+**Recommended next step (service-layer track)**: normalize the direct
+`HTTPException` usage inside services into explicit service results or
+small domain exceptions that routers map to the identical existing
+status codes and detail payloads — behavior-preserving, not a new error
+taxonomy visible to clients. Does **not** move `_state`,
+`get_curation_checkpointer`, or extract an app factory in the same
+step — those stay separate, later decisions, each needing its own
+explicit go-ahead.
 
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 

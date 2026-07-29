@@ -490,16 +490,89 @@ api.py                    composition + compatibility only: app/lifespan/
 5. `research_agent/api_app/` remains the interim package name until
    `api.py`'s compatibility constraints are intentionally retired.
 
-**Recommended Phase 7 options, ranked by risk** (not yet started — each
-needs its own explicit go-ahead):
+### Phase 7 (direct helper imports) — done
 
-| Risk | Option |
-|---|---|
-| Low/medium | Replace remaining `api.<helper>` references with direct imports from `summary_cache.py`/`search_helpers.py`/`curation_helpers.py` where no patchability or state-identity risk exists (mirrors Phase 5's sweep, applied to Phase 6's new modules). |
-| Medium | Normalize service error handling away from direct `HTTPException` where practical, using typed service results or small domain exceptions mapped in routers. |
-| Medium/high | Move `get_curation_checkpointer` and dependency wiring into `api_app/dependencies.py`, preserving `app.dependency_overrides` compatibility. |
-| High | Extract an app factory/lifespan/`_state` ownership module — the last thing keeping `api.py` from being pure composition. |
-| Defer | Rename `api_app/` to `api/` — only once `api.py`'s compatibility constraints are intentionally removed, not as part of routine cleanup. |
+Phase 7 executed the "Low/medium" option from Phase 6's table above:
+every remaining safe `api.<helper>` reference (for helpers Phase 6 moved
+out of `api.py`) was replaced with a direct import from its new module.
+
+| File | Now imports directly | Still keeps `import research_agent.api as api` for |
+|---|---|---|
+| `search_service.py` | `_filtered_candidate_count`, `_server_side_rerank`, `_merge_web_articles` (from `search_helpers.py`) | `expanded_search`, `run_research_agent`, `search_web` (patch targets) |
+| `summary_service.py` | `_get_or_create_summary`, `_get_or_create_web_summary` (from `summary_cache.py`) | nothing — the `api` import was removed entirely |
+| `curation_core_service.py` | `_curation_config` (from `curation_helpers.py`) | `_state`, `build_candidate_pool`, `rank_full_pool`, `canonicalize_topic` (patch targets/state) |
+| `curation_history_service.py` | `_curation_config` (from `curation_helpers.py`) | nothing — the `api` import was removed entirely |
+
+`_upstream_error_guard` needed no changes in this phase — every router
+already imported it directly from `api_app/errors.py` as of Phase 6.
+
+**`api.<name>` references still remaining, and why** (this is now the
+complete list — nothing else is left to sweep):
+1. **Patch targets**, reached via `import research_agent.api as api` in
+   whichever service still calls them: `run_research_agent`,
+   `expanded_search`, `search_web`, `ask`, `chat_turn`,
+   `get_papers_by_ids`, `build_candidate_pool`, `rank_full_pool`,
+   `canonicalize_topic`, `generate_report_for_session`,
+   `regenerate_report_with_new_sources`, `generate_summary`,
+   `generate_web_summary`, `semantic_search`, `embed_and_index_papers`,
+   `OpenAI`, `init_db`. These stay `api.<name>` permanently (or until the
+   underlying function itself moves) — importing any of them directly
+   from its source module would capture a reference immune to
+   `patch.object(api, "<name>", ...)`.
+2. **`api._state`** — the one piece of shared mutable state every request
+   handler reads from; still owned by `api.py`.
+3. **`api.get_curation_checkpointer`** — the dependency-override identity
+   anchor; every curation router still declares
+   `Depends(api.get_curation_checkpointer)` itself, unchanged.
+
+**Current architecture after Phase 7:**
+
+```
+api_app/routers/*.py     thin HTTP adapters — import schemas/serializers/
+                        _upstream_error_guard directly; import api only
+                        for patch targets, _state, get_curation_checkpointer
+        │
+        ▼
+services/*.py            orchestration — import schemas/serializers/
+                        summary_cache/search_helpers/curation_helpers
+                        directly; import api only for patch targets,
+                        _state, get_curation_checkpointer
+        │
+        ▼
+api_app/{schemas,serializers,errors}.py + services/{summary_cache,
+search_helpers,curation_helpers}.py    every schema, pure helper, and
+                                       behavioral helper now has a real,
+                                       independently-importable home
+        │
+        ▼
+api.py                    compatibility/composition + state/dependency
+                        anchor only: app/lifespan/CORS, _state,
+                        get_curation_checkpointer, 12
+                        app.include_router(...) calls, and re-exports of
+                        every name above for anything still reaching
+                        them via `research_agent.api.<name>`
+```
+
+**Remaining debt after Phase 7** (down to exactly the items Phase 6's
+table flagged as not "Low/medium" risk):
+
+1. `search_service.py` and the curation core/history/report/chat services
+   still raise `HTTPException` directly rather than returning a uniform
+   sentinel/typed result for the router to translate.
+2. `api.py` still owns `_state`.
+3. `api.py` still owns `get_curation_checkpointer`.
+4. `api.py` still owns app/lifespan/CORS/router composition.
+5. `research_agent/api_app/` remains the interim package name until
+   `api.py`'s compatibility constraints are intentionally retired.
+
+**Recommended Phase 8**: normalize the direct `HTTPException` usage inside
+services (item 1 above) into explicit service results or small domain
+exceptions that routers map to the identical existing status codes and
+detail payloads — behavior-preserving, not a new error taxonomy visible
+to clients. Does **not** move `_state`, `get_curation_checkpointer`, or
+extract an app factory in the same phase — those stay separate, later
+decisions (items 2–4 above), each needing its own explicit go-ahead per
+Phase 6's risk ranking ("Medium/high" and "High").
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
