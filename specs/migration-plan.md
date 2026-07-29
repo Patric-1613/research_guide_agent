@@ -488,6 +488,56 @@ compatibility re-exports remain in `api.py` intentionally.
 every compatibility re-export `api.py` currently provides. Do **not**
 rename `api_app/` to `api/` yet.
 
+## Phase 10 — Extract app factory (done)
+
+Executed the recommendation above: moved `lifespan()`, FastAPI app
+creation, CORS setup, and all 11 `app.include_router(...)` calls out of
+`api.py` into new `research_agent/api_app/app.py`'s
+`create_app() -> FastAPI`, in the exact same router registration order.
+`research_agent/api.py` shrank from 232 to 142 lines.
+
+`research_agent.api:app` remains the exact same public ASGI entrypoint;
+`api_app/app.py` intentionally builds no module-level `app` of its own,
+so there's never a second live FastAPI instance/lifespan. `lifespan()`
+reaches `init_db`/`OpenAI`/`get_chroma_collection`/`_state` via `import
+research_agent.api as api`, at call time only (it doesn't run until
+uvicorn starts the app) — the same safe circular pattern used since
+Phase 2/6. `get_curation_checkpointer` and `_state` are untouched, still
+imported from `api_app/runtime.py` exactly as Phase 9 left them.
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean; `uvicorn research_agent.api:app` boots successfully; `GET
+/health` returns 200; `/curation/reviews` route order verified via a
+real `TestClient` request (resolves to the reviews-list route, not
+`{session_id}`); both runtime identity checks remained `True`
+(`api.get_curation_checkpointer is runtime.get_curation_checkpointer`,
+`api._state is runtime._state`).
+
+**Remaining intentional compatibility** (deliberate shims, not old
+broken architecture): `api_app/` stays the interim package name until
+`api.py`'s compatibility constraints are intentionally retired; `api.py`
+keeps every compatibility re-export from Phases 4–9; `research_agent.
+api:app` remains the stable public ASGI entrypoint.
+
+### Standardized single-user backend baseline (2026-07-29)
+
+Phases 0–10 complete the structural migration this effort set out to
+do: `api.py` went from a single ~1,300-line file holding every model,
+helper, and route handler inline to a 142-line compatibility/composition
+entrypoint, with schemas, serializers, error handling, runtime state,
+app composition, and every route's orchestration each given a real,
+independently-testable home — without changing a single endpoint's
+behavior along the way.
+
+**Explicitly not started**: OAuth/authentication, PostgreSQL migration,
+multi-user support. This is still a single-user, SQLite-backed,
+unauthenticated local service. Tagged `standardized-single-user-backend`
+— this is the recommended place to pause before any product/platform
+refactor (auth, multi-tenancy, Postgres, deployment) begins; see Phase 8
+below ("Multi-user production readiness"), which was always
+proposal-only and is not implied by anything in Phases 0–10.
+
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
 Move (not rewrite) modules into their layer, per `docs/architecture.md`'s

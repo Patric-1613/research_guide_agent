@@ -722,6 +722,113 @@ compatibility re-export `api.py` currently provides. Do **not** rename
 compatibility constraints are intentionally retired, same as every prior
 phase's note on this.
 
+### Phase 10 (extract app factory) — done
+
+Phase 10 executed the recommendation above: moved `lifespan()`, FastAPI
+app creation, CORS setup, and all 11 `app.include_router(...)` calls out
+of `api.py` into new `research_agent/api_app/app.py`'s
+`create_app() -> FastAPI`, in the exact same router registration order
+as before. `research_agent/api.py` shrank from 232 to 142 lines.
+
+`research_agent.api:app` remains the exact same public ASGI
+entrypoint — `api.py` now does `from research_agent.api_app.app import
+create_app` / `app = create_app()` instead of constructing the app
+inline. `api_app/app.py` intentionally does not construct its own
+module-level `app`, so there is never a second live FastAPI instance (or
+a second lifespan) around. `lifespan()` reaches every patch-targeted
+name (`init_db`, `OpenAI`, `get_chroma_collection`) and `_state` via
+`import research_agent.api as api`, at call time only — the same safe
+circular pattern every `api_app`/`services` module has used since
+Phase 2/6, safe here specifically because `lifespan()` doesn't run until
+uvicorn actually starts the app, long after both modules have finished
+loading. `get_curation_checkpointer` and `_state` themselves are
+untouched — still imported from `api_app/runtime.py` exactly as Phase 9
+left them, no wrapping, no duplication.
+
+**Current standardized backend architecture (as of Phase 10):**
+
+```
+research_agent/api.py               compatibility re-exports + load_dotenv()
+                                    + app = create_app() — 142 lines
+        │
+        ▼
+research_agent/api_app/app.py       app factory: create_app(), lifespan(),
+                                    CORS, all 11 app.include_router(...) calls
+        │
+        ▼
+research_agent/api_app/routers/     thin HTTP adapters (11 files)
+        │
+        ▼
+research_agent/services/            orchestration, service-layer helpers,
+                                    ServiceError
+        │
+        ▼
+research_agent/api_app/schemas.py       API request/response contracts
+research_agent/api_app/serializers.py   output/markdown serializers
+research_agent/api_app/errors.py        upstream error normalization
+research_agent/api_app/runtime.py       _state, get_curation_checkpointer
+```
+
+Original behavior is preserved throughout — every endpoint path, method,
+status code, response field, and error detail is identical to the
+pre-migration `api.py`; this entire arc (Phases 2–10) has been a file-
+organization and dependency-direction change, never a behavior change.
+
+**Validation recorded for Phase 10:**
+
+```
+test_api.py + test_curation_api.py     → 77 passed
+uv run pytest -q (full backend suite)  → 342 passed
+cd frontend && npm test                → 98 passed
+cd frontend && npm run build           → clean
+uvicorn research_agent.api:app         → boots successfully
+GET /health                            → 200
+GET /curation/reviews                  → resolves to the reviews-list
+                                          route, not {session_id} (route
+                                          order verified via a real
+                                          TestClient request)
+api.get_curation_checkpointer is runtime.get_curation_checkpointer → True
+api._state is runtime._state                                       → True
+```
+
+**Remaining intentional compatibility** (not old broken architecture —
+deliberate shims, kept on purpose):
+
+1. `research_agent/api_app/` remains the interim package name, chosen
+   specifically to coexist with `api.py` without an import collision
+   (see "Why `research_agent/api_app/`, not `research_agent/api/`"
+   above). Renaming it to `api/` stays deferred until `api.py`'s
+   compatibility constraints are intentionally retired.
+2. `api.py`'s compatibility re-exports remain — every schema, helper,
+   and runtime object moved out over Phases 4–9 is still reachable as
+   `research_agent.api.<name>`, and every `patch.object(api, "<name>",
+   ...)` test still works unchanged.
+3. `research_agent.api:app` remains the stable public ASGI entrypoint —
+   nothing that boots or deploys this service needs to change.
+
+### Standardized single-user backend baseline (2026-07-29)
+
+Phases 0–10 complete the structural migration this whole effort set out
+to do: `research_agent/api.py` went from a single ~1,300-line file
+holding every model, helper, and route handler inline to a 142-line
+compatibility/composition entrypoint, with schemas, serializers, error
+handling, runtime state, app composition, and every route's orchestration
+each given a real, independently-testable home — without changing a
+single endpoint's behavior along the way.
+
+**Explicitly not started, and out of scope for everything above:** OAuth/
+authentication, PostgreSQL migration, and multi-user support. This
+codebase is still a single-user, SQLite-backed, unauthenticated local
+service — nothing in Phases 0–10 touched auth, tenancy, or the database
+engine, and none of it was meant to.
+
+This point — tagged `standardized-single-user-backend` — is the
+standardized single-user backend baseline. It is the recommended place
+to pause before any product/platform refactor (auth, multi-tenancy,
+Postgres, deployment) begins, per this project's original Phase 8
+("Multi-user production readiness") being explicitly proposal-only and
+not implied by anything in Phases 0–10.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
