@@ -775,95 +775,11 @@ class CurationSelectFromHistoryResponse(BaseModel):
     selected_paper_ids: list[str]
 
 
-@app.post("/curation/{session_id}/select-from-history", response_model=CurationSelectFromHistoryResponse)
-def curation_select_from_history(
-    session_id: str, req: CurationSelectFromHistoryRequest, cp=Depends(get_curation_checkpointer),
-) -> CurationSelectFromHistoryResponse:
-    """curation-turn-history Phase 9c: retroactively add a paper seen in
-    an earlier turn, without a new search -- lets a user unstuck from a
-    curation that ended short of their target (e.g. the pool genuinely
-    ran dry) by picking from what they already saw, even from Report/Chat
-    mode. SYNTHESIZE-STAGE ONLY -- see select_paper_from_history()'s own
-    docstring for exactly why (out-of-band writes while a real interrupt
-    is pending corrupt its bookkeeping, the same failure mode
-    curation-refinement-and-auto-offer Phase 6f already found once).
-    Picking from history while still curating goes through
-    /curation/{session_id}/picks instead (Phase 9d)."""
-    session = load_curation_session(session_id, cp)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_id not found")
-    try:
-        select_paper_from_history(session, req.paper_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    save_curation_session(session, session_id, cp)
-    return CurationSelectFromHistoryResponse(session_id=session_id, selected_paper_ids=session.selected_paper_ids)
+from research_agent.api_app.routers.curation_history import router as curation_history_router
+from research_agent.api_app.routers.curation_reports import router as curation_reports_router
 
-
-@app.post("/curation/{session_id}/reopen", response_model=CurationTurnResponse)
-def curation_reopen(session_id: str, cp=Depends(get_curation_checkpointer)) -> CurationTurnResponse:
-    """curation-editable-until-locked Phase 10c: reopens a review that WAS
-    explicitly stopped (stage=="synthesize") back into active curation --
-    the counterpart to Phase 10b's routing change, which made stopping
-    the ONLY thing that ever locks a review. Gated on reopen_curation_
-    session()'s own rules (still curating / report already generated /
-    chat already started, in that order) -- see its docstring for why. On
-    success, re-invokes start_curation_turn() fresh on the same
-    thread_id: not a Command(resume=...) (there's no pending interrupt
-    to resume once a real stop has already run through END), just a
-    plain graph.invoke() that picks up from wherever cursor/
-    selected_paper_ids left off, verified empirically before this was
-    implemented."""
-    with _upstream_error_guard("curation_reopen"):
-        session = load_curation_session(session_id, cp)
-        if session is None:
-            raise HTTPException(status_code=404, detail="session_id not found")
-        try:
-            reopen_curation_session(session)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        target_count = session.target_count
-        result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
-        return _turn_result_to_response(session_id, target_count, result)
-
-
-@app.post("/curation/{session_id}/report", response_model=ReportOut)
-def curation_report(session_id: str, cp=Depends(get_curation_checkpointer)) -> ReportOut:
-    """Generate-or-get, same cache-then-generate convention /summarize
-    already uses for its own report-like artifact — a second call for the
-    same session_id doesn't re-bill the LLM."""
-    with _upstream_error_guard("curation_report"):
-        session = load_curation_session(session_id, cp)
-        if session is None:
-            raise HTTPException(status_code=404, detail="session_id not found")
-        if session.report is None:
-            try:
-                session.report = generate_report_for_session(session, client=_state["client"])
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            # curation-refinement-and-auto-offer Phase 6f-3: keeps the
-            # auto-offer's staleness check accurate even when a report is
-            # generated straight through this endpoint rather than via
-            # chat's accept-web-offer path.
-            session.report_covered_web_article_count = len(session.web_articles_added)
-            save_curation_session(session, session_id, cp)
-        return _report_to_out(session.report)
-
-
-@app.post("/curation/{session_id}/report/regenerate", response_model=ReportOut)
-def curation_report_regenerate(session_id: str, cp=Depends(get_curation_checkpointer)) -> ReportOut:
-    with _upstream_error_guard("curation_report_regenerate"):
-        session = load_curation_session(session_id, cp)
-        if session is None:
-            raise HTTPException(status_code=404, detail="session_id not found")
-        try:
-            session.report = regenerate_report_with_new_sources(session, client=_state["client"])
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        session.report_covered_web_article_count = len(session.web_articles_added)
-        save_curation_session(session, session_id, cp)
-        return _report_to_out(session.report)
+app.include_router(curation_history_router)
+app.include_router(curation_reports_router)
 
 
 @app.post("/curation/{session_id}/chat", response_model=CurationChatResponse)
