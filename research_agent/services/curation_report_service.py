@@ -3,10 +3,12 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 import research_agent.api as api
+from research_agent.api_app.schemas import ReportOut
+from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import load_curation_session, save_curation_session
 
 
-def get_or_create_report(session_id: str, cp) -> api.ReportOut:
+def get_or_create_report(session_id: str, cp) -> ReportOut:
     """Generate-or-get, same cache-then-generate convention /summarize
     already uses for its own report-like artifact — a second call for the
     same session_id doesn't re-bill the LLM."""
@@ -24,10 +26,10 @@ def get_or_create_report(session_id: str, cp) -> api.ReportOut:
         # chat's accept-web-offer path.
         session.report_covered_web_article_count = len(session.web_articles_added)
         save_curation_session(session, session_id, cp)
-    return api._report_to_out(session.report)
+    return _report_to_out(session.report)
 
 
-def regenerate_report(session_id: str, cp) -> api.ReportOut:
+def regenerate_report(session_id: str, cp) -> ReportOut:
     session = load_curation_session(session_id, cp)
     if session is None:
         raise HTTPException(status_code=404, detail="session_id not found")
@@ -37,4 +39,4 @@ def regenerate_report(session_id: str, cp) -> api.ReportOut:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.report_covered_web_article_count = len(session.web_articles_added)
     save_curation_session(session, session_id, cp)
-    return api._report_to_out(session.report)
+    return _report_to_out(session.report)

@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 import research_agent.api as api
+from research_agent.api_app.schemas import CurationSelectFromHistoryRequest, CurationSelectFromHistoryResponse, CurationTurnResponse
+from research_agent.api_app.serializers import _turn_result_to_response
 from research_agent.curation_loop import start_curation_turn
 from research_agent.curation_session import (
     _session_to_dict,
@@ -13,7 +15,7 @@ from research_agent.curation_session import (
 )
 
 
-def select_from_history(session_id: str, req: api.CurationSelectFromHistoryRequest, cp) -> api.CurationSelectFromHistoryResponse:
+def select_from_history(session_id: str, req: CurationSelectFromHistoryRequest, cp) -> CurationSelectFromHistoryResponse:
     """curation-turn-history Phase 9c: retroactively add a paper seen in
     an earlier turn, without a new search -- lets a user unstuck from a
     curation that ended short of their target (e.g. the pool genuinely
@@ -32,10 +34,10 @@ def select_from_history(session_id: str, req: api.CurationSelectFromHistoryReque
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     save_curation_session(session, session_id, cp)
-    return api.CurationSelectFromHistoryResponse(session_id=session_id, selected_paper_ids=session.selected_paper_ids)
+    return CurationSelectFromHistoryResponse(session_id=session_id, selected_paper_ids=session.selected_paper_ids)
 
 
-def reopen_curation(session_id: str, cp) -> api.CurationTurnResponse:
+def reopen_curation(session_id: str, cp) -> CurationTurnResponse:
     """curation-editable-until-locked Phase 10c: reopens a review that WAS
     explicitly stopped (stage=="synthesize") back into active curation --
     the counterpart to Phase 10b's routing change, which made stopping
@@ -58,4 +60,4 @@ def reopen_curation(session_id: str, cp) -> api.CurationTurnResponse:
 
     target_count = session.target_count
     result = start_curation_turn(session_id, cp, _session_to_dict(session), config=api._curation_config())
-    return api._turn_result_to_response(session_id, target_count, result)
+    return _turn_result_to_response(session_id, target_count, result)

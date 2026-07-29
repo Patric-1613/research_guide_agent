@@ -6,11 +6,13 @@ import sqlite3
 from fastapi import HTTPException
 
 import research_agent.api as api
+from research_agent.api_app.schemas import SearchRequest, SearchResponse
+from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out
 from research_agent.schema import WebArticle
 from research_agent.storage import save_search
 
 
-def run_search(db: sqlite3.Connection, req: api.SearchRequest) -> api.SearchResponse:
+def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
 
     if req.use_query_expansion:
@@ -81,8 +83,8 @@ def run_search(db: sqlite3.Connection, req: api.SearchRequest) -> api.SearchResp
         web_articles=[a.to_dict() for a in web_articles],
     )
 
-    return api.SearchResponse(
+    return SearchResponse(
         search_id=search_id, topic=req.topic, created_at=created_at,
-        papers=[api._paper_to_out(p, score) for p, score in ranked],
-        web_articles=[api._web_article_to_out(a) for a in web_articles],
+        papers=[_paper_to_out(p, score) for p, score in ranked],
+        web_articles=[_web_article_to_out(a) for a in web_articles],
     )

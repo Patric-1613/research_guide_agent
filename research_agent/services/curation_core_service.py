@@ -6,12 +6,14 @@ import uuid
 from fastapi import HTTPException
 
 import research_agent.api as api
+from research_agent.api_app.schemas import CurationPicksRequest, CurationStartRequest, CurationTurnResponse
+from research_agent.api_app.serializers import _turn_result_to_response
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
 from research_agent.curation_session import _session_to_dict
 from research_agent.query_expansion import PaperPoolSession
 
 
-def start_curation(req: api.CurationStartRequest, cp) -> api.CurationTurnResponse:
+def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
     client = api._state["client"]
     s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
     deduped = api.build_candidate_pool(
@@ -32,10 +34,10 @@ def start_curation(req: api.CurationStartRequest, cp) -> api.CurationTurnRespons
     session_id = uuid.uuid4().hex
     session = PaperPoolSession(topic=req.topic, display_title=display_title, reserve=ranked, target_count=req.target_count)
     result = start_curation_turn(session_id, cp, _session_to_dict(session), config=api._curation_config())
-    return api._turn_result_to_response(session_id, req.target_count, result)
+    return _turn_result_to_response(session_id, req.target_count, result)
 
 
-def submit_picks(session_id: str, req: api.CurationPicksRequest, cp) -> api.CurationTurnResponse:
+def submit_picks(session_id: str, req: CurationPicksRequest, cp) -> CurationTurnResponse:
     state = get_curation_state(session_id, cp)
     if state is None:
         raise HTTPException(status_code=404, detail="session_id not found")
@@ -47,4 +49,4 @@ def submit_picks(session_id: str, req: api.CurationPicksRequest, cp) -> api.Cura
         session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
         refinement=req.refinement, request_refill=req.request_refill, config=api._curation_config(),
     )
-    return api._turn_result_to_response(session_id, target_count, result)
+    return _turn_result_to_response(session_id, target_count, result)
