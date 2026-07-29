@@ -621,6 +621,57 @@ def test_select_from_history_refuses_while_curation_still_in_progress():
     assert "not ready" in resp.json()["detail"]
 
 
+def test_select_from_history_refuses_once_a_report_has_been_generated():
+    """curation-editable-until-locked bug fix: the turn-history browser
+    was letting a paper be silently added here even after a report
+    already existed for a DIFFERENT selection -- reproduces the exact
+    reported symptom (clicking "+ Add to review" from Browse past turns
+    while a report/chat already exists must be refused, not accepted)."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        served_ids = [p["paper_id"] for p in client.get(f"/curation/{session_id}").json()["turn_history"][0]["batch"]]
+        not_yet_picked = [pid for pid in served_ids if pid not in pick_ids][0]
+
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": not_yet_picked})
+
+    assert resp.status_code == 400
+    assert "report has already been generated" in resp.json()["detail"]
+
+
+def test_select_from_history_refuses_once_chat_has_started():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        served_ids = [p["paper_id"] for p in client.get(f"/curation/{session_id}").json()["turn_history"][0]["batch"]]
+        not_yet_picked = [pid for pid in served_ids if pid not in pick_ids][0]
+
+        fake_result = {"answer": "an answer", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            # Mutate the REAL session object the same way chat_turn()
+            # actually does, so chat_history is genuinely non-empty
+            # afterward -- not just a mocked return value.
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": fake_result["answer"]})
+            return fake_result
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": not_yet_picked})
+
+    assert resp.status_code == 400
+    assert "chat has already started" in resp.json()["detail"]
+
+
 def test_select_from_history_unknown_paper_id_returns_400():
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
     with _client() as client, \
@@ -1084,6 +1135,8 @@ if __name__ == "__main__":
     test_curation_get_state_stop_reason_is_none_mid_curation()
     test_select_from_history_adds_a_paper_after_curation_finished_short_of_target()
     test_select_from_history_refuses_while_curation_still_in_progress()
+    test_select_from_history_refuses_once_a_report_has_been_generated()
+    test_select_from_history_refuses_once_chat_has_started()
     test_select_from_history_unknown_paper_id_returns_400()
     test_select_from_history_unknown_session_id_returns_404()
     test_select_from_history_can_exceed_target_count()

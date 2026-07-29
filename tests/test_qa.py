@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from unittest.mock import patch
 
-from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, _condense_question, _recent_history, ask
+from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, condense_question, capped_history, _renumber_citation_markers, ask
 from research_agent.schema import Paper, WebArticle
 
 
@@ -66,9 +66,9 @@ def test_ask_with_no_papers_short_circuits_without_calling_client():
     assert session.history[-2] == {"role": "user", "content": "anything?"}
 
 
-def test_condense_question_skips_llm_call_on_first_turn():
+def testcondense_question_skips_llm_call_on_first_turn():
     mock_client = MagicMock()
-    result = _condense_question([], "what about it?", mock_client)
+    result = condense_question([], "what about it?", mock_client)
     assert result == "what about it?"
     mock_client.chat.completions.create.assert_not_called()
 
@@ -88,6 +88,35 @@ def test_answer_schema_rejects_unknown_web_url():
         pass
 
 
+# --- _renumber_citation_markers (chat-ux-fixes bug 5) ---
+
+def test_renumber_citation_markers_closes_a_gap_that_skips_1():
+    """The exact real-world symptom reported: web citations starting at
+    [Web 2] without [Web 1] ever appearing."""
+    answer = "Per [Web 2] and [Web 3], the hornet arrived in 2016."
+    assert _renumber_citation_markers(answer) == "Per [Web 1] and [Web 2], the hornet arrived in 2016."
+
+
+def test_renumber_citation_markers_leaves_already_correct_numbering_unchanged():
+    answer = "Per [Paper 1] and [Paper 2], X is true."
+    assert _renumber_citation_markers(answer) == answer
+
+
+def test_renumber_citation_markers_treats_paper_and_web_as_independent_sequences():
+    answer = "Per [Paper 3] and [Web 5], X is true."
+    assert _renumber_citation_markers(answer) == "Per [Paper 1] and [Web 1], X is true."
+
+
+def test_renumber_citation_markers_reuses_the_same_new_number_for_repeated_references():
+    answer = "[Web 4] says X. Later, [Web 4] also says Y. But [Web 7] disagrees."
+    assert _renumber_citation_markers(answer) == "[Web 1] says X. Later, [Web 1] also says Y. But [Web 2] disagrees."
+
+
+def test_renumber_citation_markers_no_markers_is_a_no_op():
+    answer = "There are no citations in this answer at all."
+    assert _renumber_citation_markers(answer) == answer
+
+
 def test_ask_with_only_web_articles_no_papers_still_answers():
     session = ChatSession(papers=[], web_articles=[_web_article("https://x.com/a", "Article A")])
     schema = _build_answer_schema([], ["https://x.com/a"])
@@ -104,6 +133,29 @@ def test_ask_with_only_web_articles_no_papers_still_answers():
     assert len(result["cited_web_articles"]) == 1
     assert result["cited_web_articles"][0].url == "https://x.com/a"
     mock_client.chat.completions.parse.assert_called_once()
+
+
+def test_ask_renumbers_web_citations_the_model_got_wrong():
+    """chat-ux-fixes bug 5, through the real ask() path (not just the
+    isolated _renumber_citation_markers unit): a model response that
+    skips straight to [Web 2]/[Web 3] must come back through ask()
+    already fixed to [Web 1]/[Web 2] -- both in the returned result AND
+    in what gets persisted to session.history."""
+    session = ChatSession(papers=[], web_articles=[
+        _web_article("https://x.com/a", "Article A"), _web_article("https://x.com/b", "Article B"),
+    ])
+    schema = _build_answer_schema([], ["https://x.com/a", "https://x.com/b"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 2] and [Web 3], X is true.",
+        cited_paper_ids=[], cited_web_urls=["https://x.com/a", "https://x.com/b"],
+    )
+
+    result = ask(session, "what does the web say?", client=mock_client)
+
+    assert result["answer"] == "Per [Web 1] and [Web 2], X is true."
+    assert session.history[-1] == {"role": "assistant", "content": "Per [Web 1] and [Web 2], X is true."}
 
 
 def test_ask_forces_empty_web_citations_when_model_marks_unanswerable():
@@ -302,13 +354,13 @@ def test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question():
     mock_client.chat.completions.parse.assert_called_once()  # generate_answer DID run
 
 
-def test_recent_history_keeps_only_last_n_turns():
+def testcapped_history_keeps_only_last_n_turns():
     history = []
     for i in range(12):
         history.append({"role": "user", "content": f"question {i}"})
         history.append({"role": "assistant", "content": f"answer {i}"})
 
-    capped = _recent_history(history, max_turns=3)
+    capped = capped_history(history, max_turns=3)
     assert capped == [
         {"role": "user", "content": "question 9"},
         {"role": "assistant", "content": "answer 9"},
@@ -319,9 +371,9 @@ def test_recent_history_keeps_only_last_n_turns():
     ]
 
 
-def test_recent_history_is_a_no_op_below_the_cap():
+def testcapped_history_is_a_no_op_below_the_cap():
     history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
-    assert _recent_history(history, max_turns=8) == history
+    assert capped_history(history, max_turns=8) == history
 
 
 def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
@@ -368,10 +420,16 @@ def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
 if __name__ == "__main__":
     test_answer_schema_rejects_unknown_paper_id()
     test_ask_with_no_papers_short_circuits_without_calling_client()
-    test_condense_question_skips_llm_call_on_first_turn()
+    testcondense_question_skips_llm_call_on_first_turn()
     test_answer_schema_without_web_urls_has_no_cited_web_urls_field()
     test_answer_schema_rejects_unknown_web_url()
+    test_renumber_citation_markers_closes_a_gap_that_skips_1()
+    test_renumber_citation_markers_leaves_already_correct_numbering_unchanged()
+    test_renumber_citation_markers_treats_paper_and_web_as_independent_sequences()
+    test_renumber_citation_markers_reuses_the_same_new_number_for_repeated_references()
+    test_renumber_citation_markers_no_markers_is_a_no_op()
     test_ask_with_only_web_articles_no_papers_still_answers()
+    test_ask_renumbers_web_citations_the_model_got_wrong()
     test_ask_forces_empty_web_citations_when_model_marks_unanswerable()
     test_ask_forces_empty_citations_when_model_marks_unanswerable()
     test_classify_non_substantive_question_mark_veto_short_circuits_before_any_embedding_call()
@@ -383,7 +441,7 @@ if __name__ == "__main__":
     test_classify_non_substantive_picks_the_best_scoring_category_across_multiple()
     test_ask_short_circuits_on_non_substantive_message_without_any_llm_or_retrieval_call()
     test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question()
-    test_recent_history_keeps_only_last_n_turns()
-    test_recent_history_is_a_no_op_below_the_cap()
+    testcapped_history_keeps_only_last_n_turns()
+    testcapped_history_is_a_no_op_below_the_cap()
     test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model()
     print("All qa tests passed.")

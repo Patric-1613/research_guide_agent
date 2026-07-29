@@ -247,14 +247,30 @@ def select_paper_from_history(session: PaperPoolSession, paper_id: str) -> None:
 
     Raises ValueError (api.py converts to 400, same convention as
     report.py/curation_chat.py's own "not ready" checks) if stage isn't
-    "synthesize" yet, or if paper_id was never actually served in any
-    past turn of THIS session.
+    "synthesize" yet, if paper_id was never actually served in any past
+    turn of THIS session, or (curation-editable-until-locked bug fix)
+    if the review is already locked -- a report has been generated
+    and/or chat has started. That second check didn't exist when this
+    function was first written (Phase 9c), because reaching
+    stage=="synthesize" USED to always mean curation had just finished
+    and nothing more could be added; curation-editable-until-locked
+    (Phase 10) later redefined "locked" to mean has_report/has_chat
+    specifically, not stage alone (reopen_curation_session() already
+    gates on exactly that), but this function was never updated to
+    match -- a real, exploitable gap: the turn-history browser was
+    still letting a paper be added here even after a report/chat
+    already existed for a DIFFERENT selection, silently orphaning them
+    from what the report/chat actually reflects.
     """
     if session.stage != "synthesize":
         raise ValueError(
             f"Session is not ready to select from history (stage={session.stage!r}, expected 'synthesize') -- "
             "curation must finish first; while still curating, submit this paper_id via /curation/{session_id}/picks instead."
         )
+    if session.report is not None:
+        raise ValueError("Cannot select from history: a report has already been generated for this review.")
+    if session.chat_history:
+        raise ValueError("Cannot select from history: chat has already started for this review.")
     if paper_id in session.selected_paper_ids:
         return
     paper_dict = _find_paper_in_turn_history(session, paper_id)
