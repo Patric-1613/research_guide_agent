@@ -400,14 +400,56 @@ core/history/report/chat services still raise `HTTPException` directly;
 app/lifespan/CORS/router composition; `api_app/` remains the interim
 package name.
 
-**Recommended next step (service-layer track)**: normalize the direct
-`HTTPException` usage inside services into explicit service results or
-small domain exceptions that routers map to the identical existing
-status codes and detail payloads — behavior-preserving, not a new error
-taxonomy visible to clients. Does **not** move `_state`,
-`get_curation_checkpointer`, or extract an app factory in the same
-step — those stay separate, later decisions, each needing its own
-explicit go-ahead.
+## Phase 8 — Normalize service error handling (done)
+
+Executed the recommended next step above: replaced every direct FastAPI
+`HTTPException` raise inside 5 services with a new small service-layer
+exception, `research_agent/services/errors.py`'s
+`ServiceError(status_code, detail)`. Routers catch `ServiceError` and
+convert it to the identical `HTTPException(status_code=...,
+detail=...)` the service used to raise directly — payloads preserved
+exactly, only the raise site moved.
+
+| Service | Raise sites converted |
+|---|---|
+| `search_service.py` | no-papers 404 (×2), filtered-no-match 404 (dynamic detail) |
+| `curation_core_service.py` | no-papers 404, session-not-found 404, not-awaiting-picks 400 |
+| `curation_history_service.py` | session-not-found 404 (×2), `ValueError`-derived 400 (×2) |
+| `curation_report_service.py` | session-not-found 404 (×2), `ValueError`-derived 400 (×2) |
+| `curation_chat_service.py` | session-not-found 404, `ValueError`-derived 400 |
+
+Routers (`search.py`, `curation_core.py`, `curation_history.py`,
+`curation_reports.py`, `curation_chat.py`) each wrap their service call
+in `try: ... except ServiceError as exc: raise
+HTTPException(status_code=exc.status_code, detail=exc.detail) from exc`,
+placed inside the existing `_upstream_error_guard` block wherever one
+already existed — the guard's `HTTPException` passthrough behaves
+exactly as before. `curation_history.py`'s `select-from-history` route
+still has no guard, matching prior behavior (only the `try/except`
+wrapping was added). The None-sentinel services outside this phase's
+scope (`library_service.py`, `summary_service.py`, `chat_service.py`,
+`curation_session_service.py`) were intentionally left unchanged.
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean. Every named error case re-verified directly (missing-papers 404,
+session-not-found 404 across all five curation groups, not-awaiting-picks
+400, `ValueError`-derived 400s, upstream-guard 503 paths) — all identical
+status codes/details.
+
+**Remaining debt after Phase 8** (unchanged from Phase 7's items 2–4 —
+this phase resolved item 1 only): `api.py` still owns `_state`,
+`get_curation_checkpointer`, and app/lifespan/CORS/router composition;
+`api_app/` remains the interim package name.
+
+**Recommended Phase 9**: move dependency/state ownership carefully into
+`api_app/dependencies.py` or `api_app/runtime.py` — but only once
+`api.get_curation_checkpointer`'s identity can be preserved via a
+compatibility re-export or wrapper strategy proven *before* the move,
+the same "verify before implementing" discipline used for the original
+Phase 2 `api.py` → `api/` package plan (caught as broken before any code
+moved). Do **not** move the app factory/lifespan in the same phase
+unless that dependency-identity strategy is proven first.
 
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
