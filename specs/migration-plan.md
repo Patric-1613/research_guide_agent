@@ -68,53 +68,104 @@ out of scope for this migration unless explicitly requested — it's core
 documented history the instructions for this work say to preserve, not
 rewrite.
 
-## Phase 2 — Backend API split (behavior-preserving)
+## Phase 2 — Backend API split (behavior-preserving) — DONE (2026-07-29)
 
-Goal: split `research_agent/api.py` (currently ~1,300 lines, every route in
-one file) into a `research_agent/api/` package, one router at a time,
-without changing any endpoint's behavior.
+Goal: split `research_agent/api.py` (was ~1,300 lines, every route in one
+file) into per-endpoint-group routers, without changing any endpoint's
+behavior. Completed as designed, with one significant, caught-before-
+implementation revision to the original plan below.
 
-Steps:
-1. Create `research_agent/api/` with `app.py`, `dependencies.py`,
-   `schemas/`, `routers/`.
-2. **Import-conflict check first:** Python cannot have both
-   `research_agent/api.py` and `research_agent/api/__init__.py` resolve the
-   same import path — `research_agent/api.py` must be removed/renamed in
-   the same commit that introduces `research_agent/api/__init__.py`, not
-   left alongside it. The compatibility requirement (`uvicorn research_
-   agent.api:app` keeps working) is satisfied by `research_agent/api/
-   __init__.py` re-exporting `app` from `app.py`, not by keeping the old
-   file. This is checked for real (a real `uvicorn --help`-level import,
-   not assumed) before any router is moved.
-3. Move exactly one router at a time (suggested order: `health` → `search`
-   → `summarize` → `chat` → `reports` → `curation`, cheapest/lowest-risk
-   first). After each move: `uv run pytest tests/test_api.py tests/
-   test_curation_api.py -q`, plus a live `uvicorn` boot + `curl /health`
-   smoke check.
-4. Do not proceed to the next router if a test fails.
+**The plan as originally written here called for converting `api.py` into a
+`research_agent/api/` package.** A design-note review (before any code
+moved) found a real bug in that plan: `unittest.mock.patch.object(api,
+"name")` mutates whichever module a function's `__globals__` actually
+points to — the module it's *physically defined in* — not whatever
+re-exports that name elsewhere. Relocating `api.py`'s content into `api/
+app.py` with `api/__init__.py` wildcard-re-exporting the old names would
+silently break all ~140 `patch.object(api, "<name>", ...)` calls this test
+suite relies on: a wildcard re-export only copies names into the package's
+own dict once, at import time, so patching `research_agent.api.<name>`
+afterward would leave `app.py`'s own dict (and any handler physically
+defined there) unaffected — tests would keep *passing*, just silently
+exercising the real function instead of the mock. Confirmed with an
+isolated scratch reproduction before accepting the revision, not assumed.
+Full reasoning, plus the corrected design, is in `docs/architecture.md`'s
+"Why `research_agent/api_app/`, not `research_agent/api/`" section.
 
-Risk: this is the first phase that touches import paths — the phase most
-likely to break something subtle (a route registered in the wrong order, a
-`Depends()` losing its override in a test). Mitigated by moving one router
-per commit and the import-conflict check above happening before any code
-moves, not after.
+**Revised and executed plan:**
+1. Never rename or relocate `api.py` — it stays the live entrypoint for
+   the entire phase, patchable exactly as before.
+2. Created `research_agent/api_app/routers/` as an entirely separate,
+   temporary package name, specifically so it can exist *alongside* the
+   still-live `api.py` with zero import collision, ever.
+3. Moved one router at a time (actual order: `health` → `library` →
+   `export` → `summarize` → `chat` → `search` → curation, staged
+   internally into 5 groups by shared-helper/patch-boundary cohesion —
+   see `docs/architecture.md`'s router inventory table for the final,
+   concrete 11-file list). Each moved handler reaches back into
+   `research_agent.api` via `import research_agent.api as api` and calls
+   `api.<name>(...)` for every dependency tests patch or that's otherwise
+   still owned by `api.py` (models, shared helpers) — a fresh attribute
+   lookup at call time, confirmed empirically (a three-way scratch test)
+   to correctly see patches applied to the original module, unlike a
+   direct `from research_agent.<module> import <name>` binding.
+4. After each router move: `uv run pytest tests/test_api.py tests/
+   test_curation_api.py -q` plus `uv run python -c "from research_agent.api
+   import app; print(app.title)"`; full `uv run pytest -q` at both the
+   `/search` move and the final curation-chat move; full frontend
+   (`npm test` + `npm run build`) at the final move.
+5. Two real, pre-existing test-coverage gaps were found and closed
+   *before* moving the routes they covered, rather than moving first and
+   hoping: `POST /search`'s `use_query_expansion=True` branch had zero
+   API-level coverage (added before `/search` moved), and none of
+   `_upstream_error_guard`'s 6 curation call sites had a test proving it
+   actually converts a real upstream failure into a clean 503 (added
+   before the curation-core group moved). Both closed with the smallest
+   possible deterministic test, no existing test weakened.
+6. One registration-order constraint (`GET /curation/reviews` must be
+   registered before `GET /curation/{session_id}`, or Starlette matches
+   `{session_id}="reviews"` first) was preserved by keeping both routes in
+   the same file, in the same relative order, and verified directly (not
+   just trusted) with a real `TestClient` request against the actual
+   persisted dev database after that move.
+
+Final validation: `uv run pytest -q` → 342 passed; `cd frontend && npm
+test` → 98 passed; `cd frontend && npm run build` → clean.
+
+**Transition debt intentionally left for Phase 3** (see `docs/
+architecture.md` for the full list): every router still reaches into
+`research_agent.api` for its shared dependencies (decoupled in location
+only, not in fact); every request/response Pydantic model and every shared
+helper (`_upstream_error_guard`, `_state`, `_curation_config`,
+`_turn_result_to_response`, the `_paper_to_out`-family serializers) still
+lives in `api.py`. Phase 3 resolves this by giving them real, independent
+homes.
 
 Rollback: revert the single commit for the router that broke something;
 every other already-moved router is unaffected since each is its own
-commit.
+commit. Tag `pre-standardization-2026-07-29` remains the outer safety net.
 
 ## Phase 3 — Service layer
 
-Extract orchestration currently inline in route handlers into
-`research_agent/services/{search,summary,chat,curation,report}_service.py`.
-Routers become thin: validate request → call one service function → return.
-No algorithm changes. Add focused tests only where a service introduces
-logic that wasn't independently testable before (e.g., an orchestration
-sequence currently only reachable through the full HTTP round trip).
+Directly resolves Phase 2's transition debt (see above / `docs/
+architecture.md`): extract orchestration currently inline in route
+handlers into `research_agent/services/{search,summary,chat,curation,
+report}_service.py`, and give the request/response Pydantic models and
+shared helpers (`_upstream_error_guard`, `_state`, `_curation_config`,
+`_turn_result_to_response`, the `_paper_to_out`-family serializers) real,
+independent homes (a `schemas`/`dependencies`-style module, not still
+`api.py`) that routers and services import directly — at which point the
+`import research_agent.api as api` / `api.<name>` indirection every
+router currently relies on stops being necessary, since there's no longer
+a single shared module whose patchability depends on staying put. Routers
+become thin: validate request → call one service function → return. No
+algorithm changes. Add focused tests only where a service introduces logic
+that wasn't independently testable before (e.g., an orchestration sequence
+currently only reachable through the full HTTP round trip).
 
-Test gate: `uv run pytest -q` (full suite) after each service is extracted,
-not just the affected router's tests — a service can be called from more
-than one route.
+Test gate: `uv run pytest -q` (full suite) after each service/schema/helper
+is extracted, not just the affected router's tests — several are shared
+across more than one route today.
 
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
