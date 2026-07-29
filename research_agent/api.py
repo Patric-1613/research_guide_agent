@@ -581,19 +581,9 @@ def search(req: SearchRequest, db: sqlite3.Connection = Depends(get_db_connectio
         )
 
 
-@app.post("/summarize", response_model=SummarizeResponse)
-def summarize(req: SummarizeRequest, db: sqlite3.Connection = Depends(get_db_connection)) -> SummarizeResponse:
-    with _upstream_error_guard("summarize"):
-        saved = get_search(db, req.search_id)
-        if saved is None:
-            raise HTTPException(status_code=404, detail="search_id not found")
+from research_agent.api_app.routers.summarize import router as summarize_router
 
-        summary_json = _get_or_create_summary(db, req.search_id, saved, style=req.style)
-        web_summary_json = _get_or_create_web_summary(db, req.search_id, saved)
-        web_summary_out = WebSummaryOut(**web_summary_json) if web_summary_json is not None else None
-        return SummarizeResponse(
-            search_id=req.search_id, topic=saved.topic, style=req.style, web_summary=web_summary_out, **summary_json,
-        )
+app.include_router(summarize_router)
 
 
 @app.post("/chat", response_model=ChatResponse)
