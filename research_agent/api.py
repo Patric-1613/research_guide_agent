@@ -617,16 +617,9 @@ def chat(req: ChatRequest, db: sqlite3.Connection = Depends(get_db_connection)) 
         )
 
 
-@app.get("/export/{search_id}", response_class=PlainTextResponse)
-def export(search_id: int, style: CitationStyle = "apa", db: sqlite3.Connection = Depends(get_db_connection)) -> str:
-    with _upstream_error_guard("export"):
-        saved = get_search(db, search_id)
-        if saved is None:
-            raise HTTPException(status_code=404, detail="search_id not found")
+from research_agent.api_app.routers.export import router as export_router
 
-        summary_json = _get_or_create_summary(db, search_id, saved, style=style)
-        web_summary_json = _get_or_create_web_summary(db, search_id, saved)
-        return _render_markdown(saved.topic, summary_json, style=style, web_summary_json=web_summary_json)
+app.include_router(export_router)
 
 
 from research_agent.api_app.routers.library import router as library_router
