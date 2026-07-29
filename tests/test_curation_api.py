@@ -131,6 +131,28 @@ def test_curation_start_with_no_papers_returns_404():
     assert resp.status_code == 404
 
 
+def test_curation_start_upstream_openai_failure_returns_clean_error_not_raw_500():
+    """_upstream_error_guard's own contract, proven on a curation endpoint
+    for the first time (existing coverage was only /search and /chat in
+    test_api.py) -- confirmed before /curation/start moves out of api.py,
+    same discipline as the query-expansion-branch test added before
+    /search's own move. build_candidate_pool runs before canonicalize_
+    topic in the real handler, so this never reaches the fixture's own
+    canonicalize_topic patch."""
+    import httpx
+    from openai import APIConnectionError
+
+    with _client() as client, \
+         patch.object(
+             api, "build_candidate_pool",
+             side_effect=APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1/x")),
+         ):
+        resp = client.post("/curation/start", json={"topic": "t"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {"error": "curation_start service unavailable"}
+
+
 # --- display_title (curation-review-management Phase 8, item 5) ---
 
 def test_curation_get_state_returns_canonicalized_display_title_distinct_from_raw_topic():
@@ -1106,6 +1128,7 @@ def test_curation_report_endpoint_sets_report_covered_web_article_count():
 if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()
+    test_curation_start_upstream_openai_failure_returns_clean_error_not_raw_500()
     test_curation_picks_resumes_the_real_interrupt_and_returns_the_next_batch()
     test_curation_picks_reaching_target_does_not_transition_to_synthesize()
     test_curation_picks_with_explicit_stop_transitions_to_synthesize()
