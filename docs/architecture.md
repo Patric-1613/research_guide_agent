@@ -383,16 +383,123 @@ wherever it still is — that audit is future work, not assumed here.
    it to `api/` is deferred until `api.py`'s compatibility constraints are
    deliberately retired, not before.
 
-**Recommended Phase 5 options, ranked by risk** (not yet started — each
+### Phase 5 (direct schema/serializer imports) — done
+
+Phase 5 executed the "Low risk" option from Phase 4's table above: every
+router and service touched by Phases 2–3 (9 routers + 9 services) now
+imports Pydantic models from `schemas.py` and pure helpers from
+`serializers.py` directly, instead of via `api.<name>`. Two files
+(`routers/library.py`, `services/curation_session_service.py`) had no
+remaining patch-target/state/guard references after the swap, so their
+`import research_agent.api as api` was removed entirely; every other
+touched file keeps that import for whatever's still only reachable that
+way (patch targets, `_state`, `get_curation_checkpointer`).
+
+One reference was deliberately left as `api.<name>` outside the allowed
+schema/serializer lists: `api._merge_web_articles` in `search_service.py`
+— it's a domain function from `agent.py`, not a schema or a serializer,
+and wasn't in Phase 5's scope, so it was left rather than silently moved.
+(Phase 6, below, later gave it a real home in `search_helpers.py`.)
+
+`api.py`'s compatibility re-exports were untouched by this phase — no
+schema/serializer moved location, only who imports them changed.
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean.
+
+### Phase 6 (behavioral helpers extraction) — done
+
+Phase 6 moved the remaining non-endpoint behavioral helpers out of
+`api.py` into four focused modules, executing the "Medium" option from
+Phase 4's table (dependency providers/error-guard helpers) plus the
+summary-cache/search/curation helper groups that emerged from auditing
+what was left:
+
+| New module | Owns |
+|---|---|
+| `research_agent/api_app/errors.py` | `_upstream_error_guard`, `_UPSTREAM_ERRORS` — pure, no `api.py` dependency |
+| `research_agent/services/summary_cache.py` | `_get_or_create_summary`, `_get_or_create_web_summary`, `_reselect_style` |
+| `research_agent/services/search_helpers.py` | `_server_side_rerank`, `_filtered_candidate_count`, and `_merge_web_articles` (re-exported here from `agent.py` instead of imported directly into `api.py` — never patched either way, so patchability is unaffected by the move) |
+| `research_agent/services/curation_helpers.py` | `_curation_config` |
+
+`research_agent/api.py` shrank from 369 to 232 lines. `get_curation_checkpointer`
+and `_state` were **not** moved — both stay in `api.py`, unchanged, exactly
+as scoped. Every new module reaches `api.<name>`/`api._state` via `import
+research_agent.api as api`, accessed only inside function bodies (never at
+import time) — the same safe circular-import pattern `api_app/routers/*.py`
+has relied on since Phase 2: Python only needs the (possibly
+still-loading) `research_agent.api` module object to exist in `sys.modules`
+at the new module's import time, and none of them touch `api.<name>`
+until a function is actually called, long after `api.py` has finished
+loading.
+
+`api.py` re-exports every moved name, so `research_agent.api.<name>` and
+`patch.object(api, "<name>", ...)` keep working unchanged.
+`_upstream_error_guard` is never patched in any test, so the 8 routers
+that use it (`chat`, `curation_chat`, `curation_core`, `curation_history`,
+`curation_reports`, `export`, `search`, `summarize`) now import it
+directly from `errors.py`. The other three new modules' helpers were
+**not** swept into direct imports at their call sites — `search_service.py`,
+`summary_service.py`, and the curation services still reach
+`_server_side_rerank`/`_filtered_candidate_count`/`_get_or_create_summary`/
+`_get_or_create_web_summary`/`_curation_config` via `api.<name>`, relying
+on the re-export. Phase 6 only asked for a direct-import sweep on
+`_upstream_error_guard`; a broader sweep for the other three modules is
+listed as Phase 7 option 1 below.
+
+**Current architecture after Phase 6:**
+
+```
+api_app/routers/*.py     thin HTTP adapters — import schemas/serializers/
+                        _upstream_error_guard directly; import api only
+                        for patch targets, _state, get_curation_checkpointer
+        │
+        ▼
+services/*.py            business orchestration + helper logic — search,
+                        summary/export, library, regular chat, all five
+                        curation groups, plus summary_cache/search_helpers/
+                        curation_helpers
+        │
+        ▼
+api_app/schemas.py        API data contracts (28 Pydantic models)
+api_app/serializers.py    pure output conversion / markdown formatting
+api_app/errors.py         upstream error normalization
+        │
+        ▼
+api.py                    composition + compatibility only: app/lifespan/
+                        CORS, _state, get_curation_checkpointer, 12
+                        app.include_router(...) calls, and re-exports of
+                        everything in schemas.py/serializers.py/errors.py/
+                        summary_cache.py/search_helpers.py/curation_helpers.py
+```
+
+**Remaining debt after Phase 6:**
+
+1. `api.py` still owns `_state` and `get_curation_checkpointer` — neither
+   moved, by design (dependency-override key identity for the latter).
+2. `api.py` still owns FastAPI app construction/lifespan/CORS/router
+   composition — no app-factory module exists yet.
+3. `search_service.py` and the curation core/history/report/chat services
+   still raise `HTTPException` directly rather than returning a uniform
+   sentinel for the router to translate — flagged since Phase 3, still
+   true.
+4. Some service call sites still use `api.<helper>` re-exports for
+   compatibility even though those helpers now live in `summary_cache.py`/
+   `search_helpers.py`/`curation_helpers.py` — a deliberately narrower
+   sweep than Phase 5 did for schemas/serializers (see above).
+5. `research_agent/api_app/` remains the interim package name until
+   `api.py`'s compatibility constraints are intentionally retired.
+
+**Recommended Phase 7 options, ranked by risk** (not yet started — each
 needs its own explicit go-ahead):
 
 | Risk | Option |
 |---|---|
-| Low | Update routers/services to import schemas and pure serializers directly where safe (i.e., the name is never patched in a test), keeping patched dependencies reached via `api.<name>`. |
-| Medium | Move dependency providers and error-guard helpers into `api_app/dependencies.py` / `api_app/errors.py`, preserving `api.py` re-exports the same way Phase 4 did. |
-| Medium/high | Move `_state` and lifespan/app creation into a real app-factory module. |
-| Higher | Convert services' direct-`HTTPException`-raising behavior into typed service results / domain errors that routers translate, rather than services reaching into the HTTP layer. |
-| Defer | Rename `api_app/` to `api/` — only once `api.py`'s own compatibility constraints (the `patch.object`/re-export surface) are deliberately retired, not as part of routine cleanup. |
+| Low/medium | Replace remaining `api.<helper>` references with direct imports from `summary_cache.py`/`search_helpers.py`/`curation_helpers.py` where no patchability or state-identity risk exists (mirrors Phase 5's sweep, applied to Phase 6's new modules). |
+| Medium | Normalize service error handling away from direct `HTTPException` where practical, using typed service results or small domain exceptions mapped in routers. |
+| Medium/high | Move `get_curation_checkpointer` and dependency wiring into `api_app/dependencies.py`, preserving `app.dependency_overrides` compatibility. |
+| High | Extract an app factory/lifespan/`_state` ownership module — the last thing keeping `api.py` from being pure composition. |
+| Defer | Rename `api_app/` to `api/` — only once `api.py`'s compatibility constraints are intentionally removed, not as part of routine cleanup. |
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
