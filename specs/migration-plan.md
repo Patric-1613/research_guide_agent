@@ -451,6 +451,43 @@ Phase 2 `api.py` → `api/` package plan (caught as broken before any code
 moved). Do **not** move the app factory/lifespan in the same phase
 unless that dependency-identity strategy is proven first.
 
+## Phase 9 — Extract runtime state (done)
+
+Executed the recommendation above: moved `_state` and
+`get_curation_checkpointer` out of `api.py` into new `research_agent/
+api_app/runtime.py`, both moved verbatim. `runtime.py` has no dependency
+on `api.py` at all — it only imports `sqlite_checkpointer` from
+`research_agent.qa` — so there was no circular-import reasoning needed
+here, unlike the Phase 6 helper modules.
+
+`api.py` re-exports both as the literal same objects, not wrappers:
+`_state` stays a plain mutable dict that `lifespan()` mutates in place,
+so every reader sees the same updates regardless of which module holds
+the name; `get_curation_checkpointer` is imported as-is, never wrapped,
+so `app.dependency_overrides[api.get_curation_checkpointer]` keeps
+matching every router's unchanged `Depends(api.get_curation_checkpointer)`.
+
+Identity checks confirmed directly:
+```
+api.get_curation_checkpointer is runtime.get_curation_checkpointer  → True
+api._state is runtime._state                                        → True
+```
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean. Every curation router's `dependency_overrides`-backed test still
+passes; services reading `api._state` still share the same runtime dict.
+
+**Remaining debt after Phase 9**: `api.py` still owns app/lifespan/CORS/
+router composition; `api_app/` remains the interim package name;
+compatibility re-exports remain in `api.py` intentionally.
+
+**Recommended Phase 10**: extract FastAPI app composition into
+`api_app/app.py` with a `create_app()` function, while keeping
+`research_agent.api:app` as the public ASGI entrypoint and preserving
+every compatibility re-export `api.py` currently provides. Do **not**
+rename `api_app/` to `api/` yet.
+
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
 Move (not rewrite) modules into their layer, per `docs/architecture.md`'s

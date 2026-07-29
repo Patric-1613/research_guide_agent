@@ -642,6 +642,86 @@ the highest-risk item left (Phase 6's table ranked it "High"), and
 is exactly the kind of subtle compatibility constraint this whole
 migration has repeatedly had to verify empirically rather than assume.
 
+### Phase 9 (extract runtime state) — done
+
+Phase 9 executed the recommendation above: moved `_state` and
+`get_curation_checkpointer` out of `api.py` into new
+`research_agent/api_app/runtime.py`, both moved verbatim. `runtime.py`
+has no dependency on `api.py` at all (unlike the Phase 6 helper
+modules) — it only imports `sqlite_checkpointer` from `research_agent.
+qa`, so there was no circular-import reasoning needed here, and no
+"prove identity before moving" scratch experiment required beyond the
+direct identity check below (there was no wrapper risk to rule out in
+the first place, since neither object was ever wrapped).
+
+`api.py` re-exports both as the literal same objects, not wrappers:
+`_state` is a plain mutable dict — `lifespan()`'s
+`_state["client"] = ...` mutates it in place, so every reader (`api.py`
+itself, routers, services) sees the same updates regardless of which
+module holds the name. `get_curation_checkpointer` is imported as-is,
+never wrapped, so `app.dependency_overrides[api.get_curation_checkpointer]`
+(keyed by callable identity) keeps matching every router's unchanged
+`Depends(api.get_curation_checkpointer)` declaration.
+
+**Identity checks, confirmed directly:**
+
+```
+api.get_curation_checkpointer is runtime.get_curation_checkpointer  → True
+api._state is runtime._state                                        → True
+```
+
+**Current architecture after Phase 9:**
+
+```
+api_app/routers/*.py     thin HTTP adapters — Depends(api.get_curation_
+                        checkpointer) unchanged; import api only for
+                        patch targets, _state, get_curation_checkpointer
+        │
+        ▼
+services/*.py            orchestration — import schemas/serializers/
+                        errors/summary_cache/search_helpers/
+                        curation_helpers directly; import api only for
+                        patch targets, _state, get_curation_checkpointer
+        │
+        ▼
+api_app/{schemas,serializers,errors,runtime}.py + services/*.py
+                         every schema, pure helper, behavioral helper,
+                         runtime dict, and dependency provider now has a
+                         real, independently-importable home
+        │
+        ▼
+api.py                    pure composition + compatibility re-exports
+                        only: app creation, lifespan, CORS, the 12
+                        app.include_router(...) calls, and re-exports of
+                        every name above for anything still reaching
+                        them via `research_agent.api.<name>`
+```
+
+Validation: `test_api.py` + `test_curation_api.py` 77 passed; full
+backend suite 342 passed; frontend `npm test` 98 passed; `npm run build`
+clean. Every curation router's `dependency_overrides`-backed test still
+passes; services reading `api._state` (search/summary/curation
+orchestration) still share the same runtime dict unchanged.
+
+**Remaining debt after Phase 9:**
+
+1. `api.py` still owns app/lifespan/CORS/router composition — the last
+   thing keeping it from being pure composition-plus-re-exports.
+2. `research_agent/api_app/` remains the interim package name.
+3. Compatibility re-exports remain in `api.py` intentionally — every
+   moved schema/helper/runtime object is still reachable as
+   `research_agent.api.<name>` for any caller/test that hasn't switched
+   to a direct import.
+
+**Recommended Phase 10**: extract FastAPI app composition into
+`api_app/app.py` with a `create_app()` function, while keeping
+`research_agent.api:app` as the public ASGI entrypoint (the object
+`uvicorn research_agent.api:app` boots) and preserving every
+compatibility re-export `api.py` currently provides. Do **not** rename
+`api_app/` to `api/` yet — that stays deferred until `api.py`'s
+compatibility constraints are intentionally retired, same as every prior
+phase's note on this.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
