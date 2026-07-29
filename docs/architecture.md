@@ -177,6 +177,116 @@ known debt, not an oversight:
    patchable in their own right, and `api.py` can shrink to just app
    construction and route registration.
 
+### Phase 3 (service layer) — progress so far
+
+Phase 3 is in progress, moving one route group's orchestration at a time
+into `research_agent/services/`. Extracted so far:
+
+| Service file | Function(s) | Backs |
+|---|---|---|
+| `library_service.py` | `list_library_items`, `get_library_item` | `GET /library`, `GET /library/{search_id}` |
+| `summary_service.py` | `summarize_search`, `export_search_markdown` | `POST /summarize`, `GET /export/{search_id}` |
+| `chat_service.py` | `answer_search_chat` | `POST /chat` (original one-shot pipeline only — **not** curation chat) |
+| `search_service.py` | `run_search` | `POST /search` (both the agent path and `use_query_expansion=True`) |
+
+Not yet extracted: any curation route (`curation_core.py`,
+`curation_sessions.py`, `curation_history.py`, `curation_reports.py`,
+`curation_chat.py` all still hold their orchestration inline).
+
+Current shape of the stack, mid-Phase-3:
+
+```
+api_app/routers/*.py   thin route adapters: get dependencies, call one
+                        service function inside api._upstream_error_guard,
+                        translate a None/sentinel result into the existing
+                        HTTPException where applicable
+        │
+        ▼
+services/*.py           orchestration moved out of routers; still reaches
+                        back into api.py via `import research_agent.api as
+                        api` for every schema, shared helper, and any name
+                        tests patch — same `api.<name>` convention Phase 2
+                        established for routers, now used by services too
+        │
+        ▼
+api.py                  still holds every Pydantic model, `_state`, and
+                        every shared helper (_upstream_error_guard,
+                        _get_or_create_summary, _render_markdown,
+                        _paper_to_out family, curation formatting/config
+                        helpers) — unchanged since Phase 2
+```
+
+Every extracted service function follows the same "return `None` (or, for
+`search_service.py`, raise the existing `HTTPException` directly) on a
+not-found/empty condition, let the router layer handle the HTTP status"
+convention established in `library_service.py`. Three of the four
+extractions so far needed one small, explicitly-flagged signature
+extension beyond the shorthand originally proposed, in each case because
+the current behavior genuinely depends on an extra piece of request state
+that a 1- or 2-argument signature would have dropped: `summarize_search`/
+`export_search_markdown` take a `style` parameter (citation style changes
+the output), `answer_search_chat` takes `history` (prior turns feed the
+answer), and `run_search` takes `db` (needed to persist the search and
+obtain `search_id`/`created_at`).
+
+### Transition debt still remaining (updated for Phase 3 progress)
+
+1. **Routers and services both still reach into `research_agent.api` as
+   `api.<name>`** for every schema, shared helper, and patch-target name —
+   this was Phase 2's compatibility mechanism for routers, and Phase 3's
+   newly-extracted services follow the identical convention rather than
+   introducing a second one. Nothing is decoupled from `api.py` in
+   practice yet, only in file location.
+2. **`api.py` still owns every request/response Pydantic model** — none
+   have moved to a `schemas/` module.
+3. **`api.py` still owns shared helpers**: `_upstream_error_guard`,
+   `_state`, `_curation_config`, `_turn_result_to_response`,
+   `_get_or_create_summary`/`_get_or_create_web_summary`,
+   `_render_markdown`, the `_paper_to_out`/`_web_article_to_out`/
+   `_paper_out_from_batch_entry`/`_report_to_out`/`_turn_history_out`
+   family — all of it, unchanged since Phase 2.
+4. **Curation routes have no service layer yet** — `curation_core.py`,
+   `curation_sessions.py`, `curation_history.py`, `curation_reports.py`,
+   and `curation_chat.py` all still orchestrate inline. This is
+   deliberately deferred (see "Next planned area" below) since curation
+   touches significantly more shared state (checkpointer dependency
+   overrides, report generation, history/reopen flows) than the four
+   simpler extractions done so far.
+5. **`search_service.py` raises `HTTPException` directly**, rather than
+   returning a `None`/sentinel value for the router to translate — noted
+   as acceptable temporary debt for this transitional phase, not the
+   final ideal layering (a service module raising an HTTP-layer exception
+   is exactly the coupling Phase 3 is meant to unwind elsewhere). This
+   was safe to leave as-is here because `_upstream_error_guard` already
+   re-raises `HTTPException` untouched, so behavior is unaffected; it's
+   flagged for cleanup once the curation extraction settles the pattern
+   for services with multiple distinct not-found/error branches.
+
+### Validation recorded across Phase 3 so far
+
+```
+Step 1 (library_service)  commit ee28449  uv run pytest -q → 342 passed
+Step 2 (summary_service)  commit 398022f  uv run pytest -q → 342 passed
+Step 3 (chat_service)     commit d95e01d  uv run pytest -q → 342 passed
+Step 4 (search_service)   commit c7bc8d3  uv run pytest -q → 342 passed
+```
+
+Pass count has stayed flat at 342 across every step — expected, since
+Phase 3 (unlike parts of Phase 2) hasn't needed to close any new
+coverage gaps so far, only relocate existing orchestration.
+
+### Next planned area: curation service extraction
+
+Curation needs its own mini-plan before extraction starts, rather than
+following the same one-step-per-route pattern used above, because it
+touches several things the four extractions so far didn't:
+`get_curation_checkpointer` (an `app.dependency_overrides`-keyed
+dependency, not a `patch.object`-based name — a different risk profile),
+report generation/regeneration, the history/reopen flows, and curation
+chat's own escalation logic on top of `qa.py`. This will be scoped as a
+separate, explicit go-ahead, not assumed as an automatic continuation of
+Phase 3 Steps 1–4.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

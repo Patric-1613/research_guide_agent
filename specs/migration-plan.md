@@ -145,7 +145,7 @@ Rollback: revert the single commit for the router that broke something;
 every other already-moved router is unaffected since each is its own
 commit. Tag `pre-standardization-2026-07-29` remains the outer safety net.
 
-## Phase 3 — Service layer
+## Phase 3 — Service layer (in progress, started 2026-07-29)
 
 Directly resolves Phase 2's transition debt (see above / `docs/
 architecture.md`): extract orchestration currently inline in route
@@ -166,6 +166,56 @@ currently only reachable through the full HTTP round trip).
 Test gate: `uv run pytest -q` (full suite) after each service/schema/helper
 is extracted, not just the affected router's tests — several are shared
 across more than one route today.
+
+**Progress so far** (one route group per step, same "propose → implement
+→ validate → commit" cadence as Phase 2; full detail in `docs/
+architecture.md`'s "Phase 3 (service layer) — progress so far" section):
+
+| Step | Service | Backs | Commit | Full suite |
+|---|---|---|---|---|
+| 1 | `library_service.py` | `GET /library`, `GET /library/{search_id}` | `ee28449` | 342 passed |
+| 2 | `summary_service.py` | `POST /summarize`, `GET /export/{search_id}` | `398022f` | 342 passed |
+| 3 | `chat_service.py` | `POST /chat` (original pipeline only, not curation chat) | `d95e01d` | 342 passed |
+| 4 | `search_service.py` | `POST /search` (both branches) | `c7bc8d3` | 342 passed |
+
+Every step kept the pass count flat at 342 — no new coverage gaps
+surfaced during Phase 3 so far (unlike parts of Phase 2, which closed two
+pre-existing gaps before moving the routes they covered). Each service
+function follows `library_service.py`'s established "return `None` (or,
+for `search_service.py`, raise the existing `HTTPException` directly) on
+a not-found/empty condition, let the router handle the HTTP status"
+convention, and reaches shared/patched names via `import research_agent.
+api as api` exactly as Phase 2's routers do — that indirection is not
+resolved yet (see debt item 1 below), only relocated one layer further
+in.
+
+**Remaining transition debt** (unchanged in kind from Phase 2, now also
+true of the new services, plus one item specific to this phase):
+1. Routers and services both still reach `research_agent.api` as
+   `api.<name>` for every schema/helper/patched name.
+2. `api.py` still owns every Pydantic model.
+3. `api.py` still owns every shared helper (`_upstream_error_guard`,
+   `_state`, `_curation_config`, `_get_or_create_summary`/
+   `_get_or_create_web_summary`, `_render_markdown`, the
+   `_paper_to_out`-family serializers, `_turn_result_to_response`).
+4. **Curation routes have no service layer yet** — deliberately deferred;
+   see "Next: curation service extraction" below.
+5. `search_service.py` raises `HTTPException` directly rather than
+   returning a sentinel for the router to translate — acceptable
+   temporary debt (`_upstream_error_guard` already re-raises
+   `HTTPException` untouched, so behavior is unaffected), flagged for
+   cleanup once the curation extraction settles a pattern for services
+   with multiple distinct not-found/error branches.
+
+**Next: curation service extraction.** This needs its own mini-plan
+before it starts, rather than continuing the one-step-per-route-group
+pattern above unchanged, because curation touches meaningfully more than
+the four extractions so far: `get_curation_checkpointer` is an
+`app.dependency_overrides`-keyed dependency (not `patch.object`-based,
+a different risk profile from every name moved so far), plus report
+generation/regeneration, history/reopen flows, and curation chat's own
+escalation logic on top of `qa.py`. Scoped as a separate, explicit
+go-ahead — not an automatic continuation of Steps 1–4.
 
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
