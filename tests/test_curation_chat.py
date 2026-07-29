@@ -242,6 +242,148 @@ def test_chat_turn_accept_triggers_web_search_adds_articles_and_clears_offer():
     assert result["new_web_articles_found"] == 1
 
 
+def test_chat_turn_accept_records_a_curated_search_label_not_a_repeated_question_or_a_bare_yes():
+    """chat-ux-fixes bug 4 (second pass): accepting a web offer re-asks the
+    ORIGINAL question internally (needed for real retrieval/generation
+    grounding -- confirmed via mock_search's own assert above), but the
+    transcript must show neither that question repeated verbatim NOR a
+    context-free "yes please" -- a curated label naming the actual
+    resolved search query instead. No prior chat_history here, so
+    condense_question skips its LLM call and the query is the question
+    unchanged (see the dedicated condensing test below for the case
+    where history genuinely changes it)."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "what's new in 2026?"},
+    )
+    new_article = WebArticle(
+        title="2026 roundup", url="https://x.com/roundup", snippet="s",
+        published_date=None, source_domain="x.com",
+    )
+    schema = _build_answer_schema(["p1"], ["https://x.com/roundup"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], ...", cited_paper_ids=[], cited_web_urls=["https://x.com/roundup"],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[new_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "yes please", client=mock_client)
+
+    assert session.chat_history[-2] == {"role": "user", "content": 'Search the web for: "what\'s new in 2026?"'}
+    assert session.chat_history[-1] == {"role": "assistant", "content": "Per [Web 1], ..."}
+    assert not any(turn["content"] == "what's new in 2026?" for turn in session.chat_history)
+    assert not any(turn["content"] == "yes please" for turn in session.chat_history)
+
+
+def _mock_create_response(content: str):
+    mock_message = MagicMock(content=content)
+    mock_usage = MagicMock(prompt_tokens=50, completion_tokens=10, total_tokens=60)
+    mock_response = MagicMock(usage=mock_usage)
+    mock_response.choices = [MagicMock(message=mock_message)]
+    return mock_response
+
+
+def test_chat_turn_accept_resolves_a_follow_up_fragment_into_a_standalone_search_query():
+    """chat-ux-fixes bug 2 (second pass): the root cause behind "web
+    search finds nothing new" on follow-ups -- the RAW per-turn message
+    that triggered the offer (a pronoun-heavy fragment relying on
+    earlier turns for context) must not be searched verbatim. qa.py's
+    own condense_question is reused to resolve it into a real standalone
+    query first, using the conversation history that came before the
+    offer -- confirmed here by asserting search_web receives the
+    CONDENSED text, not the fragment, and that the transcript label
+    names the condensed query too."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "What are the reasons invasive species are in the UK?"},
+            {"role": "assistant", "content": "Several ecological and human factors contribute."},
+        ],
+        pending_web_offer={"question": "I mean very recent like in the 2026?"},
+    )
+    new_article = WebArticle(
+        title="2026 sightings roundup", url="https://x.com/2026", snippet="s",
+        published_date=None, source_domain="x.com",
+    )
+    schema = _build_answer_schema(["p1"], ["https://x.com/2026"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], nothing recent is reported.",
+            cited_paper_ids=[], cited_web_urls=["https://x.com/2026"],
+        ),
+    ]
+    mock_client.chat.completions.create.return_value = _mock_create_response(
+        "Recent invasive species sightings in the UK in 2026",
+    )
+
+    with patch("research_agent.curation_chat.search_web", return_value=[new_article]) as mock_search, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "yes", client=mock_client)
+
+    mock_search.assert_called_once_with("Recent invasive species sightings in the UK in 2026")
+    assert session.chat_history[-2] == {
+        "role": "user", "content": 'Search the web for: "Recent invasive species sightings in the UK in 2026"',
+    }
+    assert not any(turn["content"] == "I mean very recent like in the 2026?" for turn in session.chat_history)
+
+
+def test_chat_turn_accept_falls_back_to_the_raw_question_if_condensing_fails():
+    """Defensive: an external-call failure while resolving the search
+    query must degrade to searching the raw question, not blow up the
+    whole accept flow -- same posture search_web's own guard already
+    has for its own external call."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "What are the reasons invasive species are in the UK?"},
+            {"role": "assistant", "content": "Several ecological and human factors contribute."},
+        ],
+        pending_web_offer={"question": "I mean very recent like in the 2026?"},
+    )
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=True, answer="Still nothing recent.", cited_paper_ids=[]),
+    ]
+    # Only the FIRST condense call (this fix's own, for the search query)
+    # is meant to fail here -- ask_in_session's own internal condense call
+    # (qa.py's pre-existing retrieval-condensing, unrelated to this fix
+    # and not in this phase's scope) must still succeed normally, so this
+    # test isolates the one guard actually being tested.
+    mock_client.chat.completions.create.side_effect = [
+        RuntimeError("condense call failed"),
+        _mock_create_response("Recent invasive species sightings in the UK in 2026"),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[]) as mock_search, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "yes", client=mock_client)
+
+    mock_search.assert_called_once_with("I mean very recent like in the 2026?")
+
+
 def test_chat_turn_decline_clears_offer_without_web_search():
     """A genuine, content-free decline ("no thanks") still short-circuits
     -- not via a canned reply this module invents, but via qa.ask()'s own
@@ -532,6 +674,10 @@ def test_accept_web_offer_does_not_offer_report_update_when_report_already_cover
 
 
 def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
+    """chat-ux-fixes bug 4 (second pass): the transcript shows a curated
+    label ("Update the report to include N new source(s)") instead of
+    the literal accept message -- same reasoning as the web-offer accept
+    label: every "yes" in a conversation must not look identical."""
     papers = [_paper("p1", "RoCoFT")]
     new_article = WebArticle(title="2026 roundup", url="https://x.com/roundup", snippet="s", published_date=None, source_domain="x.com")
     session = PaperPoolSession(
@@ -553,7 +699,7 @@ def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
     assert session.report_covered_web_article_count == 1
     assert result["report_updated"] is True
     assert session.chat_history[-2:] == [
-        {"role": "user", "content": "yes, please update it"},
+        {"role": "user", "content": "Update the report to include 1 new source"},
         {"role": "assistant", "content": result["answer"]},
     ]
 

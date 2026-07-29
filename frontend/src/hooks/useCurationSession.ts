@@ -21,6 +21,20 @@ export interface TurnEvent {
   pickedPaperIds: string[]
 }
 
+// chat-ux-fixes bug 2: web_search_used/new_web_articles_found are already
+// returned by POST /chat's response on every turn, but were previously
+// discarded entirely -- captured here as an annotation on the MOST
+// RECENT reply, the same "client-only, not persisted server-side" model
+// TurnEvent above already uses (this one-shot fact genuinely isn't part
+// of PaperPoolSession; a refresh loses it, same as TurnEvent's own
+// scrollback). Always describes the latest reply only -- overwritten (to
+// null if that reply didn't use a web search) on every subsequent
+// sendChatMessage call, never accumulated into a list.
+export interface ChatSearchMeta {
+  webSearchUsed: boolean
+  newWebArticlesFound: number | null
+}
+
 const SESSION_PARAM = 'session'
 
 export function getSessionIdFromUrl(): string | null {
@@ -45,6 +59,7 @@ interface UseCurationSessionResult {
   loading: boolean
   error: string | null
   turnEvents: TurnEvent[]
+  lastChatSearchMeta: ChatSearchMeta | null
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -79,6 +94,7 @@ export function useCurationSession(): UseCurationSessionResult {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [turnEvents, setTurnEvents] = useState<TurnEvent[]>([])
+  const [lastChatSearchMeta, setLastChatSearchMeta] = useState<ChatSearchMeta | null>(null)
   const turnEventsSessionRef = useRef<string | null>(null)
 
   const loadState = useCallback(async (id: string): Promise<CurationStateResponse> => {
@@ -87,6 +103,7 @@ export function useCurationSession(): UseCurationSessionResult {
     if (turnEventsSessionRef.current !== id) {
       turnEventsSessionRef.current = id
       setTurnEvents([])
+      setLastChatSearchMeta(null)
     }
     return fresh
   }, [])
@@ -181,7 +198,12 @@ export function useCurationSession(): UseCurationSessionResult {
     (message: string) =>
       runAction(async () => {
         if (!sessionId) return
-        await curationApi.chat(sessionId, { message })
+        const response = await curationApi.chat(sessionId, { message })
+        setLastChatSearchMeta(
+          response.web_search_used
+            ? { webSearchUsed: true, newWebArticlesFound: response.new_web_articles_found }
+            : null,
+        )
         await loadState(sessionId)
       }),
     [runAction, sessionId, loadState],
@@ -235,7 +257,7 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   return {
-    sessionId, state, loading, error, turnEvents,
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
     selectFromHistory, reopenReview, refresh,
   }

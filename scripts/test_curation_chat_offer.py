@@ -81,6 +81,47 @@ def _base_session_with_pending_offer(offer_question: str) -> PaperPoolSession:
     )
 
 
+def _session_with_realistic_follow_up_fragment() -> PaperPoolSession:
+    """chat-ux-fixes bug 2 (second pass): the exact real-world shape
+    reported -- a coherent first question, answered normally, THEN a
+    pronoun/context-dependent follow-up FRAGMENT ("what about more
+    recent versions?") that only makes sense given the prior turn. This
+    is deliberately NOT the same shape _base_session_with_pending_offer
+    uses above (where the offer question is already a complete,
+    standalone sentence) -- that shape wouldn't actually exercise
+    condense_question doing real work, since there's nothing incoherent
+    to resolve."""
+    selected = [
+        _paper(
+            "p1", "RoCoFT: Efficient Finetuning of LLMs with Row-Column Updates",
+            "We propose RoCoFT, a parameter-efficient fine-tuning method introduced in 2024 that "
+            "updates only a small subset of rows and columns of weight matrices, achieving "
+            "competitive performance with a fraction of the trainable parameters of full "
+            "fine-tuning.",
+        ),
+    ]
+    fragment = "what about more recent versions of it?"
+    return PaperPoolSession(
+        topic="parameter-efficient fine-tuning for large language models",
+        stage="synthesize",
+        selected_paper_ids=["p1"],
+        selected_papers=selected,
+        chat_history=[
+            {"role": "user", "content": "When was RoCoFT introduced?"},
+            {"role": "assistant", "content": "RoCoFT was introduced in 2024 [Paper 1]."},
+            {"role": "user", "content": fragment},
+            {
+                "role": "assistant",
+                "content": (
+                    "The selected papers don't cover this. "
+                    "Would you like me to search the web for more on this?"
+                ),
+            },
+        ],
+        pending_web_offer={"question": fragment},
+    )
+
+
 def main() -> None:
     client = OpenAI()
     offer_question = "What is the most recent (2026) leaderboard ranking of LoRA variants on GLUE?"
@@ -190,10 +231,42 @@ def main() -> None:
     print("results, no corrupted offer state.")
 
     print("\n" + "=" * 100)
+    print("Case 6 (chat-ux-fixes bug 2, second pass): a REAL context-dependent follow-up")
+    print("fragment ('what about more recent versions of it?') must be resolved into a real")
+    print("standalone search query before being sent to Tavily -- not searched verbatim, and")
+    print("not repeated (nor a bare 'yes') in the transcript.")
+    print("=" * 100)
+    session6 = _session_with_realistic_follow_up_fragment()
+    fragment = session6.pending_web_offer["question"]
+    r6 = chat_turn(session6, "yes", client=client)
+    accepted_label = session6.chat_history[-2]["content"]
+    print(f"raw fragment: {fragment!r}")
+    print(f"transcript label for the accept: {accepted_label!r}")
+    print(f"web_search_used={r6.get('web_search_used')}, new_web_articles_found={r6.get('new_web_articles_found')}")
+    assert r6.get("web_search_used") is True, "FAIL: expected a real web search to run"
+    assert accepted_label != "yes", "FAIL: transcript still shows a bare 'yes', not a curated label"
+    assert accepted_label != fragment, "FAIL: transcript still shows the raw fragment repeated verbatim"
+    assert accepted_label.startswith('Search the web for: "'), f"FAIL: unexpected label shape: {accepted_label!r}"
+    resolved_query = accepted_label[len('Search the web for: "'):-1]
+    print(f"resolved standalone query: {resolved_query!r}")
+    # Can't assert exact wording from a real LLM call, but a genuinely
+    # resolved standalone query for this fragment must at minimum name
+    # the actual subject ("RoCoFT") the pronoun ("it") stood in for --
+    # the raw fragment alone never mentions it.
+    assert "rocoft" in resolved_query.lower(), (
+        f"FAIL: resolved query doesn't appear to have resolved 'it' -> RoCoFT at all: {resolved_query!r}"
+    )
+    assert resolved_query.lower() != fragment.lower(), "FAIL: condensing was a no-op on a genuine fragment"
+    print("PASS: the fragment was resolved into a real standalone query naming RoCoFT, actually")
+    print("searched (not the raw fragment), and shown as a curated transcript label, not a bare 'yes'.")
+
+    print("\n" + "=" * 100)
     print("PASS: accept triggers a real search, decline stays paper-only, an unrelated reply")
     print("clears the stale offer instead of misreading it as yes/no, a decline-shaped message")
     print("with a real question attached still gets that question answered instead of silently")
-    print("dropped, and a genuine Tavily failure degrades gracefully end to end.")
+    print("dropped, a genuine Tavily failure degrades gracefully end to end, and a real")
+    print("context-dependent follow-up fragment gets resolved into a real standalone query")
+    print("instead of being searched (or shown in the transcript) verbatim.")
     print("=" * 100)
 
 

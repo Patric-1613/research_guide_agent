@@ -157,13 +157,37 @@ def _maybe_set_web_offer(session: PaperPoolSession, question: str, result: dict)
     return {**result, "answer": augmented_answer, "web_offer_made": True}
 
 
-def _accept_web_offer(session: PaperPoolSession, client: OpenAI, top_k: int) -> dict:
+def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, top_k: int) -> dict:
     question = session.pending_web_offer["question"]
     session.pending_web_offer = None
 
+    # chat-ux-fixes bug 2/4 (second pass): `question` is the RAW, literal
+    # per-turn message that triggered the offer -- for a follow-up like
+    # "I mean very recent like in the 2026?" that's an incoherent web
+    # search query on its own (no subject; it only makes sense given
+    # earlier turns' context). qa.py already resolves exactly this kind
+    # of fragment into a real standalone question for its own paper-
+    # retrieval condensing (condense_question/capped_history, made
+    # public for this reuse rather than reinventing a second resolver).
+    # Computed at ACCEPT time only, never at offer time -- a declined or
+    # ignored offer never spends this extra LLM call (approved design:
+    # showing the resolved query in the transcript AFTER accepting, not
+    # in the offer prompt itself, is worth the offer-time call it saves).
+    try:
+        search_query = qa.condense_question(qa.capped_history(session.chat_history), question, client)
+    except Exception:
+        # Same defensive posture as the search_web guard right below --
+        # an external-call failure here must degrade to the raw question
+        # as the search query, not blow up the whole accept flow.
+        logger.warning(
+            "condense_question raised unexpectedly for %r -- using the raw question as the search query",
+            question, exc_info=True,
+        )
+        search_query = question
+
     existing_urls = {a.url for a in session.web_articles_added}
     try:
-        found = search_web(question)
+        found = search_web(search_query)
     except Exception:
         # search_web()'s own docstring promises it never raises -- degrades
         # to [] on missing key, zero results, or any API/network error --
@@ -173,7 +197,7 @@ def _accept_web_offer(session: PaperPoolSession, client: OpenAI, top_k: int) -> 
         # this project's discipline says not to make. Same degrade-to-empty
         # outcome as a documented failure, just reached defensively instead
         # of by trusting the callee never to violate its own contract.
-        logger.warning("search_web raised unexpectedly for query %r -- treating as no new results", question, exc_info=True)
+        logger.warning("search_web raised unexpectedly for query %r -- treating as no new results", search_query, exc_info=True)
         found = []
     new_articles = [a for a in found if a.url not in existing_urls]
     session.web_articles_added.extend(new_articles)
@@ -186,6 +210,25 @@ def _accept_web_offer(session: PaperPoolSession, client: OpenAI, top_k: int) -> 
     # information gap after a genuine web search attempt is reported
     # plainly instead.
     result = ask_in_session(session, question, client=client, top_k=top_k)
+    # chat-ux-fixes bug 4 (first pass): ask_in_session (via qa.ask()) just
+    # appended {"role": "user", "content": question} -- the ORIGINAL
+    # question, needed here for real retrieval/generation grounding -- as
+    # the new user turn, making the same question appear a second time
+    # verbatim in the transcript. chat-ux-fixes bug 4 (second pass): a
+    # bare "yes" (that first fix) turned out not to be good enough either
+    # -- every accept in a conversation looked identical, with no way to
+    # tell what any of them were actually for. Replaced with a label
+    # naming the actual resolved search query, so this turn is
+    # self-describing in the transcript on its own. Same "patch the
+    # freshly-appended turn after the fact" pattern _maybe_set_web_offer
+    # above already uses for the assistant side (and _accept_report_
+    # update below reuses again) -- this is the user-side equivalent.
+    # qa.py's ask()/_no_sources_result always append exactly one user
+    # then one assistant entry per call (documented and relied on by
+    # qa.py's own capped_history), so the turn ask_in_session just added
+    # is guaranteed to be at [-2], never anything upstream of it.
+    if len(session.chat_history) >= 2:
+        session.chat_history[-2] = {"role": "user", "content": f'Search the web for: "{search_query}"'}
     result = {**result, "web_search_used": True, "new_web_articles_found": len(new_articles)}
     # curation-refinement-and-auto-offer Phase 6f-3: the "immediately, as
     # soon as the trigger condition is true" point this design settled
@@ -221,12 +264,18 @@ def _accept_report_update(session: PaperPoolSession, message: str, client: OpenA
     all -- there's no user question to re-answer here, just a report to
     regenerate -- so the user/assistant turn is appended directly,
     mirroring what ask_in_session would have done for any other turn."""
+    new_count = session.pending_report_update.get("new_article_count", 1)
     session.pending_report_update = None
     session.report = regenerate_report_with_new_sources(session, client=client)
     session.report_covered_web_article_count = len(session.web_articles_added)
 
     answer = "Done — I've updated the report to include the newly approved web source(s)."
-    session.chat_history.append({"role": "user", "content": message})
+    # chat-ux-fixes bug 4 (second pass): a curated label instead of the
+    # literal message (e.g. "yes") -- same reasoning as _accept_web_
+    # offer's label above: a bare "yes" here is indistinguishable from
+    # every other accept in the conversation.
+    label = f"Update the report to include {new_count} new source{'s' if new_count != 1 else ''}"
+    session.chat_history.append({"role": "user", "content": label})
     session.chat_history.append({"role": "assistant", "content": answer})
     return {
         "answer": answer,
@@ -299,7 +348,7 @@ def chat_turn(
         offer_description = f"search the web for more on: {session.pending_web_offer['question']!r}"
         intent = _classify_offer_response(offer_description, message, client)
         if intent == "accept":
-            return _accept_web_offer(session, client, top_k)
+            return _accept_web_offer(session, message, client, top_k)
         # decline or other: clear the stale offer either way -- neither
         # case may leave it lingering for a later turn to misread.
         session.pending_web_offer = None

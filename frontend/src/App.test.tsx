@@ -34,6 +34,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     loading: false,
     error: null,
     turnEvents: [],
+    lastChatSearchMeta: null,
     openReview: vi.fn(),
     startReview: vi.fn(),
     submitPicks: vi.fn(),
@@ -182,6 +183,49 @@ describe('App', () => {
     }))
     rerender(<App />)
     expect(screen.getByText('Browse past turns (1)')).toBeInTheDocument()
+  })
+
+  it('chat UX fixes, bug 1: "Browse past turns" stays visible in Chat mode', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      stage: 'synthesize', pending_batch: null,
+      turn_history: [{ turn_number: 1, refilled: false, batch: [] }],
+    }))
+    render(<App />)
+
+    await user.click(screen.getByTestId('workspace-mode-chat'))
+
+    expect(screen.getByText('Browse past turns (1)')).toBeInTheDocument()
+  })
+
+  it('chat UX fixes, bug 1: "Browse past turns" is hidden in Report mode, even with real turn history', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      stage: 'synthesize', pending_batch: null,
+      turn_history: [{ turn_number: 1, refilled: false, batch: [] }],
+    }))
+    render(<App />)
+
+    await user.click(screen.getByTestId('workspace-mode-report'))
+
+    expect(screen.queryByTestId('open-turn-history')).not.toBeInTheDocument()
+  })
+
+  it('chat UX fixes, bug 1: switching to Report mode closes the turn history browser if it was already open', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      stage: 'synthesize', pending_batch: null,
+      turn_history: [{ turn_number: 1, refilled: false, batch: [] }],
+    }))
+    render(<App />)
+
+    await user.click(screen.getByTestId('open-turn-history'))
+    expect(screen.getByTestId('close-turn-history')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('workspace-mode-report'))
+
+    expect(screen.queryByTestId('close-turn-history')).not.toBeInTheDocument()
+    expect(screen.getByTestId('generate-report')).toBeInTheDocument()
   })
 
   it('curation-editable-until-locked Phase 10e: "Reopen for more curation" appears once stopped, as long as nothing has been chatted/reported yet', () => {

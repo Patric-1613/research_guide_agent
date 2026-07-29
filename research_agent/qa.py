@@ -60,6 +60,7 @@ wants one long-lived connection; storage.py opens one per request).
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -167,8 +168,47 @@ def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None
     return create_model("ChatAnswer", **fields)
 
 
+_CITATION_MARKER_RE = re.compile(r"\[(Paper|Web) (\d+)\]")
+
+
+def _renumber_citation_markers(answer: str) -> str:
+    """chat-ux-fixes bug 5: the system prompt asks the model to number
+    inline [Paper N]/[Web N] markers starting at 1, in the order it
+    lists the corresponding id/url in cited_paper_ids/cited_web_urls --
+    but nothing enforces that, and in real use it's been observed
+    skipping straight to e.g. [Web 2]/[Web 3] without ever writing
+    [Web 1] (most likely because retrieved_web_articles/context passed
+    to the model spans the WHOLE session's web articles, not just this
+    turn's, so the model appears to anchor numbers to a global position
+    rather than to its own per-turn cited_web_urls order). Matches this
+    module's existing precedent of never trusting the model on a
+    citation guarantee it can just get wrong (see _generate_node's own
+    "don't trust the model to honor 'empty if not answerable'" comment)
+    -- rather than a prompt tweak (unverifiable), this deterministically
+    renumbers whatever markers actually appear, per kind (Paper/Web are
+    independent sequences, never merged), to be dense and start at 1 in
+    the order they first appear in the text. This doesn't require
+    knowing which cited_paper_ids/cited_web_urls entry a given marker
+    was MEANT to reference (that mapping isn't recoverable from the
+    text alone) -- it only guarantees the numbers themselves are
+    sequential and start at 1, which is exactly what was broken.
+    """
+    next_number = {"Paper": 1, "Web": 1}
+    seen: dict[tuple[str, str], int] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        kind, old_number = match.group(1), match.group(2)
+        key = (kind, old_number)
+        if key not in seen:
+            seen[key] = next_number[kind]
+            next_number[kind] += 1
+        return f"[{kind} {seen[key]}]"
+
+    return _CITATION_MARKER_RE.sub(_replace, answer)
+
+
 @observe(name="condense_question", as_type="generation", capture_input=False, capture_output=False)
-def _condense_question(history: list[dict], question: str, client: OpenAI, model: str = CONDENSE_MODEL) -> str:
+def condense_question(history: list[dict], question: str, client: OpenAI, model: str = CONDENSE_MODEL) -> str:
     if not history:
         # No LLM call on the common first-turn case — nothing to condense
         # against, so the span is left with no generation details recorded,
@@ -202,7 +242,7 @@ def _condense_question(history: list[dict], question: str, client: OpenAI, model
     return condensed
 
 
-def _recent_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> list[dict]:
+def capped_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> list[dict]:
     """Caps history to the last max_turns user+assistant pairs (history
     always grows in pairs — see _no_sources_result and the end of ask()
     below), dropping older turns rather than letting the prompt sent on
@@ -500,7 +540,7 @@ def _route_after_classify(state: QAState) -> str:
 
 
 def _condense_node(state: QAState) -> dict:
-    standalone = _condense_question(state["recent_history"], state["question"], state["client"])
+    standalone = condense_question(state["recent_history"], state["question"], state["client"])
     return {"standalone_query": standalone}
 
 
@@ -593,8 +633,14 @@ def _generate_node(state: QAState) -> dict:
     cited_web_urls = list(getattr(parsed, "cited_web_urls", [])) if parsed.answerable else []
     cited_web_articles = [web_by_url[url] for url in cited_web_urls]
 
+    # chat-ux-fixes bug 5: same "defensive, don't trust the model" spirit
+    # as the answerable-guard just above -- see _renumber_citation_markers's
+    # own docstring for why the model's own [Paper N]/[Web N] numbering
+    # can't be trusted as-is.
+    answer = _renumber_citation_markers(parsed.answer)
+
     session.history.append({"role": "user", "content": question})
-    session.history.append({"role": "assistant", "content": parsed.answer})
+    session.history.append({"role": "assistant", "content": answer})
 
     get_client().update_current_span(
         input={"question": question, "top_k": top_k},
@@ -609,7 +655,7 @@ def _generate_node(state: QAState) -> dict:
 
     return {
         "result": {
-            "answer": parsed.answer,
+            "answer": answer,
             "answerable": parsed.answerable,
             "cited_papers": cited_papers,
             "retrieved_papers": retrieved_papers,
@@ -705,7 +751,7 @@ def ask(
     scripts) keeps working as-is.
     """
     client = client or OpenAI()
-    recent_history = _recent_history(session.history)
+    recent_history = capped_history(session.history)
 
     initial_state: QAState = {
         "session": session,

@@ -31,7 +31,7 @@ function setModeInUrl(mode: WorkspaceMode): void {
 
 export default function App() {
   const {
-    sessionId, state, loading, error, turnEvents,
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
     selectFromHistory, reopenReview,
   } = useCurationSession()
@@ -74,6 +74,13 @@ export default function App() {
   function setWorkspaceMode(mode: WorkspaceMode) {
     setWorkspaceModeState(mode)
     setModeInUrl(mode)
+    // Chat UX fixes, bug 1: the turn history browser is Review/Chat-only
+    // (redundant in Review's own inline turn feed but still useful there;
+    // never made sense in Report, which has no notion of "turns" at all)
+    // -- switching TO Report must close it, not just hide the toggle
+    // button that opens it, so navigating there via a tab click can't
+    // leave it stuck open from an earlier Review/Chat session.
+    if (mode === 'report') setShowHistory(false)
   }
 
   // Re-sync from the URL on back/forward navigation, mirroring the
@@ -225,7 +232,7 @@ export default function App() {
           {state && (
             <>
               <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
-              {!showHistory && (reopenEligible || state.turn_history.length > 0) && (
+              {!showHistory && (reopenEligible || (state.turn_history.length > 0 && workspaceMode !== 'report')) && (
                 <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-1.5">
                   <div>
                     {reopenEligible && (
@@ -240,7 +247,8 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                  {state.turn_history.length > 0 && (
+                  {/* Chat UX fixes, bug 1: Review + Chat only, never Report -- see setWorkspaceMode above. */}
+                  {state.turn_history.length > 0 && workspaceMode !== 'report' && (
                     <button
                       type="button"
                       data-testid="open-turn-history"
@@ -276,7 +284,12 @@ export default function App() {
                     />
                   )}
                   {workspaceMode === 'chat' && (
-                    <ChatModePanel state={state} disabled={loading} onSendMessage={handleSendMessage} />
+                    <ChatModePanel
+                      state={state}
+                      disabled={loading}
+                      onSendMessage={handleSendMessage}
+                      lastSearchMeta={lastChatSearchMeta}
+                    />
                   )}
                   {workspaceMode === 'report' && (
                     <ReportModePanel

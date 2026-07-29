@@ -16,11 +16,22 @@ interface TurnHistoryBrowserProps {
 // them), addressing the original request directly -- being "stuck" in
 // Report/Chat mode no longer means the earlier turns are gone.
 //
-// Which action a paper gets depends on stage, matching the two
-// backend-enforced channels (see select_paper_from_history's own
-// docstring in curation_session.py for exactly why there are two):
-//   - stage=="synthesize": select-from-history is safe (no pending
-//     interrupt) -- picking is immediate.
+// Which action a paper gets depends on stage AND lock status, matching
+// the backend-enforced gates (see select_paper_from_history's own
+// docstring in curation_session.py for exactly why):
+//   - locked (report generated and/or chat started): view-only, no
+//     action at all -- reported bug fix. This used to be gated on
+//     stage=="synthesize" alone, which stopped being a sufficient
+//     "safe to add" proxy once curation-editable-until-locked (Phase
+//     10) redefined "locked" as has_report/has_chat specifically --
+//     the backend gate was patched to match (select_paper_from_history
+//     now refuses once locked, not just while stage=="curate"), and
+//     this render logic has to mirror that same rule, or a stale "+
+//     Add to review" button would call an endpoint that now correctly
+//     rejects it, which is confusing on its own even though it can no
+//     longer silently corrupt anything.
+//   - stage=="synthesize" and NOT locked: select-from-history is safe
+//     (no pending interrupt) -- picking is immediate.
 //   - stage=="curate": a real interrupt IS pending -- picking here just
 //     stages the paper via the SAME onAdd/onRemoveStaged mechanism
 //     Review mode's current batch already uses, applied on the next
@@ -37,7 +48,8 @@ export function TurnHistoryBrowser({
 }: TurnHistoryBrowserProps) {
   const stagedSet = new Set(stagedPickIds)
   const selectedSet = new Set(state.selected_paper_ids)
-  const canPickImmediately = state.stage === 'synthesize'
+  const isLocked = state.report !== null || state.chat_history.length > 0
+  const canPickImmediately = state.stage === 'synthesize' && !isLocked
   const turns = [...state.turn_history].reverse() // most recent turn first
 
   return (
@@ -63,7 +75,7 @@ export function TurnHistoryBrowser({
             </h3>
             <div className="flex flex-col gap-2">
               {entry.batch.map((paper) => {
-                if (selectedSet.has(paper.paper_id)) {
+                if (selectedSet.has(paper.paper_id) || isLocked) {
                   return <PaperCard key={paper.paper_id} paper={paper} showAbstract action={{ kind: 'none' }} />
                 }
                 if (canPickImmediately) {
@@ -102,11 +114,15 @@ export function TurnHistoryBrowser({
         ))}
       </div>
 
-      {!canPickImmediately && (
+      {isLocked ? (
+        <p className="border-t border-border bg-panel px-4 py-3 text-center text-xs text-text-muted">
+          This review is locked (a report has been generated and/or chat has started) — past turns are view-only.
+        </p>
+      ) : !canPickImmediately ? (
         <p className="border-t border-border bg-panel px-4 py-3 text-center text-xs text-text-muted">
           Curation is still in progress — papers picked here are added the next time you hit Continue in Review mode.
         </p>
-      )}
+      ) : null}
     </div>
   )
 }

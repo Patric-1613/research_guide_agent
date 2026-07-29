@@ -130,6 +130,79 @@ describe('TurnHistoryBrowser', () => {
     expect(screen.queryByText(/added the next time you hit Continue/)).not.toBeInTheDocument()
   })
 
+  it('reported bug: once a report has been generated, an unselected historical paper is view-only, not "+ Add to review"', () => {
+    const onAdd = vi.fn()
+    const onSelectFromHistory = vi.fn()
+    const state = baseState({
+      stage: 'synthesize',
+      turn_history: [{ turn_number: 1, refilled: false, batch: [paper('p0', 'From Turn 1')] }],
+      report: {
+        findings: { content: 'f', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: '', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: '', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+      },
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={onAdd} onRemoveStaged={vi.fn()} onSelectFromHistory={onSelectFromHistory} onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: '+ Add to review' })).not.toBeInTheDocument()
+    expect(screen.getByText(/This review is locked/)).toBeInTheDocument()
+  })
+
+  it('reported bug: once chat has started, an unselected historical paper is view-only', () => {
+    const state = baseState({
+      stage: 'synthesize',
+      turn_history: [{ turn_number: 1, refilled: false, batch: [paper('p0', 'From Turn 1')] }],
+      chat_history: [{ role: 'user', content: 'hi' }],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: '+ Add to review' })).not.toBeInTheDocument()
+    expect(screen.getByText(/This review is locked/)).toBeInTheDocument()
+  })
+
+  it('once locked, staged-but-not-yet-submitted historical picks also render as view-only, not "Remove"', () => {
+    const state = baseState({
+      stage: 'synthesize',
+      turn_history: [{ turn_number: 1, refilled: false, batch: [paper('p0', 'From Turn 1')] }],
+      chat_history: [{ role: 'user', content: 'hi' }],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={['p0']} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
+  })
+
+  it('not locked (no report, no chat) still behaves as before: synthesize stage picks immediately', () => {
+    const state = baseState({
+      stage: 'synthesize', report: null, chat_history: [],
+      turn_history: [{ turn_number: 1, refilled: false, batch: [paper('p0', 'From Turn 1')] }],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: '+ Add to review' })).toBeInTheDocument()
+    expect(screen.queryByText(/This review is locked/)).not.toBeInTheDocument()
+  })
+
   it('clicking Close calls onClose', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()

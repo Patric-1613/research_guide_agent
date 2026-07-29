@@ -467,6 +467,38 @@ def test_select_paper_from_history_refuses_while_still_curating():
     assert session.selected_paper_ids == []
 
 
+def test_select_paper_from_history_refuses_once_a_report_has_been_generated():
+    """curation-editable-until-locked bug fix: stage=="synthesize" alone
+    no longer means "safe to add" -- a report already exists (built from
+    the selection AS IT WAS), so silently growing selected_paper_ids here
+    would orphan the report from the current selection."""
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+        report={"findings": {"content": "f", "cited_papers": []}},
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="report has already been generated"):
+        select_paper_from_history(session, "p1")
+
+    assert session.selected_paper_ids == []
+
+
+def test_select_paper_from_history_refuses_once_chat_has_started():
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        turn_history=[_history_entry(1, [_paper("p0"), _paper("p1")])],
+        chat_history=[{"role": "user", "content": "hi"}],
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="chat has already started"):
+        select_paper_from_history(session, "p1")
+
+    assert session.selected_paper_ids == []
+
+
 def test_select_paper_from_history_raises_for_a_paper_never_actually_served():
     session = PaperPoolSession(topic="q", stage="synthesize", turn_history=[_history_entry(1, [_paper("p0")])])
 
@@ -622,6 +654,8 @@ if __name__ == "__main__":
     test_loading_a_pre_phase9b_session_without_turn_history_falls_back_to_empty()
     test_select_paper_from_history_adds_it_to_selection_when_synthesize()
     test_select_paper_from_history_refuses_while_still_curating()
+    test_select_paper_from_history_refuses_once_a_report_has_been_generated()
+    test_select_paper_from_history_refuses_once_chat_has_started()
     test_select_paper_from_history_raises_for_a_paper_never_actually_served()
     test_select_paper_from_history_is_a_silent_no_op_if_already_selected()
     test_select_paper_from_history_finds_a_paper_from_an_earlier_turn_not_just_the_latest()

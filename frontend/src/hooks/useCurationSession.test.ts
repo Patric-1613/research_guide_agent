@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCurationSession, getSessionIdFromUrl } from './useCurationSession'
 import { curationApi } from '../api/client'
-import type { CurationStateResponse, CurationTurnResponse } from '../api/types'
+import type { CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../api/types'
 
 vi.mock('../api/client', () => ({
   curationApi: {
@@ -23,6 +23,15 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
+    ...overrides,
+  }
+}
+
+function chatResponse(overrides: Partial<CurationChatResponse> = {}): CurationChatResponse {
+  return {
+    answer: 'the answer', answerable: true, cited_papers: [], cited_web_articles: [],
+    web_offer_made: false, web_offer_declined: false, web_search_used: false, new_web_articles_found: null,
+    report_update_offer_made: false, report_update_declined: false, report_updated: false, chat_history: [],
     ...overrides,
   }
 }
@@ -166,5 +175,60 @@ describe('useCurationSession', () => {
     expect(result.current.sessionId).toBe('s1')
     expect(result.current.state?.session_id).toBe('s1')
     expect(getSessionIdFromUrl()).toBe('s1')
+  })
+
+  it('chat-ux-fixes bug 2: sendChatMessage captures web_search_used/new_web_articles_found from the response as lastChatSearchMeta', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: true, new_web_articles_found: 2 }))
+
+    await act(async () => {
+      await result.current.sendChatMessage('yes')
+    })
+
+    expect(result.current.lastChatSearchMeta).toEqual({ webSearchUsed: true, newWebArticlesFound: 2 })
+  })
+
+  it('chat-ux-fixes bug 2: lastChatSearchMeta is null when the reply did not use a web search, even after a PRIOR reply did', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: true, new_web_articles_found: 1 }))
+    await act(async () => {
+      await result.current.sendChatMessage('yes')
+    })
+    expect(result.current.lastChatSearchMeta).not.toBeNull()
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: false, new_web_articles_found: null }))
+    await act(async () => {
+      await result.current.sendChatMessage('a normal follow-up question')
+    })
+
+    expect(result.current.lastChatSearchMeta).toBeNull()
+  })
+
+  it('chat-ux-fixes bug 2: lastChatSearchMeta resets to null when switching to a DIFFERENT session (mirrors turnEvents)', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: true, new_web_articles_found: 1 }))
+    await act(async () => {
+      await result.current.sendChatMessage('yes')
+    })
+    expect(result.current.lastChatSearchMeta).not.toBeNull()
+
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's2', topic: 'other topic' }))
+    await act(async () => {
+      await result.current.openReview('s2')
+    })
+
+    expect(result.current.lastChatSearchMeta).toBeNull()
   })
 })
