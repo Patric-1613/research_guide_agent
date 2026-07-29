@@ -629,32 +629,9 @@ def export(search_id: int, style: CitationStyle = "apa", db: sqlite3.Connection 
         return _render_markdown(saved.topic, summary_json, style=style, web_summary_json=web_summary_json)
 
 
-@app.get("/library", response_model=list[LibraryItem])
-def library(db: sqlite3.Connection = Depends(get_db_connection)) -> list[LibraryItem]:
-    saved_list = list_searches(db)
-    return [
-        LibraryItem(
-            search_id=s.id, topic=s.topic, created_at=s.created_at,
-            paper_count=len(s.paper_ids), has_summary=s.summary is not None,
-            web_article_count=len(s.web_articles),
-        )
-        for s in saved_list
-    ]
+from research_agent.api_app.routers.library import router as library_router
 
-
-@app.get("/library/{search_id}", response_model=SearchResponse)
-def library_detail(search_id: int, db: sqlite3.Connection = Depends(get_db_connection)) -> SearchResponse:
-    saved = get_search(db, search_id)
-    if saved is None:
-        raise HTTPException(status_code=404, detail="search_id not found")
-
-    papers = get_papers_by_ids(saved.paper_ids, collection=_state["collection"])
-    scores_by_id = dict(zip(saved.paper_ids, saved.scores))
-    return SearchResponse(
-        search_id=saved.id, topic=saved.topic, created_at=saved.created_at,
-        papers=[_paper_to_out(p, scores_by_id.get(p.paper_id)) for p in papers],
-        web_articles=[_web_article_to_out(a) for a in _web_articles_from_saved(saved)],
-    )
+app.include_router(library_router)
 
 
 # =================================================================================
