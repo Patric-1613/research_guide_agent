@@ -586,25 +586,9 @@ from research_agent.api_app.routers.summarize import router as summarize_router
 app.include_router(summarize_router)
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, db: sqlite3.Connection = Depends(get_db_connection)) -> ChatResponse:
-    with _upstream_error_guard("chat"):
-        saved = get_search(db, req.search_id)
-        if saved is None:
-            raise HTTPException(status_code=404, detail="search_id not found")
+from research_agent.api_app.routers.chat import router as chat_router
 
-        papers = get_papers_by_ids(saved.paper_ids, collection=_state["collection"])
-        web_articles = _web_articles_from_saved(saved)
-        session = ChatSession(papers=papers, web_articles=web_articles, history=[turn.model_dump() for turn in req.history])
-        result = ask(session, req.question, client=_state["client"])
-
-        return ChatResponse(
-            answer=result["answer"],
-            answerable=result["answerable"],
-            cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in result["cited_papers"]],
-            cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in result.get("cited_web_articles", [])],
-            history=[ChatTurn(**turn) for turn in session.history],
-        )
+app.include_router(chat_router)
 
 
 from research_agent.api_app.routers.export import router as export_router
