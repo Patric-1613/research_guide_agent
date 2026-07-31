@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 
 import research_agent.api as api
 from research_agent.api_app.schemas import SearchRequest, SearchResponse
 from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out
+from research_agent.config import get_settings
 from research_agent.schema import WebArticle
 from research_agent.services.errors import ServiceError
 from research_agent.services.search_helpers import _filtered_candidate_count, _merge_web_articles, _server_side_rerank
@@ -13,7 +13,7 @@ from research_agent.storage import save_search
 
 
 def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
-    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    s2_key = get_settings().semantic_scholar_api_key
 
     if req.use_query_expansion:
         # LLM-assisted query expansion (query_expansion.py) — a separate,

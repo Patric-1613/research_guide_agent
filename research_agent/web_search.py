@@ -17,9 +17,9 @@ back to the existing paper-only behavior, not crash the search.
 from __future__ import annotations
 
 import logging
-import os
 from urllib.parse import urlparse
 
+from research_agent.config import get_settings
 from research_agent.schema import WebArticle
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def search_web(query: str, max_results: int = 4) -> list[WebArticle]:
         logger.warning("search_web called with empty query")
         return []
 
-    if not os.getenv("TAVILY_API_KEY"):
+    if not get_settings().tavily_api_key:
         logger.info("TAVILY_API_KEY not set — skipping web search, paper-only results apply")
         return []
 

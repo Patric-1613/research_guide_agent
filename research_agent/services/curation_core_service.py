@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import uuid
 
 import research_agent.api as api
 from research_agent.api_app.schemas import CurationPicksRequest, CurationStartRequest, CurationTurnResponse
 from research_agent.api_app.serializers import _turn_result_to_response
+from research_agent.config import get_settings
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
 from research_agent.curation_session import _session_to_dict
 from research_agent.query_expansion import PaperPoolSession
@@ -15,10 +15,10 @@ from research_agent.services.errors import ServiceError
 
 def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
     client = api._state["client"]
-    s2_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
+    settings = get_settings()
     deduped = api.build_candidate_pool(
-        req.topic, req.target_count, s2_api_key=s2_key, client=client,
-        use_openalex_fallback=req.use_openalex_fallback, openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
+        req.topic, req.target_count, s2_api_key=settings.semantic_scholar_api_key, client=client,
+        use_openalex_fallback=req.use_openalex_fallback, openalex_mailto=settings.openalex_mailto,
     )
     ranked, _ = api.rank_full_pool(req.topic, deduped, client=client, collection=api._state["collection"])
     if not ranked:

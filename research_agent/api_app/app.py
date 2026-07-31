@@ -15,13 +15,13 @@ avoid ever having two live FastAPI instances (and two lifespans) around.
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import research_agent.api as api
+from research_agent.config import get_settings
 
 
 @asynccontextmanager
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     # (e.g. SEMANTIC_SCHOLAR_API_KEY).
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"), "http://127.0.0.1:5173"],
+        allow_origins=[get_settings().frontend_origin, "http://127.0.0.1:5173"],
         allow_methods=["*"],
         allow_headers=["*"],
     )

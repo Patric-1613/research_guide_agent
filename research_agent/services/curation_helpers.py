@@ -12,9 +12,8 @@ stay in api.py (see docs/architecture.md).
 
 from __future__ import annotations
 
-import os
-
 import research_agent.api as api
+from research_agent.config import get_settings
 
 
 def _curation_config() -> dict:
@@ -25,8 +24,9 @@ def _curation_config() -> dict:
     omitted. Built fresh per request rather than cached in _state,
     since s2_api_key/openalex_mailto are read from the environment the
     same way /search already does, not assumed constant."""
+    settings = get_settings()
     return {
         "client": api._state["client"],
-        "s2_api_key": os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
-        "openalex_mailto": os.getenv("OPENALEX_MAILTO") or None,
+        "s2_api_key": settings.semantic_scholar_api_key,
+        "openalex_mailto": settings.openalex_mailto,
     }
