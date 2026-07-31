@@ -1,5 +1,5 @@
 import type { MouseEvent } from 'react'
-import type { CurationReviewSummary } from '../../api/types'
+import type { CurationReviewSummary } from '../../types'
 
 interface ReviewCardProps {
   review: CurationReviewSummary

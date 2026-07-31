@@ -918,14 +918,23 @@ cd frontend && npm test             → 98 passed
 cd frontend && npm run build        → clean (tsc -b && vite build)
 ```
 
-Frontend structure today (already reasonably layered, see `specs/migration-
-plan.md` Phase 7 for the small remaining moves):
+**Frontend structure — done (Phase 16, `specs/migration-plan.md`'s
+Phase 7).** `frontend/src/` now matches the target `{pages,components,
+hooks,lib/api,types}/` shape below directly:
 
 ```
 frontend/src/
-  App.tsx                 central orchestrator (workspace mode, routing state)
-  hooks/useCurationSession.ts   the one stateful hook every component reads from
-  api/client.ts, api/types.ts   typed fetch wrapper + response shapes
+  App.tsx                        thin entrypoint — renders CurationWorkspacePage
+  pages/CurationWorkspacePage.tsx  the app's one page (no client-side
+                                  router — a single-view SPA with a
+                                  ?mode= query-param toggle, not
+                                  multi-page routing)
+  hooks/useCurationSession.ts     the one stateful hook every component reads from
+  lib/api/client.ts               typed fetch wrapper — request paths,
+                                  methods, payloads, error handling
+                                  unchanged, only the file's location moved
+  types/index.ts                 shared response/request types (moved
+                                  from api/types.ts, same shapes)
   components/
     ReviewMode/, ReportMode/, ChatMode/    the three workspace-mode panels
     ReviewsList/, TurnHistory/, TurnFeed/  left panel + turn scrollback/browser

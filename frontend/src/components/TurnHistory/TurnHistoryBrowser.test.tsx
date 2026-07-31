@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TurnHistoryBrowser } from './TurnHistoryBrowser'
-import type { CurationStateResponse, PaperOut } from '../../api/types'
+import type { CurationStateResponse, PaperOut } from '../../types'
 
 function paper(id: string, title: string, abstract: string | null = null): PaperOut {
   return {

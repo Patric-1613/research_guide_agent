@@ -1,4 +1,4 @@
-import type { ReportSectionOut, CurationStateResponse } from '../../api/types'
+import type { ReportSectionOut, CurationStateResponse } from '../../types'
 
 interface ReportModePanelProps {
   state: CurationStateResponse

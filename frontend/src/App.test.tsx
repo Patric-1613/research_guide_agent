@@ -3,11 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { useCurationSession } from './hooks/useCurationSession'
-import { curationApi } from './api/client'
-import type { CurationStateResponse } from './api/types'
+import { curationApi } from './lib/api/client'
+import type { CurationStateResponse } from './types'
 
 vi.mock('./hooks/useCurationSession')
-vi.mock('./api/client', () => ({
+vi.mock('./lib/api/client', () => ({
   curationApi: {
     listReviews: vi.fn().mockResolvedValue([]),
   },

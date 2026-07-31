@@ -31,8 +31,8 @@ uv run uvicorn research_agent.api:app --reload --reload-exclude "frontend/*"
 ```
 
 The frontend reads the backend's base URL from `VITE_API_BASE_URL`
-(`src/api/client.ts`, read at call time via `import.meta.env`, not module
-load time), defaulting to `http://localhost:8000` if unset. Copy
+(`src/lib/api/client.ts`, read at call time via `import.meta.env`, not
+module load time), defaulting to `http://localhost:8000` if unset. Copy
 `.env.example` to `.env` to set it explicitly:
 
 ```bash
@@ -43,9 +43,17 @@ cp .env.example .env
 
 ```
 src/
-  App.tsx                      central orchestrator (workspace mode, routing state)
-  hooks/useCurationSession.ts   the one stateful hook every component reads from
-  api/client.ts, api/types.ts   typed fetch wrapper + response shapes
+  App.tsx                        thin entrypoint — renders CurationWorkspacePage
+  pages/CurationWorkspacePage.tsx  the app's one page: workspace-mode state,
+                                  top-level layout, URL-param mode sync
+                                  (no client-side router — a single-view SPA
+                                  with a ?mode= query param, not multi-page
+                                  routing)
+  hooks/useCurationSession.ts     the one stateful hook every component reads from
+  lib/api/client.ts               typed fetch wrapper — request paths, methods,
+                                  payloads, error handling
+  types/index.ts                  shared response/request types, mirroring
+                                  research_agent/api_app/schemas.py field-for-field
   components/
     ReviewMode/, ReportMode/, ChatMode/     the three workspace-mode panels
     ReviewsList/, TurnHistory/, TurnFeed/   left panel + turn scrollback/browser

@@ -170,6 +170,56 @@ plan.md`'s existing Phase 7); model-name/path config centralization
 (optional future config debt, from Phase 14 — not scheduled); the
 always-out-of-scope auth/Postgres/multi-user work.
 
+## Phase 16 status update (2026-07-31)
+
+Completed, frontend-only, no backend files touched:
+
+- **Frontend structure cleanup — done.** `frontend/src/` now matches the
+  target `{pages,components,hooks,lib/api,types}/` shape:
+  - `src/api/client.ts` → `src/lib/api/client.ts` (and its test),
+    `src/api/types.ts` → `src/types/index.ts` — both moved via `git mv`,
+    content otherwise unchanged (only the relative import path between
+    them updated for the new depth).
+  - `src/App.tsx`'s body (workspace-mode state, layout, URL-param sync)
+    moved into new `src/pages/CurationWorkspacePage.tsx` — the app's one
+    page (this is a single-view SPA with a `?mode=` query-param toggle,
+    no client-side router, so there's exactly one page to extract, not
+    several). `App.tsx` is now a 3-line wrapper rendering it — the
+    default export tested by `App.test.tsx` still exists at the same
+    path with the same behavior, so that test's own assertions needed no
+    changes, only its two import paths (`./api/client` → `./lib/api/
+    client`, `./api/types` → `./types`) and its `vi.mock('./api/client',
+    ...)` call.
+  - All 17 remaining files that imported from the old `api/` location
+    (10 components, their tests, the `useCurationSession` hook and its
+    test) had their import paths updated to the new locations — no
+    logic, JSX, or assertions changed in any of them.
+  - `frontend/README.md` and `docs/architecture.md`'s frontend-structure
+    sketch updated to describe the new layout.
+- Confirmed directly: every `/curation/...` request path, HTTP method,
+  request payload shape, and error-handling behavior in `lib/api/
+  client.ts` is byte-identical to before the move (`git diff` on that
+  file shows only the two import-path lines changed) — no backend API
+  contract was touched, and no visual/behavioral change was introduced
+  anywhere.
+
+Validation: `cd frontend && npm test` → 98 passed; `npm run build` →
+clean (`tsc -b && vite build`, including the project's strict
+`noUnusedLocals`/`noUnusedParameters` checks, which would have caught a
+stray unfixed import). `npm run e2e` was **not** run — per `playwright.
+config.ts`'s own comment, it drives a real Vite dev server against a
+real, live FastAPI backend (both must be started manually first); this
+is a heavier, manual integration step this validation pass didn't invoke
+automatically, consistent with how this project has always treated its
+"live" test/eval scripts. Backend test suite not re-run — no backend
+file changed (confirmed via `git diff --stat`).
+
+**Still pending**: model-name/path config centralization (optional
+future config debt, from Phase 14 — not scheduled); the always-out-of-
+scope auth/Postgres/multi-user work. With Phase 16 done, every item in
+this plan's original "Recommended phase sequence" is now either done or
+explicitly deferred/out-of-scope.
+
 ---
 
 ## 1. Config audit
@@ -417,17 +467,16 @@ already used throughout this migration's validation steps (`npm test` /
    types}/` reorganization) is `specs/migration-plan.md`'s existing
    Phase 7 ("Frontend structure"), not a new finding from this audit.
 
-### Proposed frontend standardization phase (not implemented here)
+### Proposed frontend standardization phase — all three items done
 
-1. Rewrite `frontend/README.md` with real project content: what this
-   frontend is, `npm install`/`npm run dev`/`npm test`/`npm run build`/
-   `npm run e2e` commands, the `VITE_API_BASE_URL` env var, and a short
-   pointer to `docs/architecture.md` for the fuller picture — mirroring
-   how the root `README.md` documents the backend.
-2. Execute `specs/migration-plan.md`'s existing Phase 7 (introduce
+1. ~~Rewrite `frontend/README.md` with real project content.~~ **Done
+   (Phase 12).**
+2. ~~Execute `specs/migration-plan.md`'s existing Phase 7 (introduce
    `frontend/src/{pages,lib/api,types}/`, move route-level views into
-   `pages/` gradually) — already planned, not redesigned here.
-3. Resolve `frontend.zip` per §6's recommendation.
+   `pages/` gradually).~~ **Done (Phase 16)** — one page moved (the app's
+   only one; no client-side router exists, so there was exactly one view
+   to extract), API client + types relocated to `lib/api/`/`types/`.
+3. ~~Resolve `frontend.zip` per §6's recommendation.~~ **Done (Phase 13).**
 
 ---
 
@@ -625,8 +674,12 @@ is preferred — they're independent of each other except where noted.
    5 live env vars centralized. Remaining increments (model names,
    `top_k` defaults, Chroma/SQLite paths, rate-limit/retry settings) are
    still pending, each its own explicitly-scoped step.
-7. **Frontend structure** — `specs/migration-plan.md`'s existing
-   Phase 7 (`{pages,lib/api,types}/`). **Pending.**
+7. ~~**Frontend structure** — `specs/migration-plan.md`'s existing
+   Phase 7 (`{pages,lib/api,types}/`).~~ **Done (Phase 16).**
+   `src/api/{client,types}.ts` → `src/lib/api/client.ts` +
+   `src/types/index.ts`; `App.tsx`'s body → `src/pages/
+   CurationWorkspacePage.tsx`, with `App.tsx` now a thin wrapper. No
+   backend or visual/behavioral change.
 8. ~~**Eval standardization (docs/artifact-organization portion)** —
    canonical commands, artifact policy, README/spec, generated-vs-tracked
    clarification.~~ **Done (Phase 15).** `latency_history.csv`'s
@@ -638,6 +691,9 @@ is preferred — they're independent of each other except where noted.
    artifacts only, per its own instructions — and remains a separate,
    larger, not-currently-scheduled future step if ever wanted.
 
-**Recommended next single step: Frontend structure** (item 7) — the one
-remaining pending item that isn't a "decide later, optional" debt item
-(model-name/path config centralization) or an out-of-scope exclusion.
+**Every item in this list is now done or explicitly deferred.** What
+remains: model-name/path config centralization (optional future config
+debt from Phase 14, not scheduled) and the always-out-of-scope auth/
+Postgres/multi-user work — both of which have their own gating notes
+above rather than a "next step" recommendation, since neither is a
+routine continuation of this plan.

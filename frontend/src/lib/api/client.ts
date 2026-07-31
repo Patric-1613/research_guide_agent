@@ -10,8 +10,8 @@ import type {
   CurationStateResponse,
   CurationTurnResponse,
   ReportOut,
-} from './types'
-import { ApiError } from './types'
+} from '../../types'
+import { ApiError } from '../../types'
 
 // Reads at call time via Vite's import.meta.env, not module load time --
 // makes it possible to swap in tests without needing to reload the module.

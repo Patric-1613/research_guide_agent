@@ -1,10 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCurationSession, getSessionIdFromUrl } from './useCurationSession'
-import { curationApi } from '../api/client'
-import type { CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../api/types'
+import { curationApi } from '../lib/api/client'
+import type { CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../types'
 
-vi.mock('../api/client', () => ({
+vi.mock('../lib/api/client', () => ({
   curationApi: {
     getState: vi.fn(),
     start: vi.fn(),

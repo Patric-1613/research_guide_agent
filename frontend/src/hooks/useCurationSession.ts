@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { curationApi } from '../api/client'
-import { ApiError } from '../api/types'
-import type { CurationStateResponse } from '../api/types'
+import { curationApi } from '../lib/api/client'
+import { ApiError } from '../types'
+import type { CurationStateResponse } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
 // deliberately client-only, accumulated as turns happen during THIS page

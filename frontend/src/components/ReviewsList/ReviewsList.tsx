@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { curationApi } from '../../api/client'
-import type { CurationReviewSummary } from '../../api/types'
+import { curationApi } from '../../lib/api/client'
+import type { CurationReviewSummary } from '../../types'
 import { ReviewCard, statusLabel } from './ReviewCard'
 import { NewReviewForm } from './NewReviewForm'
 import { WorkspaceModeSwitcher, type WorkspaceMode } from '../WorkspaceMode/WorkspaceModeSwitcher'

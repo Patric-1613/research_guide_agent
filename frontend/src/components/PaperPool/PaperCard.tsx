@@ -1,4 +1,4 @@
-import type { PaperOut } from '../../api/types'
+import type { PaperOut } from '../../types'
 
 interface PaperCardProps {
   paper: PaperOut

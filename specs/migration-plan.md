@@ -654,11 +654,48 @@ The actual code reorganization into `research_agent/evals/{datasets,
 runners,evaluators}/` + `cli.py` was not part of that phase's scope and
 remains pending, not currently scheduled.
 
+## Phase 16 — Frontend structure standardization (done)
+
+Executed this phase: introduced `frontend/src/{pages,lib/api,types}/`.
+
+- `src/api/client.ts` → `src/lib/api/client.ts` (+ its test), `src/api/
+  types.ts` → `src/types/index.ts`, both via `git mv`. Request paths,
+  methods, payloads, error handling, and every type shape are unchanged
+  — the only edits were the two files' own relative import path to each
+  other (one directory deeper now) and a stale path reference in a
+  comment.
+- `src/App.tsx`'s body (workspace-mode state, layout, URL-param sync)
+  moved into new `src/pages/CurationWorkspacePage.tsx` — this is a
+  single-view SPA with a `?mode=` query-param toggle and no client-side
+  router, so there was exactly one route-level view to move, not
+  several. `App.tsx` is now a 3-line wrapper rendering it; `App.test.tsx`
+  keeps testing the same default export at the same path with unchanged
+  assertions, needing only its two import paths and one `vi.mock(...)`
+  call updated.
+- 17 other files (10 components + their tests, the `useCurationSession`
+  hook + its test) had their import paths updated to the new
+  `lib/api/`/`types/` locations — no logic, JSX, or test assertions
+  changed in any of them.
+- `frontend/README.md` and `docs/architecture.md`'s frontend-structure
+  sketch updated to describe the new layout.
+
+Test gate: `npm test` → 98 passed; `npm run build` → clean (`tsc -b &&
+vite build`, including the project's strict `noUnusedLocals`/
+`noUnusedParameters` checks). `npm run e2e` not run — per `playwright.
+config.ts`'s own comment it requires a real, manually-started Vite dev
+server plus a real, live FastAPI backend; not invoked automatically,
+consistent with how this project treats its other "live" test/eval
+scripts. No backend file changed. No UI redesign, no behavior change —
+confirmed directly: `lib/api/client.ts`'s diff shows only the two
+import-path lines changed, every endpoint/method/payload byte-identical.
+
 ## Phase 7 — Frontend structure
 
 Introduce `frontend/src/{pages,lib/api,types}/`; move route-level views into
 `pages/` gradually. No UI redesign, no behavior change. Test gate after
 each move: `npm test` (vitest) and `npm run build`.
+
+**Status: done — see Phase 16 above.**
 
 ## Phase 8 — Multi-user production readiness (proposal only, not implemented)
 

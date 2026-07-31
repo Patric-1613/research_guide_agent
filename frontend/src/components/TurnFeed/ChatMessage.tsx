@@ -1,4 +1,4 @@
-import type { ChatTurn } from '../../api/types'
+import type { ChatTurn } from '../../types'
 
 export function ChatMessage({ turn }: { turn: ChatTurn }) {
   const isUser = turn.role === 'user'

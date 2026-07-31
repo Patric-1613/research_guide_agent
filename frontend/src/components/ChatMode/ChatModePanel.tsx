@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { CurationStateResponse } from '../../api/types'
+import type { CurationStateResponse } from '../../types'
 import type { ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
 

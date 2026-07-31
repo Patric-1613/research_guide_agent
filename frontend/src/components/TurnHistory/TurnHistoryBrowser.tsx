@@ -1,4 +1,4 @@
-import type { CurationStateResponse } from '../../api/types'
+import type { CurationStateResponse } from '../../types'
 import { PaperCard } from '../PaperPool/PaperCard'
 
 interface TurnHistoryBrowserProps {
