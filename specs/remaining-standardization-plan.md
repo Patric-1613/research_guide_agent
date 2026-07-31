@@ -20,6 +20,35 @@ production readiness") already says: proposal-only, a separate document,
 not implied by anything here. Nothing in this plan should be read as
 preparing for them ahead of time.
 
+## Phase 12 status update (2026-07-31)
+
+Completed, docs/config-template only, no executable code touched:
+
+- **Config Phase A** — `.env.example` now documents `FRONTEND_ORIGIN` and
+  `OPENALEX_MAILTO`, matching the existing entries' comment style.
+- **README targeted fixes** — the `ranking.py` contradiction is resolved
+  (see §4 below for the confirmed-by-grep true status: citation-partitioned
+  reranking is live via `agent.py`'s rerank tool; BM25/hybrid remain
+  eval-only); the stale "148 tests" claim in "Run the tests" is replaced
+  with the current backend/frontend counts and all four test/build/e2e
+  commands.
+- **README modernization** — a new intro paragraph plus expanded "Project
+  structure" listing now mention the curation loop, curation chat, report
+  generation/regeneration, the React frontend, and the standardized
+  backend structure, with pointers to `docs/architecture.md`/`specs/
+  migration-plan.md` rather than duplicating their detail inline.
+- **`frontend/README.md`** — rewritten with real project content
+  (what it's for, commands, backend connection, `VITE_API_BASE_URL`,
+  structure), replacing the unmodified Vite scaffold template.
+- **`frontend.zip` guidance** — added to `.gitignore` (not deleted; see
+  §6 below, unchanged recommendation: confirm safe, then remove in a
+  separate cleanup action).
+
+Still pending, unchanged from the original audit: eval archive
+reorganization (§2), Config Phase B / typed settings (§1), frontend
+structure cleanup (§3), eval standardization (§2), and the always-out-of-
+scope auth/Postgres/multi-user work.
+
 ---
 
 ## 1. Config audit
@@ -441,43 +470,48 @@ git history, and referenced by nothing in the build/test/deploy path or
 any tracked file. This reads as an ad hoc manual backup someone made
 locally, not a build artifact or a fixture any test depends on.
 
-This audit does **not** delete it (deletion is explicitly out of this
-phase's allowed changes) — flagged here as the recommended action for
-whoever runs the next phase that's allowed to touch the working tree:
-confirm it's safe to remove (it should be, per the findings above), then
-either delete it or move it outside the repo, and add `/frontend.zip` (or
-`*.zip`) to the root `.gitignore` so a future accidental re-creation
-doesn't sit around untracked again.
+**Update (Phase 12, 2026-07-31):** `frontend.zip` added to the root
+`.gitignore`, so it can no longer be committed by accident. It has
+**not** been deleted — that remains a separate, explicit cleanup action.
+This audit still does not delete it (deletion is out of every phase's
+allowed changes so far) — flagged as the recommended action for whoever
+runs the next phase that's allowed to touch the working tree: confirm
+it's safe to remove (it should be, per the findings above), then either
+delete it or move it outside the repo.
 
 ---
 
 ## Recommended phase sequence
 
-None of the following are started by this audit. Each needs its own
-explicit go-ahead, in whatever order is preferred — they're independent
-of each other except where noted:
+Each remaining item needs its own explicit go-ahead, in whatever order
+is preferred — they're independent of each other except where noted.
 
-1. **Config Phase A** (near-zero risk) — add `FRONTEND_ORIGIN`/
-   `OPENALEX_MAILTO` to `.env.example`. Fastest, safest, no dependencies.
-2. **README fix** — correct the `ranking.py` self-contradiction and the
-   stale test count; both are small, factual corrections.
-3. **`frontend.zip` cleanup** — confirm safe, remove, `.gitignore` it.
-4. **README/docs update** — full quickstart/architecture-summary/
+1. ~~**Config Phase A** (near-zero risk) — add `FRONTEND_ORIGIN`/
+   `OPENALEX_MAILTO` to `.env.example`.~~ **Done (Phase 12).**
+2. ~~**README fix** — correct the `ranking.py` self-contradiction and the
+   stale test count.~~ **Done (Phase 12).**
+3. **`frontend.zip` cleanup** — **partially done (Phase 12):**
+   `.gitignore`d; still not removed from the working tree. Confirm safe,
+   then delete or move it outside the repo.
+4. ~~**README/docs update** — quickstart/architecture-summary/
    test-commands/eval-commands/curation-system-mention pass, plus
-   `frontend/README.md` rewrite.
+   `frontend/README.md` rewrite.~~ **Done (Phase 12).**
 5. **Eval archive reorganization** — move the 4 snapshot CSVs into
    `eval_results/archive/` with an explanatory README; resolve
-   `latency_history.csv`'s provenance.
+   `latency_history.csv`'s provenance. **Pending.**
 6. **Config Phase B** — `research_agent/config/settings.py`, one setting
    group at a time (matches `specs/migration-plan.md`'s existing
-   Phase 5).
+   Phase 5). **Pending.**
 7. **Frontend structure** — `specs/migration-plan.md`'s existing
-   Phase 7 (`{pages,lib/api,types}/`).
+   Phase 7 (`{pages,lib/api,types}/`). **Pending.**
 8. **Eval standardization** — `specs/migration-plan.md`'s existing
    Phase 6 (`research_agent/evals/{datasets,runners,evaluators}/` +
-   `cli.py`).
+   `cli.py`). **Pending.**
 
-**Recommended next single step: Config Phase A.** It's the smallest,
-lowest-risk item on this list (two lines added to `.env.example`, no
-code touched), it closes a real discoverability gap for anyone doing a
-fresh clone, and it doesn't block or get blocked by anything else here.
+**Recommended next single step: item 3, finishing `frontend.zip`
+cleanup** (confirm safe, then delete/move it — the lowest-risk remaining
+item, already half-done) **or item 5, eval archive reorganization** (a
+files-only move plus a small new README, no code touched either). Both
+are independent of Config Phase B/frontend structure/eval
+standardization, which are larger, code-touching phases better taken up
+after these smaller cleanups land.

@@ -13,3 +13,8 @@ data/*.sqlite3
 # eval_data/reference_topics.json (its converted, reviewable output) is
 # tracked instead.
 eval_data/reference_topics.xlsx
+# Ad hoc local backup of frontend/ (including node_modules) — not a build
+# artifact, not referenced by anything in the repo. Recommended for removal
+# entirely; ignored here in the meantime so it can't be committed by
+# accident. See specs/remaining-standardization-plan.md.
+frontend.zip
