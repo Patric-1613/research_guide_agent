@@ -833,9 +833,82 @@ not implied by anything in Phases 0–10.
 this baseline — config, evals, frontend, README/docs, and old-architecture
 cleanup — and produced `specs/remaining-standardization-plan.md`. That
 document is the source of truth for what standardization work remains
-outside the backend's internal structure; nothing in it has been
-implemented yet, and it maintains the same OAuth/Postgres/multi-user
-exclusion as this section.
+outside the backend's internal structure; it maintains the same OAuth/
+Postgres/multi-user exclusion as this section. Phases 12–14 have since
+executed several of that plan's items (docs/env-template cleanup, file
+hygiene, and now config centralization below) — see that document for
+the current status of every remaining item.
+
+### Phase 14 (centralize backend settings) — done
+
+Executed `specs/remaining-standardization-plan.md`'s Config Phase B:
+added `research_agent/config/settings.py` (a frozen `Settings` dataclass)
+and `research_agent/config/__init__.py` (re-exporting `Settings` and
+`get_settings`), centralizing the 5 env vars this codebase's own code
+reads directly: `SEMANTIC_SCHOLAR_API_KEY`, `UNPAYWALL_EMAIL`,
+`TAVILY_API_KEY`, `FRONTEND_ORIGIN`, `OPENALEX_MAILTO`.
+
+Six call sites now read `get_settings().<field>` instead of calling
+`os.getenv(...)` directly: `web_search.py`'s `TAVILY_API_KEY` guard,
+`enrichment.py`'s `_unpaywall_email()`/`_crossref_contact()`,
+`api_app/app.py`'s CORS `allow_origins`, and
+`services/search_service.py`/`services/curation_core_service.py`/
+`services/curation_helpers.py`'s `SEMANTIC_SCHOLAR_API_KEY`/
+`OPENALEX_MAILTO` reads.
+
+**Behavior-preservation notes:**
+- Every env var name is unchanged; every default is unchanged
+  (`FRONTEND_ORIGIN`'s `"http://localhost:5173"` fallback, every other
+  field's `None` when unset).
+- The `or None` falsy-becomes-`None` handling every original call site
+  had (an explicitly-empty env var treated the same as an absent one) is
+  preserved exactly — verified directly by a new test.
+- `.env` loading is unchanged: `config/settings.py` calls `load_dotenv()`
+  itself (idempotent, safe alongside `api.py`'s own call), so importing
+  the config module in isolation still picks up `.env`.
+- `get_settings()` is **deliberately uncached** — it re-reads
+  `os.environ` on every call, so existing tests that wrap a single call
+  in `unittest.mock.patch.dict(os.environ, ...)` keep working exactly as
+  before, and this new module doesn't introduce any test-isolation
+  hazard a future test would need to work around.
+
+**Explicitly not centralized, documented in `settings.py`'s own module
+docstring:**
+- `OPENAI_API_KEY` and `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/
+  `LANGFUSE_BASE_URL` — remain SDK-managed. Nothing in this codebase
+  reads them directly today; the OpenAI SDK's bare `OpenAI()`
+  constructor call (`api_app/app.py`'s `lifespan()`, reached as the
+  patch target `api.OpenAI`) and the Langfuse SDK's `get_client()`
+  (`tracing.py`) both read these from `os.environ` internally. Routing
+  them through `Settings` would mean explicitly passing credentials into
+  constructors that currently read them implicitly — a real behavior
+  touchpoint on sensitive, central code paths, left alone unless/until a
+  future deployment-config need requires it.
+- Model-name constants (`EMBEDDING_MODEL`, `SUMMARY_MODEL`,
+  `AGENT_MODEL`, `TITLE_SUGGESTION_MODEL`, `CANONICALIZE_TOPIC_MODEL`,
+  `CONDENSE_MODEL`, `ANSWER_MODEL`, `REPORT_MODEL`) remain plain Python
+  literals in their own modules — none of these are read from the
+  environment today, so centralizing them would touch import structure
+  across roughly 8 domain modules for zero behavior difference.
+- Data/cache/Chroma paths (`DATA_DIR`, `DB_PATH`, `CHROMA_PERSIST_DIR`,
+  `QA_CHECKPOINT_DB_PATH`) remain where they are, for the same reason.
+- No OAuth/auth/PostgreSQL/multi-user settings were introduced — out of
+  scope, as always.
+
+**Validation:** `tests/test_config_settings.py` (new file) 4 passed;
+`test_api.py` + `test_curation_api.py` 77 passed; full backend suite 346
+passed (342 baseline + 4 new); frontend `npm test` 98 passed; `npm run
+build` clean. Confirmed directly: the app boots and imports correctly
+under a completely clean shell environment (`env -i`, `.env`-file-driven
+config only), `GET /health` returns 200, and a CORS preflight request's
+`access-control-allow-origin` response header still matches the
+unchanged `http://localhost:5173` default.
+
+**Remaining config debt:** whether/when to centralize the model-name
+constants and filesystem paths above is deferred to a later, explicitly
+-scoped decision; SDK-managed secrets (`OPENAI_API_KEY`, `LANGFUSE_*`)
+stay untouched unless a future deployment-config need requires routing
+them through `Settings` too.
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 

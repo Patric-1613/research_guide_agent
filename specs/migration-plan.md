@@ -562,6 +562,40 @@ path anymore (checked via `grep -rn` before removing the shim).
 
 Test gate: `uv run pytest -q` (full suite) after each module move.
 
+## Phase 14 — Centralize backend settings (done, first increment)
+
+Executed the first setting group of Phase 5 below: added
+`research_agent/config/settings.py` (a frozen `Settings` dataclass) and
+`research_agent/config/__init__.py`, centralizing the 5 env vars this
+codebase's own code reads directly — `SEMANTIC_SCHOLAR_API_KEY`,
+`UNPAYWALL_EMAIL`, `TAVILY_API_KEY`, `FRONTEND_ORIGIN`,
+`OPENALEX_MAILTO` — across 6 call sites (`web_search.py`,
+`enrichment.py`, `api_app/app.py`, and three `services/*.py` files).
+
+Every env var name and default is unchanged, including the `or None`
+falsy-becomes-`None` handling every original call site had.
+`get_settings()` is deliberately uncached (re-reads `os.environ` on
+every call) so existing `patch.dict(os.environ, ...)`-based tests keep
+working unchanged. `.env` loading is unchanged — `config/settings.py`
+calls `load_dotenv()` itself, idempotently, alongside `api.py`'s own
+call.
+
+Intentionally not centralized in this increment (see `docs/
+architecture.md`'s Phase 14 section for the full reasoning): `OPENAI_API_KEY`/
+`LANGFUSE_*` (SDK-managed, no direct call site in our code); the 8
+model-name constants (`EMBEDDING_MODEL`, `SUMMARY_MODEL`, `AGENT_MODEL`,
+etc.) and the 4 data/cache/Chroma path constants (`DATA_DIR`, `DB_PATH`,
+`CHROMA_PERSIST_DIR`, `QA_CHECKPOINT_DB_PATH`) — none of these are
+env-driven today, so centralizing them is a separate, larger,
+explicitly-scoped future increment of Phase 5 below, not done here.
+
+Validation: `tests/test_config_settings.py` (new) 4 passed; `test_api.py`
++ `test_curation_api.py` 77 passed; full backend suite 346 passed (342
+baseline + 4 new); frontend `npm test` 98 passed; `npm run build` clean;
+app confirmed booting under a completely clean shell environment
+(`env -i`); `GET /health` 200; CORS preflight `access-control-allow-origin`
+unchanged at the default.
+
 ## Phase 5 — Config standardization
 
 Introduce `config.yml` + `research_agent/config/settings.py`; migrate
@@ -570,6 +604,12 @@ CORS origins, rate-limit/retry settings) gradually, one setting group per
 commit. Environment variables keep working — `settings.py` reads them, it
 doesn't replace `.env`. `.env.example` is not broken. Add tests asserting
 each setting's default value and its env-var override.
+
+**Status: first increment done — see Phase 14 above.** The 5 live env
+vars our own code reads directly are centralized. Remaining increments
+of this phase (model names, `top_k` defaults, Chroma/SQLite paths,
+rate-limit/retry settings, and a possible `config.yml` for non-secret
+defaults) are still pending, each its own explicitly-scoped step.
 
 ## Phase 6 — Evals standardization
 

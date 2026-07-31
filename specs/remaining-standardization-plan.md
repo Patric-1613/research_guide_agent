@@ -79,6 +79,53 @@ cleanup (§3), eval standardization (§2's remaining `latency_history.csv`
 reproducibility decision), and the always-out-of-scope auth/Postgres/
 multi-user work.
 
+## Phase 14 status update (2026-07-31)
+
+Completed, code-touching but behavior-preserving:
+
+- **Config Phase B — done (first increment).** Added `research_agent/
+  config/{__init__,settings}.py`: a frozen `Settings` dataclass plus
+  uncached `get_settings()`, centralizing the 5 env vars this codebase's
+  own code reads directly — `SEMANTIC_SCHOLAR_API_KEY`, `UNPAYWALL_EMAIL`,
+  `TAVILY_API_KEY`, `FRONTEND_ORIGIN`, `OPENALEX_MAILTO` — across 6 call
+  sites. Same names, same defaults, same falsy-becomes-`None` handling;
+  `get_settings()` re-reads `os.environ` on every call (no caching) so
+  existing `patch.dict(os.environ, ...)`-based tests keep working
+  unchanged; `.env` loading unchanged. New `tests/test_config_settings.py`
+  (4 tests) added — no existing test edited.
+- **Intentionally not centralized in this increment**: `OPENAI_API_KEY`/
+  `LANGFUSE_*` (SDK-managed — nothing in this codebase reads them
+  directly; the OpenAI/Langfuse SDKs read them from `os.environ`
+  internally); the 8 model-name constants (`EMBEDDING_MODEL`,
+  `SUMMARY_MODEL`, `AGENT_MODEL`, `TITLE_SUGGESTION_MODEL`,
+  `CANONICALIZE_TOPIC_MODEL`, `CONDENSE_MODEL`, `ANSWER_MODEL`,
+  `REPORT_MODEL`); the 4 data/cache/Chroma path constants (`DATA_DIR`,
+  `DB_PATH`, `CHROMA_PERSIST_DIR`, `QA_CHECKPOINT_DB_PATH`) — none of
+  these are read from the environment today, so centralizing them would
+  touch import structure across roughly 8 domain modules for zero
+  behavior difference. No OAuth/auth/PostgreSQL/multi-user settings were
+  introduced.
+
+Validation: `tests/test_config_settings.py` 4 passed; `test_api.py` +
+`test_curation_api.py` 77 passed; full backend suite 346 passed (342
+baseline + 4 new); frontend `npm test` 98 passed; `npm run build` clean;
+app confirmed booting under a completely clean shell environment
+(`env -i`); `GET /health` 200; CORS preflight `access-control-allow-origin`
+unchanged at the default.
+
+**Remaining config debt**: decide later whether/when to centralize the
+model-name constants and filesystem paths above; leave SDK-managed
+secrets (`OPENAI_API_KEY`, `LANGFUSE_*`) alone unless/when a future
+deployment-config need requires routing them through `Settings` too.
+
+**Recommended next chunk: eval standardization** — define the canonical
+eval commands (already documented informally in root `README.md`),
+document current eval outputs (`eval_results/`'s current-vs-archived
+split from Phase 13), add an eval README/spec section, clarify
+generated-vs-tracked artifacts, and resolve `latency_history.csv`'s
+reproducibility gap — with no model/data behavior changes initially,
+matching `specs/migration-plan.md`'s existing Phase 6 outline.
+
 ---
 
 ## 1. Config audit
@@ -529,9 +576,11 @@ is preferred — they're independent of each other except where noted.
    `eval_results/archive/` with an explanatory README.~~ **Done
    (Phase 13).** `latency_history.csv`'s reproducibility gap remains
    documented but unresolved — see `eval_results/archive/README.md`.
-6. **Config Phase B** — `research_agent/config/settings.py`, one setting
-   group at a time (matches `specs/migration-plan.md`'s existing
-   Phase 5). **Pending.**
+6. ~~**Config Phase B** — `research_agent/config/settings.py`, one
+   setting group at a time.~~ **Done, first increment (Phase 14):** the
+   5 live env vars centralized. Remaining increments (model names,
+   `top_k` defaults, Chroma/SQLite paths, rate-limit/retry settings) are
+   still pending, each its own explicitly-scoped step.
 7. **Frontend structure** — `specs/migration-plan.md`'s existing
    Phase 7 (`{pages,lib/api,types}/`). **Pending.**
 8. **Eval standardization** — `specs/migration-plan.md`'s existing
@@ -539,9 +588,9 @@ is preferred — they're independent of each other except where noted.
    `cli.py`); could also resolve `latency_history.csv`'s missing
    reproducing script as part of this. **Pending.**
 
-**Recommended next single step: Config Phase B** (`research_agent/
-config/settings.py`) — the smallest remaining *code-touching* phase, and
-the one everything else pending (frontend structure, eval
-standardization) least depends on. It should still be scoped and
-approved as its own step, one setting group at a time, per
-`specs/migration-plan.md`'s existing Phase 5 outline.
+**Recommended next single step: Eval standardization** (item 8) —
+define the canonical eval commands, document current eval outputs, add
+an eval README/spec, clarify generated-vs-tracked artifacts, and resolve
+`latency_history.csv`'s reproducibility gap, with no model/data behavior
+changes initially. Frontend structure (item 7) is independent and can be
+taken up in either order.
