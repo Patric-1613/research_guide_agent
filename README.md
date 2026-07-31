@@ -193,11 +193,15 @@ tests/             deterministic backend unit tests (342 as of the
                    calls required — see "Run the tests" below). frontend/ has
                    its own 98-test vitest suite plus Playwright e2e tests.
 eval_data/         curated reference sets consumed by the eval harnesses
-                   (17-topic retrieval reference set, 24-scenario RAGAS set)
-eval_results/      CSV run history for both harnesses, plus eval_results/runs/
-                   (per-run RAGAS artifacts — see "RAGAS quality evaluation")
+                   (17-topic retrieval reference set, 24-scenario RAGAS
+                   set) — see eval_data/README.md
+eval_results/      CSV run history for both harnesses, eval_results/archive/
+                   (historical snapshots), eval_results/runs/ (gitignored
+                   per-run RAGAS artifacts) — see eval_results/README.md
+                   and docs/evaluation.md for the full artifact policy
 data/              gitignored: chroma_db/, cache/, history.sqlite
-docs/              docs/architecture.md — current + target backend architecture
+docs/              docs/architecture.md — current + target backend
+                   architecture; docs/evaluation.md — eval workflow
 specs/             specs/migration-plan.md (Phases 0-10 backend
                    standardization, done) and specs/remaining-
                    standardization-plan.md (what's left: config, evals,
@@ -329,6 +333,27 @@ verified by keeping the full test suite green (101 → 128 tests) throughout.
   is now mocked in the shared test fixture — `pytest tests/` passes
   128/128 with `.env` entirely absent, not just with real credentials
   configured.
+
+## Evaluation
+
+Two real-pipeline (non-mocked, billable) evaluation harnesses live in
+`scripts/`, each with its own repeatable command. Full workflow detail,
+including the artifact-organization policy below, is in
+[`docs/evaluation.md`](docs/evaluation.md).
+
+```bash
+uv run python scripts/eval_retrieval.py --note "..."   # retrieval precision/recall
+uv run python scripts/ragas_eval.py --note "..."         # RAGAS quality metrics
+```
+
+Both accept `--help` for the full flag reference (ranking-mode
+experiments, topic subsets, judge-model override, etc.). **Every real
+run appends a row to that harness's `eval_results/*.csv` history log** —
+expect `git status` to show that file locally modified after running
+either command; that's the log working as designed, not a mistake to
+undo. See `docs/evaluation.md` for exactly which `eval_results/` files
+are tracked history logs vs. `.gitignore`d per-run detail vs. archived
+historical snapshots.
 
 ## Retrieval ranking experiments
 
@@ -655,7 +680,10 @@ per-turn record: question, real retrieved paper titles, real generated
 answer, every metric) plus an incremental `raw_<timestamp>.jsonl`, written
 turn-by-turn *during* generation rather than only at the end — so
 already-paid-for generation data survives even if scoring itself later
-crashes or rate-limits.
+crashes or rate-limits. `eval_results/runs/` is gitignored (per-run
+detail, reviewed locally, not meant to accumulate in git history the way
+`eval_results/history.csv`'s one-row-per-run log does — see
+`docs/evaluation.md`).
 
 ```bash
 uv run python scripts/ragas_eval.py --note "..."

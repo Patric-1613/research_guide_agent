@@ -18,3 +18,8 @@ eval_data/reference_topics.xlsx
 # entirely; ignored here in the meantime so it can't be committed by
 # accident. See specs/remaining-standardization-plan.md.
 frontend.zip
+# scripts/ragas_eval.py's per-run detail artifacts (run_<id>.json +
+# raw_<timestamp>.jsonl) — growing without bound, reviewed locally, not
+# meant to accumulate in git history the way eval_results/history.csv's
+# one-row-per-run log does. See docs/evaluation.md.
+eval_results/runs/

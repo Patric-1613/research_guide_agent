@@ -611,6 +611,35 @@ of this phase (model names, `top_k` defaults, Chroma/SQLite paths,
 rate-limit/retry settings, and a possible `config.yml` for non-secret
 defaults) are still pending, each its own explicitly-scoped step.
 
+## Phase 15 — Eval standardization, docs/artifact-organization portion (done)
+
+Executed the docs/artifact-organization slice of Phase 6 below — not the
+code reorganization it also describes (see "Status" note under Phase 6).
+Added `docs/evaluation.md` (canonical eval commands for both harnesses,
+the full artifact policy, and `latency_history.csv`'s reproducibility
+gap documented honestly rather than invented), `eval_data/README.md`
+(input-fixture inventory + provenance), and `eval_results/README.md`
+(local index cross-referencing `docs/evaluation.md` and
+`eval_results/archive/README.md`). Root `README.md` got a new, concise
+"Evaluation" section plus small "Project structure"/RAGAS-section
+updates.
+
+`eval_results/runs/` (RAGAS's per-run detail artifacts, which didn't
+exist yet in the working tree) was added to `.gitignore` — a
+repeatable-command output that grows without bound per run, unlike the
+two one-row-per-run history CSVs, which stay tracked. No existing
+tracked file was affected.
+
+No script wrapper (e.g. `scripts/run_eval.py`) was added — both existing
+harnesses already have solid `--help` output and single-command
+invocations; a wrapper would add argument-forwarding surface for no real
+discoverability gain.
+
+Validation: `scripts/eval_retrieval.py --help` and `scripts/ragas_eval.py
+--help` both run cleanly (neither harness's full run is fast enough to
+exercise routinely — both make real, billable API calls). No executable
+code changed, so the backend test suite was not re-run for this phase.
+
 ## Phase 6 — Evals standardization
 
 Move scattered eval logic toward `research_agent/evals/{datasets,runners,
@@ -619,6 +648,11 @@ unchanged or as thin wrappers calling the new location. `eval_results/` and
 its historical CSVs are never modified or deleted by this phase. Add a
 deterministic, no-API-key test gate for evaluator logic where the
 evaluation itself doesn't strictly require a live model call.
+
+**Status: docs/artifact-organization portion done — see Phase 15 above.**
+The actual code reorganization into `research_agent/evals/{datasets,
+runners,evaluators}/` + `cli.py` was not part of that phase's scope and
+remains pending, not currently scheduled.
 
 ## Phase 7 — Frontend structure
 

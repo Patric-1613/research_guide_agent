@@ -126,6 +126,50 @@ generated-vs-tracked artifacts, and resolve `latency_history.csv`'s
 reproducibility gap — with no model/data behavior changes initially,
 matching `specs/migration-plan.md`'s existing Phase 6 outline.
 
+## Phase 15 status update (2026-07-31)
+
+Completed, docs/artifact-organization only, no executable code or eval
+data changed:
+
+- **Eval standardization — done.** Added `docs/evaluation.md` (canonical
+  eval commands, artifact policy, the `latency_history.csv`
+  reproducibility gap documented honestly rather than invented),
+  `eval_data/README.md` (input-fixture inventory + provenance), and
+  `eval_results/README.md` (short local index cross-referencing
+  `docs/evaluation.md` and `eval_results/archive/README.md`). Root
+  `README.md` got a new, concise "Evaluation" section (commands, the
+  "expect your history CSV to show modified after a real run" warning,
+  pointer to `docs/evaluation.md`) plus small "Project structure"/RAGAS-
+  section updates reflecting the new READMEs and `runs/`'s gitignore
+  status.
+- **`eval_results/runs/`** (the per-run RAGAS detail artifacts — did not
+  exist yet in this working tree) added to `.gitignore`: a repeatable-
+  command output that grows without bound per run, unlike the two
+  one-row-per-run history CSVs, which stay tracked. No existing tracked
+  file was affected — the directory didn't exist before this change.
+- **No script wrapper added** (`scripts/run_eval.py` was offered as an
+  optional example in the task, not required) — both existing harnesses
+  already have solid `--help` output and single-command invocations;
+  a wrapper would add argument-forwarding surface for the two
+  harnesses' quite different flag sets, for no real discoverability gain
+  over documenting the two direct commands clearly. Deliberately skipped
+  rather than adding indirection with no behavior benefit.
+- **Eval archive reorganization** — already complete (Phase 13); this
+  phase only added documentation referencing it, no further file moves.
+
+Validation: `scripts/eval_retrieval.py --help` and `scripts/ragas_eval.py
+--help` both run cleanly. No full eval run performed (neither is fast —
+both make real, billable API calls per topic/scenario — so per this
+phase's own validation instructions, only `--help` was exercised). No
+executable code changed, so the backend test suite was not required to
+be re-run; confirmed via `git diff --stat` that only docs/`.gitignore`/
+new-README files changed.
+
+**Still pending**: frontend structure cleanup (§3, `specs/migration-
+plan.md`'s existing Phase 7); model-name/path config centralization
+(optional future config debt, from Phase 14 — not scheduled); the
+always-out-of-scope auth/Postgres/multi-user work.
+
 ---
 
 ## 1. Config audit
@@ -583,14 +627,17 @@ is preferred — they're independent of each other except where noted.
    still pending, each its own explicitly-scoped step.
 7. **Frontend structure** — `specs/migration-plan.md`'s existing
    Phase 7 (`{pages,lib/api,types}/`). **Pending.**
-8. **Eval standardization** — `specs/migration-plan.md`'s existing
+8. ~~**Eval standardization (docs/artifact-organization portion)** —
+   canonical commands, artifact policy, README/spec, generated-vs-tracked
+   clarification.~~ **Done (Phase 15).** `latency_history.csv`'s
+   reproducibility gap remains documented but unresolved (no reproducing
+   script exists — see `docs/evaluation.md`). The actual code
+   reorganization envisioned by `specs/migration-plan.md`'s original
    Phase 6 (`research_agent/evals/{datasets,runners,evaluators}/` +
-   `cli.py`); could also resolve `latency_history.csv`'s missing
-   reproducing script as part of this. **Pending.**
+   `cli.py`) was **not** done here — this phase's scope was docs/
+   artifacts only, per its own instructions — and remains a separate,
+   larger, not-currently-scheduled future step if ever wanted.
 
-**Recommended next single step: Eval standardization** (item 8) —
-define the canonical eval commands, document current eval outputs, add
-an eval README/spec, clarify generated-vs-tracked artifacts, and resolve
-`latency_history.csv`'s reproducibility gap, with no model/data behavior
-changes initially. Frontend structure (item 7) is independent and can be
-taken up in either order.
+**Recommended next single step: Frontend structure** (item 7) — the one
+remaining pending item that isn't a "decide later, optional" debt item
+(model-name/path config centralization) or an out-of-scope exclusion.
