@@ -44,10 +44,40 @@ Completed, docs/config-template only, no executable code touched:
   §6 below, unchanged recommendation: confirm safe, then remove in a
   separate cleanup action).
 
-Still pending, unchanged from the original audit: eval archive
-reorganization (§2), Config Phase B / typed settings (§1), frontend
-structure cleanup (§3), eval standardization (§2), and the always-out-of-
-scope auth/Postgres/multi-user work.
+Still pending as of Phase 12: eval archive reorganization (§2), Config
+Phase B / typed settings (§1), frontend structure cleanup (§3), eval
+standardization (§2), and the always-out-of-scope auth/Postgres/
+multi-user work.
+
+## Phase 13 status update (2026-07-31)
+
+Completed, files-only, no executable code touched:
+
+- **`frontend.zip` cleanup — done.** Confirmed untracked, `.gitignore`d,
+  and referenced by nothing outside this plan's own recommendation, then
+  deleted from the working tree. §6 below is now resolved, not just
+  guarded against.
+- **Eval archive reorganization — done.** The 4 manual snapshot CSVs
+  named in §2 (`retrieval_history_pre_ranking_experiment.csv`,
+  `retrieval_history_pre_citation_partition.csv`,
+  `history_throwaway_smoketest.csv`, `history_two_metric_run1.csv`) moved
+  into new `eval_results/archive/` via `git mv` (history preserved), with
+  a new `eval_results/archive/README.md` explaining each one, confirming
+  neither eval harness reads from `archive/`, and documenting
+  `latency_history.csv`'s continued no-reproducing-script gap.
+  `eval_results/retrieval_history.csv` and `eval_results/history.csv`
+  (the current, actively-appended-to running logs) were **not** moved —
+  they remain the canonical eval output exactly as §2 always intended.
+  `latency_history.csv` was also **not** moved (still directly referenced
+  by root `README.md`'s "Search-call parallelization" section by its
+  current path; moving it would break that link, which this files-only
+  phase didn't touch) — its status is now documented in
+  `eval_results/archive/README.md` instead.
+
+Still pending: Config Phase B / typed settings (§1), frontend structure
+cleanup (§3), eval standardization (§2's remaining `latency_history.csv`
+reproducibility decision), and the always-out-of-scope auth/Postgres/
+multi-user work.
 
 ---
 
@@ -471,13 +501,13 @@ any tracked file. This reads as an ad hoc manual backup someone made
 locally, not a build artifact or a fixture any test depends on.
 
 **Update (Phase 12, 2026-07-31):** `frontend.zip` added to the root
-`.gitignore`, so it can no longer be committed by accident. It has
-**not** been deleted — that remains a separate, explicit cleanup action.
-This audit still does not delete it (deletion is out of every phase's
-allowed changes so far) — flagged as the recommended action for whoever
-runs the next phase that's allowed to touch the working tree: confirm
-it's safe to remove (it should be, per the findings above), then either
-delete it or move it outside the repo.
+`.gitignore`, so it can no longer be committed by accident. Not yet
+deleted at that point — flagged as a separate, explicit cleanup action.
+
+**Update (Phase 13, 2026-07-31): done.** Re-confirmed untracked,
+`.gitignore`d, and referenced by nothing outside this plan's own
+recommendation, then deleted from the working tree. Nothing under
+`frontend/` itself was touched.
 
 ---
 
@@ -490,15 +520,15 @@ is preferred — they're independent of each other except where noted.
    `OPENALEX_MAILTO` to `.env.example`.~~ **Done (Phase 12).**
 2. ~~**README fix** — correct the `ranking.py` self-contradiction and the
    stale test count.~~ **Done (Phase 12).**
-3. **`frontend.zip` cleanup** — **partially done (Phase 12):**
-   `.gitignore`d; still not removed from the working tree. Confirm safe,
-   then delete or move it outside the repo.
+3. ~~**`frontend.zip` cleanup** — confirm safe, remove, `.gitignore`
+   it.~~ **Done (Phase 13).**
 4. ~~**README/docs update** — quickstart/architecture-summary/
    test-commands/eval-commands/curation-system-mention pass, plus
    `frontend/README.md` rewrite.~~ **Done (Phase 12).**
-5. **Eval archive reorganization** — move the 4 snapshot CSVs into
-   `eval_results/archive/` with an explanatory README; resolve
-   `latency_history.csv`'s provenance. **Pending.**
+5. ~~**Eval archive reorganization** — move the 4 snapshot CSVs into
+   `eval_results/archive/` with an explanatory README.~~ **Done
+   (Phase 13).** `latency_history.csv`'s reproducibility gap remains
+   documented but unresolved — see `eval_results/archive/README.md`.
 6. **Config Phase B** — `research_agent/config/settings.py`, one setting
    group at a time (matches `specs/migration-plan.md`'s existing
    Phase 5). **Pending.**
@@ -506,12 +536,12 @@ is preferred — they're independent of each other except where noted.
    Phase 7 (`{pages,lib/api,types}/`). **Pending.**
 8. **Eval standardization** — `specs/migration-plan.md`'s existing
    Phase 6 (`research_agent/evals/{datasets,runners,evaluators}/` +
-   `cli.py`). **Pending.**
+   `cli.py`); could also resolve `latency_history.csv`'s missing
+   reproducing script as part of this. **Pending.**
 
-**Recommended next single step: item 3, finishing `frontend.zip`
-cleanup** (confirm safe, then delete/move it — the lowest-risk remaining
-item, already half-done) **or item 5, eval archive reorganization** (a
-files-only move plus a small new README, no code touched either). Both
-are independent of Config Phase B/frontend structure/eval
-standardization, which are larger, code-touching phases better taken up
-after these smaller cleanups land.
+**Recommended next single step: Config Phase B** (`research_agent/
+config/settings.py`) — the smallest remaining *code-touching* phase, and
+the one everything else pending (frontend structure, eval
+standardization) least depends on. It should still be scoped and
+approved as its own step, one setting group at a time, per
+`specs/migration-plan.md`'s existing Phase 5 outline.
