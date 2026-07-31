@@ -829,6 +829,14 @@ Postgres, deployment) begins, per this project's original Phase 8
 ("Multi-user production readiness") being explicitly proposal-only and
 not implied by anything in Phases 0–10.
 
+**Phase 11 (2026-07-31)** audited the rest of the current project against
+this baseline — config, evals, frontend, README/docs, and old-architecture
+cleanup — and produced `specs/remaining-standardization-plan.md`. That
+document is the source of truth for what standardization work remains
+outside the backend's internal structure; nothing in it has been
+implemented yet, and it maintains the same OAuth/Postgres/multi-user
+exclusion as this section.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

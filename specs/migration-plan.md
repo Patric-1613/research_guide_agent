@@ -538,6 +538,20 @@ refactor (auth, multi-tenancy, Postgres, deployment) begins; see Phase 8
 below ("Multi-user production readiness"), which was always
 proposal-only and is not implied by anything in Phases 0–10.
 
+## Phase 11 — Whole-repo standardization audit (done, read-only)
+
+Audited the rest of the current project against the baseline above —
+config, evals, frontend, README/docs, and old-architecture cleanup — and
+produced `specs/remaining-standardization-plan.md`, the source of truth
+for what standardization work remains outside the backend's internal
+structure. Read-only: no executable code, tests, or frontend files
+changed. Maintains the same OAuth/PostgreSQL/multi-user exclusion as the
+baseline above. See that document for the full findings, per-area risk
+notes, and the recommended phase sequence (config `.env.example` fix,
+README corrections, `frontend.zip` cleanup, README/docs rewrite, eval
+archive reorganization, then the existing config-standardization/
+frontend-structure/eval-standardization phases below).
+
 ## Phase 4 — Agents, graphs, RAG, and sources organization
 
 Move (not rewrite) modules into their layer, per `docs/architecture.md`'s
