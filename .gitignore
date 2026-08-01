@@ -13,3 +13,13 @@ data/*.sqlite3
 # eval_data/reference_topics.json (its converted, reviewable output) is
 # tracked instead.
 eval_data/reference_topics.xlsx
+# Ad hoc local backup of frontend/ (including node_modules) — not a build
+# artifact, not referenced by anything in the repo. Recommended for removal
+# entirely; ignored here in the meantime so it can't be committed by
+# accident. See specs/remaining-standardization-plan.md.
+frontend.zip
+# scripts/ragas_eval.py's per-run detail artifacts (run_<id>.json +
+# raw_<timestamp>.jsonl) — growing without bound, reviewed locally, not
+# meant to accumulate in git history the way eval_results/history.csv's
+# one-row-per-run log does. See docs/evaluation.md.
+eval_results/runs/

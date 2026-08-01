@@ -9,13 +9,41 @@ questions — with every claim traceable back to a specific paper.
 No Google Scholar (no official API, scraping violates ToS) — only the
 arXiv and Semantic Scholar APIs are used.
 
+Beyond the one-shot flow above, the app also has an interactive
+**curation workflow**: review candidate papers a batch at a time and pick
+which ones matter (`curation_loop.py`), get a synthesized literature-review
+report with regenerate-on-demand (`report.py`), and chat about the curated
+set with the option to pull in live web context or refresh the report
+mid-conversation (`curation_chat.py`). A **React + Vite frontend**
+(`frontend/`, see `frontend/README.md`) is the primary UI for this
+workflow — see "Running the app" below to start it. The backend itself was
+restructured over a later, separate standardization effort (routers →
+services → schemas/serializers/errors/runtime → app factory, with zero
+endpoint-behavior change) — see `docs/architecture.md` for the current
+layered structure and `specs/migration-plan.md` for how it got there.
+
+**Status**: standardized single-user project baseline (tag
+`standardized-single-user-project`) — backend architecture, config,
+eval workflow, and frontend structure are all standardized and fully
+tested. OAuth/authentication, PostgreSQL migration, and multi-user
+support are **not started**, by design — see `specs/remaining-
+standardization-plan.md` for the full current-state record, and
+`specs/production-readiness-roadmap.md` for the design-only audit/plan
+covering what any of that would actually require.
+
 ## Architecture
 
-![Architecture diagram](research_agent_architecture.svg)
+For the current, full-app architecture (frontend → API → services →
+domain modules → storage, including the curation/report/chat system),
+see [`docs/architecture.md`](docs/architecture.md)'s Mermaid diagram
+under "Current architecture." The original, hand-maintained
+`research_agent_architecture.svg` diagram is retained for history at
+[`docs/archive/research_agent_architecture.svg`](docs/archive/research_agent_architecture.svg)
+— it's accurate only for the original one-shot pipeline below, predates
+the curation system/React frontend/backend standardization entirely, and
+should not be read as describing the app's current architecture.
 
-The diagram above is the detailed, file-by-file view (updated for the
-robustness/reliability changes below — brighter highlighted lines within
-each box). The condensed version:
+The one-shot pipeline specifically, condensed:
 
 ```
 Topic
@@ -133,37 +161,67 @@ flight — easy to mistake for a hang or timeout.
 
 ```
 research_agent/
-  schema.py         Paper — the normalized record shared by every phase
+  schema.py         Paper / WebArticle — the normalized records shared by every phase
   ingestion.py       search_arxiv(), search_semantic_scholar()
   dedup.py           cross-source deduplication + merge
   embeddings.py      batched + cached embedding, Chroma storage, cosine retrieval
   query_expansion.py LLM-suggested-title candidate-pool widening (build_candidate_pool
-                     + expanded_search) — the live app's opt-in query-expansion mode
-  ranking.py         opt-in alternative FINAL ranking steps for evaluation only —
-                     BM25, RRF hybrid fusion, citation-partitioned reranking, and
-                     the derived get_partition_n(k) rule (see "Retrieval ranking
-                     experiments" below); never used by the live app's default path
-  agent.py           LangChain tool-calling orchestration agent
-  summarize.py       theme clustering + grounded per-paper summaries
+                     + expanded_search) — the live app's opt-in query-expansion mode;
+                     also owns PaperPoolSession, the curation workflow's own state
+  ranking.py         BM25/RRF-hybrid ranking alternatives, evaluation-only (see
+                     "Retrieval ranking experiments" below) — never used by the live
+                     app. Also owns citation-partitioned reranking
+                     (partition_by_citation/get_partition_n/merge_with_guaranteed_
+                     slots), which IS used live, by agent.py's rerank tool
+  agent.py           LangChain tool-calling orchestration agent (one-shot pipeline)
+  summarize.py       theme clustering + grounded per-paper summaries (one-shot only)
   citations.py       APA + BibTeX formatting (deterministic, no LLM)
-  qa.py              conversational RAG over retrieved abstracts
-  storage.py         SQLite persistence for saved searches
+  qa.py              conversational RAG over retrieved abstracts — powers both
+                     the one-shot /chat and (via curation_chat.py) curation chat
+  curation_loop.py    interactive review workflow: present a batch of candidate
+                     papers, take picks, refine, resume — a LangGraph StateGraph
+                     used for checkpointing + interrupt/resume, not agentic
+                     decision-making (see docs/architecture.md)
+  curation_session.py  curation session persistence, history, reopen/delete
+  curation_chat.py    chat over a curated paper set, with optional live
+                     web-search escalation and report-update offers
+  report.py           literature-review report generation/regeneration for a
+                     curated session
+  storage.py         SQLite persistence for saved searches (one-shot pipeline)
   tracing.py         shared Langfuse helpers (redacted paper/trace metadata
                      views) — see "Observability" below
-  api.py             FastAPI backend
-frontend/          React + Vite UI (curation/report/chat) — see frontend/README.md
+  api.py             thin compatibility/composition entrypoint — routers,
+                     services, schemas, and app wiring live under api_app/
+                     and services/ (see docs/architecture.md)
+  api_app/           routers (thin HTTP adapters), schemas, serializers,
+                     error handling, runtime state, and the app factory
+  services/          per-endpoint-group orchestration
+frontend/          React + Vite UI for the curation/report/chat workflow —
+                   see frontend/README.md
 scripts/           runnable CLI demos for each phase (see below), plus two
                    real-pipeline evaluation harnesses: eval_retrieval.py
                    (retrieval precision/recall + ranking-mode experiments)
                    and ragas_eval.py (RAGAS Faithfulness/Answer Relevancy/
                    Context Precision/Context Recall over a curated question set)
-tests/             deterministic unit tests (148 tests, zero network/LLM
-                   calls required — see "Run the tests" below)
+tests/             deterministic backend unit tests (342 as of the
+                   standardized-single-user-backend baseline; zero network/LLM
+                   calls required — see "Run the tests" below). frontend/ has
+                   its own 98-test vitest suite plus Playwright e2e tests.
 eval_data/         curated reference sets consumed by the eval harnesses
-                   (17-topic retrieval reference set, 24-scenario RAGAS set)
-eval_results/      CSV run history for both harnesses, plus eval_results/runs/
-                   (per-run RAGAS artifacts — see "RAGAS quality evaluation")
+                   (17-topic retrieval reference set, 24-scenario RAGAS
+                   set) — see eval_data/README.md
+eval_results/      CSV run history for both harnesses, eval_results/archive/
+                   (historical snapshots), eval_results/runs/ (gitignored
+                   per-run RAGAS artifacts) — see eval_results/README.md
+                   and docs/evaluation.md for the full artifact policy
 data/              gitignored: chroma_db/, cache/, history.sqlite
+docs/              docs/architecture.md — current + target backend
+                   architecture; docs/evaluation.md — eval workflow
+specs/             specs/migration-plan.md (Phases 0-10 backend
+                   standardization, done) and specs/remaining-
+                   standardization-plan.md (what's left: config, evals,
+                   frontend, docs — auth/Postgres/multi-user explicitly out
+                   of scope until a separate decision)
 ```
 
 ### Try each phase individually
@@ -181,15 +239,19 @@ uv run python scripts/test_api.py                                # phase 7: full
 ### Run the tests
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -v          # backend — 342 tests as of the
+                                  # standardized-single-user-backend baseline
+cd frontend && npm test           # frontend — 98 vitest tests
+cd frontend && npm run build      # frontend — type-check + production build
+cd frontend && npm run e2e        # frontend — Playwright end-to-end tests
 ```
 
-All 148 tests in `tests/` are fully deterministic and need no network access
-and no API keys — every LLM call (OpenAI) and every external API call
+All backend tests in `tests/` are fully deterministic and need no network
+access and no API keys — every LLM call (OpenAI) and every external API call
 (arXiv, Semantic Scholar, Unpaywall/CrossRef, Tavily) is mocked, including
-the `OpenAI()` client construction in `api.py`'s FastAPI `lifespan()`, which
-otherwise runs unconditionally at `TestClient` startup regardless of which
-endpoint a given test hits. Verified directly: `tests/` passes 148/148 with
+the `OpenAI()` client construction in `api_app/app.py`'s FastAPI `lifespan()`,
+which otherwise runs unconditionally at `TestClient` startup regardless of
+which endpoint a given test hits. Verified directly: `tests/` passes with
 `.env` entirely absent — including Langfuse tracing, disabled for the whole
 suite via `tests/conftest.py` (see "Observability" below) so a normal test
 run never sends real telemetry.
@@ -287,16 +349,39 @@ verified by keeping the full test suite green (101 → 128 tests) throughout.
   128/128 with `.env` entirely absent, not just with real credentials
   configured.
 
+## Evaluation
+
+Two real-pipeline (non-mocked, billable) evaluation harnesses live in
+`scripts/`, each with its own repeatable command. Full workflow detail,
+including the artifact-organization policy below, is in
+[`docs/evaluation.md`](docs/evaluation.md).
+
+```bash
+uv run python scripts/eval_retrieval.py --note "..."   # retrieval precision/recall
+uv run python scripts/ragas_eval.py --note "..."         # RAGAS quality metrics
+```
+
+Both accept `--help` for the full flag reference (ranking-mode
+experiments, topic subsets, judge-model override, etc.). **Every real
+run appends a row to that harness's `eval_results/*.csv` history log** —
+expect `git status` to show that file locally modified after running
+either command; that's the log working as designed, not a mistake to
+undo. See `docs/evaluation.md` for exactly which `eval_results/` files
+are tracked history logs vs. `.gitignore`d per-run detail vs. archived
+historical snapshots.
+
 ## Retrieval ranking experiments
 
 A later, separate line of work asked whether the live app's ranking step
-(cosine similarity over embeddings, nothing else) is actually the best
-available option, and whether a diagnosed recurring failure — foundational
-papers (e.g. LoRA) losing rerank against generic survey papers that repeat
-a topic's wording densely — has a fix. All of this is **opt-in evaluation
-tooling only**, wired through `scripts/eval_retrieval.py`'s `--ranking-mode`
-flag; `research_agent/ranking.py` is never imported by `api.py`, `app.py`,
-or `qa.py`, and the live app's default ranking behavior is unchanged.
+(cosine similarity over embeddings, nothing else, at the time) was actually
+the best available option, and whether a diagnosed recurring failure —
+foundational papers (e.g. LoRA) losing rerank against generic survey papers
+that repeat a topic's wording densely — has a fix. The BM25/hybrid
+comparisons directly below are **opt-in evaluation only**, wired through
+`scripts/eval_retrieval.py`'s `--ranking-mode` flag; `research_agent/
+ranking.py` is never imported by `api.py`, `app.py`, or `qa.py`. The winning
+approach found here — citation-partitioned reranking — was later promoted
+to the live agent's default path; see "Deployment status" below.
 
 Every number below is a real run against the same 17-topic reference set
 (`eval_data/reference_topics.json`) used throughout, logged to
@@ -610,7 +695,10 @@ per-turn record: question, real retrieved paper titles, real generated
 answer, every metric) plus an incremental `raw_<timestamp>.jsonl`, written
 turn-by-turn *during* generation rather than only at the end — so
 already-paid-for generation data survives even if scoring itself later
-crashes or rate-limits.
+crashes or rate-limits. `eval_results/runs/` is gitignored (per-run
+detail, reviewed locally, not meant to accumulate in git history the way
+`eval_results/history.csv`'s one-row-per-run log does — see
+`docs/evaluation.md`).
 
 ```bash
 uv run python scripts/ragas_eval.py --note "..."

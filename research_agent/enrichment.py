@@ -35,7 +35,6 @@ normalized DOI string directly, in its own table (not embedding_cache).
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sqlite3
 import time
@@ -43,6 +42,7 @@ from pathlib import Path
 
 import requests
 
+from research_agent.config import get_settings
 from research_agent.schema import Paper
 
 logger = logging.getLogger(__name__)
@@ -66,11 +66,11 @@ _JATS_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _unpaywall_email() -> str | None:
-    return os.getenv("UNPAYWALL_EMAIL") or None
+    return get_settings().unpaywall_email
 
 
 def _crossref_contact() -> str:
-    return os.getenv("UNPAYWALL_EMAIL") or _CROSSREF_CONTACT_FALLBACK
+    return get_settings().unpaywall_email or _CROSSREF_CONTACT_FALLBACK
 
 
 def _init_cache_db(path: Path = CACHE_DB_PATH) -> sqlite3.Connection:

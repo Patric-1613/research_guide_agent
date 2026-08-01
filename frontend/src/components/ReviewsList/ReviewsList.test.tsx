@@ -2,10 +2,10 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ReviewsList } from './ReviewsList'
-import { curationApi } from '../../api/client'
-import type { CurationReviewSummary } from '../../api/types'
+import { curationApi } from '../../lib/api/client'
+import type { CurationReviewSummary } from '../../types'
 
-vi.mock('../../api/client', () => ({
+vi.mock('../../lib/api/client', () => ({
   curationApi: {
     listReviews: vi.fn(),
   },

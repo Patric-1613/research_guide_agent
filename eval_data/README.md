@@ -1,0 +1,15 @@
+# Eval input fixtures
+
+Input datasets consumed by the evaluation harnesses in `scripts/`. See
+`docs/evaluation.md` for the full evaluation workflow — this file only
+covers what lives here and where each one comes from.
+
+| File | Consumed by | Source |
+|---|---|---|
+| `reference_topics.json` | `scripts/eval_retrieval.py` | Converted from `reference_topics.xlsx` via `scripts/convert_reference_sheet.py`. 17 topics, hand-curated, each with a human-confirmed set of expected relevant papers. |
+| `reference_topics.xlsx` | (source only — not read directly by any script) | The raw, human-maintained spreadsheet. Binary and not diff-friendly, so it's `.gitignore`d — `reference_topics.json` (its reviewable, converted output) is the tracked source of truth. Re-run `scripts/convert_reference_sheet.py` whenever the spreadsheet is updated. |
+| `stage1_ragas_questions.json` | `scripts/ragas_eval.py` | Hand-curated, 24 scenarios across single-paper, cross-paper-comparison, multi-turn, and deliberately-unanswerable categories. Not generated from anything — edited directly. Each scenario's own `_meta` block records how it was independently verified against the real pipeline. |
+
+Nothing in this directory is modified by running an eval — these are
+inputs only. Eval *outputs* live in `eval_results/` (see
+`docs/evaluation.md`'s artifact policy).

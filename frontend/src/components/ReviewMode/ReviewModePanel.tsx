@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CurationStateResponse } from '../../api/types'
+import type { CurationStateResponse } from '../../types'
 import type { TurnEvent } from '../../hooks/useCurationSession'
 import { TurnBlock, TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'

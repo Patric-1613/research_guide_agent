@@ -1,32 +1,61 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + Vite UI for the Research Paper Summarizer's interactive curation
+workflow: review a batch of candidate papers and pick which ones matter,
+read/regenerate a synthesized literature-review report, and chat about
+the curated set (with optional live web-context and report-update
+escalation). See the repo root [`README.md`](../README.md) and
+[`docs/architecture.md`](../docs/architecture.md) for the full picture,
+including the original one-shot `/search`/`/summarize`/`/chat`/`/export`
+endpoints this frontend does not have its own UI for (use `/docs` on the
+backend directly for those).
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install          # first time only
+npm run dev           # start the Vite dev server (http://localhost:5173)
+npm test               # vitest — unit/component tests
+npm run build           # tsc -b && vite build — type-check + production build
+npm run e2e              # Playwright end-to-end tests
+npm run lint               # oxlint
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Connecting to the backend
+
+Start the backend separately first (see the root `README.md`'s "Running
+the app" section):
+
+```bash
+uv run uvicorn research_agent.api:app --reload --reload-exclude "frontend/*"
+```
+
+The frontend reads the backend's base URL from `VITE_API_BASE_URL`
+(`src/lib/api/client.ts`, read at call time via `import.meta.env`, not
+module load time), defaulting to `http://localhost:8000` if unset. Copy
+`.env.example` to `.env` to set it explicitly:
+
+```bash
+cp .env.example .env
+```
+
+## Structure
+
+```
+src/
+  App.tsx                        thin entrypoint — renders CurationWorkspacePage
+  pages/CurationWorkspacePage.tsx  the app's one page: workspace-mode state,
+                                  top-level layout, URL-param mode sync
+                                  (no client-side router — a single-view SPA
+                                  with a ?mode= query param, not multi-page
+                                  routing)
+  hooks/useCurationSession.ts     the one stateful hook every component reads from
+  lib/api/client.ts               typed fetch wrapper — request paths, methods,
+                                  payloads, error handling
+  types/index.ts                  shared response/request types, mirroring
+                                  research_agent/api_app/schemas.py field-for-field
+  components/
+    ReviewMode/, ReportMode/, ChatMode/     the three workspace-mode panels
+    ReviewsList/, TurnHistory/, TurnFeed/   left panel + turn scrollback/browser
+    PaperPool/, WorkspaceMode/, AppHeader/, shared/
+```

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { curationApi } from './client'
-import { ApiError } from './types'
+import { ApiError } from '../../types'
 
 function mockFetchOnce(status: number, body: unknown) {
   const fetchMock = vi.fn().mockResolvedValue({

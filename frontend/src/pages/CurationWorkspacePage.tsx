@@ -1,0 +1,314 @@
+import { useEffect, useRef, useState } from 'react'
+import { useCurationSession } from '../hooks/useCurationSession'
+import { AppHeader } from '../components/AppHeader/AppHeader'
+import { ReviewsList } from '../components/ReviewsList/ReviewsList'
+import { TopicHeader } from '../components/TurnFeed/TopicHeader'
+import { ReviewModePanel } from '../components/ReviewMode/ReviewModePanel'
+import { PoolSummaryPanel } from '../components/ReviewMode/PoolSummaryPanel'
+import { ChatModePanel } from '../components/ChatMode/ChatModePanel'
+import { ReportModePanel } from '../components/ReportMode/ReportModePanel'
+import { TurnHistoryBrowser } from '../components/TurnHistory/TurnHistoryBrowser'
+import type { WorkspaceMode } from '../components/WorkspaceMode/WorkspaceModeSwitcher'
+
+const MODE_PARAM = 'mode'
+
+// Mirrors the `session` URL param pattern in useCurationSession.ts --
+// workspaceMode is UI-only state, but it still needs to survive a real
+// browser reload (e.g. mid-chat), or a refresh would silently bounce the
+// user back out of Chat/Report, regressing the already-tested "state
+// survives refresh" property.
+function getModeFromUrl(): WorkspaceMode {
+  const raw = new URLSearchParams(window.location.search).get(MODE_PARAM)
+  return raw === 'chat' || raw === 'report' ? raw : 'review'
+}
+
+function setModeInUrl(mode: WorkspaceMode): void {
+  const url = new URL(window.location.href)
+  if (mode === 'review') url.searchParams.delete(MODE_PARAM)
+  else url.searchParams.set(MODE_PARAM, mode)
+  window.history.replaceState({}, '', url)
+}
+
+export default function CurationWorkspacePage() {
+  const {
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
+    selectFromHistory, reopenReview,
+  } = useCurationSession()
+
+  const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
+  const [reviewsRefreshToken, setReviewsRefreshToken] = useState(0)
+  const [workspaceMode, setWorkspaceModeState] = useState<WorkspaceMode>(() => getModeFromUrl())
+  // curation-turn-history Phase 9f: deliberately NOT a 4th WorkspaceMode --
+  // reachable from Review/Chat/Report alike (the whole point: being
+  // "stuck" in Report mode no longer means the earlier turns are gone),
+  // so it's an overlay toggle on top of whichever mode is active, not a
+  // peer of the tri-tab switcher's own lock semantics.
+  const [showHistory, setShowHistory] = useState(false)
+
+  // Chat and Report unlock together, purely on curation being finished
+  // (stage === "synthesize") -- chat_turn()'s own guard has no
+  // dependency on a report existing yet, so gating on has_report would
+  // be stricter than what the backend actually requires.
+  const unlocked = state?.stage === 'synthesize'
+
+  // curation-editable-until-locked Phase 10e: the ONLY gate on going
+  // back to active curation, mirroring reopen_curation_session()'s own
+  // server-side check exactly (research_agent/curation_session.py) --
+  // this is just the UI-hiding half, the backend re-validates for real.
+  // Once reopened, `unlocked` above naturally goes back to false on the
+  // next loadState() (stage flips back to "curate"), which the existing
+  // effect below already handles by bouncing workspaceMode back to
+  // 'review' -- no separate re-lock logic needed here.
+  const reopenEligible = !!state && state.stage === 'synthesize' && state.report === null && state.chat_history.length === 0
+
+  // Staged ("+ Add to review") picks are scoped to whichever batch is
+  // CURRENTLY pending -- reset whenever the pending batch's identity
+  // changes, including "there's no longer a pending batch at all"
+  // (curation just finished).
+  const pendingBatchKey = state?.pending_batch?.map((p) => p.paper_id).join(',') ?? null
+  useEffect(() => {
+    setStagedPickIds([])
+  }, [pendingBatchKey])
+
+  function setWorkspaceMode(mode: WorkspaceMode) {
+    setWorkspaceModeState(mode)
+    setModeInUrl(mode)
+    // Chat UX fixes, bug 1: the turn history browser is Review/Chat-only
+    // (redundant in Review's own inline turn feed but still useful there;
+    // never made sense in Report, which has no notion of "turns" at all)
+    // -- switching TO Report must close it, not just hide the toggle
+    // button that opens it, so navigating there via a tab click can't
+    // leave it stuck open from an earlier Review/Chat session.
+    if (mode === 'report') setShowHistory(false)
+  }
+
+  // Re-sync from the URL on back/forward navigation, mirroring the
+  // session-id popstate handling in useCurationSession.ts.
+  useEffect(() => {
+    function onPopState() {
+      setWorkspaceModeState(getModeFromUrl())
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  // Phase 8, item 3 fallout: the auto-jump-to-Report below must fire
+  // EXACTLY ONCE, at the live moment a session transitions from
+  // in-progress to just-finished -- not every time this effect happens to
+  // re-run while already unlocked. It used to fire unconditionally
+  // whenever (unlocked && workspaceMode === 'review'), which meant a
+  // completed review could never actually be VIEWED in Review mode at
+  // all: reopening one (handleSelectReview resets mode to 'review'),
+  // deep-linking with ?mode=review, or manually clicking the Review tab
+  // all got instantly bounced back to Report before render even settled
+  // -- silently making ReviewModePanel's now-fixed selected-papers view
+  // unreachable through any normal navigation path. Tracked per
+  // session_id so opening a DIFFERENT already-finished review doesn't
+  // read as a "live transition" either.
+  const prevUnlockRef = useRef<{ sessionId: string | null; unlocked: boolean }>({ sessionId: null, unlocked: false })
+
+  // Two safety/UX rules:
+  //  - The moment curation finishes WHILE THIS SESSION IS ALREADY OPEN,
+  //    jump straight to Report once -- that's the natural next step right
+  //    after the last pick. Never clobber a manual Chat/Report navigation,
+  //    and never re-fire just because the review happens to still be
+  //    unlocked on a later render.
+  //  - If Chat/Report is showing but curation ISN'T actually finished
+  //    (e.g. a stale/bookmarked `?mode=chat` URL from before this review
+  //    reached that stage), fall back to Review rather than rendering a
+  //    locked tab's content.
+  useEffect(() => {
+    // While state is still loading (null), we don't yet know whether
+    // `unlocked` is real or just the null-state default of false --
+    // clamping here would force a `?mode=chat` reload back to Review
+    // before the real (possibly-unlocked) state ever arrives.
+    if (!state) return
+
+    const sameSession = prevUnlockRef.current.sessionId === state.session_id
+    const justUnlocked = sameSession && !prevUnlockRef.current.unlocked && unlocked
+    prevUnlockRef.current = { sessionId: state.session_id, unlocked }
+
+    if (!unlocked && workspaceMode !== 'review') {
+      setWorkspaceMode('review')
+    } else if (justUnlocked && workspaceMode === 'review') {
+      setWorkspaceMode('report')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, unlocked, workspaceMode])
+
+  function handleSelectReview(id: string) {
+    setStagedPickIds([])
+    setWorkspaceMode('review')
+    setShowHistory(false)
+    openReview(id)
+  }
+
+  async function handleStartReview(topic: string, targetCount: number) {
+    setWorkspaceMode('review')
+    setShowHistory(false)
+    await startReview(topic, targetCount)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleDeleteReview(id: string) {
+    await deleteReview(id)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  // curation-refinement-and-auto-offer Phase 6f-2: refinement text (if
+  // any was typed) rides in the SAME picks submission, forcing a fresh,
+  // refinement-guided search on this turn rather than waiting for the
+  // pool to run low on its own.
+  async function handleSubmitPicks(refinement: string | undefined, stop: boolean, requestRefill?: boolean) {
+    await submitPicks(stagedPickIds, stop, refinement, requestRefill)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleGenerateReport() {
+    await generateReport()
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleRegenerateReport() {
+    await regenerateReport()
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  // curation-refinement-and-auto-offer Phase 6f-4: report regeneration
+  // is no longer triggered by a passive banner/button here -- it's
+  // offered conversationally (chat_turn() appends the offer to the
+  // answer and sets pending_report_update automatically once a new web
+  // source makes the report stale), and accepted via the SAME Yes/No
+  // buttons -> onSendMessage path ChatModePanel already uses for the
+  // web-search offer, not a separate mechanism.
+  async function handleSendMessage(message: string) {
+    await sendChatMessage(message)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleSelectFromHistory(paperId: string) {
+    await selectFromHistory(paperId)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  async function handleReopenReview() {
+    await reopenReview()
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
+  function handleAdd(paperId: string) {
+    setStagedPickIds((prev) => (prev.includes(paperId) ? prev : [...prev, paperId]))
+  }
+
+  function handleRemoveStaged(paperId: string) {
+    setStagedPickIds((prev) => prev.filter((id) => id !== paperId))
+  }
+
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-bg text-text">
+      <AppHeader />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <ReviewsList
+          activeSessionId={sessionId}
+          onSelectReview={handleSelectReview}
+          onStartReview={handleStartReview}
+          onDeleteReview={handleDeleteReview}
+          refreshToken={reviewsRefreshToken}
+          workspaceMode={workspaceMode}
+          workspaceUnlocked={unlocked}
+          onWorkspaceModeChange={setWorkspaceMode}
+        />
+
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {!state && (
+            <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
+              {loading ? 'Loading…' : 'Select a review on the left, or start a new one.'}
+            </div>
+          )}
+          {error && (
+            <div className="border-b border-danger/30 bg-danger-soft px-4 py-2 text-sm text-danger">{error}</div>
+          )}
+          {state && (
+            <>
+              <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
+              {!showHistory && (reopenEligible || (state.turn_history.length > 0 && workspaceMode !== 'report')) && (
+                <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-1.5">
+                  <div>
+                    {reopenEligible && (
+                      <button
+                        type="button"
+                        data-testid="reopen-review"
+                        onClick={handleReopenReview}
+                        disabled={loading}
+                        className="text-xs text-text-secondary underline decoration-dotted hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Reopen for more curation
+                      </button>
+                    )}
+                  </div>
+                  {/* Chat UX fixes, bug 1: Review + Chat only, never Report -- see setWorkspaceMode above. */}
+                  {state.turn_history.length > 0 && workspaceMode !== 'report' && (
+                    <button
+                      type="button"
+                      data-testid="open-turn-history"
+                      onClick={() => setShowHistory(true)}
+                      className="text-xs text-text-secondary underline decoration-dotted hover:text-accent"
+                    >
+                      Browse past turns ({state.turn_history.length})
+                    </button>
+                  )}
+                </div>
+              )}
+              {showHistory ? (
+                <TurnHistoryBrowser
+                  state={state}
+                  stagedPickIds={stagedPickIds}
+                  disabled={loading}
+                  onAdd={handleAdd}
+                  onRemoveStaged={handleRemoveStaged}
+                  onSelectFromHistory={handleSelectFromHistory}
+                  onClose={() => setShowHistory(false)}
+                />
+              ) : (
+                <>
+                  {workspaceMode === 'review' && (
+                    <ReviewModePanel
+                      state={state}
+                      turnEvents={turnEvents}
+                      stagedPickIds={stagedPickIds}
+                      disabled={loading}
+                      onAdd={handleAdd}
+                      onRemoveStaged={handleRemoveStaged}
+                      onSubmitPicks={handleSubmitPicks}
+                    />
+                  )}
+                  {workspaceMode === 'chat' && (
+                    <ChatModePanel
+                      state={state}
+                      disabled={loading}
+                      onSendMessage={handleSendMessage}
+                      lastSearchMeta={lastChatSearchMeta}
+                    />
+                  )}
+                  {workspaceMode === 'report' && (
+                    <ReportModePanel
+                      state={state}
+                      disabled={loading}
+                      onGenerateReport={handleGenerateReport}
+                      onRegenerateReport={handleRegenerateReport}
+                    />
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </main>
+
+        {state && workspaceMode === 'review' && !showHistory && (
+          <PoolSummaryPanel state={state} stagedPickIds={stagedPickIds} />
+        )}
+      </div>
+    </div>
+  )
+}

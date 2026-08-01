@@ -247,6 +247,33 @@ def test_search_keeps_agent_ranking_when_count_already_matches_top_k():
     mock_search.assert_not_called()
 
 
+def test_search_with_query_expansion_returns_papers_and_no_web_articles():
+    """use_query_expansion=True bypasses the agent entirely in favor of
+    expanded_search() (query_expansion.py's own candidate-widening path)
+    -- a genuinely different branch from every /search test above, which
+    all exercise the agent path via run_research_agent. Web article
+    search is agent-only right now, so web_articles is unconditionally
+    empty on this path -- a documented, deliberate gap (see api.py's own
+    comment on SearchRequest.use_query_expansion), not something this
+    test invents."""
+    papers = [_paper("p1", "Paper One"), _paper("p2", "Paper Two")]
+
+    with _client() as client, \
+         patch.object(api, "expanded_search", return_value=[(papers[0], 0.9), (papers[1], 0.7)]) as mock_expanded, \
+         patch.object(api, "run_research_agent") as mock_agent:
+        resp = client.post("/search", json={"topic": "test topic", "use_query_expansion": True})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["topic"] == "test topic"
+    assert [p["title"] for p in body["papers"]] == ["Paper One", "Paper Two"]
+    assert body["papers"][0]["score"] == 0.9
+    assert body["web_articles"] == []
+    mock_expanded.assert_called_once()
+    assert mock_expanded.call_args.args[0] == "test topic"
+    mock_agent.assert_not_called()
+
+
 def test_summarize_reuses_cached_summary_without_recalling_llm():
     papers = [_paper("p1", "Paper One")]
     fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)])
@@ -603,6 +630,7 @@ if __name__ == "__main__":
     test_search_falls_back_to_server_side_rerank_if_agent_skipped_it()
     test_search_reranks_serverside_when_agent_ignored_requested_top_k()
     test_search_keeps_agent_ranking_when_count_already_matches_top_k()
+    test_search_with_query_expansion_returns_papers_and_no_web_articles()
     test_summarize_reuses_cached_summary_without_recalling_llm()
     test_summarize_different_styles_produce_different_citations_without_recalling_llm()
     test_export_uses_selected_citation_style_in_references_section()

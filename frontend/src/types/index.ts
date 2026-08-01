@@ -2,7 +2,7 @@
 // (curation-api-and-ui Phase 6a/6c) field-for-field -- kept as plain
 // interfaces, not generated, since the backend has no OpenAPI-client
 // codegen step wired up yet; if the two drift, the HTTP tests on both
-// sides (tests/test_curation_api.py, src/api/client.test.ts) are what
+// sides (tests/test_curation_api.py, src/lib/api/client.test.ts) are what
 // catch it.
 
 export interface PaperOut {

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ReportModePanel } from './ReportModePanel'
-import type { CurationStateResponse } from '../../api/types'
+import type { CurationStateResponse } from '../../types'
 
 function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
   return {

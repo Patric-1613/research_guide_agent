@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { PoolSummaryPanel } from './PoolSummaryPanel'
-import type { CurationStateResponse, PaperOut } from '../../api/types'
+import type { CurationStateResponse, PaperOut } from '../../types'
 
 function paper(id: string, title: string): PaperOut {
   return {
