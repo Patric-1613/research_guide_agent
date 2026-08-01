@@ -27,7 +27,9 @@ layered structure and `specs/migration-plan.md` for how it got there.
 eval workflow, and frontend structure are all standardized and fully
 tested. OAuth/authentication, PostgreSQL migration, and multi-user
 support are **not started**, by design — see `specs/remaining-
-standardization-plan.md` for the full current-state record.
+standardization-plan.md` for the full current-state record, and
+`specs/production-readiness-roadmap.md` for the design-only audit/plan
+covering what any of that would actually require.
 
 ## Architecture
 

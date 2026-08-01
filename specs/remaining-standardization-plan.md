@@ -755,3 +755,9 @@ routine continuation of this plan.
 
 **Phase 17 (final checkpoint) confirmed this directly** — see above —
 and closes the arc. Tagged `standardized-single-user-project`.
+
+**Phase 18** started a separate arc on top of this closed one:
+`specs/production-readiness-roadmap.md` is a design/audit-only document
+for the auth/PostgreSQL/multi-user work this plan has deferred at every
+step — nothing in it is implemented, and it does not reopen or modify
+anything in this plan.

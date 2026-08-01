@@ -956,6 +956,13 @@ proposal document, not a continuation of this one.
 
 Tagged `standardized-single-user-project`.
 
+**Phase 18 (2026-08-01)**, immediately after, produced `specs/
+production-readiness-roadmap.md` — a design/audit-only document covering
+exactly the production-readiness work named above (auth options,
+PostgreSQL migration options, a multi-user data-ownership proposal, API/
+frontend impact, and a phased Phase 19–27 implementation plan). Nothing
+in that document is implemented; it does not disturb this baseline.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
