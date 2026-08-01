@@ -23,9 +23,17 @@ manufacturing findings to fill out the domain-module categories.
 
 ## Candidates
 
-### `requirements-frozen-baseline.txt`
+### `requirements-frozen-baseline.txt` — ARCHIVED (Phase 18B, 2026-08-02)
+
+**Resolved.** Moved to `docs/archive/requirements-frozen-baseline.txt`
+via `git mv` (content byte-identical, history preserved) alongside a new
+`docs/archive/README.md` explaining the archive convention and this
+file's specific staleness. `pyproject.toml`'s dependencies and
+`frontend/package.json` remain the live sources of truth, unchanged.
+Findings below kept as the historical record of why this move happened.
 
 - **Path**: `/requirements-frozen-baseline.txt` (repo root, 130 lines)
+  → now `docs/archive/requirements-frozen-baseline.txt`
 - **Why it looks legacy**: Predates the pip → uv dependency-management
   migration (`54c613b`, 2026-07-16). `pyproject.toml`'s own comment
   describes it as the historical snapshot `uv.lock`'s
@@ -45,15 +53,11 @@ manufacturing findings to fill out the domain-module categories.
 - **Tests referencing it**: none.
 - **Runtime risk if removed**: none — nothing reads this file at
   runtime, build, or `uv lock` time.
-- **Recommendation**: **ARCHIVE CANDIDATE.** Real historical value (proof
-  of what was captured at the pip→uv cutover) but actively misleading
-  left in the repo root as-is, since it now describes a dependency set
-  that hasn't been true for weeks. Either delete it (its provenance
-  value is already fully captured in `pyproject.toml`'s comment and
-  `uv.lock`) or move it under a clearly historical location (e.g.
-  `docs/` with a note) if the provenance record itself is worth keeping.
+- **Recommendation**: ~~**ARCHIVE CANDIDATE.**~~ **Done.** Moved to
+  `docs/archive/`, not deleted — the provenance record is kept, just no
+  longer sitting in the repo root implying current relevance.
 - **Removable before future backend feature work?** Yes — zero coupling
-  to anything live.
+  to anything live. (Archived, not removed — see above.)
 
 ### `research_agent_architecture.svg`
 
@@ -233,7 +237,7 @@ performed here.
 
 | Classification | Count | Items |
 |---|---|---|
-| ARCHIVE CANDIDATE | 1 | `requirements-frozen-baseline.txt` |
+| ARCHIVED (Phase 18B) | 1 | `docs/archive/requirements-frozen-baseline.txt` (was `/requirements-frozen-baseline.txt`) |
 | UNKNOWN (needs manual decision) | 1 | `research_agent_architecture.svg` |
 | KEEP, flagged as a pattern worth knowing about (not a defect) | 1 | docs/specs proliferation (9 documents) |
 | KEEP — public compatibility surface | 2 | `research_agent/api.py`, `research_agent/api_app/` (naming) |

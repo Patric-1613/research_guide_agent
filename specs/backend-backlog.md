@@ -109,11 +109,10 @@ today, cross-referenced to where each item is already tracked in detail:
   `patch.object` mocking or require the whole re-export cleanup first).
   Not scheduled. See `docs/architecture.md`'s "Why `research_agent/
   api_app/`, not `research_agent/api/`" section.
-- **`requirements-frozen-baseline.txt` is stale** — still lists
-  `streamlit==1.59.0`/`altair==6.2.2`, both removed from the live
-  dependency set weeks ago. See `specs/legacy-cleanup-audit.md`. Low
-  risk, zero runtime coupling — safe to archive/remove whenever
-  convenient, not urgent.
+- ~~`requirements-frozen-baseline.txt` is stale~~ — **Done (Phase 18B).**
+  Archived to `docs/archive/requirements-frozen-baseline.txt` (content
+  unchanged, `git mv`'d, not deleted); `docs/archive/README.md` added
+  explaining the archive convention. See `specs/legacy-cleanup-audit.md`.
 - **`research_agent_architecture.svg` is stale relative to current
   architecture** (predates the curation system, the React frontend, and
   the entire `api.py` → `api_app/`/`services/` split) but is still the
