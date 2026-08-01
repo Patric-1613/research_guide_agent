@@ -761,3 +761,13 @@ and closes the arc. Tagged `standardized-single-user-project`.
 for the auth/PostgreSQL/multi-user work this plan has deferred at every
 step — nothing in it is implemented, and it does not reopen or modify
 anything in this plan.
+
+**Phase 18A** ran a read-only legacy-cleanup audit and captured a
+backend bug/feature backlog: `specs/legacy-cleanup-audit.md` (found zero
+dead code in `research_agent/`; two real findings, both repo-root
+artifacts — a stale `requirements-frozen-baseline.txt` and an outdated-
+but-still-linked `research_agent_architecture.svg`) and `specs/
+backend-backlog.md` (known bugs, feature ideas, technical debt, and the
+deferred-platform-work list, all cross-referenced rather than
+duplicated). Neither document changes anything this plan already
+closed.
