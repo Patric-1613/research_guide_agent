@@ -5,28 +5,100 @@ today, and the target layered architecture this project is migrating toward
 incrementally (see `specs/migration-plan.md` for the phased plan). Nothing in
 this document changes behavior — it's a map, not a refactor.
 
-The existing top-level `README.md` and `research_agent_architecture.svg`
-describe the original single-pipeline research agent (search → dedup →
-rank → summarize/chat). That description is still accurate for that part of
-the system, but predates the curation/report/chat system and the React UI
-added afterward — this document fills that gap and is the more current
-source of truth for anything under `research_agent/curation_*`, `report.py`,
-`qa.py`, and `frontend/`.
+`research_agent_architecture.svg` (now archived at `docs/archive/
+research_agent_architecture.svg` — see that directory's `README.md`)
+described the original single-pipeline research agent (search → dedup →
+rank → summarize/chat). That description is still accurate for that part
+of the system, but predates the curation/report/chat system, the React
+UI, and the entire backend standardization below — this document,
+including the Mermaid diagram right below, is the current, accurate
+source of truth for the whole app as it stands today.
 
 ## Current architecture
 
-**Phase 2 (API split) is complete as of 2026-07-29.** `research_agent/api.py`
-is now a thin, backward-compatible entrypoint — `uvicorn research_agent.api:
-app` still boots the exact same app object it always has, and every response
-shape is byte-for-byte unchanged — but every actual route handler has moved
-out into `research_agent/api_app/routers/`. `api.py` itself now holds:
-top-level imports, shared module-level state (`_state`, populated once in
-`lifespan()`), every request/response Pydantic model, a handful of shared
-serialization/error-guard helpers, and 12 `app.include_router(...)` calls
-that wire the routers back onto the one live `app` object. There is still no
-separate service layer — orchestration logic lives in the router handlers
-now, not in `api.py`'s own handlers, but it hasn't moved any further than
-that yet (see "Transition debt" below).
+The diagram below reflects the app as of the `standardized-single-user-
+project` tag — every layer named is real and current, not aspirational
+(see "Target architecture" further down for what's still ahead):
+
+```mermaid
+flowchart TD
+    FE["Frontend<br/>React + Vite (frontend/src/)"]
+
+    subgraph BACKEND["Backend — research_agent/"]
+        API["api.py<br/>compatibility/composition entrypoint"]
+        APPFACTORY["api_app/app.py<br/>create_app(): lifespan, CORS,<br/>11 app.include_router(...) calls"]
+        ROUTERS["api_app/routers/<br/>11 thin HTTP adapters"]
+        SUPPORT["api_app/schemas.py · serializers.py<br/>errors.py · runtime.py<br/>+ config/settings.py"]
+        SERVICES["services/<br/>13 files — orchestration per endpoint group"]
+
+        subgraph DOMAIN["Domain modules"]
+            AGENT["agent.py<br/>LangChain tool-calling agent"]
+            RETRIEVAL["ingestion.py · dedup.py<br/>embeddings.py · ranking.py<br/>enrichment.py · web_search.py"]
+            QA["qa.py<br/>LangGraph QA graph"]
+            CURATION["curation_loop.py · curation_session.py<br/>curation_chat.py · query_expansion.py"]
+            REPORTING["report.py · summarize.py · citations.py"]
+        end
+
+        STORAGE["storage.py<br/>SQLite per-request connections"]
+    end
+
+    subgraph EXTERNAL["External services"]
+        OPENAI["OpenAI<br/>(embeddings, agent, summarize/QA/report)"]
+        SOURCES["arXiv · Semantic Scholar · OpenAlex<br/>(paper search)"]
+        TAVILY["Tavily<br/>(web context)"]
+        UNPAYWALL["Unpaywall / CrossRef<br/>(abstract enrichment)"]
+    end
+
+    subgraph PERSIST["Storage"]
+        CHROMA[("ChromaDB<br/>data/chroma_db/ — vector store,<br/>shared paper content")]
+        SQLITE[("SQLite<br/>data/history.sqlite — saved searches")]
+        CHECKPT[("SQLite<br/>data/qa_checkpoints.sqlite —<br/>LangGraph checkpoints")]
+    end
+
+    FE -->|"fetch() via VITE_API_BASE_URL"| API
+    API --> APPFACTORY
+    APPFACTORY --> ROUTERS
+    ROUTERS --> SERVICES
+    SERVICES -.->|"schemas/serializers/errors/<br/>_state/checkpointer/settings"| SUPPORT
+    SERVICES --> AGENT
+    SERVICES --> RETRIEVAL
+    SERVICES --> QA
+    SERVICES --> CURATION
+    SERVICES --> REPORTING
+    SERVICES --> STORAGE
+
+    AGENT --> OPENAI
+    AGENT --> RETRIEVAL
+    QA --> OPENAI
+    RETRIEVAL --> SOURCES
+    RETRIEVAL --> OPENAI
+    RETRIEVAL --> CHROMA
+    CURATION --> RETRIEVAL
+    CURATION --> CHECKPT
+    QA --> CHECKPT
+    REPORTING --> OPENAI
+    CURATION --> TAVILY
+    RETRIEVAL --> UNPAYWALL
+    STORAGE --> SQLITE
+```
+
+`api.py` is the compatibility/composition entrypoint —
+`uvicorn research_agent.api:app` still boots the exact same app object it
+always has — but almost everything it used to hold directly now lives
+under `api_app/`/`services/`/`config/`, re-exported back into `api.py`
+for anything still reaching it via `research_agent.api.<name>` or
+`patch.object(api, "<name>", ...)`. See the router inventory, the
+`api_app/` module table, and the `services/` list further down for the
+full file-by-file detail behind this diagram.
+
+### Phase 2 snapshot (2026-07-29) — historical, not current
+
+**Kept below for history — this describes the state right after Phase 2
+only, before Phases 3–10/14 moved schemas, serializers, the service
+layer, runtime state, and app composition out of `api.py`.** See the
+Mermaid diagram above for the current architecture; this ASCII sketch
+and its surrounding description are a preserved snapshot, not a live
+reference.
 
 ```
 frontend/ (React + Vite)

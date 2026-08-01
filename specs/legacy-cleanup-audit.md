@@ -59,37 +59,38 @@ Findings below kept as the historical record of why this move happened.
 - **Removable before future backend feature work?** Yes — zero coupling
   to anything live. (Archived, not removed — see above.)
 
-### `research_agent_architecture.svg`
+### `research_agent_architecture.svg` — RESOLVED (Phase 18C, 2026-08-02)
 
-- **Path**: `/research_agent_architecture.svg` (repo root, 16.6 KB)
-- **Why it looks legacy**: Still embedded in `README.md`'s "Architecture"
+**Resolved — option (b) from this entry's original recommendation was
+chosen.** Moved to `docs/archive/research_agent_architecture.svg` via
+`git mv` (content byte-identical, history preserved), with
+`docs/archive/README.md` updated to explain it's historical and
+specifically what it predates. `README.md`'s "Architecture" section no
+longer embeds it as *the* diagram — it now points to `docs/
+architecture.md`'s new Mermaid diagram (added in this same phase,
+directly in this repo, not just in the Obsidian vault as option (b)
+originally suggested) as the current architecture, and links the
+archived SVG explicitly labeled as historical/original-pipeline-only.
+Findings below kept as the historical record of why this happened.
+
+- **Path**: `/research_agent_architecture.svg` (repo root, 16.6 KB) →
+  now `docs/archive/research_agent_architecture.svg`
+- **Why it looked legacy**: Was embedded in `README.md`'s "Architecture"
   section (`![Architecture diagram](research_agent_architecture.svg)`)
   as *the* architecture diagram — but `docs/architecture.md`'s own
-  opening paragraph already says this SVG "describe[s] the original
+  opening paragraph already said this SVG "describe[s] the original
   single-pipeline research agent... predates the curation/report/chat
-  system and the React UI added afterward." It also predates the entire
+  system and the React UI added afterward." It also predated the entire
   `api.py` → `api_app/`/`services/` split (Phases 2–10) and the
   `research_agent/config/` module (Phase 14) — none of that structure
-  appears in it.
-- **References found**: `README.md` (embeds it), `docs/architecture.md`
-  (names it in the "predates..." caveat above).
+  appeared in it.
+- **References found**: `README.md` (embedded it), `docs/architecture.md`
+  (named it in the "predates..." caveat above) — both updated in this
+  phase.
 - **Tests referencing it**: none (it's a docs asset, not code).
-- **Runtime risk if removed**: none — purely a documentation image.
-- **Recommendation**: **UNKNOWN — needs a manual decision.** Two real
-  options, both reasonable, neither mine to pick: (a) regenerate it to
-  reflect current architecture (a real effort — it's a detailed,
-  hand-maintained file-by-file diagram, not a quick edit), or (b) keep
-  it as explicitly-labeled historical material for the original
-  one-shot pipeline specifically (which is still accurate for *that*
-  part of the system) and rely on `docs/architecture.md`'s Mermaid
-  diagram (added in this project's Obsidian-notes work, not in this
-  repo) or a new one for current architecture. Not classified as a
-  simple ARCHIVE/REMOVE candidate because it's still linked from the
-  README a reader sees first — removing the link without a replacement
-  would be a real documentation regression, not a cleanup.
-- **Removable before future backend feature work?** Not blocking either
-  way — this doesn't interact with backend code at all. Purely a
-  documentation-quality decision, on its own timeline.
+- **Runtime risk of the move**: none — purely a documentation image, zero
+  code coupling, confirmed before moving.
+- **Removable before future backend feature work?** N/A now — resolved.
 
 ### `docs/`/`specs/` document proliferation (not a single file — a pattern)
 
@@ -238,7 +239,7 @@ performed here.
 | Classification | Count | Items |
 |---|---|---|
 | ARCHIVED (Phase 18B) | 1 | `docs/archive/requirements-frozen-baseline.txt` (was `/requirements-frozen-baseline.txt`) |
-| UNKNOWN (needs manual decision) | 1 | `research_agent_architecture.svg` |
+| RESOLVED — archived + replaced (Phase 18C) | 1 | `docs/archive/research_agent_architecture.svg` (was `/research_agent_architecture.svg`); replaced in `README.md` by `docs/architecture.md`'s new Mermaid diagram |
 | KEEP, flagged as a pattern worth knowing about (not a defect) | 1 | docs/specs proliferation (9 documents) |
 | KEEP — public compatibility surface | 2 | `research_agent/api.py`, `research_agent/api_app/` (naming) |
 | KEEP — live domain module/service/router | everything else in `research_agent/`, `services/`, `api_app/` | — |
@@ -254,6 +255,9 @@ where a decade-old-feeling "legacy cleanup audit" instinct would expect
 to find something and a targeted, evidence-based one instead finds very
 little — which is itself the expected outcome of a project that has
 already been through 17 phases of standardization.
+
+**Both findings are now resolved** (Phases 18B and 18C) — every item
+this audit surfaced is either KEEP or resolved; none remain open.
 
 ## Related
 

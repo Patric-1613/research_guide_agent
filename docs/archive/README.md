@@ -13,6 +13,10 @@ to describe:
   and `[tool.uv] constraint-dependencies` (pinned transitive) sections,
   resolved into `uv.lock`. Install with `uv sync`.
 - **Frontend dependencies**: `frontend/package.json`.
+- **Architecture**: `docs/architecture.md` (the Mermaid diagram + written
+  detail near the top of "Current architecture" is the current, accurate
+  picture — routers, services, schemas/serializers/errors/runtime, the
+  domain modules, external APIs, and storage).
 
 ## What's here
 
@@ -33,3 +37,19 @@ to describe:
   `constraint-dependencies` list is already clean of both. Retained here
   only for history (what the environment looked like at that one moment
   in time), not as a description of anything current.
+
+- **`research_agent_architecture.svg`** — the original, hand-maintained,
+  file-by-file architecture diagram, embedded in `README.md`'s
+  "Architecture" section for most of this project's history. **This
+  diagram is historical, not current** — it describes only the original
+  one-shot pipeline (search → dedup → rank → summarize/chat) and
+  predates three major additions: the interactive curation/report/chat
+  system (`curation_loop.py`, `curation_chat.py`, `report.py`, and
+  everything under `/curation/*`), the React + Vite frontend, and the
+  entire `api.py` → `api_app/`/`services/`/`config/` backend
+  standardization (Phases 0–10 and 14 of `specs/migration-plan.md`).
+  None of that structure appears in it. It's still accurate for the one
+  thing it actually shows — the original pipeline — which is why it's
+  archived here rather than deleted; it should not be treated as, or
+  mistaken for, a description of the app's current architecture. See
+  `docs/architecture.md`'s Mermaid diagram for that.

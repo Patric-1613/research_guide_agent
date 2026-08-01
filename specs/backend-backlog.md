@@ -113,12 +113,12 @@ today, cross-referenced to where each item is already tracked in detail:
   Archived to `docs/archive/requirements-frozen-baseline.txt` (content
   unchanged, `git mv`'d, not deleted); `docs/archive/README.md` added
   explaining the archive convention. See `specs/legacy-cleanup-audit.md`.
-- **`research_agent_architecture.svg` is stale relative to current
-  architecture** (predates the curation system, the React frontend, and
-  the entire `api.py` → `api_app/`/`services/` split) but is still the
-  only diagram linked from `README.md`. See `specs/legacy-cleanup-audit.md`
-  — flagged UNKNOWN there, needs a manual decision (regenerate vs.
-  relabel as historical), not urgent.
+- ~~`research_agent_architecture.svg` is stale relative to current
+  architecture~~ — **Done (Phase 18C).** Archived to `docs/archive/
+  research_agent_architecture.svg` (content unchanged, `git mv`'d, not
+  deleted); `README.md` now points to `docs/architecture.md`'s new
+  Mermaid diagram as the current architecture instead. See
+  `specs/legacy-cleanup-audit.md`.
 - **No numeric pass/fail gate on the RAGAS eval** — still manually run
   and human-interpreted, not CI-enforced. See `docs/evaluation.md`, and
   the Obsidian vault's `Mentor-Feedback.md`/`TODO.md` (surfaced by the

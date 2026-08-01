@@ -33,11 +33,17 @@ covering what any of that would actually require.
 
 ## Architecture
 
-![Architecture diagram](research_agent_architecture.svg)
+For the current, full-app architecture (frontend → API → services →
+domain modules → storage, including the curation/report/chat system),
+see [`docs/architecture.md`](docs/architecture.md)'s Mermaid diagram
+under "Current architecture." The original, hand-maintained
+`research_agent_architecture.svg` diagram is retained for history at
+[`docs/archive/research_agent_architecture.svg`](docs/archive/research_agent_architecture.svg)
+— it's accurate only for the original one-shot pipeline below, predates
+the curation system/React frontend/backend standardization entirely, and
+should not be read as describing the app's current architecture.
 
-The diagram above is the detailed, file-by-file view (updated for the
-robustness/reliability changes below — brighter highlighted lines within
-each box). The condensed version:
+The one-shot pipeline specifically, condensed:
 
 ```
 Topic
