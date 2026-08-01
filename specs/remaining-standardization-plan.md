@@ -220,6 +220,61 @@ scope auth/Postgres/multi-user work. With Phase 16 done, every item in
 this plan's original "Recommended phase sequence" is now either done or
 explicitly deferred/out-of-scope.
 
+## Phase 17 — Final standardized single-user project checkpoint (done)
+
+Closes the current-project standardization arc (Phases 11–16) with one
+final validation/documentation pass. No new architecture work, no
+behavior changes — a checkpoint, not a phase that touches code.
+
+**Final validation:**
+
+```
+uv run pytest -q                    → 346 passed
+cd frontend && npm test             → 98 passed
+cd frontend && npm run build        → clean (tsc -b && vite build)
+```
+
+**Repo status confirmed:**
+- Only `eval_results/retrieval_history.csv` remains locally modified —
+  the same append-only running log noted as expected throughout every
+  phase of this entire migration (a real local eval run adds a row);
+  not touched, not part of this checkpoint's scope.
+- `frontend.zip` confirmed gone from the working tree (removed Phase 13,
+  `.gitignore`d Phase 12).
+- No other untracked or modified files.
+
+**Current-project standardization is complete.** Every item from
+`specs/remaining-standardization-plan.md`'s original audit (Phase 11)
+is now done or explicitly deferred — see the "Recommended phase
+sequence" section below, where every entry is struck through as done
+except the two items already marked optional/deferred by design.
+
+**Remaining debt, both optional and explicitly not scheduled:**
+- Model-name constants (`EMBEDDING_MODEL`, `SUMMARY_MODEL`,
+  `AGENT_MODEL`, etc. — 8 total, scattered across 6 files).
+- Data/cache/Chroma path constants (`DATA_DIR`, `DB_PATH`,
+  `CHROMA_PERSIST_DIR`, `QA_CHECKPOINT_DB_PATH`).
+
+Neither is read from the environment today — both are plain Python
+literals. See `docs/architecture.md`'s Phase 14 section and §1 below
+for the full inventory.
+
+**Explicitly out of scope, not started, and not implied by anything in
+Phases 0–17:** OAuth/authentication, PostgreSQL migration, multi-user
+support.
+
+**Recommended next step**: this is a good place to **stop** — a stable,
+fully-tested, fully-documented single-user baseline (346 backend tests,
+98 frontend tests, clean build, no known regressions) suitable as an
+internship/portfolio demo checkpoint. If work continues past this
+point, the next thing to do is **not** the optional config debt above —
+it's starting a **separate, explicit production-readiness design
+phase** (auth strategy, SQLite → PostgreSQL migration path, per-user
+isolation, the original plan's Phase 8) as its own proposal document,
+not a continuation of this one.
+
+Tagged `standardized-single-user-project` (commit at time of tagging).
+
 ---
 
 ## 1. Config audit
@@ -697,3 +752,6 @@ debt from Phase 14, not scheduled) and the always-out-of-scope auth/
 Postgres/multi-user work — both of which have their own gating notes
 above rather than a "next step" recommendation, since neither is a
 routine continuation of this plan.
+
+**Phase 17 (final checkpoint) confirmed this directly** — see above —
+and closes the arc. Tagged `standardized-single-user-project`.

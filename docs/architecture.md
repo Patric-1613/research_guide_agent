@@ -834,10 +834,13 @@ this baseline — config, evals, frontend, README/docs, and old-architecture
 cleanup — and produced `specs/remaining-standardization-plan.md`. That
 document is the source of truth for what standardization work remains
 outside the backend's internal structure; it maintains the same OAuth/
-Postgres/multi-user exclusion as this section. Phases 12–14 have since
-executed several of that plan's items (docs/env-template cleanup, file
-hygiene, and now config centralization below) — see that document for
-the current status of every remaining item.
+Postgres/multi-user exclusion as this section. Phases 12–16 have since
+executed every item that plan identified (docs/env-template cleanup,
+file hygiene, config centralization, eval workflow docs, frontend
+structure), and Phase 17 closed the arc with a final validation
+checkpoint — see "Phase 17 (final checkpoint)" below and `specs/
+remaining-standardization-plan.md` for the complete, item-by-item
+record.
 
 ### Phase 14 (centralize backend settings) — done
 
@@ -909,6 +912,49 @@ constants and filesystem paths above is deferred to a later, explicitly
 -scoped decision; SDK-managed secrets (`OPENAI_API_KEY`, `LANGFUSE_*`)
 stay untouched unless a future deployment-config need requires routing
 them through `Settings` too.
+
+### Phase 17 (final checkpoint) — done
+
+Closes the current-project standardization arc (Phases 11–16) with one
+final validation/documentation pass — no new architecture work, no
+behavior changes.
+
+**Final validation:**
+
+```
+uv run pytest -q                    → 346 passed
+cd frontend && npm test             → 98 passed
+cd frontend && npm run build        → clean (tsc -b && vite build)
+```
+
+**Repo status confirmed:** only `eval_results/retrieval_history.csv`
+remains locally modified — the same append-only running log noted as
+expected throughout this entire migration, untouched by this checkpoint;
+`frontend.zip` confirmed gone from the working tree; no other
+untracked/modified files.
+
+**Current-project standardization is complete** — every item from
+`specs/remaining-standardization-plan.md`'s Phase 11 audit is now done
+or explicitly deferred. Two categories remain, both by design:
+
+- **Optional, not scheduled:** model-name constants (8, across 6 files)
+  and data/cache/Chroma path constants (4) — see the Phase 14 section
+  above for the full inventory. Neither is read from the environment
+  today; centralizing either is a separate, larger, explicitly-scoped
+  future decision, not a routine continuation.
+- **Explicitly out of scope, not started:** OAuth/authentication,
+  PostgreSQL migration, multi-user support — unchanged from every prior
+  phase's own note on this.
+
+**Recommended next step:** this is a good place to **stop** — a stable,
+fully-tested, fully-documented single-user baseline (346 backend tests,
+98 frontend tests, clean build) suitable as a demo/portfolio checkpoint.
+Continuing past this point means starting a **separate, explicit
+production-readiness design phase** (auth strategy, SQLite → PostgreSQL
+migration, per-user isolation — the original plan's Phase 8) as its own
+proposal document, not a continuation of this one.
+
+Tagged `standardized-single-user-project`.
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 

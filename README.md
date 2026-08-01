@@ -22,6 +22,13 @@ services → schemas/serializers/errors/runtime → app factory, with zero
 endpoint-behavior change) — see `docs/architecture.md` for the current
 layered structure and `specs/migration-plan.md` for how it got there.
 
+**Status**: standardized single-user project baseline (tag
+`standardized-single-user-project`) — backend architecture, config,
+eval workflow, and frontend structure are all standardized and fully
+tested. OAuth/authentication, PostgreSQL migration, and multi-user
+support are **not started**, by design — see `specs/remaining-
+standardization-plan.md` for the full current-state record.
+
 ## Architecture
 
 ![Architecture diagram](research_agent_architecture.svg)
