@@ -5,11 +5,14 @@ from research_agent.api_app.schemas import (
     ChatTurn,
     CitedPaperOut,
     CitedWebArticleOut,
+    CurationChatAddToReportRequest,
+    CurationChatAddToReportResponse,
     CurationChatDeleteRequest,
     CurationChatDeleteResponse,
     CurationChatRequest,
     CurationChatResponse,
 )
+from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
 
@@ -53,4 +56,51 @@ def delete_curation_chat_exchanges(session_id: str, req: CurationChatDeleteReque
         chat_history=[ChatTurn(**turn) for turn in session.chat_history],
         deleted_exchange_ids=deleted_exchange_ids,
         report_possibly_stale=report_possibly_stale,
+    )
+
+
+def add_curation_chat_exchanges_to_report(
+    session_id: str, req: CurationChatAddToReportRequest, cp,
+) -> CurationChatAddToReportResponse:
+    """curation-chat-add-to-report Phase 4. Mutates session.report_
+    approved_web_article_urls and each eligible exchange's
+    added_to_report ONLY after regenerate_report_with_approved_web_
+    sources succeeds -- a raised exception (ValueError from a precondition,
+    or anything else from the LLM call) propagates before either mutation,
+    structurally guaranteeing a failed regeneration never marks anything
+    approved/added.
+    """
+    if not req.exchange_ids:
+        raise ServiceError(400, "exchange_ids must not be empty")
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise ServiceError(404, "session_id not found")
+    if session.report is None:
+        raise ServiceError(400, "Generate a report first before adding web sources to it.")
+
+    eligible_ids, skipped_ids = api.select_eligible_exchanges_for_report(session, req.exchange_ids)
+    if not eligible_ids:
+        raise ServiceError(400, "No eligible web-backed exchanges to add to the report.")
+
+    newly_approved_urls = api.cited_web_article_urls_for_exchanges(session, eligible_ids)
+    approved_web_articles = api.resolve_approved_web_articles_for_regeneration(session, newly_approved_urls)
+
+    try:
+        new_report = api.regenerate_report_with_approved_web_sources(
+            session, approved_web_articles, client=api._state["client"],
+        )
+    except ValueError as exc:
+        raise ServiceError(400, str(exc)) from exc
+
+    session.report = new_report
+    api.approve_web_article_urls(session, newly_approved_urls)
+    api.mark_exchanges_added_to_report(session, eligible_ids)
+    save_curation_session(session, session_id, cp)
+
+    return CurationChatAddToReportResponse(
+        report=_report_to_out(session.report),
+        chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+        added_exchange_ids=eligible_ids,
+        skipped_exchange_ids=skipped_ids,
+        source_count=len(newly_approved_urls),
     )

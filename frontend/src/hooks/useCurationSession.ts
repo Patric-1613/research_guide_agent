@@ -35,6 +35,15 @@ export interface ChatSearchMeta {
   newWebArticlesFound: number | null
 }
 
+// curation-chat-add-to-report Phase 4: success-feedback summary of the
+// most recent addExchangesToReport call, same client-only/latest-action
+// model as ChatSearchMeta above.
+export interface AddToReportResult {
+  addedCount: number
+  skippedCount: number
+  sourceCount: number
+}
+
 const SESSION_PARAM = 'session'
 
 export function getSessionIdFromUrl(): string | null {
@@ -66,6 +75,10 @@ interface UseCurationSessionResult {
   // Phase 3 never persists or acts on this, it's purely a signal for the
   // frontend to show a "report may be stale" warning.
   reportPossiblyStale: boolean
+  // curation-chat-add-to-report Phase 4: same "latest action only,
+  // client-only" model as lastChatSearchMeta/reportPossiblyStale -- set
+  // fresh on every successful addExchangesToReport call, lost on refresh.
+  lastAddToReportResult: AddToReportResult | null
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -81,6 +94,11 @@ interface UseCurationSessionResult {
   // assistant answer that share it (see the backend's own
   // delete_chat_exchanges() docstring for why).
   deleteExchanges: (exchangeIds: string[]) => Promise<void>
+  // curation-chat-add-to-report Phase 4: same exchange_id-based batching
+  // as deleteExchanges -- approves the requested exchanges' cited web
+  // sources and regenerates the report through the existing selective
+  // path (see the backend's regenerate_report_with_approved_web_sources).
+  addExchangesToReport: (exchangeIds: string[]) => Promise<void>
   // curation-review-management Phase 8, item 1: deletes for real via the
   // backend, then -- ONLY if the deleted id was the currently-open
   // session -- clears sessionId/state/URL so the UI falls back to the
@@ -107,6 +125,7 @@ export function useCurationSession(): UseCurationSessionResult {
   const [turnEvents, setTurnEvents] = useState<TurnEvent[]>([])
   const [lastChatSearchMeta, setLastChatSearchMeta] = useState<ChatSearchMeta | null>(null)
   const [reportPossiblyStale, setReportPossiblyStale] = useState(false)
+  const [lastAddToReportResult, setLastAddToReportResult] = useState<AddToReportResult | null>(null)
   const turnEventsSessionRef = useRef<string | null>(null)
 
   const loadState = useCallback(async (id: string): Promise<CurationStateResponse> => {
@@ -232,6 +251,26 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  const addExchangesToReport = useCallback(
+    (exchangeIds: string[]) =>
+      runAction(async () => {
+        if (!sessionId) return
+        const response = await curationApi.addChatExchangesToReport(sessionId, { exchange_ids: exchangeIds })
+        setLastAddToReportResult({
+          addedCount: response.added_exchange_ids.length,
+          skippedCount: response.skipped_exchange_ids.length,
+          sourceCount: response.source_count,
+        })
+        // On failure, curationApi.addChatExchangesToReport above throws --
+        // runAction's own catch sets the shared error and this line never
+        // runs, so state (and therefore every badge) stays exactly as it
+        // was. loadState() only ever runs after a confirmed backend
+        // success, never optimistically.
+        await loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   const refresh = useCallback(
     () =>
       runAction(async () => {
@@ -280,8 +319,8 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   return {
-    sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale,
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    deleteReview, selectFromHistory, reopenReview, refresh,
+    addExchangesToReport, deleteReview, selectFromHistory, reopenReview, refresh,
   }
 }

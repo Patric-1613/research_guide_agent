@@ -88,6 +88,22 @@ describe('curationApi', () => {
     expect(result.deleted_exchange_ids).toEqual(['ex-1'])
   })
 
+  it('addChatExchangesToReport() posts to the add-to-report path with the exchange_ids body', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      report: { findings: { content: '', cited_papers: [], cited_web_articles: [] }, limitations: { content: '', cited_papers: [] }, future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [] },
+      chat_history: [], added_exchange_ids: ['ex-1'], skipped_exchange_ids: [], source_count: 1,
+    })
+
+    const result = await curationApi.addChatExchangesToReport('s1', { exchange_ids: ['ex-1'] })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/chat/exchanges/add-to-report',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ exchange_ids: ['ex-1'] }) }),
+    )
+    expect(result.added_exchange_ids).toEqual(['ex-1'])
+    expect(result.source_count).toBe(1)
+  })
+
   it('reopen() posts to the session-scoped /reopen path with no body payload beyond {}', async () => {
     const fetchMock = mockFetchOnce(200, {
       session_id: 's1', stage: 'curate', target_count: 10,

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { CurationStateResponse } from '../../types'
-import type { ChatSearchMeta } from '../../hooks/useCurationSession'
+import type { AddToReportResult, ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
-import { ChatMessageRow } from '../TurnFeed/ChatMessageRow'
+import { ChatMessageRow, isEligibleForAddToReport } from '../TurnFeed/ChatMessageRow'
 
 interface ChatModePanelProps {
   state: CurationStateResponse
@@ -17,6 +17,9 @@ interface ChatModePanelProps {
   // curation-chat-delete Phase 3
   onDeleteExchanges: (exchangeIds: string[]) => Promise<void>
   reportPossiblyStale: boolean
+  // curation-chat-add-to-report Phase 4
+  onAddExchangesToReport: (exchangeIds: string[]) => Promise<void>
+  lastAddToReportResult: AddToReportResult | null
 }
 
 // Chat mode's center panel shows ONLY the conversation -- no paper pool
@@ -24,6 +27,7 @@ interface ChatModePanelProps {
 // candidate/paper-pool UI should disappear entirely.
 export function ChatModePanel({
   state, disabled, onSendMessage, lastSearchMeta, onDeleteExchanges, reportPossiblyStale,
+  onAddExchangesToReport, lastAddToReportResult,
 }: ChatModePanelProps) {
   const [text, setText] = useState('')
   // chat-ux-fixes bug 3: onSendMessage awaits the FULL round trip
@@ -40,15 +44,24 @@ export function ChatModePanel({
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // curation-chat-select Phase 2 / curation-chat-delete Phase 3: select
-  // mode + delete are wired up; Edit and add-to-report remain disabled
-  // placeholders (later phases). Selected by exchange_id (Phase 1's
-  // shared id linking a question+answer pair), not array index, so it
-  // stays correct regardless of how the underlying list is later
-  // re-rendered. Session-local like everything else in this panel --
-  // resets on refresh.
+  // curation-chat-select Phase 2 / curation-chat-delete Phase 3 /
+  // curation-chat-add-to-report Phase 4: select mode + delete + add-to-
+  // report are all wired up; only Edit remains a disabled placeholder.
+  // Selected by exchange_id (Phase 1's shared id linking a question+
+  // answer pair), not array index, so it stays correct regardless of how
+  // the underlying list is later re-rendered. Session-local like
+  // everything else in this panel -- resets on refresh.
   const [selectMode, setSelectMode] = useState(false)
   const [selectedExchangeIds, setSelectedExchangeIds] = useState<Set<string>>(new Set())
+
+  // curation-chat-add-to-report Phase 4: which exchange_ids are currently
+  // eligible, derived fresh from state.chat_history every render (same
+  // rule ChatMessageRow's own menu item uses, via the shared
+  // isEligibleForAddToReport helper, so the two can never disagree).
+  const eligibleForReportExchangeIds = new Set(
+    state.chat_history.filter(isEligibleForAddToReport).map((t) => t.exchange_id as string),
+  )
+  const hasEligibleSelection = [...selectedExchangeIds].some((id) => eligibleForReportExchangeIds.has(id))
 
   function handleEnterSelectMode(exchangeId: string) {
     setSelectMode(true)
@@ -98,6 +111,30 @@ export function ChatModePanel({
     if (ids.length === 0) return
     if (!window.confirm(`Delete ${ids.length} selected exchange${ids.length === 1 ? '' : 's'}?`)) return
     await onDeleteExchanges(ids)
+    handleClearSelection()
+  }
+
+  // curation-chat-add-to-report Phase 4: no confirmation prompt (additive,
+  // not destructive). onAddExchangesToReport (useCurationSession's
+  // runAction) only reaches loadState() -- and therefore only updates
+  // state.chat_history's added_to_report/badges -- on a CONFIRMED backend
+  // success; a thrown error is caught by runAction itself, surfaced via
+  // the shared error banner, and state is left completely untouched, so
+  // badges are never greyed optimistically.
+  async function handleAddToReport(exchangeId: string) {
+    await onAddExchangesToReport([exchangeId])
+    setSelectedExchangeIds((prev) => {
+      if (!prev.has(exchangeId)) return prev
+      const next = new Set(prev)
+      next.delete(exchangeId)
+      return next
+    })
+  }
+
+  async function handleBulkAddToReport() {
+    const ids = Array.from(selectedExchangeIds)
+    if (ids.length === 0) return
+    await onAddExchangesToReport(ids)
     handleClearSelection()
   }
 
@@ -164,6 +201,7 @@ export function ChatModePanel({
               onEnterSelectMode={handleEnterSelectMode}
               onToggleSelect={handleToggleSelect}
               onDelete={(exchangeId) => void handleDeleteExchange(exchangeId)}
+              onAddToReport={(exchangeId) => void handleAddToReport(exchangeId)}
             />
             {i === firstWebBackedIndex && (
               <p data-testid="web-metadata-hint" className="mt-1 text-center text-xs italic text-text-muted">
@@ -194,6 +232,13 @@ export function ChatModePanel({
             A deleted exchange had been added to the report — the report may now be stale.
           </p>
         )}
+        {lastAddToReportResult && (
+          <p data-testid="add-to-report-success-note" className="mb-2 text-center text-xs italic text-text-muted">
+            Added {lastAddToReportResult.addedCount} exchange{lastAddToReportResult.addedCount === 1 ? '' : 's'} (
+            {lastAddToReportResult.sourceCount} source{lastAddToReportResult.sourceCount === 1 ? '' : 's'}) to the
+            report.
+          </p>
+        )}
         {selectedExchangeIds.size > 0 && (
           <div
             data-testid="bulk-action-bar"
@@ -214,11 +259,11 @@ export function ChatModePanel({
             <button
               type="button"
               data-testid="bulk-add-to-report"
-              disabled
-              title="Coming soon"
-              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void handleBulkAddToReport()}
+              disabled={disabled || !hasEligibleSelection}
+              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Add selected to report (Coming soon)
+              Add selected to report
             </button>
             <button
               type="button"

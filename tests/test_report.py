@@ -21,6 +21,7 @@ from research_agent.report import (
     _build_report_schema,
     generate_report,
     generate_report_for_session,
+    regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
 )
 from research_agent.schema import Paper, WebArticle
@@ -330,6 +331,115 @@ def test_regenerate_report_defensive_layer_restores_citation_the_prompt_instruct
     assert result["skipped_papers"] == []  # "2222" restored -> no longer skipped
 
 
+# --- curation-chat-add-to-report Phase 4: regenerate_report_with_approved_web_sources ---
+
+def test_regenerate_with_approved_web_sources_only_reaches_the_model_for_the_passed_in_articles():
+    """The core Phase 4 correctness proof: an article sitting in
+    session.web_articles_added that ISN'T in the approved_web_articles
+    argument must never appear in the prompt sent to the model, even
+    though it's real, present session data."""
+    p1 = _paper("1111", "Paper One")
+    approved = _web_article("https://approved.com", "Approved Article")
+    unapproved = _web_article("https://unapproved.com", "Unapproved Article")
+
+    existing_report = {
+        "findings": {"content": "old", "cited_papers": [p1]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="some topic", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report,
+        # The raw pool has BOTH -- proves the function doesn't fall back
+        # to reading this at all, since only `approved` is passed below.
+        web_articles_added=[approved, unapproved],
+    )
+
+    schema = _build_report_schema(["1111"], ["https://approved.com"])
+    section_cls = schema.model_fields["findings"].annotation
+    parsed = schema(
+        findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved.com"]),
+        limitations=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+        future_scope=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_approved_web_sources(session, [approved], client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "approved.com" in joined
+    assert "unapproved.com" not in joined
+    assert [a.url for a in result["findings"]["cited_web_articles"]] == ["https://approved.com"]
+
+
+def test_regenerate_with_approved_web_sources_ignores_web_articles_added_entirely():
+    """Even more direct: approved_web_articles shares NO overlap at all
+    with session.web_articles_added -- proves the function truly never
+    reads session.web_articles_added, not just that it filters it."""
+    p1 = _paper("1111", "Paper One")
+    pool_only_article = _web_article("https://pool-only.com", "Pool Only")
+    approved_article = _web_article("https://approved-elsewhere.com", "Approved Elsewhere")
+
+    existing_report = {
+        "findings": {"content": "old", "cited_papers": [p1]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="some topic", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report,
+        web_articles_added=[pool_only_article],
+    )
+
+    schema = _build_report_schema(["1111"], ["https://approved-elsewhere.com"])
+    section_cls = schema.model_fields["findings"].annotation
+    parsed = schema(
+        findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved-elsewhere.com"]),
+        limitations=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+        future_scope=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    regenerate_report_with_approved_web_sources(session, [approved_article], client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "pool-only.com" not in joined
+    assert "approved-elsewhere.com" in joined
+
+
+def test_regenerate_with_approved_web_sources_refuses_when_no_existing_report():
+    session = PaperPoolSession(topic="q", stage="synthesize", selected_papers=[_paper("1111", "Paper One")], report=None)
+    try:
+        regenerate_report_with_approved_web_sources(session, [], client=MagicMock())
+        assert False, "expected a ValueError when there's no existing report to regenerate"
+    except ValueError as e:
+        assert "no existing report" in str(e).lower()
+
+
+def test_regenerate_with_approved_web_sources_refuses_when_stage_is_not_synthesize():
+    p1 = _paper("1111", "Paper One")
+    existing_report = {
+        "findings": {"content": "x", "cited_papers": [p1]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(topic="q", stage="curate", selected_papers=[p1], report=existing_report)
+    try:
+        regenerate_report_with_approved_web_sources(session, [], client=MagicMock())
+        assert False, "expected a ValueError for a session not in the synthesize stage"
+    except ValueError as e:
+        assert "curate" in str(e)
+
+
 if __name__ == "__main__":
     test_report_schema_rejects_unknown_paper_id()
     test_generate_report_attaches_citations_per_section_and_flags_skipped()
@@ -346,4 +456,8 @@ if __name__ == "__main__":
     test_regenerate_report_refuses_when_stage_is_not_synthesize()
     test_regenerate_report_preserves_all_original_citations_and_adds_web_citations()
     test_regenerate_report_defensive_layer_restores_citation_the_prompt_instruction_failed_to_preserve()
+    test_regenerate_with_approved_web_sources_only_reaches_the_model_for_the_passed_in_articles()
+    test_regenerate_with_approved_web_sources_ignores_web_articles_added_entirely()
+    test_regenerate_with_approved_web_sources_refuses_when_no_existing_report()
+    test_regenerate_with_approved_web_sources_refuses_when_stage_is_not_synthesize()
     print("All report tests passed.")

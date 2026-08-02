@@ -31,9 +31,9 @@ function setModeInUrl(mode: WorkspaceMode): void {
 
 export default function CurationWorkspacePage() {
   const {
-    sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale,
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    deleteReview, selectFromHistory, reopenReview,
+    addExchangesToReport, deleteReview, selectFromHistory, reopenReview,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -192,6 +192,11 @@ export default function CurationWorkspacePage() {
     setReviewsRefreshToken((t) => t + 1)
   }
 
+  async function handleAddExchangesToReport(exchangeIds: string[]) {
+    await addExchangesToReport(exchangeIds)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
   async function handleSelectFromHistory(paperId: string) {
     await selectFromHistory(paperId)
     setReviewsRefreshToken((t) => t + 1)
@@ -296,6 +301,8 @@ export default function CurationWorkspacePage() {
                       lastSearchMeta={lastChatSearchMeta}
                       onDeleteExchanges={handleDeleteExchanges}
                       reportPossiblyStale={reportPossiblyStale}
+                      onAddExchangesToReport={handleAddExchangesToReport}
+                      lastAddToReportResult={lastAddToReportResult}
                     />
                   )}
                   {workspaceMode === 'report' && (

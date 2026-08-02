@@ -27,7 +27,15 @@ from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 
 from research_agent.agent import run_research_agent
-from research_agent.curation_chat import chat_turn, delete_chat_exchanges
+from research_agent.curation_chat import (
+    approve_web_article_urls,
+    chat_turn,
+    cited_web_article_urls_for_exchanges,
+    delete_chat_exchanges,
+    mark_exchanges_added_to_report,
+    resolve_approved_web_articles_for_regeneration,
+    select_eligible_exchanges_for_report,
+)
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
 from research_agent.curation_session import (
     _session_to_dict,
@@ -47,7 +55,11 @@ from research_agent.query_expansion import (
     expanded_search,
     rank_full_pool,
 )
-from research_agent.report import generate_report_for_session, regenerate_report_with_new_sources
+from research_agent.report import (
+    generate_report_for_session,
+    regenerate_report_with_approved_web_sources,
+    regenerate_report_with_new_sources,
+)
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search
 from research_agent.summarize import generate_summary, generate_web_summary
 from research_agent.web_search import search_web

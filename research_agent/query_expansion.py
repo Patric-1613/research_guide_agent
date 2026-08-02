@@ -774,6 +774,17 @@ class PaperPoolSession:
     # reload. None while stage == "curate"; set exactly once, in
     # _make_stop_node, same one-way semantics as `stage` itself.
     stop_reason: str | None = None
+    # curation-chat-add-to-report Phase 4: web article URLs explicitly
+    # approved (via chat's "Add to report" action) for report regeneration
+    # -- deliberately separate from web_articles_added, which stays the
+    # raw, unfiltered pool of every web article ever discovered during
+    # chat. A URL landing in web_articles_added does NOT mean it's allowed
+    # into the report through the selective add-to-report path; only URLs
+    # in THIS set are. (The existing whole-pool /report/regenerate path is
+    # unaffected -- it still reads web_articles_added directly, unfiltered
+    # by this set; see report.py's regenerate_report_with_new_sources.)
+    # Same set-field convention as seen_paper_ids/seen_titles above.
+    report_approved_web_article_urls: set[str] = field(default_factory=set)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

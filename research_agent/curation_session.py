@@ -116,6 +116,7 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         # convention as chat_history above -- no hydration step needed.
         "turn_history": list(session.turn_history),
         "stop_reason": session.stop_reason,
+        "report_approved_web_article_urls": list(session.report_approved_web_article_urls),
     }
 
 
@@ -148,6 +149,12 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         # backward-compat convention as display_title above.
         turn_history=list(d.get("turn_history", [])),
         stop_reason=d.get("stop_reason"),
+        # Older sessions saved before curation-chat-add-to-report Phase 4
+        # simply have no approved web sources yet -- an empty set is the
+        # correct default (nothing was ever explicitly approved), not just
+        # a non-crashing fallback, same backward-compat convention as
+        # every other field above.
+        report_approved_web_article_urls=set(d.get("report_approved_web_article_urls", [])),
     )
 
 

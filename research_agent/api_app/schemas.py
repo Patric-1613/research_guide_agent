@@ -305,6 +305,24 @@ class CurationChatDeleteResponse(BaseModel):
     report_possibly_stale: bool = False
 
 
+class CurationChatAddToReportRequest(BaseModel):
+    exchange_ids: list[str]
+
+
+class CurationChatAddToReportResponse(BaseModel):
+    report: ReportOut
+    chat_history: list[ChatTurn]
+    # Exchanges whose cited web sources were newly approved and reflected
+    # in `report` above -- always a subset of the request, never includes
+    # an unknown/ineligible/already-added id (see skipped_exchange_ids).
+    added_exchange_ids: list[str]
+    skipped_exchange_ids: list[str]
+    # Unique NEWLY approved cited web URLs this call -- NOT the cumulative
+    # approved set (session.report_approved_web_article_urls may already
+    # be larger from a previous call).
+    source_count: int
+
+
 class CurationReviewSummary(BaseModel):
     session_id: str
     topic: str

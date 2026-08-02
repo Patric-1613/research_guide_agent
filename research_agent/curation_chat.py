@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field
 from research_agent import qa
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import regenerate_report_with_new_sources
+from research_agent.schema import WebArticle
 from research_agent.web_search import search_web
 
 logger = logging.getLogger(__name__)
@@ -480,3 +481,97 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
 
     session.chat_history = kept
     return sorted(matched_ids), report_possibly_stale
+
+
+# --- curation-chat-add-to-report Phase 4 ---
+
+def _assistant_entries_by_exchange_id(session: PaperPoolSession) -> dict[str, dict]:
+    """Exactly one assistant entry per real exchange_id, by the same
+    invariant _attach_exchange_metadata relies on (one user + one
+    assistant entry per chat_turn() call, sharing one exchange_id).
+    Entries with exchange_id None (pre-Phase-1 history) are never keys
+    here -- structurally ineligible for anything in this section."""
+    return {
+        turn["exchange_id"]: turn
+        for turn in session.chat_history
+        if turn.get("role") == "assistant" and turn.get("exchange_id")
+    }
+
+
+def select_eligible_exchanges_for_report(session: PaperPoolSession, exchange_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Partitions the requested exchange_ids (deduped, request order
+    preserved) into (eligible, skipped). Eligible means: a real,
+    resolvable exchange_id, whose assistant entry has used_web_search=True
+    AND a non-empty cited_web_articles, AND is not already
+    added_to_report=True. Everything else -- unknown id, a paper-only
+    answer, or an already-added one -- lands in skipped, not an error;
+    the caller decides whether an empty eligible list is itself an error.
+    """
+    assistant_by_id = _assistant_entries_by_exchange_id(session)
+    seen: set[str] = set()
+    eligible: list[str] = []
+    skipped: list[str] = []
+    for exchange_id in exchange_ids:
+        if not exchange_id or exchange_id in seen:
+            continue
+        seen.add(exchange_id)
+        turn = assistant_by_id.get(exchange_id)
+        if (
+            turn is not None
+            and turn.get("used_web_search")
+            and turn.get("cited_web_articles")
+            and not turn.get("added_to_report")
+        ):
+            eligible.append(exchange_id)
+        else:
+            skipped.append(exchange_id)
+    return eligible, skipped
+
+
+def cited_web_article_urls_for_exchanges(session: PaperPoolSession, exchange_ids: list[str]) -> set[str]:
+    """Union of cited_web_articles urls across the given exchange_ids --
+    expected to already be the ELIGIBLE subset (select_eligible_exchanges_
+    for_report's first return value), but reads defensively via .get()
+    either way so an unknown/ineligible id just contributes nothing rather
+    than raising."""
+    assistant_by_id = _assistant_entries_by_exchange_id(session)
+    urls: set[str] = set()
+    for exchange_id in exchange_ids:
+        turn = assistant_by_id.get(exchange_id)
+        if turn is None:
+            continue
+        for article in turn.get("cited_web_articles") or []:
+            urls.add(article["url"])
+    return urls
+
+
+def resolve_approved_web_articles_for_regeneration(session: PaperPoolSession, newly_approved_urls: set[str]) -> list[WebArticle]:
+    """The one function that actually enforces "unapproved web articles
+    never reach the report": filters session.web_articles_added (the raw,
+    unfiltered pool) down to just the union of session.report_approved_
+    web_article_urls (previously approved) and newly_approved_urls (this
+    call's newly-eligible exchanges) -- by URL membership, nothing else.
+    Anything in the raw pool whose URL isn't in that union is simply
+    absent from the returned list, never passed to
+    regenerate_report_with_approved_web_sources()."""
+    approved_urls = session.report_approved_web_article_urls | newly_approved_urls
+    return [article for article in session.web_articles_added if article.url in approved_urls]
+
+
+def approve_web_article_urls(session: PaperPoolSession, urls: set[str]) -> None:
+    """Only ever called AFTER a successful report regeneration (see the
+    service layer) -- a failed regeneration must never grow the approved
+    set, or a later retry would believe sources are already approved that
+    were never actually reflected in any real report."""
+    session.report_approved_web_article_urls = session.report_approved_web_article_urls | urls
+
+
+def mark_exchanges_added_to_report(session: PaperPoolSession, exchange_ids: list[str]) -> None:
+    """Flips added_to_report=True on the assistant entry of each given
+    exchange_id. Same "only after success" rule as approve_web_article_
+    urls above -- called from the same post-regeneration point, never
+    before."""
+    target_ids = set(exchange_ids)
+    for turn in session.chat_history:
+        if turn.get("role") == "assistant" and turn.get("exchange_id") in target_ids:
+            turn["added_to_report"] = True

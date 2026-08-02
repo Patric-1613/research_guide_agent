@@ -18,7 +18,18 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.curation_chat import _OfferResponseIntent, _classify_offer_response, ask_in_session, chat_turn, delete_chat_exchanges
+from research_agent.curation_chat import (
+    _OfferResponseIntent,
+    _classify_offer_response,
+    approve_web_article_urls,
+    ask_in_session,
+    chat_turn,
+    cited_web_article_urls_for_exchanges,
+    delete_chat_exchanges,
+    mark_exchanges_added_to_report,
+    resolve_approved_web_articles_for_regeneration,
+    select_eligible_exchanges_for_report,
+)
 from research_agent.qa import _build_answer_schema
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper, WebArticle
@@ -30,6 +41,10 @@ def _paper(paper_id: str, title: str) -> Paper:
         abstract=f"Abstract for {title}.", url=f"http://arxiv.org/abs/{paper_id}",
         doi=None, citation_count=None, source="arxiv", paper_id=paper_id,
     )
+
+
+def _web_article(url: str, title: str) -> WebArticle:
+    return WebArticle(title=title, url=url, snippet="s", published_date=None, source_domain="example.com")
 
 
 def _mock_parse_response(schema_cls, **kwargs):
@@ -1114,3 +1129,121 @@ def test_deleted_exchange_content_is_excluded_from_the_next_chat_turns_openai_me
     joined = " ".join(m["content"] for m in second_generate_messages)
     assert "unusual in some specific way" not in joined
     assert "RoCoFT is unusual" not in joined
+
+
+# --- curation-chat-add-to-report Phase 4: domain helpers ---
+
+def _web_exchange(exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False) -> list[dict]:
+    return [
+        {"role": "user", "content": f"question for {exchange_id}", "exchange_id": exchange_id},
+        {
+            "role": "assistant", "content": f"answer for {exchange_id}", "exchange_id": exchange_id,
+            "used_web_search": True,
+            "cited_web_articles": [{"url": url, "title": title}],
+            "added_to_report": added_to_report,
+        },
+    ]
+
+
+def test_select_eligible_exchanges_for_report_partitions_eligible_and_skipped():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-web", "https://a.com"),
+            *_exchange("ex-paper-only"),  # used_web_search=False by _exchange's own default
+            *_web_exchange("ex-already-added", "https://b.com", added_to_report=True),
+        ],
+    )
+
+    eligible, skipped = select_eligible_exchanges_for_report(
+        session, ["ex-web", "ex-paper-only", "ex-already-added", "does-not-exist"],
+    )
+
+    assert eligible == ["ex-web"]
+    assert skipped == ["ex-paper-only", "ex-already-added", "does-not-exist"]
+
+
+def test_select_eligible_exchanges_for_report_ignores_old_entries_with_no_exchange_id():
+    old_entries = [{"role": "user", "content": "old q"}, {"role": "assistant", "content": "old a"}]
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=old_entries)
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, [""])
+    assert eligible == []
+    assert skipped == []  # an empty/falsy id is dropped outright, not even counted as skipped
+
+
+def test_select_eligible_exchanges_for_report_dedupes_requested_ids():
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=_web_exchange("ex-1", "https://a.com"))
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, ["ex-1", "ex-1", "ex-1"])
+
+    assert eligible == ["ex-1"]
+    assert skipped == []
+
+
+def test_cited_web_article_urls_for_exchanges_unions_and_dedupes():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com"),
+            *_web_exchange("ex-2", "https://a.com"),  # same URL as ex-1
+            *_web_exchange("ex-3", "https://b.com"),
+        ],
+    )
+
+    urls = cited_web_article_urls_for_exchanges(session, ["ex-1", "ex-2", "ex-3"])
+
+    assert urls == {"https://a.com", "https://b.com"}
+
+
+def test_resolve_approved_web_articles_for_regeneration_excludes_unapproved_pool_articles():
+    """The core Phase 4 correctness guarantee: an article sitting in the
+    raw web_articles_added pool that was never approved must NOT appear
+    in the resolved list, even though it's fully valid, real session
+    data."""
+    approved_article = _web_article("https://approved.com", "Approved")
+    unapproved_article = _web_article("https://unapproved.com", "Unapproved")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        web_articles_added=[approved_article, unapproved_article],
+    )
+
+    resolved = resolve_approved_web_articles_for_regeneration(session, {"https://approved.com"})
+
+    assert resolved == [approved_article]
+    assert unapproved_article not in resolved
+
+
+def test_resolve_approved_web_articles_for_regeneration_includes_previously_approved_plus_newly_approved():
+    article_1 = _web_article("https://one.com", "One")
+    article_2 = _web_article("https://two.com", "Two")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        web_articles_added=[article_1, article_2],
+        report_approved_web_article_urls={"https://one.com"},
+    )
+
+    resolved = resolve_approved_web_articles_for_regeneration(session, {"https://two.com"})
+
+    assert {a.url for a in resolved} == {"https://one.com", "https://two.com"}
+
+
+def test_approve_web_article_urls_unions_into_the_existing_approved_set():
+    session = PaperPoolSession(topic="peft", stage="synthesize", report_approved_web_article_urls={"https://one.com"})
+
+    approve_web_article_urls(session, {"https://two.com"})
+
+    assert session.report_approved_web_article_urls == {"https://one.com", "https://two.com"}
+
+
+def test_mark_exchanges_added_to_report_flips_only_the_targeted_assistant_entries():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com"), *_web_exchange("ex-2", "https://b.com")],
+    )
+
+    mark_exchanges_added_to_report(session, ["ex-1"])
+
+    by_id = {t["exchange_id"]: t for t in session.chat_history if t["role"] == "assistant"}
+    assert by_id["ex-1"]["added_to_report"] is True
+    assert by_id["ex-2"]["added_to_report"] is False

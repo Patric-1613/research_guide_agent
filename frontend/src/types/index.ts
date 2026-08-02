@@ -139,6 +139,20 @@ export interface CurationChatDeleteResponse {
   report_possibly_stale: boolean
 }
 
+export interface CurationChatAddToReportRequest {
+  exchange_ids: string[]
+}
+
+export interface CurationChatAddToReportResponse {
+  report: ReportOut
+  chat_history: ChatTurn[]
+  added_exchange_ids: string[]
+  skipped_exchange_ids: string[]
+  // Unique NEWLY approved cited web URLs this call, not the cumulative
+  // approved set.
+  source_count: number
+}
+
 export interface CurationReviewSummary {
   session_id: string
   topic: string

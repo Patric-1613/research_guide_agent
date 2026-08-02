@@ -263,24 +263,21 @@ def _restore_dropped_citations(existing_report: dict, section_name: str, cited_p
     return restored
 
 
-def regenerate_report_with_new_sources(
-    session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL,
+def _regenerate_report_sections_with_sources(
+    session: PaperPoolSession, web_articles: list[WebArticle], client: OpenAI | None, model: str, caller_name: str,
 ) -> dict:
-    """curation-chat-web-escalation Phase 5d: regenerates session.report
-    over the SAME session.selected_papers plus ALL of
-    session.web_articles_added approved so far via Phase 5c's
-    offer-and-decide mechanism -- typically called after a new web
-    source is approved into an already-synthesized session, not a
-    from-scratch generation (that's generate_report_for_session()).
+    """Shared body for regenerate_report_with_new_sources (whole-pool) and
+    regenerate_report_with_approved_web_sources (curation-chat-add-to-
+    report Phase 4's selective subset) -- identical schema-building,
+    citation-restoration, and skipped-paper logic either way; the only
+    difference between the two public callers is WHICH web_articles list
+    gets passed in here. Neither public function duplicates this body, so
+    citation handling can never drift between the two paths. caller_name
+    is only for the skipped-papers log line, so it stays attributable.
 
-    Requires session.report to already exist -- refuses cleanly
-    otherwise, since "regenerate" implies something to regenerate FROM;
-    generate_report_for_session() is the right call for a session's
-    first report.
-
-    Never mutates session.report itself -- returns the new report dict,
-    same convention as generate_report()/generate_report_for_session();
-    the caller decides when to actually replace session.report with it.
+    Same preconditions as before this refactor (session.report must
+    already exist; stage must be "synthesize") -- unchanged, just moved
+    here from regenerate_report_with_new_sources's own body.
     """
     if session.report is None:
         raise ValueError(
@@ -294,7 +291,6 @@ def regenerate_report_with_new_sources(
 
     existing_report = session.report
     selected_papers = session.selected_papers
-    web_articles = session.web_articles_added
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
@@ -323,8 +319,8 @@ def regenerate_report_with_new_sources(
     skipped = [p for pid, p in papers_by_id.items() if pid not in referenced_ids]
     if skipped:
         logger.warning(
-            "regenerate_report_with_new_sources: %d selected paper(s) never cited in any section: %s",
-            len(skipped), [p.title for p in skipped],
+            "%s: %d selected paper(s) never cited in any section: %s",
+            caller_name, len(skipped), [p.title for p in skipped],
         )
 
     get_client().update_current_span(
@@ -341,3 +337,68 @@ def regenerate_report_with_new_sources(
     )
 
     return {**sections_out, "skipped_papers": skipped}
+
+
+def regenerate_report_with_new_sources(
+    session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL,
+) -> dict:
+    """curation-chat-web-escalation Phase 5d: regenerates session.report
+    over the SAME session.selected_papers plus ALL of
+    session.web_articles_added approved so far via Phase 5c's
+    offer-and-decide mechanism -- typically called after a new web
+    source is approved into an already-synthesized session, not a
+    from-scratch generation (that's generate_report_for_session()).
+
+    Requires session.report to already exist -- refuses cleanly
+    otherwise, since "regenerate" implies something to regenerate FROM;
+    generate_report_for_session() is the right call for a session's
+    first report.
+
+    Never mutates session.report itself -- returns the new report dict,
+    same convention as generate_report()/generate_report_for_session();
+    the caller decides when to actually replace session.report with it.
+
+    curation-chat-add-to-report Phase 4: this function's behavior is
+    UNCHANGED by that phase -- still whole-pool, still what POST
+    /curation/{id}/report/regenerate uses. The selective, approved-
+    subset-only path added in Phase 4 is the separate
+    regenerate_report_with_approved_web_sources() below; the two are
+    intentionally independent (see that function's own docstring for
+    why using both on the same session has a real interaction worth
+    knowing about).
+    """
+    return _regenerate_report_sections_with_sources(
+        session, session.web_articles_added, client, model, "regenerate_report_with_new_sources",
+    )
+
+
+def regenerate_report_with_approved_web_sources(
+    session: PaperPoolSession, approved_web_articles: list[WebArticle],
+    client: OpenAI | None = None, model: str = REPORT_MODEL,
+) -> dict:
+    """curation-chat-add-to-report Phase 4: regenerates session.report over
+    session.selected_papers plus ONLY approved_web_articles -- deliberately
+    does NOT read session.web_articles_added (the raw, unfiltered pool of
+    every web article ever discovered during chat) at all. The caller
+    (curation_chat.py's resolve_approved_web_articles_for_regeneration)
+    is responsible for filtering the raw pool down to the approved subset
+    BEFORE calling this; an unapproved web article can never reach the
+    model through this function no matter what else is sitting in the
+    session's raw pool.
+
+    Same preconditions/return convention as regenerate_report_with_new_
+    sources (session.report must already exist, stage must be
+    "synthesize", never mutates session.report itself).
+
+    Interaction worth knowing: if a session ever also uses the OLD
+    whole-pool regenerate_report_with_new_sources (e.g. via the Report
+    tab's existing "Regenerate" button), that call will overwrite
+    session.report with one reflecting the ENTIRE raw pool, including any
+    web articles never approved through this selective path -- the two
+    mechanisms don't defer to each other. Not resolved in Phase 4 (kept
+    as an explicit, named follow-up), since /report/regenerate's own
+    behavior must stay whole-pool and unchanged this phase.
+    """
+    return _regenerate_report_sections_with_sources(
+        session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",
+    )

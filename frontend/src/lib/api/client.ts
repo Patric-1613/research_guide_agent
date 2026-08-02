@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  CurationChatAddToReportRequest,
+  CurationChatAddToReportResponse,
   CurationChatDeleteRequest,
   CurationChatDeleteResponse,
   CurationChatRequest,
@@ -71,6 +73,11 @@ export const curationApi = {
   // every other payload-carrying mutation in this client is already POST.
   deleteChatExchanges: (sessionId: string, req: CurationChatDeleteRequest): Promise<CurationChatDeleteResponse> =>
     postJson(`/curation/${sessionId}/chat/exchanges/delete`, req),
+
+  // curation-chat-add-to-report Phase 4: same POST convention as delete above.
+  addChatExchangesToReport: (
+    sessionId: string, req: CurationChatAddToReportRequest,
+  ): Promise<CurationChatAddToReportResponse> => postJson(`/curation/${sessionId}/chat/exchanges/add-to-report`, req),
 
   deleteReview: (sessionId: string): Promise<CurationDeleteResponse> =>
     deleteRequest(`/curation/${sessionId}`),

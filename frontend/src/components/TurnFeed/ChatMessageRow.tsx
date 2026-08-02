@@ -2,6 +2,20 @@ import { useState } from 'react'
 import type { ChatTurn } from '../../types'
 import { ChatMessage } from './ChatMessage'
 
+// curation-chat-add-to-report Phase 4: eligibility rule shared between
+// this row's own menu item and ChatModePanel's bulk-button gate, so the
+// two can never disagree. Assistant-only, real exchange_id, actually
+// used web sources, not already added.
+export function isEligibleForAddToReport(turn: ChatTurn): boolean {
+  return (
+    turn.role === 'assistant'
+    && !!turn.exchange_id
+    && !!turn.used_web_search
+    && (turn.cited_web_articles?.length ?? 0) > 0
+    && !turn.added_to_report
+  )
+}
+
 interface ChatMessageRowProps {
   turn: ChatTurn
   selectMode: boolean
@@ -17,6 +31,9 @@ interface ChatMessageRowProps {
   // not in the parent -- onDelete is only ever called after the user has
   // already confirmed.
   onDelete: (exchangeId: string) => void
+  // curation-chat-add-to-report Phase 4: no confirmation prompt -- this is
+  // additive, not destructive, unlike delete above.
+  onAddToReport: (exchangeId: string) => void
 }
 
 // curation-chat-select Phase 2: wraps ChatMessage (unchanged since Phase 1
@@ -29,10 +46,13 @@ interface ChatMessageRowProps {
 // are non-selectable (not given a client-side fallback id), shown as a
 // disabled checkbox once select mode is on rather than hidden entirely, so
 // it's clear WHY they can't be picked rather than just missing.
-export function ChatMessageRow({ turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete }: ChatMessageRowProps) {
+export function ChatMessageRow({
+  turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete, onAddToReport,
+}: ChatMessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const exchangeId = turn.exchange_id ?? null
   const isSelectable = exchangeId !== null
+  const isEligibleForReport = isEligibleForAddToReport(turn)
 
   return (
     <div className="flex items-start gap-2">
@@ -119,11 +139,15 @@ export function ChatMessageRow({ turn, selectMode, selected, onEnterSelectMode, 
               type="button"
               role="menuitem"
               data-testid="message-menu-add-to-report"
-              disabled
-              title="Coming soon"
-              className="block w-full px-3 py-1.5 text-left text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!isEligibleForReport}
+              onClick={() => {
+                if (!exchangeId) return
+                setMenuOpen(false)
+                onAddToReport(exchangeId)
+              }}
+              className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt disabled:cursor-not-allowed disabled:text-text-muted disabled:opacity-50"
             >
-              Add to report (Coming soon)
+              Add to report
             </button>
           </div>
         )}

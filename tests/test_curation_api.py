@@ -1145,6 +1145,229 @@ def test_curation_chat_delete_never_touches_pre_phase_1_entries_with_no_exchange
     assert body["chat_history"][1]["exchange_id"] is None
 
 
+# --- /curation/{id}/chat/exchanges/add-to-report (curation-chat-add-to-report Phase 4) ---
+
+def _fake_chat_turn_with_web_source(exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False):
+    def _fake(session, message, client=None, **kwargs):
+        answer = f"answer to {message!r}"
+        session.chat_history.append({"role": "user", "content": message, "exchange_id": exchange_id})
+        session.chat_history.append({
+            "role": "assistant", "content": answer, "exchange_id": exchange_id,
+            "used_web_search": True, "cited_web_articles": [{"url": url, "title": title}],
+            "added_to_report": added_to_report,
+        })
+        # Real chat_turn() can only ever cite a web article that's already
+        # in session.web_articles_added (qa.ask() retrieves from exactly
+        # that list) -- this fake mirrors that so the article is actually
+        # resolvable by resolve_approved_web_articles_for_regeneration.
+        if not any(a.url == url for a in session.web_articles_added):
+            session.web_articles_added.append(
+                WebArticle(title=title, url=url, snippet="s", published_date=None, source_domain="example.com"),
+            )
+        return {"answer": answer, "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+    return _fake
+
+
+def _report_stub_out(content: str = "content") -> dict:
+    return {
+        "findings": {"content": content, "cited_papers": [], "cited_web_articles": []},
+        "limitations": {"content": "", "cited_papers": [], "cited_web_articles": []},
+        "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": []},
+        "skipped_papers": [],
+    }
+
+
+def _with_existing_report(client, session_id):
+    with patch.object(api, "generate_report_for_session", return_value=_report_stub_out("v1")):
+        client.post(f"/curation/{session_id}/report")
+
+
+def test_curation_chat_add_to_report_regenerates_with_only_the_selected_sources_and_persists():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-2", "https://b.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")) as mock_regen:
+            resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["added_exchange_ids"] == ["ex-1"]
+    assert body["skipped_exchange_ids"] == []
+    assert body["source_count"] == 1
+    assert body["report"]["findings"]["content"] == "v2"
+
+    # Only ex-1's article reached regenerate_report_with_approved_web_sources -- ex-2's never did.
+    approved_articles = mock_regen.call_args.args[1]
+    assert [a.url for a in approved_articles] == ["https://a.com"]
+
+    # Persisted: ex-1's assistant entry is added_to_report, ex-2's is not.
+    by_exchange = {t["exchange_id"]: t for t in state_resp.json()["chat_history"] if t["role"] == "assistant"}
+    assert by_exchange["ex-1"]["added_to_report"] is True
+    assert by_exchange["ex-2"]["added_to_report"] is False
+    assert state_resp.json()["report"]["findings"]["content"] == "v2"
+
+
+def test_curation_chat_add_to_report_second_call_includes_previously_approved_sources():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-2", "https://b.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v3")) as mock_regen2:
+            resp2 = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-2"]})
+
+    assert resp2.status_code == 200
+    assert resp2.json()["source_count"] == 1  # only ex-2's url is NEWLY approved this call
+    approved_articles = mock_regen2.call_args.args[1]
+    assert {a.url for a in approved_articles} == {"https://a.com", "https://b.com"}  # both, not just the new one
+
+
+def test_curation_chat_add_to_report_duplicate_urls_dedupe_source_count():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://same.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-2", "https://same.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")) as mock_regen:
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1", "ex-2"]},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["source_count"] == 1
+    approved_articles = mock_regen.call_args.args[1]
+    assert len(approved_articles) == 1
+
+
+def test_curation_chat_add_to_report_already_added_returns_400_and_does_not_regenerate():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources") as mock_regen:
+            resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+    assert resp.status_code == 400
+    assert "no eligible" in resp.json()["detail"].lower()
+    mock_regen.assert_not_called()
+
+
+def test_curation_chat_add_to_report_regeneration_failure_leaves_added_to_report_false():
+    import httpx
+    from openai import APIConnectionError
+
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(
+            api, "regenerate_report_with_approved_web_sources",
+            side_effect=APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1/x")),
+        ):
+            failed_resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        assert failed_resp.status_code == 503
+
+        # The exchange must still be ELIGIBLE after the failure -- if the
+        # failed attempt had wrongly marked it added_to_report=True, this
+        # retry would 400 with "no eligible" instead of succeeding.
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            retry_resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+    assert retry_resp.status_code == 200
+    assert retry_resp.json()["added_exchange_ids"] == ["ex-1"]
+
+
+def test_curation_chat_add_to_report_no_report_yet_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        # No POST /report here -- session.report stays None.
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+    assert resp.status_code == 400
+    assert "generate a report first" in resp.json()["detail"].lower()
+
+
+def test_curation_chat_add_to_report_ineligible_entries_return_400():
+    def _fake_old_shape_chat_turn(session, message, client=None, **kwargs):
+        session.chat_history.append({"role": "user", "content": message})
+        session.chat_history.append({"role": "assistant", "content": f"answer to {message!r}"})
+        return {"answer": f"answer to {message!r}", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+    def _fake_paper_only_chat_turn(session, message, client=None, **kwargs):
+        session.chat_history.append({"role": "user", "content": message, "exchange_id": "ex-paper-only"})
+        session.chat_history.append({
+            "role": "assistant", "content": "paper-only answer", "exchange_id": "ex-paper-only",
+            "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+        })
+        return {"answer": "paper-only answer", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_old_shape_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "old-shape question"})
+        with patch.object(api, "chat_turn", side_effect=_fake_paper_only_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "paper-only question"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources") as mock_regen:
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/add-to-report",
+                json={"exchange_ids": ["ex-paper-only", "does-not-exist"]},
+            )
+
+    assert resp.status_code == 400
+    mock_regen.assert_not_called()
+
+
+def test_curation_chat_add_to_report_empty_exchange_ids_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": []})
+    assert resp.status_code == 400
+
+
+def test_curation_chat_add_to_report_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+    assert resp.status_code == 404
+
+
 def test_curation_chat_before_curation_finished_returns_400():
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
     with _client() as client, \

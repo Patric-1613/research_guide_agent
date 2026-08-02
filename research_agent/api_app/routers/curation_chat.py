@@ -2,8 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import research_agent.api as api
 from research_agent.api_app.errors import _upstream_error_guard
-from research_agent.api_app.schemas import CurationChatDeleteRequest, CurationChatDeleteResponse, CurationChatRequest, CurationChatResponse
-from research_agent.services.curation_chat_service import answer_curation_chat, delete_curation_chat_exchanges
+from research_agent.api_app.schemas import (
+    CurationChatAddToReportRequest,
+    CurationChatAddToReportResponse,
+    CurationChatDeleteRequest,
+    CurationChatDeleteResponse,
+    CurationChatRequest,
+    CurationChatResponse,
+)
+from research_agent.services.curation_chat_service import (
+    add_curation_chat_exchanges_to_report,
+    answer_curation_chat,
+    delete_curation_chat_exchanges,
+)
 from research_agent.services.errors import ServiceError
 
 router = APIRouter()
@@ -36,3 +47,17 @@ def curation_chat_delete_exchanges(
         return delete_curation_chat_exchanges(session_id, req, cp)
     except ServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+# curation-chat-add-to-report Phase 4: same POST-not-DELETE-with-body
+# convention as the delete endpoint above. This one DOES call an LLM
+# (report regeneration) so it needs _upstream_error_guard, unlike delete.
+@router.post("/curation/{session_id}/chat/exchanges/add-to-report", response_model=CurationChatAddToReportResponse)
+def curation_chat_add_to_report(
+    session_id: str, req: CurationChatAddToReportRequest, cp=Depends(api.get_curation_checkpointer),
+) -> CurationChatAddToReportResponse:
+    with _upstream_error_guard("curation_chat_add_to_report"):
+        try:
+            return add_curation_chat_exchanges_to_report(session_id, req, cp)
+        except ServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
