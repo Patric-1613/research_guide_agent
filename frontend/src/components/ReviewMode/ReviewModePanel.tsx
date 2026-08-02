@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CurationStateResponse } from '../../types'
 import type { TurnEvent } from '../../hooks/useCurationSession'
-import { TurnBlock, TurnDivider } from '../TurnFeed/TurnBlock'
+import { TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'
 
 // Mirrors research_agent/query_expansion.py's BATCH_SIZE -- not exposed
@@ -49,6 +49,17 @@ export function ReviewModePanel({
   const pendingBatch = state.pending_batch
   const stagedSet = new Set(stagedPickIds)
   const totalSelected = state.selected_paper_ids.length + stagedPickIds.length
+
+  // Scroll the batch back to the top whenever the SET OF PAPER IDS in
+  // pending_batch actually changes (a new batch was served, whether via
+  // "Get next batch" or "Search for more candidates") -- not on every
+  // re-render (staging a pick, loading toggling, etc. leave batchKey
+  // unchanged, so the effect correctly no-ops then).
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const batchKey = pendingBatch?.map((p) => p.paper_id).join(',') ?? null
+  useEffect(() => {
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0
+  }, [batchKey])
 
   if (!pendingBatch) {
     // Phase 8, item 3: true both right after curation just finished AND
@@ -112,10 +123,9 @@ export function ReviewModePanel({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        {turnEvents.map((event) => (
-          <TurnBlock key={event.turnNumber} event={event} />
-        ))}
+      <div ref={scrollContainerRef} data-testid="review-batch-scroll" className="flex-1 overflow-y-auto px-4 py-3">
+        {/* Only the active/current turn renders here -- past turns live in
+            the "Browse past turns" browser instead of stacking inline. */}
         <TurnDivider turnNumber={turnEvents.length + 1} refilled={state.refilled} />
         {targetReached && (
           <p

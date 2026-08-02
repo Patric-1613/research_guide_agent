@@ -23,7 +23,7 @@ function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStat
 }
 
 describe('TurnHistoryBrowser', () => {
-  it('renders every past turn, most recent first, with abstracts', () => {
+  it('defaults to the latest turn when opened, showing only that turn', () => {
     const state = baseState({
       turn_history: [
         { turn_number: 1, refilled: false, batch: [paper('p0', 'Turn One Paper', 'Abstract one.')] },
@@ -38,15 +38,46 @@ describe('TurnHistoryBrowser', () => {
     )
 
     expect(screen.getByText('Past turns (2)')).toBeInTheDocument()
-    expect(screen.getByText('Turn One Paper')).toBeInTheDocument()
-    expect(screen.getByText('Abstract one.')).toBeInTheDocument()
+    expect(screen.getByTestId('turn-history-position')).toHaveTextContent('Turn 2 of 2')
+    // Only the latest turn's content renders -- turn 1 is not shown at all.
     expect(screen.getByText('Turn Two Paper')).toBeInTheDocument()
-    // Most recent turn (2) listed before turn 1.
-    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
-    expect(headings[0]).toContain('Turn 2')
-    expect(headings[1]).toContain('Turn 1')
+    expect(screen.getByText('Abstract two.')).toBeInTheDocument()
+    expect(screen.queryByText('Turn One Paper')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(1)
     expect(screen.getByText(/Turn 2.*new search/)).toBeInTheDocument()
-    expect(screen.getByText(/Turn 1.*from existing pool/)).toBeInTheDocument()
+  })
+
+  it('Previous switches to the older turn; Next switches back to the newer one', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      turn_history: [
+        { turn_number: 1, refilled: false, batch: [paper('p0', 'Turn One Paper')] },
+        { turn_number: 2, refilled: true, batch: [paper('p1', 'Turn Two Paper')] },
+      ],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+
+    // Starts on turn 2 (latest). Next is disabled there.
+    expect(screen.getByTestId('turn-history-next')).toBeDisabled()
+    expect(screen.getByTestId('turn-history-prev')).toBeEnabled()
+
+    await user.click(screen.getByTestId('turn-history-prev'))
+
+    expect(screen.getByTestId('turn-history-position')).toHaveTextContent('Turn 1 of 2')
+    expect(screen.getByText('Turn One Paper')).toBeInTheDocument()
+    expect(screen.queryByText('Turn Two Paper')).not.toBeInTheDocument()
+    expect(screen.getByTestId('turn-history-prev')).toBeDisabled()
+
+    await user.click(screen.getByTestId('turn-history-next'))
+
+    expect(screen.getByTestId('turn-history-position')).toHaveTextContent('Turn 2 of 2')
+    expect(screen.getByText('Turn Two Paper')).toBeInTheDocument()
+    expect(screen.queryByText('Turn One Paper')).not.toBeInTheDocument()
   })
 
   it('an already-selected paper shows no action at all', () => {

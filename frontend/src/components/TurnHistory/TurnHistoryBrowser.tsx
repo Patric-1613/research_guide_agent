@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { CurationStateResponse } from '../../types'
 import { PaperCard } from '../PaperPool/PaperCard'
 
@@ -50,7 +51,17 @@ export function TurnHistoryBrowser({
   const selectedSet = new Set(state.selected_paper_ids)
   const isLocked = state.report !== null || state.chat_history.length > 0
   const canPickImmediately = state.stage === 'synthesize' && !isLocked
-  const turns = [...state.turn_history].reverse() // most recent turn first
+  // Ascending turn_number order (how the backend appends them) -- entry
+  // at index i always has turn_number === i + 1, so index and turn_number
+  // are interchangeable below.
+  const turns = state.turn_history
+  // Local, remounts-fresh-on-open state (this component is only ever
+  // mounted while showHistory is true -- see CurationWorkspacePage's
+  // conditional render -- so this naturally defaults to the latest turn
+  // every time the browser is opened, with no extra reset effect needed).
+  const [selectedIndex, setSelectedIndex] = useState(() => turns.length - 1)
+  const clampedIndex = Math.min(Math.max(selectedIndex, 0), turns.length - 1)
+  const entry = turns.length > 0 ? turns[clampedIndex] : null
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -66,10 +77,36 @@ export function TurnHistoryBrowser({
         </button>
       </div>
 
+      {entry && (
+        <div className="flex items-center justify-center gap-3 border-b border-border-soft bg-panel px-4 py-2">
+          <button
+            type="button"
+            data-testid="turn-history-prev"
+            onClick={() => setSelectedIndex((i) => Math.max(i - 1, 0))}
+            disabled={clampedIndex === 0}
+            className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span data-testid="turn-history-position" className="text-xs text-text-muted">
+            Turn {entry.turn_number} of {turns.length}
+          </span>
+          <button
+            type="button"
+            data-testid="turn-history-next"
+            onClick={() => setSelectedIndex((i) => Math.min(i + 1, turns.length - 1))}
+            disabled={clampedIndex === turns.length - 1}
+            className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {turns.length === 0 && <p className="text-sm text-text-muted">No turns yet.</p>}
-        {turns.map((entry) => (
-          <div key={entry.turn_number} className="mb-5">
+        {!entry && <p className="text-sm text-text-muted">No turns yet.</p>}
+        {entry && (
+          <div className="mb-5">
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
               Turn {entry.turn_number} — {entry.refilled ? 'new search' : 'from existing pool'}
             </h3>
@@ -111,7 +148,7 @@ export function TurnHistoryBrowser({
               })}
             </div>
           </div>
-        ))}
+        )}
       </div>
 
       {isLocked ? (

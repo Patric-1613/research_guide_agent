@@ -140,7 +140,7 @@ describe('ReviewModePanel', () => {
     expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
   })
 
-  it('renders past TurnBlocks above the current batch, with correct turn numbering', () => {
+  it('shows only the active/current turn -- past turnEvents no longer stack inline in the main panel', () => {
     const events: TurnEvent[] = [
       { turnNumber: 1, refilled: false, batchSize: 10, reserveRemainingAfter: 5, pickedPaperIds: ['a', 'b'] },
     ]
@@ -152,8 +152,62 @@ describe('ReviewModePanel', () => {
       />,
     )
 
-    expect(screen.getByText(/Turn 1/)).toBeInTheDocument()
+    // Turn numbering for the CURRENT turn is preserved (still derived from
+    // turnEvents.length + 1)...
     expect(screen.getByText('Turn 2 — new search')).toBeInTheDocument()
+    // ...but no content from the past turn (turn 1's own divider, or its
+    // "AGENT" / "You selected" summary) renders in the main panel anymore.
+    expect(screen.queryByText('Turn 1 — from existing pool (no new search)')).not.toBeInTheDocument()
+    expect(screen.queryByText('AGENT')).not.toBeInTheDocument()
+    expect(screen.queryByText(/You selected/)).not.toBeInTheDocument()
+    // The live batch itself still renders.
+    expect(screen.getByText('Paper One')).toBeInTheDocument()
+  })
+
+  it('scrolls the batch container back to the top when pending_batch changes to a different set of paper IDs', () => {
+    const state1 = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    const { rerender } = render(
+      <ReviewModePanel
+        state={state1} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+    const scrollEl = screen.getByTestId('review-batch-scroll')
+    scrollEl.scrollTop = 400
+
+    const state2 = baseState({ pending_batch: [paper('p2', 'Paper Two')] })
+    rerender(
+      <ReviewModePanel
+        state={state2} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(scrollEl.scrollTop).toBe(0)
+  })
+
+  it('does NOT reset scroll position when pending_batch is re-rendered with the same paper IDs', () => {
+    const state1 = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    const { rerender } = render(
+      <ReviewModePanel
+        state={state1} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+    const scrollEl = screen.getByTestId('review-batch-scroll')
+    scrollEl.scrollTop = 400
+
+    // Same paper IDs, e.g. a re-render triggered by staging a pick or a
+    // loading-state toggle -- not a new batch.
+    const state1Again = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    rerender(
+      <ReviewModePanel
+        state={state1Again} turnEvents={[]} stagedPickIds={['p1']} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(scrollEl.scrollTop).toBe(400)
   })
 
   it('a partial batch (fewer than BATCH_SIZE, not refilled) gets a distinct message pointing at "search for more" (Phase 9e)', () => {
