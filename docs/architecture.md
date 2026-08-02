@@ -1035,17 +1035,20 @@ PostgreSQL migration options, a multi-user data-ownership proposal, API/
 frontend impact, and a phased Phase 19–27 implementation plan). Nothing
 in that document is implemented; it does not disturb this baseline.
 
-## Chat feature: message actions and report inclusion (Phases 1–4)
+## Chat feature: message actions and report inclusion (Phases 1–5) — complete
 
 A separate, later feature arc — built entirely on top of the
 `standardized-single-user-project` baseline above, after it — adding
-per-message actions (select/delete/add-to-report) to curation chat and
-letting web-backed chat answers selectively feed the literature-review
-report. Backend: `research_agent/curation_chat.py`,
+per-message actions (select/delete/add-to-report/edit) to curation chat
+and letting web-backed chat answers selectively feed the
+literature-review report. Backend: `research_agent/curation_chat.py`,
 `research_agent/report.py`, `research_agent/query_expansion.py`
 (`PaperPoolSession`). Frontend: `frontend/src/components/TurnFeed/
 ChatMessageRow.tsx`, `frontend/src/components/ChatMode/
-ChatModePanel.tsx`.
+ChatModePanel.tsx`. All five planned phases are now done — see
+"Chat feature arc: closing status" at the end of this section for the
+final validation baseline and what's explicitly left as optional
+follow-up.
 
 **Phase 1 — persisted web-answer metadata.** Before this phase,
 `chat_history` entries were plain `{role, content}` dicts, and whether an
@@ -1094,6 +1097,24 @@ eligible exchanges and regenerates the report — but **selectively**, not
 over the whole raw web pool (see "Safety/correctness notes" below for
 why that distinction needed real design work, not just reuse of the
 existing regeneration path as-is).
+
+**Phase 5 — edit a user question (truncate-and-regenerate).** `POST
+/curation/{session_id}/chat/exchanges/edit` (body `{exchange_id,
+question}`, same POST-to-action-suffixed-path convention as Phases 3–4)
+locates the **user**-role entry carrying `exchange_id`, truncates
+`chat_history` to everything strictly before it — removing that
+question's old answer and every later exchange in one slice — clears
+`pending_web_offer`/`pending_report_update` (both only ever describe the
+chronologically-last exchange, which any edit always truncates away),
+then delegates the fresh answer to the existing, **unmodified**
+`chat_turn()`. The edited question becomes a genuinely new exchange with
+a **new** `exchange_id`, not an in-place mutation of the old one — no
+branching/versioning, matching the single-linear-conversation model this
+whole app already uses. Reports `report_possibly_stale: true` under the
+same rule Phase 3 established (any truncated-away assistant entry had
+`added_to_report == true`); `report_approved_web_article_urls` is left
+untouched, same Option A policy as Phase 3's delete (see "Safety/
+correctness notes" below for why).
 
 ### Current chat data model
 
@@ -1186,28 +1207,66 @@ this field existed.
   marks anything approved or added. Confirmed by a test that fails a
   regeneration once, then retries the same exchange successfully.
 
-### Remaining chat phase: Phase 5 (edit user question) — not started
+### Chat feature arc: closing status (2026-08-02)
 
-The last planned phase in this arc, explicitly out of scope for
-everything above. Expected behavior, as scoped when this arc began:
+All five planned phases are done. Summary of current behavior, in one
+place:
 
-- Edit applies only to **user questions**, never assistant answers (the
-  UI already only ever shows the Edit menu item on the user side of an
-  exchange, still disabled/"Coming soon" as of Phase 4).
-- **Truncate-and-regenerate, not branching/versioning**: editing
-  question N discards the old answer to N and every exchange after it,
-  then regenerates a fresh answer from the edited question — the
-  standard single-linear-conversation model, not a tree of alternate
-  histories.
-- **Stale-report implication, carried over from Phase 3's own
-  `report_possibly_stale` precedent**: if any of the truncated-away
-  exchanges had `added_to_report == true` (its sources were approved
-  into the report), truncating them doesn't retroactively un-approve
-  those URLs or regenerate the report — the same "signal, don't auto-fix"
-  posture Phase 3 established for delete. Whether Phase 5 reuses
-  `report_possibly_stale` as-is or needs its own signal is an open
-  design question for whenever Phase 5 is actually scoped, not decided
-  here.
+- **Delete operates by exchange, never by individual message** — a
+  question and its answer always share one `exchange_id` and are always
+  removed together.
+- **Edit applies only to user questions.** Truncate-and-regenerate: the
+  edited question becomes a brand-new exchange with a **new**
+  `exchange_id`, not an in-place rewrite of the old one.
+- **Add-to-report approves cited web source *URLs*, never literal chat
+  text** — the report is always synthesized fresh by the existing
+  citation-preserving generation machinery over the approved set, never
+  spliced from chat prose directly.
+- **`report_approved_web_article_urls`** (on `PaperPoolSession`) is the
+  persisted record of exactly which web sources have been explicitly
+  approved for the report — separate from `web_articles_added`, which
+  stays the full raw discovery pool regardless of approval.
+- **`report_possibly_stale`** appears in the delete and edit responses
+  whenever a removed/truncated assistant entry had already been folded
+  into the report (`added_to_report == true`) — a signal only, never an
+  automatic regeneration.
+- **`POST /curation/{id}/report/regenerate` (pre-existing, whole-pool)
+  is unchanged and stays independent** of the selective add-to-report
+  path — see the "Known interaction, not yet resolved" note above for
+  what happens if a session uses both.
+
+**Final validation baseline for the whole arc:**
+
+```
+uv run pytest -q                    → 404 passed
+cd frontend && npm test             → 154 passed
+cd frontend && npm run build        → clean (tsc -b && vite build)
+```
+
+**Explicitly deferred follow-ups** (none blocking, none scheduled):
+
+1. **Inline edit UI instead of `window.prompt`.** Phase 5 deliberately
+   used the same native-dialog minimalism as Phase 3's `window.confirm`
+   — a real inline-editable text field would be a nicer future upgrade,
+   not required for correctness.
+2. **Stale-report remediation/regeneration UX.** `report_possibly_stale`
+   is only ever a warning today (from both delete and edit) — there's no
+   one-click "fix it now" action; the user has to know to go regenerate
+   manually.
+3. **Pruning `report_approved_web_article_urls` after delete/edit**
+   (Option B from the add-to-report design discussion, deliberately not
+   built) — would let the *next* regeneration stop including a source
+   whose only originating exchange was later removed. Doesn't fix the
+   *current* report either way, since a generated report's text is
+   already static.
+4. **A red-team/evaluation suite for chat + report behavior** — nothing
+   in this arc has adversarial/eval-style coverage the way `report.py`'s
+   citation-grounding does (`tests/test_report_grounding.py`) or the way
+   the original pipeline's RAGAS harness does (`docs/evaluation.md`).
+5. **OAuth/authentication, PostgreSQL migration, and multi-user
+   support remain entirely out of scope and not started** — unchanged
+   from every prior phase's own note on this, including everything in
+   `specs/production-readiness-roadmap.md`.
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 

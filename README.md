@@ -15,10 +15,11 @@ which ones matter (`curation_loop.py`), get a synthesized literature-review
 report with regenerate-on-demand (`report.py`), and chat about the curated
 set with the option to pull in live web context or refresh the report
 mid-conversation (`curation_chat.py`). Chat messages support per-exchange
-actions — select, delete, and selectively approving a web-backed answer's
-cited sources for the report — see `docs/architecture.md`'s "Chat
-feature: message actions and report inclusion" section for the full
-design. A **React + Vite frontend**
+actions — select, delete, edit a previous question (truncate-and-
+regenerate), and selectively approving a web-backed answer's cited
+sources for the report — see `docs/architecture.md`'s "Chat feature:
+message actions and report inclusion" section for the full design.
+A **React + Vite frontend**
 (`frontend/`, see `frontend/README.md`) is the primary UI for this
 workflow — see "Running the app" below to start it. The backend itself was
 restructured over a later, separate standardization effort (routers →

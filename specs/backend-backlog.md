@@ -61,24 +61,40 @@ invented:
 - **Status**: Open, not started.
 
 ### Chat message actions + report inclusion
-- **Phases 1–4 (persisted web-answer metadata, message menu/select
-  mode, delete exchanges, add web-backed sources to the report): Done.**
-  See `docs/architecture.md`'s "Chat feature: message actions and report
-  inclusion (Phases 1–4)" section for the full record — data model
-  (`exchange_id`/`used_web_search`/`cited_web_articles`/
+- **Phases 1–5 (persisted web-answer metadata, message menu/select
+  mode, delete exchanges, add web-backed sources to the report, edit
+  user question): Done — the whole planned arc is complete.** See
+  `docs/architecture.md`'s "Chat feature: message actions and report
+  inclusion (Phases 1–5) — complete" section for the full record — data
+  model (`exchange_id`/`used_web_search`/`cited_web_articles`/
   `added_to_report`/`report_approved_web_article_urls`), the
-  `qa.capped_history()` sanitization boundary, and the selective-vs-
-  whole-pool report regeneration split.
-- **Phase 5 (edit user question): Open, not started.** Scoped behavior:
-  edit applies only to user questions (never assistant answers);
-  truncate-and-regenerate (discard the old answer to the edited question
-  and every later exchange, then regenerate fresh from the edited
-  question) — no branching/versioning. Open design question carried
-  over from Phase 3/4: if a truncated exchange had `added_to_report ==
-  true`, whether Phase 5 reuses the existing `report_possibly_stale`
-  signal as-is or needs its own is not yet decided. See
-  `docs/architecture.md`'s "Remaining chat phase: Phase 5" note.
-- **Priority**: Unset — needs your call.
+  `qa.capped_history()` sanitization boundary, the selective-vs-
+  whole-pool report regeneration split, and edit's truncate-and-
+  regenerate behavior (new `exchange_id` per edit, `report_possibly_
+  stale` reused as-is from Phase 3 — that open question from the
+  previous note is now resolved). Final validation: backend 404 passed,
+  frontend 154 passed, build clean.
+- **Status**: Closed. Follow-up ideas below are optional, not scheduled.
+
+### Chat feature follow-ups (optional, not scheduled)
+- **Inline edit UI instead of `window.prompt`.** Phase 5 used the same
+  native-dialog minimalism as Phase 3's `window.confirm` on purpose — a
+  real inline-editable text field is a plausible future upgrade, not a
+  correctness gap.
+- **Stale-report remediation/regeneration UX.** `report_possibly_stale`
+  (surfaced by both delete and edit) is only ever a warning today — no
+  one-click "fix it now" action exists; the user has to know to
+  manually regenerate.
+- **Pruning `report_approved_web_article_urls` after delete/edit**
+  (the "Option B" design considered and deliberately not built during
+  add-to-report/edit design). Would only affect a *future* regeneration
+  — doesn't retroactively fix an already-generated report either way.
+- **A red-team/evaluation suite for chat + report behavior** —
+  nothing in this arc has adversarial/eval-style coverage the way
+  `report.py`'s citation-grounding does (`tests/test_report_
+  grounding.py`) or the original pipeline's RAGAS harness does
+  (`docs/evaluation.md`).
+- **Priority**: Unset — needs your call, on any/all of the above.
 
 Placeholders below, ready for real entries:
 
