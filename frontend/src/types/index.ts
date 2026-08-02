@@ -153,6 +153,27 @@ export interface CurationChatAddToReportResponse {
   source_count: number
 }
 
+export interface CurationChatEditRequest {
+  exchange_id: string
+  question: string
+}
+
+export interface CurationChatEditResponse {
+  answer: string
+  answerable: boolean
+  cited_papers: CitedPaperOut[]
+  cited_web_articles: CitedWebArticleOut[]
+  web_offer_made: boolean
+  web_offer_declined: boolean
+  web_search_used: boolean
+  new_web_articles_found: number | null
+  report_update_offer_made: boolean
+  report_update_declined: boolean
+  report_updated: boolean
+  chat_history: ChatTurn[]
+  report_possibly_stale: boolean
+}
+
 export interface CurationReviewSummary {
   session_id: string
   topic: string

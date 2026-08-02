@@ -9,6 +9,8 @@ from research_agent.api_app.schemas import (
     CurationChatAddToReportResponse,
     CurationChatDeleteRequest,
     CurationChatDeleteResponse,
+    CurationChatEditRequest,
+    CurationChatEditResponse,
     CurationChatRequest,
     CurationChatResponse,
 )
@@ -103,4 +105,37 @@ def add_curation_chat_exchanges_to_report(
         added_exchange_ids=eligible_ids,
         skipped_exchange_ids=skipped_ids,
         source_count=len(newly_approved_urls),
+    )
+
+
+def edit_curation_chat_exchange(session_id: str, req: CurationChatEditRequest, cp) -> CurationChatEditResponse:
+    if not req.exchange_id:
+        raise ServiceError(400, "exchange_id must not be empty")
+    if not req.question or not req.question.strip():
+        raise ServiceError(400, "question must not be empty")
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise ServiceError(404, "session_id not found")
+
+    try:
+        result, report_possibly_stale = api.edit_chat_exchange(
+            session, req.exchange_id, req.question, client=api._state["client"],
+        )
+    except ValueError as exc:
+        raise ServiceError(400, str(exc)) from exc
+    save_curation_session(session, session_id, cp)
+
+    return CurationChatEditResponse(
+        answer=result["answer"], answerable=result["answerable"],
+        cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in result["cited_papers"]],
+        cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in result["cited_web_articles"]],
+        web_offer_made=result.get("web_offer_made", False),
+        web_offer_declined=result.get("web_offer_declined", False),
+        web_search_used=result.get("web_search_used", False),
+        new_web_articles_found=result.get("new_web_articles_found"),
+        report_update_offer_made=result.get("report_update_offer_made", False),
+        report_update_declined=result.get("report_update_declined", False),
+        report_updated=result.get("report_updated", False),
+        chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+        report_possibly_stale=report_possibly_stale,
     )

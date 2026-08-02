@@ -7,6 +7,8 @@ from research_agent.api_app.schemas import (
     CurationChatAddToReportResponse,
     CurationChatDeleteRequest,
     CurationChatDeleteResponse,
+    CurationChatEditRequest,
+    CurationChatEditResponse,
     CurationChatRequest,
     CurationChatResponse,
 )
@@ -14,6 +16,7 @@ from research_agent.services.curation_chat_service import (
     add_curation_chat_exchanges_to_report,
     answer_curation_chat,
     delete_curation_chat_exchanges,
+    edit_curation_chat_exchange,
 )
 from research_agent.services.errors import ServiceError
 
@@ -59,5 +62,19 @@ def curation_chat_add_to_report(
     with _upstream_error_guard("curation_chat_add_to_report"):
         try:
             return add_curation_chat_exchanges_to_report(session_id, req, cp)
+        except ServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+# curation-chat-edit Phase 5: same POST-not-DELETE-with-body convention.
+# Calls chat_turn() (an LLM call) for the fresh answer, so needs
+# _upstream_error_guard, same as add-to-report above.
+@router.post("/curation/{session_id}/chat/exchanges/edit", response_model=CurationChatEditResponse)
+def curation_chat_edit_exchange(
+    session_id: str, req: CurationChatEditRequest, cp=Depends(api.get_curation_checkpointer),
+) -> CurationChatEditResponse:
+    with _upstream_error_guard("curation_chat_edit_exchange"):
+        try:
+            return edit_curation_chat_exchange(session_id, req, cp)
         except ServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

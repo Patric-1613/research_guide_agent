@@ -32,6 +32,7 @@ from research_agent.curation_chat import (
     chat_turn,
     cited_web_article_urls_for_exchanges,
     delete_chat_exchanges,
+    edit_chat_exchange,
     mark_exchanges_added_to_report,
     resolve_approved_web_articles_for_regeneration,
     select_eligible_exchanges_for_report,

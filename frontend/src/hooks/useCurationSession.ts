@@ -99,6 +99,11 @@ interface UseCurationSessionResult {
   // sources and regenerates the report through the existing selective
   // path (see the backend's regenerate_report_with_approved_web_sources).
   addExchangesToReport: (exchangeIds: string[]) => Promise<void>
+  // curation-chat-edit Phase 5: truncate-and-regenerate -- replaces
+  // exchangeId's question, discards its old answer and every later
+  // exchange, and regenerates a fresh answer. The edited exchange gets a
+  // NEW exchange_id (see the backend's edit_chat_exchange() docstring).
+  editExchange: (exchangeId: string, question: string) => Promise<void>
   // curation-review-management Phase 8, item 1: deletes for real via the
   // backend, then -- ONLY if the deleted id was the currently-open
   // session -- clears sessionId/state/URL so the UI falls back to the
@@ -271,6 +276,19 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  const editExchange = useCallback(
+    (exchangeId: string, question: string) =>
+      runAction(async () => {
+        if (!sessionId) return
+        const response = await curationApi.editChatExchange(sessionId, { exchange_id: exchangeId, question })
+        // Same reused signal as deleteExchanges (Phase 3) -- editing away
+        // a report-included exchange is the same kind of staleness.
+        setReportPossiblyStale(response.report_possibly_stale)
+        await loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   const refresh = useCallback(
     () =>
       runAction(async () => {
@@ -321,6 +339,6 @@ export function useCurationSession(): UseCurationSessionResult {
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    addExchangesToReport, deleteReview, selectFromHistory, reopenReview, refresh,
+    addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   }
 }

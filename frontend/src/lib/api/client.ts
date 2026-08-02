@@ -4,6 +4,8 @@ import type {
   CurationChatAddToReportResponse,
   CurationChatDeleteRequest,
   CurationChatDeleteResponse,
+  CurationChatEditRequest,
+  CurationChatEditResponse,
   CurationChatRequest,
   CurationChatResponse,
   CurationDeleteResponse,
@@ -78,6 +80,10 @@ export const curationApi = {
   addChatExchangesToReport: (
     sessionId: string, req: CurationChatAddToReportRequest,
   ): Promise<CurationChatAddToReportResponse> => postJson(`/curation/${sessionId}/chat/exchanges/add-to-report`, req),
+
+  // curation-chat-edit Phase 5: same POST convention as delete/add-to-report above.
+  editChatExchange: (sessionId: string, req: CurationChatEditRequest): Promise<CurationChatEditResponse> =>
+    postJson(`/curation/${sessionId}/chat/exchanges/edit`, req),
 
   deleteReview: (sessionId: string): Promise<CurationDeleteResponse> =>
     deleteRequest(`/curation/${sessionId}`),

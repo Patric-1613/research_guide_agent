@@ -45,6 +45,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     sendChatMessage: vi.fn(),
     deleteExchanges: vi.fn(),
     addExchangesToReport: vi.fn(),
+    editExchange: vi.fn(),
     deleteReview: vi.fn(),
     selectFromHistory: vi.fn(),
     reopenReview: vi.fn(),

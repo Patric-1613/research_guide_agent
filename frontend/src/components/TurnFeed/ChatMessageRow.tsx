@@ -34,6 +34,10 @@ interface ChatMessageRowProps {
   // curation-chat-add-to-report Phase 4: no confirmation prompt -- this is
   // additive, not destructive, unlike delete above.
   onAddToReport: (exchangeId: string) => void
+  // curation-chat-edit Phase 5: called only with a non-blank, trimmed
+  // question -- window.prompt's own cancel (null) and blank-submit cases
+  // are both handled at the click site below, never reaching this prop.
+  onEdit: (exchangeId: string, question: string) => void
 }
 
 // curation-chat-select Phase 2: wraps ChatMessage (unchanged since Phase 1
@@ -47,12 +51,16 @@ interface ChatMessageRowProps {
 // disabled checkbox once select mode is on rather than hidden entirely, so
 // it's clear WHY they can't be picked rather than just missing.
 export function ChatMessageRow({
-  turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete, onAddToReport,
+  turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete, onAddToReport, onEdit,
 }: ChatMessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const exchangeId = turn.exchange_id ?? null
   const isSelectable = exchangeId !== null
   const isEligibleForReport = isEligibleForAddToReport(turn)
+  // curation-chat-edit Phase 5: user messages only, and only ones with a
+  // real exchange_id -- old pre-Phase-1 entries stay ineligible, same
+  // rule as Select/Delete/Add to report all already apply.
+  const isEligibleForEdit = turn.role === 'user' && isSelectable
 
   return (
     <div className="flex items-start gap-2">
@@ -108,17 +116,28 @@ export function ChatMessageRow({
                 makes sense on the user-question side of an exchange -- the
                 UI can distinguish that cleanly via turn.role, so it's
                 simply not rendered at all on assistant messages, rather
-                than shown-and-disabled everywhere. */}
+                than shown-and-disabled everywhere. curation-chat-edit
+                Phase 5: still requires a real exchange_id (old entries
+                stay disabled), and uses window.prompt as the smallest
+                safe UI -- no inline editor yet. */}
             {turn.role === 'user' && (
               <button
                 type="button"
                 role="menuitem"
                 data-testid="message-menu-edit"
-                disabled
-                title="Coming soon"
-                className="block w-full px-3 py-1.5 text-left text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!isEligibleForEdit}
+                onClick={() => {
+                  if (!exchangeId) return
+                  setMenuOpen(false)
+                  const nextQuestion = window.prompt('Edit your question:', turn.content)
+                  if (nextQuestion === null) return // cancelled
+                  const trimmed = nextQuestion.trim()
+                  if (!trimmed) return // blank submit -- no API call
+                  onEdit(exchangeId, trimmed)
+                }}
+                className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt disabled:cursor-not-allowed disabled:text-text-muted disabled:opacity-50"
               >
-                Edit (Coming soon)
+                Edit
               </button>
             )}
             <button

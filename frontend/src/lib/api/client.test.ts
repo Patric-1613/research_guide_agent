@@ -104,6 +104,26 @@ describe('curationApi', () => {
     expect(result.source_count).toBe(1)
   })
 
+  it('editChatExchange() posts to the exchanges/edit path with the exchange_id + question body', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      answer: 'fresh answer', answerable: true, cited_papers: [], cited_web_articles: [],
+      web_offer_made: false, web_offer_declined: false, web_search_used: false, new_web_articles_found: null,
+      report_update_offer_made: false, report_update_declined: false, report_updated: false,
+      chat_history: [], report_possibly_stale: false,
+    })
+
+    const result = await curationApi.editChatExchange('s1', { exchange_id: 'ex-1', question: 'edited question' })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/chat/exchanges/edit',
+      expect.objectContaining({
+        method: 'POST', body: JSON.stringify({ exchange_id: 'ex-1', question: 'edited question' }),
+      }),
+    )
+    expect(result.answer).toBe('fresh answer')
+    expect(result.report_possibly_stale).toBe(false)
+  })
+
   it('reopen() posts to the session-scoped /reopen path with no body payload beyond {}', async () => {
     const fetchMock = mockFetchOnce(200, {
       session_id: 's1', stage: 'curate', target_count: 10,

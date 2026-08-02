@@ -33,7 +33,7 @@ export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    addExchangesToReport, deleteReview, selectFromHistory, reopenReview,
+    addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -197,6 +197,11 @@ export default function CurationWorkspacePage() {
     setReviewsRefreshToken((t) => t + 1)
   }
 
+  async function handleEditExchange(exchangeId: string, question: string) {
+    await editExchange(exchangeId, question)
+    setReviewsRefreshToken((t) => t + 1)
+  }
+
   async function handleSelectFromHistory(paperId: string) {
     await selectFromHistory(paperId)
     setReviewsRefreshToken((t) => t + 1)
@@ -303,6 +308,7 @@ export default function CurationWorkspacePage() {
                       reportPossiblyStale={reportPossiblyStale}
                       onAddExchangesToReport={handleAddExchangesToReport}
                       lastAddToReportResult={lastAddToReportResult}
+                      onEditExchange={handleEditExchange}
                     />
                   )}
                   {workspaceMode === 'report' && (

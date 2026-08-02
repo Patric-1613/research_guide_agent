@@ -20,6 +20,8 @@ interface ChatModePanelProps {
   // curation-chat-add-to-report Phase 4
   onAddExchangesToReport: (exchangeIds: string[]) => Promise<void>
   lastAddToReportResult: AddToReportResult | null
+  // curation-chat-edit Phase 5
+  onEditExchange: (exchangeId: string, question: string) => Promise<void>
 }
 
 // Chat mode's center panel shows ONLY the conversation -- no paper pool
@@ -27,7 +29,7 @@ interface ChatModePanelProps {
 // candidate/paper-pool UI should disappear entirely.
 export function ChatModePanel({
   state, disabled, onSendMessage, lastSearchMeta, onDeleteExchanges, reportPossiblyStale,
-  onAddExchangesToReport, lastAddToReportResult,
+  onAddExchangesToReport, lastAddToReportResult, onEditExchange,
 }: ChatModePanelProps) {
   const [text, setText] = useState('')
   // chat-ux-fixes bug 3: onSendMessage awaits the FULL round trip
@@ -45,8 +47,8 @@ export function ChatModePanel({
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // curation-chat-select Phase 2 / curation-chat-delete Phase 3 /
-  // curation-chat-add-to-report Phase 4: select mode + delete + add-to-
-  // report are all wired up; only Edit remains a disabled placeholder.
+  // curation-chat-add-to-report Phase 4 / curation-chat-edit Phase 5:
+  // select mode, delete, add-to-report, and edit are all wired up now.
   // Selected by exchange_id (Phase 1's shared id linking a question+
   // answer pair), not array index, so it stays correct regardless of how
   // the underlying list is later re-rendered. Session-local like
@@ -138,6 +140,18 @@ export function ChatModePanel({
     handleClearSelection()
   }
 
+  // curation-chat-edit Phase 5: the prompt/cancel/blank handling all
+  // happens at the click site in ChatMessageRow -- this only ever
+  // receives a real, non-blank question. Selection is cleared
+  // unconditionally on completion (not just the edited id): truncation
+  // can invalidate an arbitrary number of previously-selected exchange
+  // ids (everything after the edited one), not just the edited exchange
+  // itself, so there's no single id to surgically deselect here.
+  async function handleEditExchange(exchangeId: string, question: string) {
+    await onEditExchange(exchangeId, question)
+    handleClearSelection()
+  }
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }, [state.chat_history.length, pendingMessage])
@@ -202,6 +216,7 @@ export function ChatModePanel({
               onToggleSelect={handleToggleSelect}
               onDelete={(exchangeId) => void handleDeleteExchange(exchangeId)}
               onAddToReport={(exchangeId) => void handleAddToReport(exchangeId)}
+              onEdit={(exchangeId, question) => void handleEditExchange(exchangeId, question)}
             />
             {i === firstWebBackedIndex && (
               <p data-testid="web-metadata-hint" className="mt-1 text-center text-xs italic text-text-muted">

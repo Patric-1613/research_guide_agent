@@ -575,3 +575,72 @@ def mark_exchanges_added_to_report(session: PaperPoolSession, exchange_ids: list
     for turn in session.chat_history:
         if turn.get("role") == "assistant" and turn.get("exchange_id") in target_ids:
             turn["added_to_report"] = True
+
+
+# --- curation-chat-edit Phase 5 ---
+
+def edit_chat_exchange(
+    session: PaperPoolSession, exchange_id: str, new_question: str,
+    client: OpenAI | None = None, top_k: int = qa.TOP_K_DEFAULT,
+) -> tuple[dict, bool]:
+    """curation-chat-edit Phase 5: truncate-and-regenerate, not an
+    in-place edit. Locates the USER entry carrying exchange_id (edit only
+    ever targets a question, never an answer) and truncates chat_history
+    to everything strictly BEFORE it -- this removes the old answer to
+    that question AND every later exchange in one slice, since
+    chat_history is strictly append-only/chronological (Phase 3's delete
+    only ever removes entries, never reorders them). No separate step
+    ever looks for "the assistant answer" specifically -- truncating at
+    the user entry's own index already removes it and everything
+    chronologically after, which is also why "what if only one side
+    exists" isn't a case this needs to handle specially.
+
+    Raises ValueError if exchange_id doesn't resolve to a user entry --
+    covers an unknown id, an id that only matches an assistant entry (the
+    role=="user" filter below), and the case a pre-Phase-1 entry
+    (exchange_id is None) could never match at all.
+
+    pending_web_offer/pending_report_update are unconditionally cleared
+    before the fresh chat_turn() call below -- NOT a rare edge case: both
+    fields only ever describe state left by the chronologically LAST
+    exchange, and an edit always truncates that exchange away too (the
+    edited exchange_id can never be after the list's true end), so
+    whatever most recently set either field is always being erased by
+    any edit whatsoever. Leaving either set would let the edited
+    question get misclassified as a reply to an offer about content that
+    no longer exists.
+
+    The actual new-answer generation is delegated to the existing,
+    UNMODIFIED chat_turn() -- appends a fresh user+assistant pair with
+    its own NEW exchange_id (this is not an in-place mutation of the old
+    exchange_id), and inherits Phase 1's capped_history() sanitization
+    for free since nothing here builds an LLM prompt directly.
+
+    report_approved_web_article_urls is deliberately left untouched
+    (Option A -- see docs/architecture.md's Phase 5 section): the
+    existing report may now cite content from a truncated exchange, but
+    pruning the approved-URL set doesn't un-cite anything already
+    written into session.report, so it wouldn't fix the staleness --
+    only a real regeneration would, which this function never triggers.
+
+    Returns (chat_turn_result, report_possibly_stale) -- the latter is
+    True if ANY assistant entry in the truncated-away range (the edited
+    exchange's own old answer, or any later exchange) had
+    added_to_report=True, computed BEFORE truncation.
+    """
+    user_idx = next(
+        (i for i, turn in enumerate(session.chat_history) if turn.get("role") == "user" and turn.get("exchange_id") == exchange_id),
+        None,
+    )
+    if user_idx is None:
+        raise ValueError(f"No editable user question found for exchange_id {exchange_id!r}")
+
+    removed = session.chat_history[user_idx:]
+    report_possibly_stale = any(turn.get("role") == "assistant" and turn.get("added_to_report") for turn in removed)
+
+    session.chat_history = session.chat_history[:user_idx]
+    session.pending_web_offer = None
+    session.pending_report_update = None
+
+    result = chat_turn(session, new_question, client=client, top_k=top_k)
+    return result, report_possibly_stale

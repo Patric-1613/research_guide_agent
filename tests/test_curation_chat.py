@@ -26,6 +26,7 @@ from research_agent.curation_chat import (
     chat_turn,
     cited_web_article_urls_for_exchanges,
     delete_chat_exchanges,
+    edit_chat_exchange,
     mark_exchanges_added_to_report,
     resolve_approved_web_articles_for_regeneration,
     select_eligible_exchanges_for_report,
@@ -1247,3 +1248,248 @@ def test_mark_exchanges_added_to_report_flips_only_the_targeted_assistant_entrie
     by_id = {t["exchange_id"]: t for t in session.chat_history if t["role"] == "assistant"}
     assert by_id["ex-1"]["added_to_report"] is True
     assert by_id["ex-2"]["added_to_report"] is False
+
+
+# --- curation-chat-edit Phase 5: edit_chat_exchange() ---
+
+def test_edit_chat_exchange_truncates_target_and_later_exchanges_then_appends_a_fresh_exchange():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_exchange("ex-0"), *_exchange("ex-1"), *_exchange("ex-2")],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer [Paper 1].", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        edit_chat_exchange(session, "ex-1", "an edited question", client=mock_client)
+
+    # ex-0 (before the edited exchange) survives untouched; ex-1's old
+    # pair and ex-2 (after it) are both gone, replaced by exactly one
+    # fresh exchange.
+    assert len(session.chat_history) == 4  # ex-0's pair + the fresh pair
+    assert session.chat_history[0]["exchange_id"] == "ex-0"
+    assert session.chat_history[1]["exchange_id"] == "ex-0"
+    assert session.chat_history[2]["role"] == "user"
+    assert session.chat_history[2]["content"] == "an edited question"
+    assert session.chat_history[3]["role"] == "assistant"
+    assert session.chat_history[3]["content"] == "Fresh answer [Paper 1]."
+    assert not any(t.get("exchange_id") == "ex-1" for t in session.chat_history)
+    assert not any(t.get("exchange_id") == "ex-2" for t in session.chat_history)
+
+
+def test_edit_chat_exchange_fresh_exchange_gets_a_new_exchange_id():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_exchange("ex-1")],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    new_exchange_id = session.chat_history[0]["exchange_id"]
+    assert new_exchange_id is not None
+    assert new_exchange_id != "ex-1"
+    assert session.chat_history[1]["exchange_id"] == new_exchange_id
+
+
+def test_edit_chat_exchange_future_context_excludes_truncated_content():
+    """Mirrors the analogous Phase 3 delete regression test: content from
+    the edited-away exchange and everything after it must not survive
+    into a LATER turn's context."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "the original question that will be edited away", "exchange_id": "ex-1"},
+            {
+                "role": "assistant", "content": "the original answer that will be edited away", "exchange_id": "ex-1",
+                "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+            },
+        ],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parse_response(schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"]),
+        _mock_parse_response(schema, answerable=True, answer="Follow-up answer.", cited_paper_ids=["p1"]),
+    ]
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="a follow-up question"))],
+        usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        edit_chat_exchange(session, "ex-1", "the edited question", client=mock_client)
+        chat_turn(session, "a follow-up question", client=mock_client)
+
+    second_generate_messages = mock_client.chat.completions.parse.call_args_list[-1].kwargs["messages"]
+    joined = " ".join(m["content"] for m in second_generate_messages)
+    assert "will be edited away" not in joined
+
+
+def test_edit_chat_exchange_report_possibly_stale_true_when_the_edited_exchange_itself_was_added_to_report():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert report_possibly_stale is True
+
+
+def test_edit_chat_exchange_report_possibly_stale_true_when_a_later_truncated_exchange_was_added_to_report():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_exchange("ex-1"), *_web_exchange("ex-2", "https://a.com", added_to_report=True)],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert report_possibly_stale is True
+
+
+def test_edit_chat_exchange_report_possibly_stale_false_when_nothing_truncated_was_added_to_report():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=False)],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert report_possibly_stale is False
+
+
+def test_edit_chat_exchange_leaves_report_approved_web_article_urls_unchanged():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    # Option A (see docs/architecture.md's Phase 5 section): never pruned.
+    assert session.report_approved_web_article_urls == {"https://a.com"}
+
+
+def test_edit_chat_exchange_clears_pending_offer_state_even_though_it_was_set():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_exchange("ex-1")],
+        pending_web_offer={"question": "some stale offer"},
+        pending_report_update={"new_article_count": 1},
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert session.pending_web_offer is None
+    assert session.pending_report_update is None
+
+
+def test_edit_chat_exchange_raises_for_unknown_exchange_id():
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[*_exchange("ex-1")])
+
+    try:
+        edit_chat_exchange(session, "does-not-exist", "edited question", client=MagicMock())
+        assert False, "expected a ValueError for an unknown exchange_id"
+    except ValueError as e:
+        assert "does-not-exist" in str(e)
+
+
+def test_edit_chat_exchange_raises_when_exchange_id_only_matches_an_assistant_entry():
+    """Structurally shouldn't happen given the one-user-one-assistant
+    invariant, but confirmed defensively: searching only role=="user"
+    means an id that somehow only resolves to an assistant entry is
+    correctly reported as not editable, not silently mismatched."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[{"role": "assistant", "content": "orphan answer", "exchange_id": "ex-orphan"}],
+    )
+
+    try:
+        edit_chat_exchange(session, "ex-orphan", "edited question", client=MagicMock())
+        assert False, "expected a ValueError -- no user entry carries this exchange_id"
+    except ValueError:
+        pass
+
+
+def test_edit_chat_exchange_raises_for_pre_phase_1_entries_with_no_exchange_id():
+    old_entries = [{"role": "user", "content": "old question"}, {"role": "assistant", "content": "old answer"}]
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=old_entries)
+
+    try:
+        edit_chat_exchange(session, "", "edited question", client=MagicMock())
+        assert False, "expected a ValueError -- no entry has a real (non-None) exchange_id to match"
+    except ValueError:
+        pass
+    assert session.chat_history == old_entries  # untouched

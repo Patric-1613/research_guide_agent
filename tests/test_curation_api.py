@@ -1368,6 +1368,124 @@ def test_curation_chat_add_to_report_unknown_session_id_returns_404():
     assert resp.status_code == 404
 
 
+# --- /curation/{id}/chat/exchanges/edit (curation-chat-edit Phase 5) ---
+
+def _fake_edit_chat_exchange(new_exchange_id: str, report_possibly_stale: bool = False):
+    """Mocked at the api.edit_chat_exchange level -- same convention this
+    whole file uses for every LLM-calling function (chat_turn,
+    regenerate_report_with_approved_web_sources, etc.): the real
+    truncation logic is already thoroughly covered by
+    tests/test_curation_chat.py's domain-level unit tests, so this fake
+    only needs to mimic ITS OBSERVABLE EFFECT (truncate + append a fresh
+    exchange) closely enough to prove the HTTP/service/persistence layer
+    wiring, not re-prove the truncation algorithm itself."""
+
+    def _fake(session, exchange_id, new_question, client=None, **kwargs):
+        user_idx = next(
+            (i for i, t in enumerate(session.chat_history) if t.get("role") == "user" and t.get("exchange_id") == exchange_id),
+            None,
+        )
+        if user_idx is None:
+            raise ValueError(f"No editable user question found for exchange_id {exchange_id!r}")
+        session.chat_history = session.chat_history[:user_idx]
+        answer = f"fresh answer to {new_question!r}"
+        session.chat_history.append({"role": "user", "content": new_question, "exchange_id": new_exchange_id})
+        session.chat_history.append({
+            "role": "assistant", "content": answer, "exchange_id": new_exchange_id,
+            "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+        })
+        result = {"answer": answer, "answerable": True, "cited_papers": [], "cited_web_articles": []}
+        return result, report_possibly_stale
+
+    return _fake
+
+
+def test_curation_chat_edit_truncates_and_persists_across_a_separate_get_request():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-2")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        with patch.object(api, "edit_chat_exchange", side_effect=_fake_edit_chat_exchange("ex-new")):
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/edit",
+                json={"exchange_id": "ex-1", "question": "an edited question"},
+            )
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["answer"] == "fresh answer to 'an edited question'"
+    assert body["report_possibly_stale"] is False
+    # report_update_offer_made/declined/report_updated present (always
+    # False on this path) for frontend-handling consistency.
+    assert body["report_update_offer_made"] is False
+    assert body["report_update_declined"] is False
+    assert body["report_updated"] is False
+    assert len(body["chat_history"]) == 2
+    assert all(t["exchange_id"] == "ex-new" for t in body["chat_history"])
+    # ex-1's old pair and ex-2 are gone -- persisted, not just in this response.
+    assert len(state_resp.json()["chat_history"]) == 2
+    assert all(t["exchange_id"] == "ex-new" for t in state_resp.json()["chat_history"])
+
+
+def test_curation_chat_edit_surfaces_report_possibly_stale_true():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "edit_chat_exchange", side_effect=_fake_edit_chat_exchange("ex-new", report_possibly_stale=True)):
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/edit",
+                json={"exchange_id": "ex-1", "question": "an edited question"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["report_possibly_stale"] is True
+
+
+def test_curation_chat_edit_unknown_exchange_id_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "edit_chat_exchange", side_effect=_fake_edit_chat_exchange("ex-new")):
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/edit",
+                json={"exchange_id": "does-not-exist", "question": "an edited question"},
+            )
+
+    assert resp.status_code == 400
+
+
+def test_curation_chat_edit_empty_exchange_id_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/edit", json={"exchange_id": "", "question": "hi"})
+    assert resp.status_code == 400
+
+
+def test_curation_chat_edit_blank_question_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/edit", json={"exchange_id": "ex-1", "question": "   "})
+    assert resp.status_code == 400
+
+
+def test_curation_chat_edit_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/chat/exchanges/edit", json={"exchange_id": "ex-1", "question": "hi"})
+    assert resp.status_code == 404
+
+
 def test_curation_chat_before_curation_finished_returns_400():
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
     with _client() as client, \

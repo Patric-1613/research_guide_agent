@@ -323,6 +323,38 @@ class CurationChatAddToReportResponse(BaseModel):
     source_count: int
 
 
+class CurationChatEditRequest(BaseModel):
+    exchange_id: str
+    question: str
+
+
+class CurationChatEditResponse(BaseModel):
+    # curation-chat-edit Phase 5: mirrors CurationChatResponse's per-turn
+    # fields as closely as practical (same field names/meanings), plus
+    # report_possibly_stale. report_update_offer_made/declined/report_updated
+    # are included for frontend-handling consistency even though this
+    # path can never actually set them True -- editing always clears any
+    # pending_report_update before the fresh chat_turn() call, so that
+    # branch can never fire here (see edit_chat_exchange's docstring).
+    answer: str
+    answerable: bool
+    cited_papers: list[CitedPaperOut]
+    cited_web_articles: list[CitedWebArticleOut]
+    web_offer_made: bool = False
+    web_offer_declined: bool = False
+    web_search_used: bool = False
+    new_web_articles_found: int | None = None
+    report_update_offer_made: bool = False
+    report_update_declined: bool = False
+    report_updated: bool = False
+    chat_history: list[ChatTurn]
+    # True if the edited exchange's old answer, or any later exchange
+    # truncated away by the edit, had added_to_report=True. Phase 5 never
+    # auto-regenerates the report or prunes report_approved_web_article_
+    # urls -- this is only a signal for the frontend to show a warning.
+    report_possibly_stale: bool = False
+
+
 class CurationReviewSummary(BaseModel):
     session_id: str
     topic: str
