@@ -13,7 +13,7 @@ describe('ChatMessage', () => {
 
     const badge = screen.getByTestId('chat-web-badge')
     expect(badge).toBeInTheDocument()
-    expect(badge.className).toContain('text-blue-400')
+    expect(badge.getAttribute('class')).toContain('text-blue-400')
   })
 
   it('renders a grey web badge once added_to_report is true', () => {
@@ -25,8 +25,8 @@ describe('ChatMessage', () => {
 
     const badge = screen.getByTestId('chat-web-badge')
     expect(badge).toBeInTheDocument()
-    expect(badge.className).not.toContain('text-blue-400')
-    expect(badge.className).toContain('text-text-muted')
+    expect(badge.getAttribute('class')).not.toContain('text-blue-400')
+    expect(badge.getAttribute('class')).toContain('text-text-muted')
   })
 
   it('renders no badge for a paper-only assistant answer', () => {

@@ -32,6 +32,7 @@ function setModeInUrl(mode: WorkspaceMode): void {
 export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
+    dismissReportStaleWarning,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
     addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview,
   } = useCurationSession()
@@ -309,6 +310,7 @@ export default function CurationWorkspacePage() {
                       onAddExchangesToReport={handleAddExchangesToReport}
                       lastAddToReportResult={lastAddToReportResult}
                       onEditExchange={handleEditExchange}
+                      onDismissReportStaleWarning={dismissReportStaleWarning}
                     />
                   )}
                   {workspaceMode === 'report' && (

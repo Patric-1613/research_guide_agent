@@ -14,6 +14,9 @@ vi.mock('../lib/api/client', () => ({
     chat: vi.fn(),
     listReviews: vi.fn(),
     deleteReview: vi.fn(),
+    deleteChatExchanges: vi.fn(),
+    addChatExchangesToReport: vi.fn(),
+    editChatExchange: vi.fn(),
   },
 }))
 
@@ -230,5 +233,113 @@ describe('useCurationSession', () => {
     })
 
     expect(result.current.lastChatSearchMeta).toBeNull()
+  })
+
+  it('chat-ux-polish Phase A: lastChatSearchMeta auto-clears ~5s after being set, with no further action', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: true, new_web_articles_found: 2 }))
+    await act(async () => {
+      await result.current.sendChatMessage('yes')
+    })
+    expect(result.current.lastChatSearchMeta).not.toBeNull()
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    expect(result.current.lastChatSearchMeta).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('chat-ux-polish Phase A: lastAddToReportResult auto-clears ~5s after being set', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.addChatExchangesToReport).mockResolvedValue({
+      added_exchange_ids: ['ex-1'], skipped_exchange_ids: [], source_count: 1, chat_history: [], report: {} as never,
+    })
+    await act(async () => {
+      await result.current.addExchangesToReport(['ex-1'])
+    })
+    expect(result.current.lastAddToReportResult).not.toBeNull()
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    expect(result.current.lastAddToReportResult).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('chat-ux-polish Phase A: starting a new chat action clears a still-fresh (not yet auto-cleared) notice from a prior action', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockResolvedValue(chatResponse({ web_search_used: true, new_web_articles_found: 2 }))
+    await act(async () => {
+      await result.current.sendChatMessage('yes')
+    })
+    expect(result.current.lastChatSearchMeta).not.toBeNull()
+
+    vi.mocked(curationApi.deleteChatExchanges).mockResolvedValue({ deleted_exchange_ids: ['ex-1'], report_possibly_stale: false, chat_history: [] })
+    await act(async () => {
+      await result.current.deleteExchanges(['ex-1'])
+    })
+
+    // deleteExchanges never sets lastChatSearchMeta itself -- the only way
+    // it could be null here is clearActionNotices firing at the top of
+    // deleteExchanges, exactly as Phase A's notice lifecycle promises.
+    expect(result.current.lastChatSearchMeta).toBeNull()
+  })
+
+  it('chat-ux-polish Phase A: dismissReportStaleWarning clears reportPossiblyStale on demand', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.deleteChatExchanges).mockResolvedValue({ deleted_exchange_ids: ['ex-1'], report_possibly_stale: true, chat_history: [] })
+    await act(async () => {
+      await result.current.deleteExchanges(['ex-1'])
+    })
+    expect(result.current.reportPossiblyStale).toBe(true)
+
+    act(() => {
+      result.current.dismissReportStaleWarning()
+    })
+
+    expect(result.current.reportPossiblyStale).toBe(false)
+  })
+
+  it('chat-ux-polish Phase A: a successful addExchangesToReport clears reportPossiblyStale (it just regenerated the report for real)', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ stage: 'synthesize' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.deleteChatExchanges).mockResolvedValue({ deleted_exchange_ids: ['ex-1'], report_possibly_stale: true, chat_history: [] })
+    await act(async () => {
+      await result.current.deleteExchanges(['ex-1'])
+    })
+    expect(result.current.reportPossiblyStale).toBe(true)
+
+    vi.mocked(curationApi.addChatExchangesToReport).mockResolvedValue({
+      added_exchange_ids: ['ex-2'], skipped_exchange_ids: [], source_count: 1, chat_history: [], report: {} as never,
+    })
+    await act(async () => {
+      await result.current.addExchangesToReport(['ex-2'])
+    })
+
+    expect(result.current.reportPossiblyStale).toBe(false)
   })
 })

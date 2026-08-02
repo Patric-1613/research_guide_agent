@@ -44,6 +44,47 @@ export interface AddToReportResult {
   sourceCount: number
 }
 
+// chat-ux-polish Phase A: notice lifecycle for the "success/info" class
+// of ephemeral state (lastChatSearchMeta, lastAddToReportResult) --
+// distinct from reportPossiblyStale, which is a WARNING and intentionally
+// does NOT use this (it persists until dismissed or a report-changing
+// action explicitly clears it, see dismissReportStaleWarning/generateReport/
+// regenerateReport/addExchangesToReport below). A success/info notice:
+//   - auto-clears ~5s after being set, so it doesn't linger forever
+//   - gets replaced/cleared immediately whenever a NEW chat action starts
+//     (see clearActionNotices, called at the top of every chat action),
+//     so an old, unrelated success note can't keep sitting next to a
+//     newer, unrelated one
+const NOTICE_AUTO_CLEAR_MS = 5000
+
+function useAutoClearingState<T>(): [T | null, (value: T | null) => void] {
+  const [value, setValue] = useState<T | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const set = useCallback((next: T | null) => {
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+    setValue(next)
+    if (next !== null) {
+      timeoutRef.current = setTimeout(() => {
+        timeoutRef.current = null
+        setValue(null)
+      }, NOTICE_AUTO_CLEAR_MS)
+    }
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current !== null) clearTimeout(timeoutRef.current)
+    },
+    [],
+  )
+
+  return [value, set]
+}
+
 const SESSION_PARAM = 'session'
 
 export function getSessionIdFromUrl(): string | null {
@@ -79,6 +120,11 @@ interface UseCurationSessionResult {
   // client-only" model as lastChatSearchMeta/reportPossiblyStale -- set
   // fresh on every successful addExchangesToReport call, lost on refresh.
   lastAddToReportResult: AddToReportResult | null
+  // chat-ux-polish Phase A: the only way to clear reportPossiblyStale
+  // other than a report-changing action succeeding (generateReport/
+  // regenerateReport/addExchangesToReport all clear it on success, since
+  // each one just regenerated the report for real).
+  dismissReportStaleWarning: () => void
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -128,10 +174,25 @@ export function useCurationSession(): UseCurationSessionResult {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [turnEvents, setTurnEvents] = useState<TurnEvent[]>([])
-  const [lastChatSearchMeta, setLastChatSearchMeta] = useState<ChatSearchMeta | null>(null)
+  const [lastChatSearchMeta, setLastChatSearchMeta] = useAutoClearingState<ChatSearchMeta>()
   const [reportPossiblyStale, setReportPossiblyStale] = useState(false)
-  const [lastAddToReportResult, setLastAddToReportResult] = useState<AddToReportResult | null>(null)
+  const [lastAddToReportResult, setLastAddToReportResult] = useAutoClearingState<AddToReportResult>()
   const turnEventsSessionRef = useRef<string | null>(null)
+
+  // chat-ux-polish Phase A: called at the start of every chat action
+  // (sendChatMessage/deleteExchanges/editExchange/addExchangesToReport)
+  // so a success/info notice from a DIFFERENT, earlier action can't keep
+  // sitting on screen once something new is happening. Deliberately
+  // does NOT touch reportPossiblyStale -- that one has its own,
+  // different lifecycle (see dismissReportStaleWarning below).
+  const clearActionNotices = useCallback(() => {
+    setLastChatSearchMeta(null)
+    setLastAddToReportResult(null)
+  }, [setLastChatSearchMeta, setLastAddToReportResult])
+
+  const dismissReportStaleWarning = useCallback(() => {
+    setReportPossiblyStale(false)
+  }, [])
 
   const loadState = useCallback(async (id: string): Promise<CurationStateResponse> => {
     const fresh = await curationApi.getState(id)
@@ -215,6 +276,11 @@ export function useCurationSession(): UseCurationSessionResult {
       runAction(async () => {
         if (!sessionId) return undefined
         await curationApi.generateReport(sessionId)
+        // chat-ux-polish Phase A: a fresh generation resolves whatever
+        // prompted the stale warning (if anything did) -- this is a real
+        // report-changing action succeeding, the explicit clear condition
+        // reportPossiblyStale's own docs promise.
+        setReportPossiblyStale(false)
         return loadState(sessionId)
       }),
     [runAction, sessionId, loadState],
@@ -225,6 +291,7 @@ export function useCurationSession(): UseCurationSessionResult {
       runAction(async () => {
         if (!sessionId) return undefined
         await curationApi.regenerateReport(sessionId)
+        setReportPossiblyStale(false)
         return loadState(sessionId)
       }),
     [runAction, sessionId, loadState],
@@ -234,6 +301,12 @@ export function useCurationSession(): UseCurationSessionResult {
     (message: string) =>
       runAction(async () => {
         if (!sessionId) return
+        // chat-ux-polish Phase A: a new chat action starting clears any
+        // stale success/info notice from a DIFFERENT, earlier action --
+        // see clearActionNotices' own docs. Deliberately before the
+        // await, so the UI reflects "something new is happening" right
+        // away, not only once the round trip finishes.
+        clearActionNotices()
         const response = await curationApi.chat(sessionId, { message })
         setLastChatSearchMeta(
           response.web_search_used
@@ -242,30 +315,37 @@ export function useCurationSession(): UseCurationSessionResult {
         )
         await loadState(sessionId)
       }),
-    [runAction, sessionId, loadState],
+    [runAction, sessionId, loadState, clearActionNotices, setLastChatSearchMeta],
   )
 
   const deleteExchanges = useCallback(
     (exchangeIds: string[]) =>
       runAction(async () => {
         if (!sessionId) return
+        clearActionNotices()
         const response = await curationApi.deleteChatExchanges(sessionId, { exchange_ids: exchangeIds })
         setReportPossiblyStale(response.report_possibly_stale)
         await loadState(sessionId)
       }),
-    [runAction, sessionId, loadState],
+    [runAction, sessionId, loadState, clearActionNotices],
   )
 
   const addExchangesToReport = useCallback(
     (exchangeIds: string[]) =>
       runAction(async () => {
         if (!sessionId) return
+        clearActionNotices()
         const response = await curationApi.addChatExchangesToReport(sessionId, { exchange_ids: exchangeIds })
         setLastAddToReportResult({
           addedCount: response.added_exchange_ids.length,
           skippedCount: response.skipped_exchange_ids.length,
           sourceCount: response.source_count,
         })
+        // chat-ux-polish Phase A: this call just regenerated the report
+        // for real (over the approved set) -- whatever staleness concern
+        // was outstanding is resolved by this success, same as generate/
+        // regenerateReport above.
+        setReportPossiblyStale(false)
         // On failure, curationApi.addChatExchangesToReport above throws --
         // runAction's own catch sets the shared error and this line never
         // runs, so state (and therefore every badge) stays exactly as it
@@ -273,20 +353,21 @@ export function useCurationSession(): UseCurationSessionResult {
         // success, never optimistically.
         await loadState(sessionId)
       }),
-    [runAction, sessionId, loadState],
+    [runAction, sessionId, loadState, clearActionNotices, setLastAddToReportResult],
   )
 
   const editExchange = useCallback(
     (exchangeId: string, question: string) =>
       runAction(async () => {
         if (!sessionId) return
+        clearActionNotices()
         const response = await curationApi.editChatExchange(sessionId, { exchange_id: exchangeId, question })
         // Same reused signal as deleteExchanges (Phase 3) -- editing away
         // a report-included exchange is the same kind of staleness.
         setReportPossiblyStale(response.report_possibly_stale)
         await loadState(sessionId)
       }),
-    [runAction, sessionId, loadState],
+    [runAction, sessionId, loadState, clearActionNotices],
   )
 
   const refresh = useCallback(
@@ -338,6 +419,7 @@ export function useCurationSession(): UseCurationSessionResult {
 
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
+    dismissReportStaleWarning,
     openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
     addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   }

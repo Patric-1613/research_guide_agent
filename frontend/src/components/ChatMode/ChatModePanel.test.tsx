@@ -22,7 +22,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'It is about X.' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.getByText('what is this about?')).toBeInTheDocument()
     expect(screen.getByText('It is about X.')).toBeInTheDocument()
@@ -31,7 +31,7 @@ describe('ChatModePanel', () => {
   it('typing a message and pressing Send calls onSendMessage and clears the input', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     const input = screen.getByTestId('persistent-input')
     await user.type(input, 'tell me more')
@@ -44,7 +44,7 @@ describe('ChatModePanel', () => {
   it('Send does nothing on empty/whitespace-only text', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), '   ')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -56,7 +56,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
     const state = baseState({ pending_web_offer: { question: 'what about scaling laws?' } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getByTestId('web-offer-yes'))
     expect(onSendMessage).toHaveBeenCalledWith('yes')
@@ -69,7 +69,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
     const state = baseState({ pending_report_update: { new_article_count: 1 } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.getByText('Update the report to include the newly approved source(s)?')).toBeInTheDocument()
     await user.click(screen.getByTestId('web-offer-no'))
@@ -77,7 +77,7 @@ describe('ChatModePanel', () => {
   })
 
   it('no offers pending: no Yes/No buttons render', () => {
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
     expect(screen.queryByTestId('web-offer-yes')).not.toBeInTheDocument()
   })
 
@@ -85,7 +85,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     let resolveSend: () => void = () => {}
     const onSendMessage = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve }))
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), 'tell me more')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -103,7 +103,7 @@ describe('ChatModePanel', () => {
     let resolveSend: () => void = () => {}
     const onSendMessage = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve }))
     const state = baseState({ pending_web_offer: { question: 'what about scaling laws?' } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getByTestId('web-offer-yes'))
 
@@ -115,7 +115,7 @@ describe('ChatModePanel', () => {
   it('chat-ux-fixes bug 3: the optimistic bubble is cleared even if onSendMessage rejects, not left stuck', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn().mockRejectedValue(new Error('boom'))
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), 'tell me more')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -127,7 +127,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 2 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 2 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -138,7 +138,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 1 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 1 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -149,7 +149,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 0 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 0 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -157,7 +157,7 @@ describe('ChatModePanel', () => {
   })
 
   it('chat-ux-fixes bug 2: no note at all when the last reply never searched the web', () => {
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
     expect(screen.queryByTestId('web-search-meta-note')).not.toBeInTheDocument()
   })
 
@@ -170,7 +170,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'Per [Web 1], ...', used_web_search: true, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.getByTestId('web-metadata-hint')).toHaveTextContent(
       'This answer used web sources — report-inclusion controls will be added to the message menu in a future update.',
@@ -184,7 +184,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'It is about X [Paper 1].', used_web_search: false, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.queryByTestId('web-metadata-hint')).not.toBeInTheDocument()
   })
@@ -198,7 +198,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'a2 [Web 1]', used_web_search: true, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.getAllByTestId('web-metadata-hint')).toHaveLength(1)
   })
@@ -217,18 +217,18 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
   }
 
   it('renders a "..." message menu button for every chat message', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
     expect(screen.getAllByTestId('message-menu-button')).toHaveLength(4)
   })
 
   it('the menu button has an accessible label', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
     expect(screen.getAllByLabelText('Message actions')).toHaveLength(4)
   })
 
   it('curation-chat-delete Phase 3: opening a message menu shows Select and Delete active; Add to report disabled here because this message (a paper-only exchange) is ineligible', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0]) // ex-1's user message
 
@@ -239,7 +239,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('curation-chat-edit Phase 5: Edit appears only on the user-question side of an exchange, and is enabled for a real exchange_id', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
     const menuButtons = screen.getAllByTestId('message-menu-button')
 
     await user.click(menuButtons[0]) // user message, exchange_id: 'ex-1'
@@ -252,7 +252,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('clicking Select in a message menu enters select mode with checkboxes, and no bulk bar yet', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
 
@@ -269,7 +269,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('selectable exchanges can be checked and unchecked, and the count updates', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -287,7 +287,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('checking either message of the same exchange reflects as one shared selection', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -301,7 +301,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('curation-chat-delete Phase 3: the bulk action bar shows Delete selected active; Add selected to report disabled because the selection (ex-1, paper-only) has no eligible exchange', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -313,7 +313,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('Clear selection empties the selection, hides the bulk bar, and exits select mode', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -335,7 +335,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'a new answer', exchange_id: 'ex-1', used_web_search: false, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[2]) // the new question's menu
     await user.click(screen.getByTestId('message-menu-select'))
@@ -355,14 +355,14 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'pre-Phase-1 answer' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     expect(screen.getByTestId('message-menu-select')).toBeDisabled()
   })
 
   it('the web badge and hint still render normally with the menu/select UI layered on top', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     expect(screen.getByTestId('chat-web-badge')).toBeInTheDocument()
     expect(screen.getByTestId('web-metadata-hint')).toBeInTheDocument()
@@ -376,7 +376,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'pre-Phase-1 answer' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     expect(screen.getByTestId('message-menu-delete')).toBeDisabled()
@@ -399,49 +399,56 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     vi.restoreAllMocks()
   })
 
-  it('per-message Delete asks for confirmation, then calls onDeleteExchanges with just that exchange', async () => {
+  it('per-message Delete opens an in-app confirm dialog (not window.confirm); confirming calls onDeleteExchanges with just that exchange', async () => {
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0]) // ex-1's user message
     await user.click(screen.getByTestId('message-menu-delete'))
 
-    expect(confirmSpy).toHaveBeenCalledWith('Delete this exchange?')
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument()
+    expect(onDeleteExchanges).not.toHaveBeenCalled() // not yet -- still needs confirmation
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
     expect(onDeleteExchanges).toHaveBeenCalledWith(['ex-1'])
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 
-  it('declining the per-message confirmation does not call onDeleteExchanges', async () => {
+  it('cancelling the per-message delete dialog does nothing -- no onDeleteExchanges call, dialog closes', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     const onDeleteExchanges = vi.fn()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
 
     expect(onDeleteExchanges).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 
-  it('bulk Delete selected asks for confirmation with the selected count, then calls onDeleteExchanges with every selected exchange id', async () => {
+  it('bulk Delete selected opens an in-app confirm dialog naming the selected count; confirming calls onDeleteExchanges with every selected exchange id', async () => {
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -452,25 +459,29 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
 
     await user.click(screen.getByTestId('bulk-delete'))
 
-    expect(confirmSpy).toHaveBeenCalledWith('Delete 2 selected exchanges?')
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('confirm-dialog')).toHaveTextContent('Delete 2 selected exchanges?')
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
     expect(onDeleteExchanges).toHaveBeenCalledWith(expect.arrayContaining(['ex-1', 'ex-2']))
     expect((onDeleteExchanges.mock.calls[0][0] as string[]).length).toBe(2)
   })
 
-  it('declining the bulk confirmation does not call onDeleteExchanges and leaves the selection intact', async () => {
+  it('cancelling the bulk delete dialog does not call onDeleteExchanges and leaves the selection intact', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     const onDeleteExchanges = vi.fn()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
     await user.click(screen.getByTestId('bulk-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
 
     expect(onDeleteExchanges).not.toHaveBeenCalled()
     expect(screen.getByTestId('bulk-action-bar')).toBeInTheDocument() // still selected
@@ -478,18 +489,18 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
 
   it('after a successful bulk delete, selection clears and select mode exits', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
     await user.click(screen.getByTestId('bulk-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
 
     await waitFor(() => expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument())
     expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
@@ -497,12 +508,11 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
 
   it('after a successful per-message delete, that exchange is de-selected if it had been checked', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -515,8 +525,21 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     // Delete just ex-2 via its own message menu.
     await user.click(screen.getAllByTestId('message-menu-button')[2])
     await user.click(screen.getByTestId('message-menu-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
 
     await waitFor(() => expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('1 selected'))
+  })
+
+  it('the "..." menu button remains visible and accessible via its aria-label', () => {
+    render(
+      <ChatModePanel
+        state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+    const menuButton = screen.getAllByLabelText('Message actions')[0]
+    expect(menuButton.getAttribute('class')).toContain('border')
+    expect(menuButton.getAttribute('class')).toContain('font-bold')
   })
 
   it('renders the report-possibly-stale warning when the prop is true', () => {
@@ -524,7 +547,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale
-        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-possibly-stale-warning')).toBeInTheDocument()
@@ -534,7 +557,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.queryByTestId('report-possibly-stale-warning')).not.toBeInTheDocument()
@@ -544,7 +567,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.getByTestId('chat-web-badge')).toBeInTheDocument()
@@ -582,7 +605,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -595,7 +618,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     const menuButtons = screen.getAllByTestId('message-menu-button')
@@ -615,7 +638,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -632,7 +655,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -647,7 +670,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -668,7 +691,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -688,7 +711,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -705,7 +728,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={{ addedCount: 1, skippedCount: 0, sourceCount: 1 }} onEditExchange={vi.fn()}
+        lastAddToReportResult={{ addedCount: 1, skippedCount: 0, sourceCount: 1 }} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.getByTestId('add-to-report-success-note')).toHaveTextContent('Added 1 exchange (1 source) to the report.')
@@ -715,7 +738,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.queryByTestId('add-to-report-success-note')).not.toBeInTheDocument()
@@ -736,7 +759,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -747,26 +770,25 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     // ex-1's own badge is still blue (added_to_report is still false in
     // the state prop this component was given -- nothing local changed it).
     const badge = screen.getAllByTestId('chat-web-badge')[0]
-    expect(badge.className).toContain('text-blue-400')
+    expect(badge.getAttribute('class')).toContain('text-blue-400')
   })
 
   it('Delete still works alongside add-to-report controls', async () => {
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false}
-        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()}
+        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[1])
     await user.click(screen.getByTestId('message-menu-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
 
     expect(onDeleteExchanges).toHaveBeenCalledWith(['ex-1'])
-    confirmSpy.mockRestore()
   })
 })
 
@@ -793,7 +815,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     const menuButtons = screen.getAllByTestId('message-menu-button')
@@ -812,7 +834,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -820,86 +842,109 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
     expect(screen.queryByTestId('message-menu-edit')).not.toBeInTheDocument()
   })
 
-  it('cancelling the prompt (returns null) does not call onEditExchange', async () => {
+  it('Edit opens an in-app dialog, not window.prompt', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'prompt').mockReturnValue(null)
+    const promptSpy = vi.spyOn(window, 'prompt')
+    render(
+      <ChatModePanel
+        state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-edit'))
+
+    expect(promptSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('edit-dialog')).toBeInTheDocument()
+  })
+
+  it('cancelling the edit dialog does not call onEditExchange, and closes the dialog', async () => {
+    const user = userEvent.setup()
     const onEditExchange = vi.fn()
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-edit'))
+    await user.click(screen.getByTestId('edit-dialog-cancel'))
 
     expect(onEditExchange).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('edit-dialog')).not.toBeInTheDocument()
   })
 
-  it('submitting a blank/whitespace-only prompt does not call onEditExchange', async () => {
+  it('submitting a blank/whitespace-only edit does not call onEditExchange -- Save stays disabled', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'prompt').mockReturnValue('   ')
     const onEditExchange = vi.fn()
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-edit'))
+    await user.clear(screen.getByTestId('edit-dialog-textarea'))
+    await user.type(screen.getByTestId('edit-dialog-textarea'), '   ')
+
+    expect(screen.getByTestId('edit-dialog-save')).toBeDisabled()
+    await user.click(screen.getByTestId('edit-dialog-save'))
 
     expect(onEditExchange).not.toHaveBeenCalled()
   })
 
-  it('the prompt is pre-filled with the existing question text', async () => {
+  it('the edit dialog textarea is pre-filled with the existing question text', async () => {
     const user = userEvent.setup()
-    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null)
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-edit'))
 
-    expect(promptSpy).toHaveBeenCalledWith(expect.any(String), 'the original question')
+    expect(screen.getByTestId('edit-dialog-textarea')).toHaveValue('the original question')
   })
 
   it('submitting a real edited question calls onEditExchange with the exchange id and trimmed text', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'prompt').mockReturnValue('  an edited question  ')
     const onEditExchange = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-edit'))
+    await user.clear(screen.getByTestId('edit-dialog-textarea'))
+    await user.type(screen.getByTestId('edit-dialog-textarea'), '  an edited question  ')
+    await user.click(screen.getByTestId('edit-dialog-save'))
 
     expect(onEditExchange).toHaveBeenCalledWith('ex-1', 'an edited question')
   })
 
   it('after a successful edit, any active selection clears and select mode exits', async () => {
     const user = userEvent.setup()
-    vi.spyOn(window, 'prompt').mockReturnValue('an edited question')
     const onEditExchange = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
@@ -911,6 +956,9 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
     // Then edit it via the same message's menu.
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-edit'))
+    await user.clear(screen.getByTestId('edit-dialog-textarea'))
+    await user.type(screen.getByTestId('edit-dialog-textarea'), 'an edited question')
+    await user.click(screen.getByTestId('edit-dialog-save'))
 
     await waitFor(() => expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument())
     expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
@@ -921,7 +969,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-possibly-stale-warning')).toBeInTheDocument()
@@ -929,20 +977,35 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
 
   it('Delete and Add to report still work on the same state alongside Edit', async () => {
     const user = userEvent.setup()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onDeleteExchanges = vi.fn().mockResolvedValue(undefined)
     render(
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
       />,
     )
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-delete'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
 
     expect(onDeleteExchanges).toHaveBeenCalledWith(['ex-1'])
-    confirmSpy.mockRestore()
+  })
+
+  it('dismissing the stale-report warning calls onDismissReportStaleWarning', async () => {
+    const user = userEvent.setup()
+    const onDismissReportStaleWarning = vi.fn()
+    render(
+      <ChatModePanel
+        state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={onDismissReportStaleWarning}
+      />,
+    )
+
+    await user.click(screen.getByTestId('dismiss-stale-warning'))
+
+    expect(onDismissReportStaleWarning).toHaveBeenCalled()
   })
 })

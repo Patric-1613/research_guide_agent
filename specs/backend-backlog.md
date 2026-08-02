@@ -96,6 +96,25 @@ invented:
   (`docs/evaluation.md`).
 - **Priority**: Unset — needs your call, on any/all of the above.
 
+### Phase B: report-source revocation after delete/edit
+- **Goal**: define desired behavior: remove approved URLs only when no
+  remaining added-to-report exchange cites them; keep existing report
+  marked stale until regenerated.
+- **Why it matters**: raised during chat-ux-polish Phase A (frontend-only
+  dialog/badge/notice polish) — confirmed deleting a chat exchange today
+  does NOT remove anything from `web_articles_added` or
+  `report_approved_web_article_urls`, so a subsequent regeneration (via
+  either the selective or whole-pool path) will still very likely include
+  the same reference even after the exchange that cited it is gone.
+  Phase A deliberately left this semantic untouched — this is the
+  tracking note for the follow-up.
+- **Rough scope** (files likely touched): `research_agent/report.py`
+  (`regenerate_report_with_approved_web_sources`), wherever
+  `report_approved_web_article_urls` is mutated on delete/edit — same
+  "Option B" design already named in the follow-up bullet above.
+- **Priority**: Unset — needs your call.
+- **Status**: Open, not started.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]

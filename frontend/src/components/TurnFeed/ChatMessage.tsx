@@ -1,23 +1,36 @@
+import { Globe } from 'lucide-react'
 import type { ChatTurn } from '../../types'
 
-// curation-chat-metadata Phase 1: blue while used_web_search is true and
-// added_to_report is still false; grey once added_to_report flips true
-// (no code path sets that yet -- reachable only via fixture/test data
-// until a later phase's "Add to report" action exists). No badge at all
-// for user messages or paper-only assistant answers.
+// curation-chat-metadata Phase 1 / chat-ux-polish Phase A: blue while
+// used_web_search is true and added_to_report is still false; grey once
+// added_to_report flips true. No badge at all for user messages or
+// paper-only assistant answers.
+//
+// Root-cause note (Phase A): this used to be a literal 🌐 emoji glyph
+// with a CSS text-color class on it. Color emoji are rendered from a
+// fixed, embedded glyph table (COLR/CPAL or CBDT/CBLC) in every major
+// browser -- the CSS `color` property has NO effect on them at all, so
+// the blue/grey classes were silently doing nothing; the icon always
+// rendered in its native emoji colors regardless of state. Using a real
+// SVG icon (lucide-react's Globe, which draws with `currentColor`) is
+// what actually makes the color change visible.
 export function ChatMessage({ turn }: { turn: ChatTurn }) {
   const isUser = turn.role === 'user'
   const showWebBadge = !isUser && turn.used_web_search
+  const addedToReport = !!turn.added_to_report
+  const badgeLabel = addedToReport ? 'Web sources added to report' : 'Web sources used'
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start gap-1.5`}>
       {showWebBadge && (
         <span
           data-testid="chat-web-badge"
-          title={turn.added_to_report ? 'Used web sources — included in the report' : 'Used web sources'}
-          aria-label={turn.added_to_report ? 'Used web sources, included in the report' : 'Used web sources'}
-          className={`mt-2 shrink-0 text-sm ${turn.added_to_report ? 'text-text-muted' : 'text-blue-400'}`}
+          role="img"
+          aria-label={badgeLabel}
+          title={badgeLabel}
+          className={`mt-2.5 h-4 w-4 shrink-0 ${addedToReport ? 'text-text-muted' : 'text-blue-400'}`}
         >
-          🌐
+          <Globe className="h-4 w-4" aria-hidden="true" />
         </span>
       )}
       <div

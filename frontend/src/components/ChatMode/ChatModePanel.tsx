@@ -3,6 +3,7 @@ import type { CurationStateResponse } from '../../types'
 import type { AddToReportResult, ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
 import { ChatMessageRow, isEligibleForAddToReport } from '../TurnFeed/ChatMessageRow'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
 
 interface ChatModePanelProps {
   state: CurationStateResponse
@@ -22,6 +23,10 @@ interface ChatModePanelProps {
   lastAddToReportResult: AddToReportResult | null
   // curation-chat-edit Phase 5
   onEditExchange: (exchangeId: string, question: string) => Promise<void>
+  // chat-ux-polish Phase A: lets the user dismiss the stale-report
+  // warning explicitly, instead of it only ever going away when another
+  // delete/edit response happens to override it.
+  onDismissReportStaleWarning: () => void
 }
 
 // Chat mode's center panel shows ONLY the conversation -- no paper pool
@@ -29,7 +34,7 @@ interface ChatModePanelProps {
 // candidate/paper-pool UI should disappear entirely.
 export function ChatModePanel({
   state, disabled, onSendMessage, lastSearchMeta, onDeleteExchanges, reportPossiblyStale,
-  onAddExchangesToReport, lastAddToReportResult, onEditExchange,
+  onAddExchangesToReport, lastAddToReportResult, onEditExchange, onDismissReportStaleWarning,
 }: ChatModePanelProps) {
   const [text, setText] = useState('')
   // chat-ux-fixes bug 3: onSendMessage awaits the FULL round trip
@@ -55,6 +60,11 @@ export function ChatModePanel({
   // everything else in this panel -- resets on refresh.
   const [selectMode, setSelectMode] = useState(false)
   const [selectedExchangeIds, setSelectedExchangeIds] = useState<Set<string>>(new Set())
+  // chat-ux-polish Phase A: in-app dialog replaces window.confirm() for
+  // bulk delete -- same trigger/cancel-does-nothing behavior, just
+  // styled. There's no single row to anchor this one to, so it's owned
+  // here rather than in ChatMessageRow.
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
 
   // curation-chat-add-to-report Phase 4: which exchange_ids are currently
   // eligible, derived fresh from state.chat_history every render (same
@@ -108,10 +118,14 @@ export function ChatModePanel({
     })
   }
 
-  async function handleBulkDelete() {
+  function handleBulkDeleteClick() {
+    if (selectedExchangeIds.size === 0) return
+    setShowBulkDeleteConfirm(true)
+  }
+
+  async function confirmBulkDelete() {
+    setShowBulkDeleteConfirm(false)
     const ids = Array.from(selectedExchangeIds)
-    if (ids.length === 0) return
-    if (!window.confirm(`Delete ${ids.length} selected exchange${ids.length === 1 ? '' : 's'}?`)) return
     await onDeleteExchanges(ids)
     handleClearSelection()
   }
@@ -243,8 +257,16 @@ export function ChatModePanel({
 
       <div className="border-t border-border bg-panel p-3">
         {reportPossiblyStale && (
-          <p data-testid="report-possibly-stale-warning" className="mb-2 text-center text-xs text-danger">
-            A deleted exchange had been added to the report — the report may now be stale.
+          <p data-testid="report-possibly-stale-warning" className="mb-2 flex items-center justify-center gap-2 text-center text-xs text-danger">
+            <span>A deleted or edited exchange had been added to the report — the report may now be stale.</span>
+            <button
+              type="button"
+              data-testid="dismiss-stale-warning"
+              onClick={onDismissReportStaleWarning}
+              className="shrink-0 underline decoration-dotted hover:text-danger/80"
+            >
+              Dismiss
+            </button>
           </p>
         )}
         {lastAddToReportResult && (
@@ -265,7 +287,7 @@ export function ChatModePanel({
             <button
               type="button"
               data-testid="bulk-delete"
-              onClick={() => void handleBulkDelete()}
+              onClick={handleBulkDeleteClick}
               disabled={disabled}
               className="rounded-md border border-border px-2.5 py-1 text-xs text-danger hover:border-danger disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -334,6 +356,16 @@ export function ChatModePanel({
           </button>
         </div>
       </div>
+      {showBulkDeleteConfirm && (
+        <ConfirmDialog
+          title="Delete selected exchanges"
+          message={`Delete ${selectedExchangeIds.size} selected exchange${selectedExchangeIds.size === 1 ? '' : 's'}? This cannot be undone.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => void confirmBulkDelete()}
+          onCancel={() => setShowBulkDeleteConfirm(false)}
+        />
+      )}
     </div>
   )
 }

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { ChatTurn } from '../../types'
 import { ChatMessage } from './ChatMessage'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { EditQuestionDialog } from '../shared/EditQuestionDialog'
 
 // curation-chat-add-to-report Phase 4: eligibility rule shared between
 // this row's own menu item and ChatModePanel's bulk-button gate, so the
@@ -54,6 +56,11 @@ export function ChatMessageRow({
   turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete, onAddToReport, onEdit,
 }: ChatMessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  // chat-ux-polish Phase A: in-app dialogs replace window.confirm/
+  // window.prompt -- same triggers, same cancel/blank-submit no-ops,
+  // just rendered as styled overlays instead of native browser dialogs.
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showEditDialog, setShowEditDialog] = useState(false)
   const exchangeId = turn.exchange_id ?? null
   const isSelectable = exchangeId !== null
   const isEligibleForReport = isEligibleForAddToReport(turn)
@@ -88,7 +95,7 @@ export function ChatMessageRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((v) => !v)}
-          className="mt-2 rounded-md px-1.5 py-0.5 text-xs text-text-muted hover:bg-panel-alt hover:text-text"
+          className="mt-1 flex h-7 w-7 items-center justify-center rounded-full border border-border text-base font-bold leading-none text-text-secondary hover:border-accent hover:bg-panel-alt hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           ⋯
         </button>
@@ -118,8 +125,8 @@ export function ChatMessageRow({
                 simply not rendered at all on assistant messages, rather
                 than shown-and-disabled everywhere. curation-chat-edit
                 Phase 5: still requires a real exchange_id (old entries
-                stay disabled), and uses window.prompt as the smallest
-                safe UI -- no inline editor yet. */}
+                stay disabled). chat-ux-polish Phase A: opens an in-app
+                EditQuestionDialog -- no inline editor yet. */}
             {turn.role === 'user' && (
               <button
                 type="button"
@@ -127,13 +134,8 @@ export function ChatMessageRow({
                 data-testid="message-menu-edit"
                 disabled={!isEligibleForEdit}
                 onClick={() => {
-                  if (!exchangeId) return
                   setMenuOpen(false)
-                  const nextQuestion = window.prompt('Edit your question:', turn.content)
-                  if (nextQuestion === null) return // cancelled
-                  const trimmed = nextQuestion.trim()
-                  if (!trimmed) return // blank submit -- no API call
-                  onEdit(exchangeId, trimmed)
+                  setShowEditDialog(true)
                 }}
                 className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt disabled:cursor-not-allowed disabled:text-text-muted disabled:opacity-50"
               >
@@ -146,9 +148,8 @@ export function ChatMessageRow({
               data-testid="message-menu-delete"
               disabled={!isSelectable}
               onClick={() => {
-                if (!exchangeId) return
                 setMenuOpen(false)
-                if (window.confirm('Delete this exchange?')) onDelete(exchangeId)
+                setShowDeleteConfirm(true)
               }}
               className="block w-full px-3 py-1.5 text-left text-danger hover:bg-panel-alt disabled:cursor-not-allowed disabled:text-text-muted disabled:opacity-50"
             >
@@ -171,6 +172,29 @@ export function ChatMessageRow({
           </div>
         )}
       </div>
+      {showDeleteConfirm && exchangeId && (
+        <ConfirmDialog
+          title="Delete exchange"
+          message="Delete this exchange? This cannot be undone."
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            setShowDeleteConfirm(false)
+            onDelete(exchangeId)
+          }}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+      {showEditDialog && exchangeId && (
+        <EditQuestionDialog
+          initialQuestion={turn.content}
+          onSave={(question) => {
+            setShowEditDialog(false)
+            onEdit(exchangeId, question)
+          }}
+          onCancel={() => setShowEditDialog(false)}
+        />
+      )}
     </div>
   )
 }
