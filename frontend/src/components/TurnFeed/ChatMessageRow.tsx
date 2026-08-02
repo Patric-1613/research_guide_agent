@@ -12,6 +12,11 @@ interface ChatMessageRowProps {
   // nothing checked" action anywhere in this UI.
   onEnterSelectMode: (exchangeId: string) => void
   onToggleSelect: (exchangeId: string) => void
+  // curation-chat-delete Phase 3: the confirm() prompt lives right here at
+  // the click site (same convention as ReviewCard's own delete button),
+  // not in the parent -- onDelete is only ever called after the user has
+  // already confirmed.
+  onDelete: (exchangeId: string) => void
 }
 
 // curation-chat-select Phase 2: wraps ChatMessage (unchanged since Phase 1
@@ -24,7 +29,7 @@ interface ChatMessageRowProps {
 // are non-selectable (not given a client-side fallback id), shown as a
 // disabled checkbox once select mode is on rather than hidden entirely, so
 // it's clear WHY they can't be picked rather than just missing.
-export function ChatMessageRow({ turn, selectMode, selected, onEnterSelectMode, onToggleSelect }: ChatMessageRowProps) {
+export function ChatMessageRow({ turn, selectMode, selected, onEnterSelectMode, onToggleSelect, onDelete }: ChatMessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const exchangeId = turn.exchange_id ?? null
   const isSelectable = exchangeId !== null
@@ -100,11 +105,15 @@ export function ChatMessageRow({ turn, selectMode, selected, onEnterSelectMode, 
               type="button"
               role="menuitem"
               data-testid="message-menu-delete"
-              disabled
-              title="Coming soon"
-              className="block w-full px-3 py-1.5 text-left text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!isSelectable}
+              onClick={() => {
+                if (!exchangeId) return
+                setMenuOpen(false)
+                if (window.confirm('Delete this exchange?')) onDelete(exchangeId)
+              }}
+              className="block w-full px-3 py-1.5 text-left text-danger hover:bg-panel-alt disabled:cursor-not-allowed disabled:text-text-muted disabled:opacity-50"
             >
-              Delete (Coming soon)
+              Delete
             </button>
             <button
               type="button"

@@ -129,6 +129,16 @@ export interface CurationChatResponse {
   chat_history: ChatTurn[]
 }
 
+export interface CurationChatDeleteRequest {
+  exchange_ids: string[]
+}
+
+export interface CurationChatDeleteResponse {
+  chat_history: ChatTurn[]
+  deleted_exchange_ids: string[]
+  report_possibly_stale: boolean
+}
+
 export interface CurationReviewSummary {
   session_id: string
   topic: string

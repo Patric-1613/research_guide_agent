@@ -1014,6 +1014,137 @@ def test_curation_chat_answers_and_persists_history_across_a_separate_get_reques
     ]
 
 
+# --- /curation/{id}/chat/exchanges/delete (curation-chat-delete Phase 3) ---
+
+def _fake_chat_turn_with_exchange(exchange_id: str, used_web_search: bool = False, added_to_report: bool = False):
+    """Same 'mock at the api.chat_turn level, but mutate the real session
+    the same way the real function does' convention as this file's other
+    chat tests -- here also stamping the exchange_id/metadata Phase 1's
+    real chat_turn() would have attached, since that's exactly the shape
+    the delete endpoint under test needs to operate on."""
+
+    def _fake(session, message, client=None, **kwargs):
+        answer = f"answer to {message!r}"
+        session.chat_history.append({"role": "user", "content": message, "exchange_id": exchange_id})
+        session.chat_history.append({
+            "role": "assistant", "content": answer, "exchange_id": exchange_id,
+            "used_web_search": used_web_search,
+            "cited_web_articles": [{"url": "https://x.com", "title": "X"}] if used_web_search else [],
+            "added_to_report": added_to_report,
+        })
+        return {"answer": answer, "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+    return _fake
+
+
+def test_curation_chat_delete_removes_both_entries_of_one_exchange_and_persists():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-2")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_exchange_ids"] == ["ex-1"]
+    assert body["report_possibly_stale"] is False
+    assert len(body["chat_history"]) == 2
+    assert all(t["exchange_id"] == "ex-2" for t in body["chat_history"])
+    # Persisted, visible via a genuinely separate request too.
+    assert len(state_resp.json()["chat_history"]) == 2
+    assert all(t["exchange_id"] == "ex-2" for t in state_resp.json()["chat_history"])
+
+
+def test_curation_chat_delete_multiple_exchanges_at_once():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        for eid in ("ex-1", "ex-2", "ex-3"):
+            with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange(eid)):
+                client.post(f"/curation/{session_id}/chat", json={"message": eid})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1", "ex-3"]})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_exchange_ids"] == ["ex-1", "ex-3"]
+    assert len(body["chat_history"]) == 2
+    assert all(t["exchange_id"] == "ex-2" for t in body["chat_history"])
+
+
+def test_curation_chat_delete_reports_possibly_stale_when_deleted_answer_was_added_to_report():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1", added_to_report=True)):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["report_possibly_stale"] is True
+
+
+def test_curation_chat_delete_unknown_exchange_id_is_idempotent_no_op():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["does-not-exist"]})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_exchange_ids"] == []
+    assert len(body["chat_history"]) == 2  # unchanged
+
+
+def test_curation_chat_delete_empty_exchange_ids_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": []})
+    assert resp.status_code == 400
+
+
+def test_curation_chat_delete_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+    assert resp.status_code == 404
+
+
+def test_curation_chat_delete_never_touches_pre_phase_1_entries_with_no_exchange_id():
+    def _fake_old_shape_chat_turn(session, message, client=None, **kwargs):
+        session.chat_history.append({"role": "user", "content": message})
+        session.chat_history.append({"role": "assistant", "content": f"answer to {message!r}"})
+        return {"answer": f"answer to {message!r}", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_old_shape_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "an old-shape question"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_exchange("ex-1")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "a new question"})
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_exchange_ids"] == ["ex-1"]
+    # The old-shape pair (exchange_id: None) survives, unchanged.
+    assert len(body["chat_history"]) == 2
+    assert body["chat_history"][0]["content"] == "an old-shape question"
+    assert body["chat_history"][0]["exchange_id"] is None
+    assert body["chat_history"][1]["content"] == "answer to 'an old-shape question'"
+    assert body["chat_history"][1]["exchange_id"] is None
+
+
 def test_curation_chat_before_curation_finished_returns_400():
     papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
     with _client() as client, \

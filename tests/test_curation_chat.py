@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.curation_chat import _OfferResponseIntent, _classify_offer_response, ask_in_session, chat_turn
+from research_agent.curation_chat import _OfferResponseIntent, _classify_offer_response, ask_in_session, chat_turn, delete_chat_exchanges
 from research_agent.qa import _build_answer_schema
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper, WebArticle
@@ -990,3 +990,127 @@ def test_second_chat_turn_after_enriched_first_turn_sends_only_role_and_content_
     # sanitization only strips the LLM-bound copy, never the original.
     assert session.chat_history[1]["used_web_search"] is True
     assert session.chat_history[1]["cited_web_articles"] == [{"url": "https://x.com/roundup", "title": "2026 roundup"}]
+
+
+# --- curation-chat-delete Phase 3: delete_chat_exchanges() ---
+
+def _exchange(exchange_id: str, added_to_report: bool = False, used_web_search: bool = False) -> list[dict]:
+    return [
+        {"role": "user", "content": f"question for {exchange_id}", "exchange_id": exchange_id},
+        {
+            "role": "assistant", "content": f"answer for {exchange_id}", "exchange_id": exchange_id,
+            "used_web_search": used_web_search,
+            "cited_web_articles": [{"url": "https://x.com", "title": "X"}] if used_web_search else [],
+            "added_to_report": added_to_report,
+        },
+    ]
+
+
+def test_delete_chat_exchanges_removes_both_entries_of_a_matching_exchange():
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[*_exchange("ex-1"), *_exchange("ex-2")])
+
+    deleted_ids, report_possibly_stale = delete_chat_exchanges(session, ["ex-1"])
+
+    assert deleted_ids == ["ex-1"]
+    assert report_possibly_stale is False
+    assert len(session.chat_history) == 2
+    assert all(turn["exchange_id"] == "ex-2" for turn in session.chat_history)
+
+
+def test_delete_chat_exchanges_leaves_pre_phase_1_entries_with_no_exchange_id_untouched():
+    old_entries = [{"role": "user", "content": "old question"}, {"role": "assistant", "content": "old answer"}]
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[*old_entries, *_exchange("ex-1")])
+
+    deleted_ids, _ = delete_chat_exchanges(session, ["ex-1"])
+
+    assert deleted_ids == ["ex-1"]
+    assert session.chat_history == old_entries  # old pair survives, byte-for-byte, in original order
+
+
+def test_delete_chat_exchanges_can_delete_multiple_exchanges_at_once():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_exchange("ex-1"), *_exchange("ex-2"), *_exchange("ex-3")],
+    )
+
+    deleted_ids, _ = delete_chat_exchanges(session, ["ex-1", "ex-3"])
+
+    assert deleted_ids == ["ex-1", "ex-3"]
+    assert len(session.chat_history) == 2
+    assert all(turn["exchange_id"] == "ex-2" for turn in session.chat_history)
+
+
+def test_delete_chat_exchanges_unknown_id_is_an_idempotent_no_op():
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[*_exchange("ex-1")])
+
+    deleted_ids, report_possibly_stale = delete_chat_exchanges(session, ["does-not-exist"])
+
+    assert deleted_ids == []
+    assert report_possibly_stale is False
+    assert len(session.chat_history) == 2  # unchanged
+
+
+def test_delete_chat_exchanges_empty_request_is_a_no_op():
+    session = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[*_exchange("ex-1")])
+
+    deleted_ids, report_possibly_stale = delete_chat_exchanges(session, [])
+
+    assert deleted_ids == []
+    assert report_possibly_stale is False
+    assert len(session.chat_history) == 2
+
+
+def test_delete_chat_exchanges_reports_possibly_stale_when_a_deleted_answer_was_added_to_report():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_exchange("ex-1", added_to_report=True), *_exchange("ex-2", added_to_report=False)],
+    )
+
+    _, report_possibly_stale = delete_chat_exchanges(session, ["ex-1"])
+    assert report_possibly_stale is True
+
+    # Deleting the NOT-added-to-report one alone must not report stale.
+    session2 = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_exchange("ex-1", added_to_report=True), *_exchange("ex-2", added_to_report=False)],
+    )
+    _, report_possibly_stale2 = delete_chat_exchanges(session2, ["ex-2"])
+    assert report_possibly_stale2 is False
+
+
+def test_deleted_exchange_content_is_excluded_from_the_next_chat_turns_openai_messages():
+    """curation-chat-delete Phase 3, requirement 4: the deleted exchange's
+    content must not survive into a LATER turn's context -- confirmed by
+    inspecting the actual messages sent to the mocked OpenAI client for
+    the follow-up turn, not just that chat_history looks right."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parse_response(schema, answerable=True, answer="RoCoFT is unusual [Paper 1].", cited_paper_ids=["p1"]),
+        _mock_parse_response(schema, answerable=True, answer="It updates rows and columns [Paper 1].", cited_paper_ids=["p1"]),
+    ]
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="what does it update?"))],
+        usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "is RoCoFT unusual in some specific way?", client=mock_client)
+
+        exchange_id = session.chat_history[0]["exchange_id"]
+        deleted_ids, _ = delete_chat_exchanges(session, [exchange_id])
+        assert deleted_ids == [exchange_id]
+        assert session.chat_history == []  # the only exchange so far, now gone
+
+        chat_turn(session, "what does it update?", client=mock_client)
+
+    second_generate_messages = mock_client.chat.completions.parse.call_args_list[-1].kwargs["messages"]
+    joined = " ".join(m["content"] for m in second_generate_messages)
+    assert "unusual in some specific way" not in joined
+    assert "RoCoFT is unusual" not in joined

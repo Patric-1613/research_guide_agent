@@ -285,6 +285,26 @@ class CurationChatResponse(BaseModel):
     chat_history: list[ChatTurn]
 
 
+class CurationChatDeleteRequest(BaseModel):
+    # curation-chat-delete Phase 3: exchange_id, not individual message ids
+    # -- deleting an exchange always removes both the user question and
+    # assistant answer that share it (see delete_chat_exchanges()).
+    exchange_ids: list[str]
+
+
+class CurationChatDeleteResponse(BaseModel):
+    chat_history: list[ChatTurn]
+    # The subset of the requested ids that actually matched >=1 entry and
+    # were removed -- never includes an id that matched nothing (an
+    # unknown id is a silent no-op, not an error; see the service).
+    deleted_exchange_ids: list[str]
+    # True if any REMOVED assistant entry had added_to_report=True. Phase 3
+    # deliberately does not regenerate or otherwise touch session.report --
+    # this is only a signal for the frontend to show a "report may be
+    # stale" warning; real stale-report handling is a later phase.
+    report_possibly_stale: bool = False
+
+
 class CurationReviewSummary(BaseModel):
     session_id: str
     topic: str

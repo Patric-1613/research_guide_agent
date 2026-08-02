@@ -60,6 +60,12 @@ interface UseCurationSessionResult {
   error: string | null
   turnEvents: TurnEvent[]
   lastChatSearchMeta: ChatSearchMeta | null
+  // curation-chat-delete Phase 3: true if the most recent deleteExchanges
+  // call removed an answer that had been added to the report. Same
+  // "latest action only, client-only" model as lastChatSearchMeta --
+  // Phase 3 never persists or acts on this, it's purely a signal for the
+  // frontend to show a "report may be stale" warning.
+  reportPossiblyStale: boolean
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -70,6 +76,11 @@ interface UseCurationSessionResult {
   generateReport: () => Promise<CurationStateResponse | undefined>
   regenerateReport: () => Promise<CurationStateResponse | undefined>
   sendChatMessage: (message: string) => Promise<void>
+  // curation-chat-delete Phase 3: exchange_ids, not individual message
+  // ids -- deleting an exchange always removes both the user question and
+  // assistant answer that share it (see the backend's own
+  // delete_chat_exchanges() docstring for why).
+  deleteExchanges: (exchangeIds: string[]) => Promise<void>
   // curation-review-management Phase 8, item 1: deletes for real via the
   // backend, then -- ONLY if the deleted id was the currently-open
   // session -- clears sessionId/state/URL so the UI falls back to the
@@ -95,6 +106,7 @@ export function useCurationSession(): UseCurationSessionResult {
   const [error, setError] = useState<string | null>(null)
   const [turnEvents, setTurnEvents] = useState<TurnEvent[]>([])
   const [lastChatSearchMeta, setLastChatSearchMeta] = useState<ChatSearchMeta | null>(null)
+  const [reportPossiblyStale, setReportPossiblyStale] = useState(false)
   const turnEventsSessionRef = useRef<string | null>(null)
 
   const loadState = useCallback(async (id: string): Promise<CurationStateResponse> => {
@@ -209,6 +221,17 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  const deleteExchanges = useCallback(
+    (exchangeIds: string[]) =>
+      runAction(async () => {
+        if (!sessionId) return
+        const response = await curationApi.deleteChatExchanges(sessionId, { exchange_ids: exchangeIds })
+        setReportPossiblyStale(response.report_possibly_stale)
+        await loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   const refresh = useCallback(
     () =>
       runAction(async () => {
@@ -257,8 +280,8 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   return {
-    sessionId, state, loading, error, turnEvents, lastChatSearchMeta,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteReview,
-    selectFromHistory, reopenReview, refresh,
+    sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
+    deleteReview, selectFromHistory, reopenReview, refresh,
   }
 }

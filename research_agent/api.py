@@ -27,7 +27,7 @@ from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 
 from research_agent.agent import run_research_agent
-from research_agent.curation_chat import chat_turn
+from research_agent.curation_chat import chat_turn, delete_chat_exchanges
 from research_agent.curation_loop import get_curation_state, resume_curation_turn, start_curation_turn
 from research_agent.curation_session import (
     _session_to_dict,

@@ -14,12 +14,17 @@ interface ChatModePanelProps {
   // nothing useful for the question was indistinguishable from the
   // button having done nothing at all.
   lastSearchMeta: ChatSearchMeta | null
+  // curation-chat-delete Phase 3
+  onDeleteExchanges: (exchangeIds: string[]) => Promise<void>
+  reportPossiblyStale: boolean
 }
 
 // Chat mode's center panel shows ONLY the conversation -- no paper pool
 // alongside it -- per the explicit ask that once in chat mode, the
 // candidate/paper-pool UI should disappear entirely.
-export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }: ChatModePanelProps) {
+export function ChatModePanel({
+  state, disabled, onSendMessage, lastSearchMeta, onDeleteExchanges, reportPossiblyStale,
+}: ChatModePanelProps) {
   const [text, setText] = useState('')
   // chat-ux-fixes bug 3: onSendMessage awaits the FULL round trip
   // (chat_turn() plus a separate state reload) before state.chat_history
@@ -35,9 +40,9 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // curation-chat-select Phase 2: UI-foundation-only select mode -- no
-  // delete/add-to-report behavior wired up yet (later phases), just the
-  // selection mechanics themselves. Selected by exchange_id (Phase 1's
+  // curation-chat-select Phase 2 / curation-chat-delete Phase 3: select
+  // mode + delete are wired up; Edit and add-to-report remain disabled
+  // placeholders (later phases). Selected by exchange_id (Phase 1's
   // shared id linking a question+answer pair), not array index, so it
   // stays correct regardless of how the underlying list is later
   // re-rendered. Session-local like everything else in this panel --
@@ -66,6 +71,34 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
   function handleClearSelection() {
     setSelectedExchangeIds(new Set())
     setSelectMode(false)
+  }
+
+  // curation-chat-delete Phase 3: confirmation lives at the click site --
+  // ChatMessageRow's own Delete menu item already confirmed before
+  // calling this, so this is single-exchange delete unconditionally.
+  // Bulk delete confirms here instead, since there's no single row to
+  // anchor the prompt to. Either way, onDeleteExchanges (useCurationSession's
+  // runAction) swallows its own errors into the shared error banner and
+  // never rejects -- selection is cleared/select mode exited afterward
+  // regardless of success or failure, matching this app's existing
+  // delete-review pattern (ReviewsList) of not needing a separate
+  // success/failure branch here.
+  async function handleDeleteExchange(exchangeId: string) {
+    await onDeleteExchanges([exchangeId])
+    setSelectedExchangeIds((prev) => {
+      if (!prev.has(exchangeId)) return prev
+      const next = new Set(prev)
+      next.delete(exchangeId)
+      return next
+    })
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedExchangeIds)
+    if (ids.length === 0) return
+    if (!window.confirm(`Delete ${ids.length} selected exchange${ids.length === 1 ? '' : 's'}?`)) return
+    await onDeleteExchanges(ids)
+    handleClearSelection()
   }
 
   useEffect(() => {
@@ -130,6 +163,7 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
               selected={!!turn.exchange_id && selectedExchangeIds.has(turn.exchange_id)}
               onEnterSelectMode={handleEnterSelectMode}
               onToggleSelect={handleToggleSelect}
+              onDelete={(exchangeId) => void handleDeleteExchange(exchangeId)}
             />
             {i === firstWebBackedIndex && (
               <p data-testid="web-metadata-hint" className="mt-1 text-center text-xs italic text-text-muted">
@@ -155,6 +189,11 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
       </div>
 
       <div className="border-t border-border bg-panel p-3">
+        {reportPossiblyStale && (
+          <p data-testid="report-possibly-stale-warning" className="mb-2 text-center text-xs text-danger">
+            A deleted exchange had been added to the report — the report may now be stale.
+          </p>
+        )}
         {selectedExchangeIds.size > 0 && (
           <div
             data-testid="bulk-action-bar"
@@ -166,11 +205,11 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
             <button
               type="button"
               data-testid="bulk-delete"
-              disabled
-              title="Coming soon"
-              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void handleBulkDelete()}
+              disabled={disabled}
+              className="rounded-md border border-border px-2.5 py-1 text-xs text-danger hover:border-danger disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Delete selected (Coming soon)
+              Delete selected
             </button>
             <button
               type="button"

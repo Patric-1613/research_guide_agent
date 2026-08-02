@@ -76,6 +76,18 @@ describe('curationApi', () => {
     expect(result).toEqual({ session_id: 's1', deleted: true })
   })
 
+  it('deleteChatExchanges() posts (not DELETE) to the exchanges/delete path with the exchange_ids body', async () => {
+    const fetchMock = mockFetchOnce(200, { chat_history: [], deleted_exchange_ids: ['ex-1'], report_possibly_stale: false })
+
+    const result = await curationApi.deleteChatExchanges('s1', { exchange_ids: ['ex-1'] })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/chat/exchanges/delete',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ exchange_ids: ['ex-1'] }) }),
+    )
+    expect(result.deleted_exchange_ids).toEqual(['ex-1'])
+  })
+
   it('reopen() posts to the session-scoped /reopen path with no body payload beyond {}', async () => {
     const fetchMock = mockFetchOnce(200, {
       session_id: 's1', stage: 'curate', target_count: 10,

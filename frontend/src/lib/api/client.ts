@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  CurationChatDeleteRequest,
+  CurationChatDeleteResponse,
   CurationChatRequest,
   CurationChatResponse,
   CurationDeleteResponse,
@@ -62,6 +64,13 @@ export const curationApi = {
 
   chat: (sessionId: string, req: CurationChatRequest): Promise<CurationChatResponse> =>
     postJson(`/curation/${sessionId}/chat`, req),
+
+  // curation-chat-delete Phase 3: POST, not DELETE-with-body -- matches
+  // the backend router's own choice (see curation_chat.py's router
+  // comment): deleteRequest() below has no body parameter at all, and
+  // every other payload-carrying mutation in this client is already POST.
+  deleteChatExchanges: (sessionId: string, req: CurationChatDeleteRequest): Promise<CurationChatDeleteResponse> =>
+    postJson(`/curation/${sessionId}/chat/exchanges/delete`, req),
 
   deleteReview: (sessionId: string): Promise<CurationDeleteResponse> =>
     deleteRequest(`/curation/${sessionId}`),

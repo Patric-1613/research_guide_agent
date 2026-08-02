@@ -427,3 +427,56 @@ def chat_turn(
     result = _chat_turn_impl(session, message, client=client, top_k=top_k)
     _attach_exchange_metadata(session, result)
     return result
+
+
+def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) -> tuple[list[str], bool]:
+    """curation-chat-delete Phase 3: removes every chat_history entry whose
+    exchange_id is in exchange_ids -- both the user question and assistant
+    answer of a matching exchange, since chat_turn() (Phase 1) always
+    stamps them with the same id. Entries with exchange_id None
+    (pre-Phase-1 history) are NEVER touched, even if exchange_ids somehow
+    contained an empty string -- deletion only ever matches a real,
+    non-empty, non-None id.
+
+    Idempotent: an exchange_id not present in chat_history at all is
+    silently a no-op for that id, not an error -- matches this module's
+    existing precedent of degrading gracefully on a client-supplied id
+    that doesn't resolve to anything real (see select_paper_from_history's
+    docstring in curation_session.py for the same principle applied to
+    picks).
+
+    Mutates session.chat_history in place is NOT relied upon here --
+    reassigns it to a new, filtered list instead. Safe because nothing
+    holds a live alias to it at this point (unlike mid-chat_turn(), where
+    qa.ChatSession.history IS the same list by reference -- see
+    _build_chat_session's own docstring): delete is always its own
+    separate request, after any prior chat_turn() call has already
+    returned and released its ChatSession.
+
+    Returns (deleted_exchange_ids, report_possibly_stale):
+      - deleted_exchange_ids: the subset of the requested ids that
+        actually matched >=1 entry and were removed (sorted, never
+        includes an id that matched nothing).
+      - report_possibly_stale: True if any REMOVED assistant entry had
+        added_to_report=True. Phase 3 deliberately does not regenerate or
+        otherwise touch session.report here -- out of scope this phase;
+        this is only a signal the API response carries for the frontend.
+    """
+    target_ids = {eid for eid in exchange_ids if eid}
+    if not target_ids:
+        return [], False
+
+    matched_ids: set[str] = set()
+    report_possibly_stale = False
+    kept: list[dict] = []
+    for turn in session.chat_history:
+        turn_exchange_id = turn.get("exchange_id")
+        if turn_exchange_id is not None and turn_exchange_id in target_ids:
+            matched_ids.add(turn_exchange_id)
+            if turn.get("role") == "assistant" and turn.get("added_to_report"):
+                report_possibly_stale = True
+            continue
+        kept.append(turn)
+
+    session.chat_history = kept
+    return sorted(matched_ids), report_possibly_stale
