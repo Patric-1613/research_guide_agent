@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { CurationStateResponse } from '../../types'
 import type { ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
+import { ChatMessageRow } from '../TurnFeed/ChatMessageRow'
 
 interface ChatModePanelProps {
   state: CurationStateResponse
@@ -33,6 +34,39 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
   // -- no need to handle overlapping optimistic messages.
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // curation-chat-select Phase 2: UI-foundation-only select mode -- no
+  // delete/add-to-report behavior wired up yet (later phases), just the
+  // selection mechanics themselves. Selected by exchange_id (Phase 1's
+  // shared id linking a question+answer pair), not array index, so it
+  // stays correct regardless of how the underlying list is later
+  // re-rendered. Session-local like everything else in this panel --
+  // resets on refresh.
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedExchangeIds, setSelectedExchangeIds] = useState<Set<string>>(new Set())
+
+  function handleEnterSelectMode(exchangeId: string) {
+    setSelectMode(true)
+    setSelectedExchangeIds(new Set([exchangeId]))
+  }
+
+  function handleToggleSelect(exchangeId: string) {
+    setSelectedExchangeIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(exchangeId)) next.delete(exchangeId)
+      else next.add(exchangeId)
+      return next
+    })
+  }
+
+  // No separate "exit select mode, keep mode on" control exists in this
+  // phase's design -- Clear selection is the only way out, so it does
+  // both: empties the selection AND turns select mode off, rather than
+  // leaving checkboxes stuck on-screen with nothing left to act on.
+  function handleClearSelection() {
+    setSelectedExchangeIds(new Set())
+    setSelectMode(false)
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
@@ -90,7 +124,13 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
         )}
         {state.chat_history.map((turn, i) => (
           <div key={i}>
-            <ChatMessage turn={turn} />
+            <ChatMessageRow
+              turn={turn}
+              selectMode={selectMode}
+              selected={!!turn.exchange_id && selectedExchangeIds.has(turn.exchange_id)}
+              onEnterSelectMode={handleEnterSelectMode}
+              onToggleSelect={handleToggleSelect}
+            />
             {i === firstWebBackedIndex && (
               <p data-testid="web-metadata-hint" className="mt-1 text-center text-xs italic text-text-muted">
                 This answer used web sources — report-inclusion controls will be added to the message menu in a
@@ -115,6 +155,42 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
       </div>
 
       <div className="border-t border-border bg-panel p-3">
+        {selectedExchangeIds.size > 0 && (
+          <div
+            data-testid="bulk-action-bar"
+            className="mb-2 flex items-center gap-2 rounded-md border border-border bg-panel-alt px-2.5 py-1.5"
+          >
+            <span data-testid="bulk-selected-count" className="text-xs text-text-secondary">
+              {selectedExchangeIds.size} selected
+            </span>
+            <button
+              type="button"
+              data-testid="bulk-delete"
+              disabled
+              title="Coming soon"
+              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Delete selected (Coming soon)
+            </button>
+            <button
+              type="button"
+              data-testid="bulk-add-to-report"
+              disabled
+              title="Coming soon"
+              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Add selected to report (Coming soon)
+            </button>
+            <button
+              type="button"
+              data-testid="bulk-clear-selection"
+              onClick={handleClearSelection}
+              className="ml-auto rounded-md px-2.5 py-1 text-xs text-text-secondary underline decoration-dotted hover:text-accent"
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
         {offerLabel && (
           <div className="mb-2 flex items-center gap-2">
             <span className="text-xs text-text-secondary">{offerLabel}</span>

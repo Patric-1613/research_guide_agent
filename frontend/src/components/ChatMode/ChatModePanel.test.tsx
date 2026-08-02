@@ -203,3 +203,168 @@ describe('ChatModePanel', () => {
     expect(screen.getAllByTestId('web-metadata-hint')).toHaveLength(1)
   })
 })
+
+describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select mode', () => {
+  function exchangeState(): CurationStateResponse {
+    return baseState({
+      chat_history: [
+        { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
+        { role: 'assistant', content: 'A PEFT method [Paper 1].', exchange_id: 'ex-1', used_web_search: false, added_to_report: false },
+        { role: 'user', content: 'anything recent?', exchange_id: 'ex-2' },
+        { role: 'assistant', content: 'Per [Web 1], ...', exchange_id: 'ex-2', used_web_search: true, added_to_report: false },
+      ],
+    })
+  }
+
+  it('renders a "..." message menu button for every chat message', () => {
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+    expect(screen.getAllByTestId('message-menu-button')).toHaveLength(4)
+  })
+
+  it('the menu button has an accessible label', () => {
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+    expect(screen.getAllByLabelText('Message actions')).toHaveLength(4)
+  })
+
+  it('opening a message menu shows Select, Delete, and Add to report -- all present, Delete/Add to report disabled', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+
+    expect(screen.getByTestId('message-menu-select')).toBeEnabled()
+    expect(screen.getByTestId('message-menu-delete')).toBeDisabled()
+    expect(screen.getByTestId('message-menu-add-to-report')).toBeDisabled()
+  })
+
+  it('Edit appears only on the user-question side of an exchange, and is disabled', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+    const menuButtons = screen.getAllByTestId('message-menu-button')
+
+    await user.click(menuButtons[0]) // user message
+    expect(screen.getByTestId('message-menu-edit')).toBeDisabled()
+
+    await user.click(menuButtons[0]) // close it
+    await user.click(menuButtons[1]) // assistant message
+    expect(screen.queryByTestId('message-menu-edit')).not.toBeInTheDocument()
+  })
+
+  it('clicking Select in a message menu enters select mode with checkboxes, and no bulk bar yet', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+
+    // Select mode is on for the whole panel -- every message row now shows
+    // a checkbox, not just the one whose menu was used.
+    expect(screen.getAllByTestId('exchange-select-checkbox')).toHaveLength(4)
+    // The message that triggered Select is pre-selected -- the bulk bar
+    // shows immediately with "1 selected".
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('1 selected')
+  })
+
+  it('selectable exchanges can be checked and unchecked, and the count updates', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('1 selected')
+
+    const checkboxes = screen.getAllByTestId('exchange-select-checkbox')
+    // Checking the OTHER exchange's checkbox (index 2/3 belong to ex-2) --
+    // both entries of ex-1 are already implicitly selected via exchange_id.
+    await user.click(checkboxes[2])
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('2 selected')
+
+    await user.click(checkboxes[2])
+    expect(screen.getByTestId('bulk-selected-count')).toHaveTextContent('1 selected')
+  })
+
+  it('checking either message of the same exchange reflects as one shared selection', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+
+    const checkboxes = screen.getAllByTestId('exchange-select-checkbox')
+    // ex-1's user (index 0) and assistant (index 1) entries should both
+    // already read as checked -- same exchange_id.
+    expect(checkboxes[0]).toBeChecked()
+    expect(checkboxes[1]).toBeChecked()
+  })
+
+  it('the bulk action bar shows Delete selected and Add selected to report, both disabled', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+
+    expect(screen.getByTestId('bulk-action-bar')).toBeInTheDocument()
+    expect(screen.getByTestId('bulk-delete')).toBeDisabled()
+    expect(screen.getByTestId('bulk-add-to-report')).toBeDisabled()
+  })
+
+  it('Clear selection empties the selection, hides the bulk bar, and exits select mode', async () => {
+    const user = userEvent.setup()
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+    expect(screen.getByTestId('bulk-action-bar')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('bulk-clear-selection'))
+
+    expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
+  })
+
+  it('old entries without exchange_id render a disabled, non-selectable checkbox once select mode is on', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'pre-Phase-1 question' },
+        { role: 'assistant', content: 'pre-Phase-1 answer' },
+        { role: 'user', content: 'a new question', exchange_id: 'ex-1' },
+        { role: 'assistant', content: 'a new answer', exchange_id: 'ex-1', used_web_search: false, added_to_report: false },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[2]) // the new question's menu
+    await user.click(screen.getByTestId('message-menu-select'))
+
+    const checkboxes = screen.getAllByTestId('exchange-select-checkbox')
+    expect(checkboxes[0]).toBeDisabled() // old entry, no exchange_id
+    expect(checkboxes[1]).toBeDisabled()
+    expect(checkboxes[2]).toBeEnabled()
+    expect(checkboxes[3]).toBeEnabled()
+  })
+
+  it('Select is disabled in the menu for an old entry without exchange_id', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'pre-Phase-1 question' },
+        { role: 'assistant', content: 'pre-Phase-1 answer' },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    expect(screen.getByTestId('message-menu-select')).toBeDisabled()
+  })
+
+  it('the web badge and hint still render normally with the menu/select UI layered on top', () => {
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    expect(screen.getByTestId('chat-web-badge')).toBeInTheDocument()
+    expect(screen.getByTestId('web-metadata-hint')).toBeInTheDocument()
+  })
+})
