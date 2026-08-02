@@ -85,10 +85,10 @@ invented:
   (surfaced by both delete and edit) is only ever a warning today — no
   one-click "fix it now" action exists; the user has to know to
   manually regenerate.
-- **Pruning `report_approved_web_article_urls` after delete/edit**
-  (the "Option B" design considered and deliberately not built during
-  add-to-report/edit design). Would only affect a *future* regeneration
-  — doesn't retroactively fix an already-generated report either way.
+- ~~Pruning `report_approved_web_article_urls` after delete/edit~~ —
+  **Done (Phase B, 2026-08-03).** See `docs/architecture.md`'s "Phase B
+  — approved report-source pruning after delete/edit" section and the
+  "Phase B: report-source revocation after delete/edit" entry below.
 - **A red-team/evaluation suite for chat + report behavior** —
   nothing in this arc has adversarial/eval-style coverage the way
   `report.py`'s citation-grounding does (`tests/test_report_
@@ -101,19 +101,26 @@ invented:
   remaining added-to-report exchange cites them; keep existing report
   marked stale until regenerated.
 - **Why it matters**: raised during chat-ux-polish Phase A (frontend-only
-  dialog/badge/notice polish) — confirmed deleting a chat exchange today
-  does NOT remove anything from `web_articles_added` or
-  `report_approved_web_article_urls`, so a subsequent regeneration (via
-  either the selective or whole-pool path) will still very likely include
-  the same reference even after the exchange that cited it is gone.
-  Phase A deliberately left this semantic untouched — this is the
-  tracking note for the follow-up.
-- **Rough scope** (files likely touched): `research_agent/report.py`
-  (`regenerate_report_with_approved_web_sources`), wherever
-  `report_approved_web_article_urls` is mutated on delete/edit — same
-  "Option B" design already named in the follow-up bullet above.
-- **Priority**: Unset — needs your call.
-- **Status**: Open, not started.
+  dialog/badge/notice polish) — confirmed deleting a chat exchange did
+  NOT remove anything from `web_articles_added` or `report_approved_
+  web_article_urls`, so a subsequent regeneration (via either the
+  selective or whole-pool path) would still very likely include the same
+  reference even after the exchange that cited it was gone. Phase A
+  deliberately left this semantic untouched; this was the tracking note
+  for the follow-up.
+- **Implementation**: `research_agent/curation_chat.py` gained
+  `approved_web_article_urls_from_added_to_report_entries()` (pure) and
+  `prune_report_approved_web_article_urls()` (mutator, recomputes the
+  approved set from scratch as the union of `cited_web_articles` URLs
+  over currently `added_to_report=True` assistant entries).
+  `delete_chat_exchanges()`/`edit_chat_exchange()` call the latter only
+  when `report_possibly_stale` is true. `web_articles_added` and
+  `session.report` are untouched; no auto-regeneration; no endpoint,
+  schema, or frontend changes. See `docs/architecture.md`'s "Phase B —
+  approved report-source pruning after delete/edit" section for the full
+  design record.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-03).
 
 Placeholders below, ready for real entries:
 

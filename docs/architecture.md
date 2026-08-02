@@ -1048,7 +1048,8 @@ ChatMessageRow.tsx`, `frontend/src/components/ChatMode/
 ChatModePanel.tsx`. All five planned phases are now done — see
 "Chat feature arc: closing status" at the end of this section for the
 final validation baseline and what's explicitly left as optional
-follow-up.
+follow-up (including "Phase B," a backend-only follow-up fix to
+approved-source pruning, documented right after that closing status).
 
 **Phase 1 — persisted web-answer metadata.** Before this phase,
 `chat_history` entries were plain `{role, content}` dicts, and whether an
@@ -1087,8 +1088,10 @@ an action-suffixed path). `delete_chat_exchanges()` removes both
 entries of every matching exchange, never touches `exchange_id == null`
 entries, and is idempotent on an unknown id. Reports
 `report_possibly_stale: true` if a removed answer had already been
-added to the report — Phase 3 deliberately does not regenerate the
-report itself, only surfaces the signal for a frontend warning.
+added to the report — delete still never regenerates the report itself,
+only surfaces the signal for a frontend warning; see Phase B below for
+what it now *does* do to `report_approved_web_article_urls` in that
+case.
 
 **Phase 4 — add web-backed chat sources to the report.** `POST
 /curation/{session_id}/chat/exchanges/add-to-report` (same convention as
@@ -1112,9 +1115,9 @@ a **new** `exchange_id`, not an in-place mutation of the old one — no
 branching/versioning, matching the single-linear-conversation model this
 whole app already uses. Reports `report_possibly_stale: true` under the
 same rule Phase 3 established (any truncated-away assistant entry had
-`added_to_report == true`); `report_approved_web_article_urls` is left
-untouched, same Option A policy as Phase 3's delete (see "Safety/
-correctness notes" below for why).
+`added_to_report == true`); see Phase B below for what it now does to
+`report_approved_web_article_urls` in that case (superseding the
+"Option A, left untouched" policy this phase originally shipped with).
 
 ### Current chat data model
 
@@ -1206,6 +1209,24 @@ this field existed.
   before either mutation runs, so a failed add-to-report attempt never
   marks anything approved or added. Confirmed by a test that fails a
   regeneration once, then retries the same exchange successfully.
+- **(Phase B) `report_approved_web_article_urls` stays in lockstep with
+  `added_to_report` on the way down too, not just the way up.** The
+  invariant is: `report_approved_web_article_urls` always equals the
+  union of `cited_web_articles` URLs across every assistant entry
+  currently `added_to_report == true`. Add-to-report already maintained
+  this going up (`approve_web_article_urls`/`mark_exchanges_added_to_
+  report` are always called together); delete/edit are the only two
+  places that can shrink the `added_to_report` side, so
+  `delete_chat_exchanges`/`edit_chat_exchange` now call a shared
+  `prune_report_approved_web_article_urls()` helper — **only when
+  `report_possibly_stale` is true** — which recomputes the approved set
+  from scratch (not an intersection/diff) via `approved_web_article_
+  urls_from_added_to_report_entries()`. A URL stays approved iff some
+  *other*, still-present, still-`added_to_report` exchange also cites
+  it. Never touches `web_articles_added` (the raw pool) or
+  `session.report` itself, and never auto-regenerates — pruning only
+  constrains what a *future* selective regeneration is allowed to
+  include. See `research_agent/curation_chat.py`.
 
 ### Chat feature arc: closing status (2026-08-02)
 
@@ -1229,7 +1250,9 @@ place:
 - **`report_possibly_stale`** appears in the delete and edit responses
   whenever a removed/truncated assistant entry had already been folded
   into the report (`added_to_report == true`) — a signal only, never an
-  automatic regeneration.
+  automatic regeneration. As of Phase B (below), that same condition
+  also prunes `report_approved_web_article_urls`, so this signal and the
+  approved-set pruning always fire together, off the same check.
 - **`POST /curation/{id}/report/regenerate` (pre-existing, whole-pool)
   is unchanged and stays independent** of the selective add-to-report
   path — see the "Known interaction, not yet resolved" note above for
@@ -1243,6 +1266,26 @@ cd frontend && npm test             → 154 passed
 cd frontend && npm run build        → clean (tsc -b && vite build)
 ```
 
+### Phase B — approved report-source pruning after delete/edit (2026-08-03) — complete
+
+A follow-up fix on top of the five-phase arc above, closing the gap
+named in "Explicitly deferred follow-ups" item 3 below (now done, not
+deferred). `research_agent/curation_chat.py` gained two new functions —
+`approved_web_article_urls_from_added_to_report_entries()` (pure) and
+`prune_report_approved_web_article_urls()` (mutator) — and
+`delete_chat_exchanges()`/`edit_chat_exchange()` now call the latter
+whenever `report_possibly_stale` is true. See the "(Phase B)" bullet in
+"Safety/correctness notes" above for the full invariant and algorithm.
+Backend-only: no frontend, endpoint-path, or response-schema changes.
+
+**Validation baseline for Phase B:**
+
+```
+uv run pytest tests/test_curation_chat.py -q                              → 65 passed
+uv run pytest tests/test_curation_chat.py tests/test_curation_api.py -q   → 137 passed
+uv run pytest -q                                                          → 415 passed
+```
+
 **Explicitly deferred follow-ups** (none blocking, none scheduled):
 
 1. **Inline edit UI instead of `window.prompt`.** Phase 5 deliberately
@@ -1253,12 +1296,10 @@ cd frontend && npm run build        → clean (tsc -b && vite build)
    is only ever a warning today (from both delete and edit) — there's no
    one-click "fix it now" action; the user has to know to go regenerate
    manually.
-3. **Pruning `report_approved_web_article_urls` after delete/edit**
-   (Option B from the add-to-report design discussion, deliberately not
-   built) — would let the *next* regeneration stop including a source
-   whose only originating exchange was later removed. Doesn't fix the
-   *current* report either way, since a generated report's text is
-   already static.
+3. ~~Pruning `report_approved_web_article_urls` after delete/edit~~ —
+   **done, see "Phase B" above.** Still does not fix the *current*
+   report either way, since a generated report's text is already
+   static — only constrains what the *next* regeneration can include.
 4. **A red-team/evaluation suite for chat + report behavior** — nothing
    in this arc has adversarial/eval-style coverage the way `report.py`'s
    citation-grounding does (`tests/test_report_grounding.py`) or the way
