@@ -60,6 +60,26 @@ invented:
 - **Priority**: Unset — needs your call.
 - **Status**: Open, not started.
 
+### Chat message actions + report inclusion
+- **Phases 1–4 (persisted web-answer metadata, message menu/select
+  mode, delete exchanges, add web-backed sources to the report): Done.**
+  See `docs/architecture.md`'s "Chat feature: message actions and report
+  inclusion (Phases 1–4)" section for the full record — data model
+  (`exchange_id`/`used_web_search`/`cited_web_articles`/
+  `added_to_report`/`report_approved_web_article_urls`), the
+  `qa.capped_history()` sanitization boundary, and the selective-vs-
+  whole-pool report regeneration split.
+- **Phase 5 (edit user question): Open, not started.** Scoped behavior:
+  edit applies only to user questions (never assistant answers);
+  truncate-and-regenerate (discard the old answer to the edited question
+  and every later exchange, then regenerate fresh from the edited
+  question) — no branching/versioning. Open design question carried
+  over from Phase 3/4: if a truncated exchange had `added_to_report ==
+  true`, whether Phase 5 reuses the existing `report_possibly_stale`
+  signal as-is or needs its own is not yet decided. See
+  `docs/architecture.md`'s "Remaining chat phase: Phase 5" note.
+- **Priority**: Unset — needs your call.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
@@ -123,6 +143,17 @@ today, cross-referenced to where each item is already tracked in detail:
   and human-interpreted, not CI-enforced. See `docs/evaluation.md`, and
   the Obsidian vault's `Mentor-Feedback.md`/`TODO.md` (surfaced by the
   2026-07-17 mentor review, item 13).
+- **Whole-pool `/report/regenerate` can silently discard a selectively-
+  curated report.** If a session uses both the chat add-to-report path
+  (Phase 4, selective — only approved web sources) and the pre-existing
+  Report tab "Regenerate" button (whole-pool — every
+  `web_articles_added` entry, approved or not), the whole-pool call will
+  overwrite `session.report` with one reflecting the entire raw web
+  pool, including sources never approved through chat. The two paths
+  don't defer to each other. Documented in
+  `research_agent/report.py`'s `regenerate_report_with_approved_web_
+  sources` docstring and `docs/architecture.md`'s chat-feature section;
+  not fixed, no scheduled owner.
 - **No CI configuration exists anywhere in this repo** (confirmed: no
   `.github/workflows/`, no other CI config found). Validation throughout
   this entire project has been manual (`uv run pytest -q`, `npm test`,

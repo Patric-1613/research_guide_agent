@@ -1035,6 +1035,180 @@ PostgreSQL migration options, a multi-user data-ownership proposal, API/
 frontend impact, and a phased Phase 19–27 implementation plan). Nothing
 in that document is implemented; it does not disturb this baseline.
 
+## Chat feature: message actions and report inclusion (Phases 1–4)
+
+A separate, later feature arc — built entirely on top of the
+`standardized-single-user-project` baseline above, after it — adding
+per-message actions (select/delete/add-to-report) to curation chat and
+letting web-backed chat answers selectively feed the literature-review
+report. Backend: `research_agent/curation_chat.py`,
+`research_agent/report.py`, `research_agent/query_expansion.py`
+(`PaperPoolSession`). Frontend: `frontend/src/components/TurnFeed/
+ChatMessageRow.tsx`, `frontend/src/components/ChatMode/
+ChatModePanel.tsx`.
+
+**Phase 1 — persisted web-answer metadata.** Before this phase,
+`chat_history` entries were plain `{role, content}` dicts, and whether an
+answer used web search was tracked only client-side, for the latest
+reply only (lost on refresh or the next turn). `chat_turn()`'s public
+entry point now stamps the exchange it just produced with a shared
+`exchange_id` plus per-answer metadata (see "Current chat data model"
+below), all additive/defaulted so old chat history keeps working
+unchanged. The frontend renders a blue 🌐 badge on any web-backed
+assistant answer. **Safety finding from this phase, load-bearing for
+everything after it**: `qa.py`'s `capped_history()` — the one function
+every LLM-bound history read goes through (`ask()`'s own
+`recent_history`, spliced directly into the model prompt, and
+`curation_chat.py`'s `condense_question(capped_history(...))` call) —
+now always returns fresh `{role, content}`-only dicts, stripping the new
+metadata before it can ever reach an OpenAI call. Proven with a
+regression test that runs a second `chat_turn()` after the first left
+enriched metadata in history and inspects the actual messages sent to
+the mocked client.
+
+**Phase 2 — message menu + select mode (UI foundation).** Each chat
+message gets a `⋯` menu (Select / Delete / Add to report / Edit) and a
+panel-wide select mode, selection tracked by `exchange_id` so checking
+either half of a question+answer pair reflects as one shared selection.
+Pre-Phase-1 entries (`exchange_id == null`) are deliberately
+non-selectable rather than given a client-side fallback id. This phase
+only built the UI mechanics — Delete/Add to report were inert
+placeholders here, wired up for real in Phases 3–4.
+
+**Phase 3 — delete exchanges.** `POST /curation/{session_id}/chat/
+exchanges/delete` (body `{exchange_ids}`) — chosen over `DELETE`
+-with-a-body specifically to match this API's existing convention (the
+one bodyless `DELETE /curation/{session_id}` route is the only
+exception; every other payload-carrying mutation is already `POST` to
+an action-suffixed path). `delete_chat_exchanges()` removes both
+entries of every matching exchange, never touches `exchange_id == null`
+entries, and is idempotent on an unknown id. Reports
+`report_possibly_stale: true` if a removed answer had already been
+added to the report — Phase 3 deliberately does not regenerate the
+report itself, only surfaces the signal for a frontend warning.
+
+**Phase 4 — add web-backed chat sources to the report.** `POST
+/curation/{session_id}/chat/exchanges/add-to-report` (same convention as
+Phase 3's delete endpoint) approves the cited web sources of selected,
+eligible exchanges and regenerates the report — but **selectively**, not
+over the whole raw web pool (see "Safety/correctness notes" below for
+why that distinction needed real design work, not just reuse of the
+existing regeneration path as-is).
+
+### Current chat data model
+
+Every `ChatTurn` entry in `chat_history` (shared by the original
+one-shot `/chat` and curation chat — the extra fields are additive and
+defaulted, so the one-shot flow's entries are unaffected) now carries:
+
+```
+role, content            unchanged since before this arc
+exchange_id               shared by the user question + assistant answer
+                          of ONE chat_turn() call; None for entries that
+                          predate Phase 1, never backfilled
+used_web_search            assistant entries only; True iff this specific
+                          answer actually cited a web source
+cited_web_articles          assistant entries only; [{url, title}, ...]
+added_to_report             assistant entries only; True once this
+                          exchange's sources have been folded into the
+                          report via Phase 4's add-to-report action
+```
+
+`PaperPoolSession` (the curation session's own state, `research_agent/
+query_expansion.py`) gained one new field for Phase 4:
+
+```
+report_approved_web_article_urls: set[str]
+```
+
+The set of web article URLs explicitly approved (via chat's "Add to
+report") for report regeneration — deliberately separate from
+`web_articles_added`, which stays the raw, unfiltered pool of every web
+article ever discovered during chat. Same set-field serialization
+convention as `seen_paper_ids`/`seen_titles` (list in storage, set at
+runtime), single serialization site (`curation_session.py`'s
+`_session_to_dict`/`_dict_to_session`, shared by both the curate-stage
+LangGraph checkpointer and synthesize-stage chat/report storage),
+backward-compatible `.get(..., [])` default for sessions saved before
+this field existed.
+
+### Safety/correctness notes
+
+- **`qa.capped_history()` is the one sanitization boundary** between
+  persisted chat history (which may carry the metadata above) and any
+  LLM prompt. It always returns brand-new `{role, content}`-only dicts,
+  never mutating the original list/dicts — the persisted history keeps
+  its full metadata, only the LLM-bound copy is stripped. This protects
+  every current and future caller of `capped_history()`, not just the
+  ones audited when it was written.
+- **Delete operates by exchange, never by individual message** — a user
+  question and its assistant answer are always removed together, since
+  they share one `exchange_id` by construction (every `chat_turn()` call
+  appends exactly one of each).
+- **Add-to-report approves specific cited web source URLs, not whole
+  messages or raw chat text.** No chat text is ever pasted into the
+  report — the action only ever (a) unions the selected exchanges'
+  `cited_web_articles` URLs into `report_approved_web_article_urls`, and
+  (b) triggers the existing report-generation machinery (Literal-
+  constrained citations, prompt-plus-structural citation preservation)
+  over that approved set. Citation handling itself is 100% shared code
+  with every other report path — never re-implemented or manually
+  spliced.
+- **The Phase 4 regeneration path never reads `web_articles_added`
+  directly.** `report.py`'s `regenerate_report_with_approved_web_sources
+  (session, approved_web_articles, ...)` only ever sees the article list
+  its caller explicitly resolved and passed in
+  (`curation_chat.py`'s `resolve_approved_web_articles_for_regeneration`,
+  which filters the raw pool down to
+  `report_approved_web_article_urls | newly_approved_urls` by URL
+  membership). An article sitting in the raw pool that was never
+  approved cannot reach the model through this path, proven directly by
+  two `test_report.py` tests that inspect the actual prompt content sent
+  to a mocked model.
+- **`regenerate_report_with_new_sources` (the pre-existing whole-pool
+  path behind `POST /curation/{id}/report/regenerate`) is unchanged and
+  stays whole-pool on purpose.** Both functions now share one private
+  helper (`_regenerate_report_sections_with_sources`) for schema-
+  building/citation-restoration so the two paths can never diverge in
+  citation handling, but their own public behavior is otherwise
+  independent — `regenerate_report_with_new_sources`'s existing 15 tests
+  pass unmodified. **Known interaction, not yet resolved**: if a session
+  uses both mechanisms, a later whole-pool `/report/regenerate` call
+  will overwrite a selectively-curated report with one reflecting the
+  *entire* raw web pool, including sources never approved through the
+  chat path — the two don't defer to each other. Documented directly in
+  `regenerate_report_with_approved_web_sources`'s own docstring; left as
+  a named follow-up, not fixed in Phase 4.
+- **`added_to_report` and `report_approved_web_article_urls` are only
+  ever mutated after a successful report regeneration** — a raised
+  exception (bad precondition, or an upstream LLM failure) propagates
+  before either mutation runs, so a failed add-to-report attempt never
+  marks anything approved or added. Confirmed by a test that fails a
+  regeneration once, then retries the same exchange successfully.
+
+### Remaining chat phase: Phase 5 (edit user question) — not started
+
+The last planned phase in this arc, explicitly out of scope for
+everything above. Expected behavior, as scoped when this arc began:
+
+- Edit applies only to **user questions**, never assistant answers (the
+  UI already only ever shows the Edit menu item on the user side of an
+  exchange, still disabled/"Coming soon" as of Phase 4).
+- **Truncate-and-regenerate, not branching/versioning**: editing
+  question N discards the old answer to N and every exchange after it,
+  then regenerates a fresh answer from the edited question — the
+  standard single-linear-conversation model, not a tree of alternate
+  histories.
+- **Stale-report implication, carried over from Phase 3's own
+  `report_possibly_stale` precedent**: if any of the truncated-away
+  exchanges had `added_to_report == true` (its sources were approved
+  into the report), truncating them doesn't retroactively un-approve
+  those URLs or regenerate the report — the same "signal, don't auto-fix"
+  posture Phase 3 established for delete. Whether Phase 5 reuses
+  `report_possibly_stale` as-is or needs its own signal is an open
+  design question for whenever Phase 5 is actually scoped, not decided
+  here.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
