@@ -1238,6 +1238,35 @@ def test_curation_chat_add_to_report_second_call_includes_previously_approved_so
     assert {a.url for a in approved_articles} == {"https://a.com", "https://b.com"}  # both, not just the new one
 
 
+def test_curation_chat_delete_then_add_to_report_excludes_the_revoked_source_end_to_end():
+    """chat-ux-report-semantics Phase B, end-to-end: ex-1 (https://a.com)
+    gets added to the report, then deleted -- a later add-to-report call
+    for an unrelated exchange must resolve ONLY its own URL, not the
+    revoked one, even though https://a.com's WebArticle is still sitting
+    in the raw web_articles_added pool (delete never touches that)."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-2", "https://b.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q2"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        delete_resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+        assert delete_resp.json()["report_possibly_stale"] is True
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v3")) as mock_regen:
+            resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-2"]})
+
+    assert resp.status_code == 200
+    approved_articles = mock_regen.call_args.args[1]
+    assert [a.url for a in approved_articles] == ["https://b.com"]  # https://a.com stayed revoked
+
+
 def test_curation_chat_add_to_report_duplicate_urls_dedupe_source_count():
     with _client() as client:
         session_id, pick_ids = _finish_curation(client)

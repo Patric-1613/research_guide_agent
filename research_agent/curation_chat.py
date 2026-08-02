@@ -462,6 +462,13 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
         added_to_report=True. Phase 3 deliberately does not regenerate or
         otherwise touch session.report here -- out of scope this phase;
         this is only a signal the API response carries for the frontend.
+        chat-ux-report-semantics Phase B: when this is True,
+        session.report_approved_web_article_urls is also pruned (see
+        prune_report_approved_web_article_urls below) so a FUTURE
+        selective regeneration can't resurrect a source that no longer
+        has any added_to_report exchange backing it -- the already-
+        generated session.report itself is still left untouched here,
+        same as before.
     """
     target_ids = {eid for eid in exchange_ids if eid}
     if not target_ids:
@@ -480,7 +487,48 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
         kept.append(turn)
 
     session.chat_history = kept
+    if report_possibly_stale:
+        prune_report_approved_web_article_urls(session)
     return sorted(matched_ids), report_possibly_stale
+
+
+def approved_web_article_urls_from_added_to_report_entries(session: PaperPoolSession) -> set[str]:
+    """chat-ux-report-semantics Phase B: the invariant this whole feature
+    exists to maintain -- session.report_approved_web_article_urls should
+    always equal exactly this: the union of cited_web_articles URLs across
+    every assistant chat_history entry that CURRENTLY has added_to_report
+    =True. add_curation_chat_exchanges_to_report already keeps the two in
+    lockstep on the way up (approve_web_article_urls and
+    mark_exchanges_added_to_report are always called together, see their
+    own docstrings); delete_chat_exchanges/edit_chat_exchange are the only
+    two places that can shrink the added_to_report side (by removing or
+    truncating entries), so they're the only two places that need to call
+    prune_report_approved_web_article_urls below to keep the invariant
+    holding on the way down too. Pure -- does not mutate session."""
+    urls: set[str] = set()
+    for turn in session.chat_history:
+        if turn.get("role") == "assistant" and turn.get("added_to_report"):
+            for article in turn.get("cited_web_articles") or []:
+                urls.add(article["url"])
+    return urls
+
+
+def prune_report_approved_web_article_urls(session: PaperPoolSession) -> None:
+    """chat-ux-report-semantics Phase B: recomputes session.report_
+    approved_web_article_urls FROM SCRATCH (not an intersection with the
+    prior value) as exactly approved_web_article_urls_from_added_to_
+    report_entries(session) -- see that function's docstring for the
+    invariant this restores. Recompute-from-scratch rather than
+    diffing/intersecting the removed entries is deliberate: it's
+    self-correcting and can't drift, at the same O(len(chat_history)) cost
+    the caller already pays to compute report_possibly_stale.
+
+    Deliberately does NOT touch session.web_articles_added (the raw,
+    unfiltered discovery pool -- see its own docstring in
+    query_expansion.py) and does NOT regenerate session.report -- pruning
+    only affects what a FUTURE selective regeneration is allowed to
+    include, never the report already generated."""
+    session.report_approved_web_article_urls = approved_web_article_urls_from_added_to_report_entries(session)
 
 
 # --- curation-chat-add-to-report Phase 4 ---
@@ -616,12 +664,14 @@ def edit_chat_exchange(
     exchange_id), and inherits Phase 1's capped_history() sanitization
     for free since nothing here builds an LLM prompt directly.
 
-    report_approved_web_article_urls is deliberately left untouched
-    (Option A -- see docs/architecture.md's Phase 5 section): the
-    existing report may now cite content from a truncated exchange, but
-    pruning the approved-URL set doesn't un-cite anything already
-    written into session.report, so it wouldn't fix the staleness --
-    only a real regeneration would, which this function never triggers.
+    chat-ux-report-semantics Phase B: report_approved_web_article_urls is
+    now PRUNED (not left untouched -- superseding the old "Option A" note
+    this docstring used to have) whenever report_possibly_stale is True,
+    via prune_report_approved_web_article_urls -- see that function's
+    docstring for the invariant it restores. This still does not fix the
+    staleness of the already-generated session.report itself (pruning
+    only constrains a FUTURE selective regeneration); only a real
+    regeneration does that, which this function still never triggers.
 
     Returns (chat_turn_result, report_possibly_stale) -- the latter is
     True if ANY assistant entry in the truncated-away range (the edited
@@ -639,6 +689,8 @@ def edit_chat_exchange(
     report_possibly_stale = any(turn.get("role") == "assistant" and turn.get("added_to_report") for turn in removed)
 
     session.chat_history = session.chat_history[:user_idx]
+    if report_possibly_stale:
+        prune_report_approved_web_article_urls(session)
     session.pending_web_offer = None
     session.pending_report_update = None
 

@@ -22,12 +22,14 @@ from research_agent.curation_chat import (
     _OfferResponseIntent,
     _classify_offer_response,
     approve_web_article_urls,
+    approved_web_article_urls_from_added_to_report_entries,
     ask_in_session,
     chat_turn,
     cited_web_article_urls_for_exchanges,
     delete_chat_exchanges,
     edit_chat_exchange,
     mark_exchanges_added_to_report,
+    prune_report_approved_web_article_urls,
     resolve_approved_web_articles_for_regeneration,
     select_eligible_exchanges_for_report,
 )
@@ -1094,6 +1096,83 @@ def test_delete_chat_exchanges_reports_possibly_stale_when_a_deleted_answer_was_
     assert report_possibly_stale2 is False
 
 
+# --- chat-ux-report-semantics Phase B: approved-URL pruning on delete ---
+
+def test_delete_chat_exchanges_prunes_approved_url_when_no_remaining_exchange_cites_it():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+
+    _, report_possibly_stale = delete_chat_exchanges(session, ["ex-1"])
+
+    assert report_possibly_stale is True
+    assert session.report_approved_web_article_urls == set()
+
+
+def test_delete_chat_exchanges_keeps_approved_url_still_cited_by_another_remaining_added_exchange():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com", added_to_report=True),
+            *_web_exchange("ex-2", "https://a.com", added_to_report=True),  # same URL, different exchange
+        ],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+
+    _, report_possibly_stale = delete_chat_exchanges(session, ["ex-1"])
+
+    assert report_possibly_stale is True  # ex-1 itself was added_to_report
+    # ex-2 is still there, still added_to_report, still citing the URL.
+    assert session.report_approved_web_article_urls == {"https://a.com"}
+
+
+def test_delete_chat_exchanges_of_non_report_added_exchange_leaves_approved_set_unchanged():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com", added_to_report=True),
+            *_web_exchange("ex-2", "https://b.com", added_to_report=False),
+        ],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+
+    _, report_possibly_stale = delete_chat_exchanges(session, ["ex-2"])
+
+    assert report_possibly_stale is False
+    assert session.report_approved_web_article_urls == {"https://a.com"}
+
+
+def test_delete_chat_exchanges_does_not_touch_the_raw_web_articles_added_pool():
+    approved_article = _web_article("https://a.com", "A")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com"},
+        web_articles_added=[approved_article],
+    )
+
+    delete_chat_exchanges(session, ["ex-1"])
+
+    assert session.web_articles_added == [approved_article]  # raw pool, unaffected by pruning
+
+
+def test_delete_chat_exchanges_pruned_url_is_excluded_from_a_future_selective_regeneration():
+    approved_article = _web_article("https://a.com", "A")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com"},
+        web_articles_added=[approved_article],
+    )
+
+    delete_chat_exchanges(session, ["ex-1"])
+
+    resolved = resolve_approved_web_articles_for_regeneration(session, set())
+    assert resolved == []  # the revoked URL no longer resolves to anything
+
+
 def test_deleted_exchange_content_is_excluded_from_the_next_chat_turns_openai_messages():
     """curation-chat-delete Phase 3, requirement 4: the deleted exchange's
     content must not survive into a LATER turn's context -- confirmed by
@@ -1248,6 +1327,35 @@ def test_mark_exchanges_added_to_report_flips_only_the_targeted_assistant_entrie
     by_id = {t["exchange_id"]: t for t in session.chat_history if t["role"] == "assistant"}
     assert by_id["ex-1"]["added_to_report"] is True
     assert by_id["ex-2"]["added_to_report"] is False
+
+
+# --- chat-ux-report-semantics Phase B: the shared invariant helper ---
+
+def test_approved_web_article_urls_from_added_to_report_entries_only_counts_added_ones():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com", added_to_report=True),
+            *_web_exchange("ex-2", "https://b.com", added_to_report=False),
+        ],
+    )
+
+    assert approved_web_article_urls_from_added_to_report_entries(session) == {"https://a.com"}
+
+
+def test_prune_report_approved_web_article_urls_recomputes_from_scratch_not_intersect():
+    # Approved set has a URL nothing in chat_history cites at all (e.g.
+    # stale from a code path outside this test's scope) -- recompute
+    # replaces it wholesale rather than merely narrowing it.
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com", "https://orphaned.com"},
+    )
+
+    prune_report_approved_web_article_urls(session)
+
+    assert session.report_approved_web_article_urls == {"https://a.com"}
 
 
 # --- curation-chat-edit Phase 5: edit_chat_exchange() ---
@@ -1409,7 +1517,7 @@ def test_edit_chat_exchange_report_possibly_stale_false_when_nothing_truncated_w
     assert report_possibly_stale is False
 
 
-def test_edit_chat_exchange_leaves_report_approved_web_article_urls_unchanged():
+def test_edit_chat_exchange_prunes_approved_url_only_cited_by_the_truncated_exchange():
     papers = [_paper("p1", "RoCoFT")]
     session = PaperPoolSession(
         topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
@@ -1426,10 +1534,91 @@ def test_edit_chat_exchange_leaves_report_approved_web_article_urls_unchanged():
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
          patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    # chat-ux-report-semantics Phase B: superseded the old "Option A, never
+    # pruned" behavior -- editing away the only added-to-report exchange
+    # that cited this URL revokes it, so a future selective regeneration
+    # can't resurrect it.
+    assert report_possibly_stale is True
+    assert session.report_approved_web_article_urls == set()
+
+
+def test_edit_chat_exchange_keeps_approved_url_cited_by_a_remaining_added_exchange_before_the_edit_point():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-0", "https://a.com", added_to_report=True),  # before the edit point, untouched
+            *_web_exchange("ex-1", "https://a.com", added_to_report=True),  # will be truncated away
+        ],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert report_possibly_stale is True  # ex-1 itself was added_to_report
+    # ex-0 survives the truncation, still added_to_report, still citing it.
+    assert session.report_approved_web_article_urls == {"https://a.com"}
+
+
+def test_edit_chat_exchange_of_non_report_added_exchange_leaves_approved_set_unchanged():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-0", "https://a.com", added_to_report=True),
+            *_exchange("ex-1"),  # paper-only, not added_to_report -- the one being edited
+        ],
+        report_approved_web_article_urls={"https://a.com"},
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        _, report_possibly_stale = edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
+
+    assert report_possibly_stale is False
+    assert session.report_approved_web_article_urls == {"https://a.com"}
+
+
+def test_edit_chat_exchange_does_not_touch_the_raw_web_articles_added_pool():
+    papers = [_paper("p1", "RoCoFT")]
+    approved_article = _web_article("https://a.com", "A")
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=True)],
+        report_approved_web_article_urls={"https://a.com"},
+        web_articles_added=[approved_article],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fresh answer.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
         edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)
 
-    # Option A (see docs/architecture.md's Phase 5 section): never pruned.
-    assert session.report_approved_web_article_urls == {"https://a.com"}
+    assert session.web_articles_added == [approved_article]  # raw pool, unaffected by pruning
 
 
 def test_edit_chat_exchange_clears_pending_offer_state_even_though_it_was_set():
