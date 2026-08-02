@@ -376,6 +376,57 @@ def testcapped_history_is_a_no_op_below_the_cap():
     assert capped_history(history, max_turns=8) == history
 
 
+def testcapped_history_strips_extra_metadata_keys():
+    """curation-chat-metadata Phase 1: entries persisted with extra
+    keys (exchange_id/used_web_search/cited_web_articles/added_to_report)
+    must come back as plain {role, content} -- this is what's actually
+    handed to the model, so any extra key here would ride along into the
+    LLM-bound messages list (qa.py's _generate_node splices this return
+    value directly into `messages`)."""
+    history = [
+        {
+            "role": "user", "content": "what's new?", "exchange_id": "abc123",
+        },
+        {
+            "role": "assistant", "content": "Per [Web 1], ...", "exchange_id": "abc123",
+            "used_web_search": True,
+            "cited_web_articles": [{"url": "https://x.com", "title": "X"}],
+            "added_to_report": False,
+        },
+    ]
+
+    capped = capped_history(history, max_turns=8)
+
+    assert capped == [
+        {"role": "user", "content": "what's new?"},
+        {"role": "assistant", "content": "Per [Web 1], ..."},
+    ]
+    assert list(capped[0].keys()) == ["role", "content"]
+    assert list(capped[1].keys()) == ["role", "content"]
+
+
+def testcapped_history_does_not_mutate_the_original_list_or_dicts():
+    """The persisted history (session.history/chat_history) must keep its
+    full metadata -- only the returned copy handed to the LLM boundary is
+    stripped."""
+    original_assistant_turn = {
+        "role": "assistant", "content": "Per [Web 1], ...", "exchange_id": "abc123",
+        "used_web_search": True, "cited_web_articles": [{"url": "https://x.com", "title": "X"}],
+        "added_to_report": False,
+    }
+    history = [{"role": "user", "content": "what's new?", "exchange_id": "abc123"}, original_assistant_turn]
+    history_snapshot = [dict(turn) for turn in history]
+
+    capped = capped_history(history, max_turns=8)
+
+    # The original list still has its original two dicts, unchanged...
+    assert history == history_snapshot
+    # ...and the returned entries are NEW dict objects, not the same ones
+    # (so a caller mutating the capped copy can never corrupt the original).
+    assert capped[1] is not original_assistant_turn
+    assert "used_web_search" in original_assistant_turn  # untouched by capping
+
+
 def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
     # A long simulated conversation (12 prior turns, more than the 8-turn
     # cap) — only the last MAX_HISTORY_TURNS turns should reach the actual
@@ -443,5 +494,7 @@ if __name__ == "__main__":
     test_ask_does_not_short_circuit_the_trap_case_thanks_but_a_real_question()
     testcapped_history_keeps_only_last_n_turns()
     testcapped_history_is_a_no_op_below_the_cap()
+    testcapped_history_strips_extra_metadata_keys()
+    testcapped_history_does_not_mutate_the_original_list_or_dicts()
     test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model()
     print("All qa tests passed.")

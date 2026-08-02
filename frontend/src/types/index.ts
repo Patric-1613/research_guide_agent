@@ -41,6 +41,18 @@ export interface CitedWebArticleOut {
 export interface ChatTurn {
   role: 'user' | 'assistant'
   content: string
+  // curation-chat-metadata Phase 1: additive/defaulted on the backend --
+  // absent or default on any pre-Phase-1 entry. Optional here too (rather
+  // than required-with-defaults) so a client-optimistic message literal
+  // (e.g. ChatModePanel's pendingMessage echo, which by definition hasn't
+  // round-tripped through the backend yet) doesn't need to fake them.
+  // exchange_id links the user question and assistant answer of one
+  // exchange; used_web_search/cited_web_articles/added_to_report are
+  // per-answer (assistant only).
+  exchange_id?: string | null
+  used_web_search?: boolean
+  cited_web_articles?: CitedWebArticleOut[]
+  added_to_report?: boolean
 }
 
 export interface CurationTurnResponse {

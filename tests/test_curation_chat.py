@@ -278,8 +278,17 @@ def test_chat_turn_accept_records_a_curated_search_label_not_a_repeated_question
          patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
         chat_turn(session, "yes please", client=mock_client)
 
-    assert session.chat_history[-2] == {"role": "user", "content": 'Search the web for: "what\'s new in 2026?"'}
-    assert session.chat_history[-1] == {"role": "assistant", "content": "Per [Web 1], ..."}
+    # curation-chat-metadata Phase 1: exact dict equality no longer holds
+    # (both entries now also carry a real, randomly-generated exchange_id)
+    # -- stable fields checked exactly, exchange_id checked for shape/
+    # sharedness instead of a hardcoded value.
+    user_turn, assistant_turn = session.chat_history[-2], session.chat_history[-1]
+    assert user_turn["role"] == "user"
+    assert user_turn["content"] == 'Search the web for: "what\'s new in 2026?"'
+    assert assistant_turn["role"] == "assistant"
+    assert assistant_turn["content"] == "Per [Web 1], ..."
+    assert user_turn["exchange_id"]  # non-empty
+    assert user_turn["exchange_id"] == assistant_turn["exchange_id"]
     assert not any(turn["content"] == "what's new in 2026?" for turn in session.chat_history)
     assert not any(turn["content"] == "yes please" for turn in session.chat_history)
 
@@ -337,9 +346,10 @@ def test_chat_turn_accept_resolves_a_follow_up_fragment_into_a_standalone_search
         chat_turn(session, "yes", client=mock_client)
 
     mock_search.assert_called_once_with("Recent invasive species sightings in the UK in 2026")
-    assert session.chat_history[-2] == {
-        "role": "user", "content": 'Search the web for: "Recent invasive species sightings in the UK in 2026"',
-    }
+    user_turn = session.chat_history[-2]
+    assert user_turn["role"] == "user"
+    assert user_turn["content"] == 'Search the web for: "Recent invasive species sightings in the UK in 2026"'
+    assert user_turn["exchange_id"]  # curation-chat-metadata Phase 1: real, non-empty id
     assert not any(turn["content"] == "I mean very recent like in the 2026?" for turn in session.chat_history)
 
 
@@ -405,7 +415,10 @@ def test_chat_turn_decline_clears_offer_without_web_search():
     assert session.pending_web_offer is None
     assert result["web_offer_declined"] is True
     assert result["answerable"] is True  # qa.py's own non-substantive path marks these answerable=True
-    assert session.chat_history[-2] == {"role": "user", "content": "no thanks"}
+    user_turn = session.chat_history[-2]
+    assert user_turn["role"] == "user"
+    assert user_turn["content"] == "no thanks"
+    assert user_turn["exchange_id"]  # curation-chat-metadata Phase 1: real, non-empty id
 
 
 def test_chat_turn_decline_with_trailing_real_question_does_not_silently_drop_it():
@@ -698,10 +711,17 @@ def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
     assert session.report is updated_report
     assert session.report_covered_web_article_count == 1
     assert result["report_updated"] is True
-    assert session.chat_history[-2:] == [
-        {"role": "user", "content": "Update the report to include 1 new source"},
-        {"role": "assistant", "content": result["answer"]},
-    ]
+    user_turn, assistant_turn = session.chat_history[-2], session.chat_history[-1]
+    assert user_turn["role"] == "user"
+    assert user_turn["content"] == "Update the report to include 1 new source"
+    assert assistant_turn["role"] == "assistant"
+    assert assistant_turn["content"] == result["answer"]
+    assert user_turn["exchange_id"]  # curation-chat-metadata Phase 1: real, non-empty id
+    assert user_turn["exchange_id"] == assistant_turn["exchange_id"]
+    # This answer carries no citations at all -- not a web-search answer.
+    assert assistant_turn["used_web_search"] is False
+    assert assistant_turn["cited_web_articles"] == []
+    assert assistant_turn["added_to_report"] is False
 
 
 def test_chat_turn_report_update_decline_clears_offer_without_regenerating():
@@ -822,3 +842,151 @@ def test_chat_turn_report_update_unrelated_message_clears_offer_and_answers_new_
     assert [p.paper_id for p in result["cited_papers"]] == ["p2"]
     assert "report_update_offer_made" not in result
     assert "report_update_declined" not in result
+
+
+# --- curation-chat-metadata Phase 1: persisted per-exchange metadata ---
+
+def test_chat_turn_attaches_a_shared_exchange_id_to_both_entries_of_a_plain_answer():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fine [Paper 1].", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "what is RoCoFT?", client=mock_client)
+
+    assert len(session.chat_history) == 2
+    user_turn, assistant_turn = session.chat_history
+    assert user_turn["exchange_id"] is not None
+    assert isinstance(user_turn["exchange_id"], str) and user_turn["exchange_id"] != ""
+    assert user_turn["exchange_id"] == assistant_turn["exchange_id"]
+
+
+def test_chat_turn_assistant_entry_marks_used_web_search_and_cites_when_web_sources_were_actually_cited():
+    """retrieved_web_articles is just session.web_articles (qa.py's own
+    _retrieve_node) -- pre-populating web_articles_added is enough to make
+    a web citation reachable without going through the offer/accept flow."""
+    papers = [_paper("p1", "RoCoFT")]
+    web_article = WebArticle(
+        title="2026 roundup", url="https://x.com/roundup", snippet="s",
+        published_date=None, source_domain="x.com",
+    )
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[web_article],
+    )
+    schema = _build_answer_schema(["p1"], ["https://x.com/roundup"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], ...", cited_paper_ids=[], cited_web_urls=["https://x.com/roundup"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[]):
+        chat_turn(session, "what's new?", client=mock_client)
+
+    assistant_turn = session.chat_history[-1]
+    assert assistant_turn["used_web_search"] is True
+    assert assistant_turn["cited_web_articles"] == [{"url": "https://x.com/roundup", "title": "2026 roundup"}]
+    assert assistant_turn["added_to_report"] is False  # Phase 1: never set True by any code path yet
+
+
+def test_chat_turn_paper_only_answer_has_used_web_search_false_and_no_cited_web_articles():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fine [Paper 1].", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "what is RoCoFT?", client=mock_client)
+
+    assistant_turn = session.chat_history[-1]
+    assert assistant_turn["used_web_search"] is False
+    assert assistant_turn["cited_web_articles"] == []
+    assert assistant_turn["added_to_report"] is False
+
+
+def test_second_chat_turn_after_enriched_first_turn_sends_only_role_and_content_to_openai():
+    """The actual sanitization regression test: after a first turn leaves
+    an enriched (exchange_id/used_web_search/cited_web_articles/
+    added_to_report) assistant entry in session.chat_history, a SECOND
+    turn must still work (proving capped_history's new stripping doesn't
+    break the multi-turn path at all) -- and, critically, every message
+    dict actually sent to the model on that second turn must contain
+    ONLY {role, content}, proving the enriched history never reaches the
+    OpenAI call."""
+    papers = [_paper("p1", "RoCoFT")]
+    web_article = WebArticle(
+        title="2026 roundup", url="https://x.com/roundup", snippet="s",
+        published_date=None, source_domain="x.com",
+    )
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[web_article],
+    )
+    schema_with_web = _build_answer_schema(["p1"], ["https://x.com/roundup"])
+    schema_paper_only = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parse_response(
+            schema_with_web, answerable=True, answer="Per [Web 1], ...",
+            cited_paper_ids=[], cited_web_urls=["https://x.com/roundup"],
+        ),
+        _mock_parse_response(
+            schema_paper_only, answerable=True, answer="Rows and columns [Paper 1].", cited_paper_ids=["p1"],
+        ),
+    ]
+    # condense_question's own call -- exercised on the second turn only,
+    # since the first turn has no prior history to condense against.
+    mock_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="what does RoCoFT update?"))],
+        usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "what's new?", client=mock_client)
+        # First turn's assistant entry is now enriched (used_web_search=True,
+        # cited_web_articles populated) -- confirm before the second call.
+        assert session.chat_history[-1]["used_web_search"] is True
+
+        chat_turn(session, "what does it update?", client=mock_client)
+
+    assert len(session.chat_history) == 4
+
+    # The SECOND generate_answer call's messages -- must be clean.
+    second_generate_messages = mock_client.chat.completions.parse.call_args_list[-1].kwargs["messages"]
+    for message in second_generate_messages:
+        assert set(message.keys()) == {"role", "content"}, f"unexpected keys in {message!r}"
+
+    # condense_question's own call also only ever received role/content
+    # (built from a transcript string, not the raw dicts -- confirmed
+    # here too rather than assumed).
+    condense_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    for message in condense_messages:
+        assert set(message.keys()) == {"role", "content"}
+
+    # The first turn's persisted history STILL has its full metadata --
+    # sanitization only strips the LLM-bound copy, never the original.
+    assert session.chat_history[1]["used_web_search"] is True
+    assert session.chat_history[1]["cited_web_articles"] == [{"url": "https://x.com/roundup", "title": "2026 roundup"}]

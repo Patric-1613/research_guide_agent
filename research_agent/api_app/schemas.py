@@ -108,17 +108,6 @@ class SummarizeResponse(BaseModel):
     web_summary: WebSummaryOut | None = None
 
 
-class ChatTurn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class ChatRequest(BaseModel):
-    search_id: int
-    question: str
-    history: list[ChatTurn] = []
-
-
 class CitedPaperOut(BaseModel):
     paper_id: str
     title: str
@@ -127,6 +116,34 @@ class CitedPaperOut(BaseModel):
 class CitedWebArticleOut(BaseModel):
     url: str
     title: str
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    # curation-chat-metadata Phase 1: all additive, all defaulted -- a
+    # pre-Phase-1 {role, content} dict still constructs cleanly via
+    # ChatTurn(**turn), with every field below at its default. Only
+    # curation_chat.py's chat_turn() populates these (on curation
+    # sessions); the separate one-shot pipeline's /chat (ChatRequest.history
+    # below) never sets them, so its entries stay at these defaults too.
+    #
+    # exchange_id: shared by the user question and assistant answer of ONE
+    # chat_turn() call -- None for entries that predate this phase.
+    exchange_id: str | None = None
+    # used_web_search / cited_web_articles / added_to_report are per-ANSWER
+    # metadata -- only ever set on the assistant entry of a pair.
+    used_web_search: bool = False
+    cited_web_articles: list[CitedWebArticleOut] = Field(default_factory=list)
+    # Always False in Phase 1 -- no code path sets this True yet (that's a
+    # later phase's "Add to report" action).
+    added_to_report: bool = False
+
+
+class ChatRequest(BaseModel):
+    search_id: int
+    question: str
+    history: list[ChatTurn] = []
 
 
 class ChatResponse(BaseModel):

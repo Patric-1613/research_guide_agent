@@ -995,9 +995,22 @@ def test_curation_chat_answers_and_persists_history_across_a_separate_get_reques
     assert body["cited_papers"] == [{"paper_id": pick_ids[0], "title": "Paper 0"}]
     assert len(body["chat_history"]) == 2
 
+    # curation-chat-metadata Phase 1: ChatTurn now always serializes its
+    # (additive, defaulted) metadata fields too -- this fake (which mocks
+    # api.chat_turn entirely, bypassing curation_chat.py's real metadata
+    # attachment) only ever appends old-shape {role, content} dicts, so
+    # every new field comes back at its default, not a hardcoded/omitted
+    # value. This is the exact "old chat_history entries still serialize
+    # through ChatTurn/API" backward-compat case.
     assert state_resp.json()["chat_history"] == [
-        {"role": "user", "content": "what does paper 0 say?"},
-        {"role": "assistant", "content": "Per [Paper 1], X is true."},
+        {
+            "role": "user", "content": "what does paper 0 say?",
+            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+        },
+        {
+            "role": "assistant", "content": "Per [Paper 1], X is true.",
+            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+        },
     ]
 
 

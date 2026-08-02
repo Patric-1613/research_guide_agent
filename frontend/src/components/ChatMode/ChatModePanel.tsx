@@ -38,6 +38,17 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }, [state.chat_history.length, pendingMessage])
 
+  // curation-chat-metadata Phase 1: shown once, next to the FIRST
+  // web-backed assistant answer only -- purely derived from chat_history
+  // (the first matching index), not separate dismiss-tracking state, so
+  // it can never reappear at a later web-backed message. "Session-local"
+  // per spec: nothing here persists across a refresh, matching every
+  // other client-only piece of state in this app (turnEvents,
+  // lastChatSearchMeta) -- a refresh may show it again if chat_history
+  // already had a web-backed answer before the refresh, which is
+  // explicitly acceptable for this phase.
+  const firstWebBackedIndex = state.chat_history.findIndex((t) => t.role === 'assistant' && t.used_web_search)
+
   const offerLabel = state.pending_web_offer
     ? 'Search the web for more on this?'
     : state.pending_report_update
@@ -78,7 +89,15 @@ export function ChatModePanel({ state, disabled, onSendMessage, lastSearchMeta }
           <p className="text-center text-sm text-text-muted">Report ready. Ask a question about the selected papers below.</p>
         )}
         {state.chat_history.map((turn, i) => (
-          <ChatMessage key={i} turn={turn} />
+          <div key={i}>
+            <ChatMessage turn={turn} />
+            {i === firstWebBackedIndex && (
+              <p data-testid="web-metadata-hint" className="mt-1 text-center text-xs italic text-text-muted">
+                This answer used web sources — report-inclusion controls will be added to the message menu in a
+                future update.
+              </p>
+            )}
+          </div>
         ))}
         {lastSearchMeta && (
           <p data-testid="web-search-meta-note" className="text-center text-xs italic text-text-muted">

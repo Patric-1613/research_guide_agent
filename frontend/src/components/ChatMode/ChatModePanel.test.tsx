@@ -160,4 +160,46 @@ describe('ChatModePanel', () => {
     render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
     expect(screen.queryByTestId('web-search-meta-note')).not.toBeInTheDocument()
   })
+
+  it('curation-chat-metadata Phase 1: shows the one-time hint next to the first web-backed assistant answer', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'what is this about?' },
+        { role: 'assistant', content: 'It is about X [Paper 1].', used_web_search: false, added_to_report: false },
+        { role: 'user', content: 'anything recent?' },
+        { role: 'assistant', content: 'Per [Web 1], ...', used_web_search: true, added_to_report: false },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    expect(screen.getByTestId('web-metadata-hint')).toHaveTextContent(
+      'This answer used web sources — report-inclusion controls will be added to the message menu in a future update.',
+    )
+  })
+
+  it('curation-chat-metadata Phase 1: no hint at all when no assistant answer has used web search', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'what is this about?' },
+        { role: 'assistant', content: 'It is about X [Paper 1].', used_web_search: false, added_to_report: false },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    expect(screen.queryByTestId('web-metadata-hint')).not.toBeInTheDocument()
+  })
+
+  it('curation-chat-metadata Phase 1: the hint does not repeat on a later web-backed answer', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1 [Web 1]', used_web_search: true, added_to_report: false },
+        { role: 'user', content: 'q2' },
+        { role: 'assistant', content: 'a2 [Web 1]', used_web_search: true, added_to_report: false },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} />)
+
+    expect(screen.getAllByTestId('web-metadata-hint')).toHaveLength(1)
+  })
 })

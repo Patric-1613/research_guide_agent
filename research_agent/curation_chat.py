@@ -35,6 +35,7 @@ yes/no on some later, unrelated turn.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Literal
 
 from openai import OpenAI
@@ -286,7 +287,7 @@ def _accept_report_update(session: PaperPoolSession, message: str, client: OpenA
     }
 
 
-def chat_turn(
+def _chat_turn_impl(
     session: PaperPoolSession,
     message: str,
     client: OpenAI | None = None,
@@ -379,3 +380,50 @@ def chat_turn(
 
     result = ask_in_session(session, message, client=client, top_k=top_k)
     return _maybe_set_web_offer(session, message, result)
+
+
+def _attach_exchange_metadata(session: PaperPoolSession, result: dict) -> None:
+    """curation-chat-metadata Phase 1: stamps the exchange _chat_turn_impl
+    just appended with a shared exchange_id and, on the assistant entry
+    only, persisted per-answer metadata (used_web_search,
+    cited_web_articles, added_to_report) later phases will read and
+    (eventually) write.
+
+    Invariant this relies on: exactly ONE user entry and ONE assistant
+    entry get appended per _chat_turn_impl call, in that order, ending up
+    at chat_history[-2] and chat_history[-1] -- guaranteed by every
+    internal branch (offer accept/decline/other, report-update accept/
+    decline/other, or the plain fallback; see qa.ask()'s and this
+    module's own docstrings/comments, which already rely on this same
+    fact). Pre-Phase-1 entries earlier in chat_history are never touched
+    -- only the pair this call just produced.
+    """
+    if len(session.chat_history) < 2:
+        return
+    exchange_id = uuid.uuid4().hex
+    session.chat_history[-2]["exchange_id"] = exchange_id
+    assistant_turn = session.chat_history[-1]
+    assistant_turn["exchange_id"] = exchange_id
+    cited_web_articles = result.get("cited_web_articles") or []
+    assistant_turn["used_web_search"] = bool(cited_web_articles)
+    assistant_turn["cited_web_articles"] = [{"url": a.url, "title": a.title} for a in cited_web_articles]
+    assistant_turn["added_to_report"] = False
+
+
+def chat_turn(
+    session: PaperPoolSession,
+    message: str,
+    client: OpenAI | None = None,
+    top_k: int = qa.TOP_K_DEFAULT,
+) -> dict:
+    """Public entry point, same signature/behavior as before Phase 1.
+    Thin wrapper around _chat_turn_impl (which holds the real
+    offer-and-decide logic, unchanged) so metadata attachment happens in
+    exactly one place regardless of which of _chat_turn_impl's several
+    internal branches produced the result, and so a ValueError raised by
+    _chat_turn_impl's own stage guard propagates before any chat_history
+    mutation is attempted here.
+    """
+    result = _chat_turn_impl(session, message, client=client, top_k=top_k)
+    _attach_exchange_metadata(session, result)
+    return result

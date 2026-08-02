@@ -247,8 +247,24 @@ def capped_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> l
     always grows in pairs — see _no_sources_result and the end of ask()
     below), dropping older turns rather than letting the prompt sent on
     every call grow without bound as a conversation lengthens. A no-op for
-    any conversation shorter than the cap."""
-    return history[-2 * max_turns:]
+    any conversation shorter than the cap.
+
+    curation-chat-metadata Phase 1: this is the ONE choke point every
+    LLM-bound use of history goes through -- both ask()'s own
+    recent_history (spliced directly into _generate_node's `messages`,
+    sent to the OpenAI call) and curation_chat.py's
+    condense_question(capped_history(...)) call. A caller's PERSISTED
+    history (session.history / PaperPoolSession.chat_history) may carry
+    extra per-message metadata (exchange_id, used_web_search,
+    cited_web_articles, added_to_report, ...) that must never reach an
+    LLM prompt -- so this always returns brand-new dicts containing only
+    {role, content}, regardless of what extra keys the input dicts have.
+    Never mutates the input list or its dicts in place: the original,
+    persisted history keeps its full metadata untouched; only this
+    returned copy is stripped.
+    """
+    sliced = history[-2 * max_turns:]
+    return [{"role": turn["role"], "content": turn["content"]} for turn in sliced]
 
 
 # semantic-classify-message: replaces the old exact-match allowlist with
