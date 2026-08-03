@@ -35,12 +35,25 @@ structurally impossible unless that URL was actually retrieved this turn,
 the same guarantee level as paper citations, not a weaker one. The two
 corpora use separate marker namespaces in the answer text ([Paper N] vs
 [Web N], not a shared [N]) specifically so a user can tell a peer-reviewed
-source from a web source at a glance, per the brief. Unlike papers, the web
-article pool isn't re-ranked by embedding similarity for each question — at
-the scale this pool actually runs at (3-4 articles per session, the same
-"small enough that ranking doesn't earn its keep" scale reasoning
-summarize.py already applies to generate_web_summary()), the whole pool is
-just included in context directly.
+source from a web source at a glance, per the brief.
+
+curation-chat-web-relevance: the web article pool is NOT re-ranked/top-k'd
+the way papers are (still true — at 3-4 articles per session, per
+web_search.py's default, ranking the whole pool doesn't earn its keep),
+but it IS now relevance-filtered per question via the filter_web_relevance
+graph node (see build_qa_graph). Superseded prior behavior: earlier, the
+entire accumulated web pool was included in context on every turn
+regardless of relevance to the current question — once one web search had
+ever been accepted in a session, nearly every later answer ended up citing
+something from that stale pool (used_web_search is derived from whatever
+got cited), and a genuinely new, unrelated follow-up rarely came back
+answerable=False anymore, so curation_chat.py's web-search offer stopped
+re-triggering. filter_web_relevance narrows the pool down to articles
+actually relevant to the current (condensed) question before generation
+ever sees them, fixing both symptoms without touching the offer-and-decide
+flow itself (curation_chat.py) or route_retrieved's own branching
+condition (still a presence check, not a relevance check — see that
+function's docstring).
 
 qa-langgraph-conversion: ask() is now a thin wrapper around a compiled
 LangGraph StateGraph (_DEFAULT_GRAPH) instead of a plain function — laying
@@ -333,6 +346,18 @@ _NON_SUBSTANTIVE_CONTENT_OVERRIDE_WORDS = {
 # re-embedded on every incoming message.
 _reference_embeddings_cache: dict[str, list[tuple[str, list[float]]]] | None = None
 
+# curation-chat-web-relevance: a STARTING threshold, not an empirically
+# tuned one -- unlike _NON_SUBSTANTIVE_SIMILARITY_THRESHOLD above (which
+# has a real measured dataset behind it, see that constant's own
+# comment), this one has not yet been calibrated against real question/
+# web-article pairs. 0.25 is a reasoned starting point (well below the
+# near-duplicate-phrase threshold above, since "topically related" is a
+# much looser bar than "near-duplicate trivial message"), but genuinely
+# needs a future calibration pass -- e.g. via a live script in the style
+# of scripts/test_semantic_classify_live.py -- before being trusted as
+# final.
+_WEB_ARTICLE_RELEVANCE_THRESHOLD = 0.25
+
 
 def _contains_content_override_word(normalized: str) -> bool:
     for token in normalized.split():
@@ -575,16 +600,89 @@ def _retrieve_node(state: QAState) -> dict:
         )
         retrieved_papers = [p for p, _ in retrieved]
 
-    # Web articles aren't re-ranked per question — the pool is small enough
-    # (3-4 per session, per web_search.py's default) that including all of
-    # it is simpler and no less relevant than embedding-ranking it would be.
+    # curation-chat-web-relevance: gathers the WHOLE pool here, unfiltered
+    # -- unlike the stale comment this replaced, it is NOT simply "included
+    # as-is" anymore. The very next node (filter_web_relevance) narrows
+    # this down to the subset actually relevant to `query` before anything
+    # downstream (route_retrieved/generate_answer) ever sees it. Kept as a
+    # separate node rather than inlined here so this function stays a pure
+    # "fetch raw candidates from each corpus" step -- see
+    # _filter_web_relevance_node's own docstring for why the split.
     retrieved_web_articles = list(session.web_articles)
     return {"retrieved_papers": retrieved_papers, "retrieved_web_articles": retrieved_web_articles}
 
 
+def _filter_relevant_web_articles(
+    query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
+) -> list[WebArticle]:
+    """curation-chat-web-relevance: the actual filtering logic, kept as its
+    own small, directly-patchable function (not inlined into the graph
+    node below) specifically so existing/future tests that don't care
+    about relevance filtering can patch this one call site as a pass-
+    through, rather than needing to mock the OpenAI embeddings client
+    itself on every test that happens to populate a non-empty web-article
+    pool.
+
+    Reuses _embed_with_cache/_cosine_similarity verbatim -- the exact same
+    embedding pathway (same persistent, content-hash-keyed cache DB) that
+    classify_message's non-substantive check already uses, not a second
+    embedding mechanism. `query` is expected to be the SAME text already
+    driving paper retrieval this turn (state["standalone_query"] or
+    state["question"]) so papers and web articles are judged against one
+    consistent query representation. Article text is title+snippet,
+    matching exactly what _generate_node already shows the model in its
+    context, so "relevant enough to keep" and "what the model actually
+    sees" never diverge.
+
+    Never mutates `articles` -- always returns a new list (or the same
+    object back unchanged on the empty/fail-open paths below), so a
+    caller holding onto the original list is never surprised.
+
+    Fails OPEN (returns `articles` unchanged) on any exception from the
+    embedding calls -- same defensive posture as this module's existing
+    search_web/condense_question try/except guards: a transient
+    embedding-API hiccup must degrade to today's "include everything"
+    behavior, not silently drop every web citation for the turn.
+    """
+    if not articles:
+        return articles
+    try:
+        query_vector = _embed_with_cache(client, query)
+        return [
+            article for article in articles
+            if _cosine_similarity(
+                query_vector, _embed_with_cache(client, f"{article.title}\n{article.snippet or ''}"),
+            ) >= threshold
+        ]
+    except Exception:
+        logger.warning(
+            "_filter_relevant_web_articles: embedding call raised unexpectedly for query %r -- "
+            "falling back to the full, unfiltered article pool", query, exc_info=True,
+        )
+        return articles
+
+
+def _filter_web_relevance_node(state: QAState) -> dict:
+    """curation-chat-web-relevance: the graph node wrapping
+    _filter_relevant_web_articles above -- deliberately a thin wrapper, not
+    where the logic itself lives, so the filtering algorithm stays testable
+    independent of LangGraph state plumbing. Runs unconditionally between
+    retrieve and route_retrieved (not a conditional edge -- it's a
+    transformation of retrieved_web_articles, not a branch decision;
+    route_retrieved's own branching condition is unchanged, just now fed
+    higher-quality input)."""
+    query = state["standalone_query"] or state["question"]
+    filtered = _filter_relevant_web_articles(query, state["retrieved_web_articles"], state["client"])
+    return {"retrieved_web_articles": filtered}
+
+
 def _route_retrieved(state: QAState) -> str:
     """Second routing decision: today's second "nothing retrieved this
-    turn" guard, now an edge off retrieve instead of an inline `if`."""
+    turn" guard, now an edge off filter_web_relevance instead of an inline
+    `if`. Unchanged by curation-chat-web-relevance: still a presence check
+    (is there anything retrieved at all), not a relevance check -- the
+    filter node upstream is what changed retrieved_web_articles'
+    *contents*, not this branch's own condition."""
     if not state["retrieved_papers"] and not state["retrieved_web_articles"]:
         return "no_sources"
     return "generate"
@@ -695,17 +793,32 @@ def build_qa_graph(checkpointer: BaseCheckpointSaver | None = None) -> object:
                                 ├─"condense"──► condense_question ─┐
                                 │                                   │
                                 └─"retrieve"(first turn)────────────┤
+                                                                     ▼
+                                                                  retrieve
+                                                                     │
+                                                          filter_web_relevance
                                                                      │
                                                      route_retrieved │
                                                ┌─"no_sources"────────┤
                                                ▼                      │
                                       no_sources_empty ─► END          └─"generate"─► generate_answer ─► END
+
+    curation-chat-web-relevance: filter_web_relevance sits between
+    retrieve and route_retrieved -- it narrows retrieved_web_articles down
+    to the subset relevant to this turn's query (see
+    _filter_web_relevance_node) BEFORE route_retrieved's own branching
+    condition (unchanged) or generate_answer ever see it. This is a
+    straight-line transformation, not a new conditional edge -- the only
+    conditional edge downstream of retrieve is still route_retrieved's
+    existing no_sources/generate branch, just now fed higher-quality
+    input.
     """
     graph = StateGraph(QAState)
     graph.add_node("classify_message", _classify_node)
     graph.add_node("non_substantive_response", _non_substantive_node)
     graph.add_node("condense_question", _condense_node)
     graph.add_node("retrieve", _retrieve_node)
+    graph.add_node("filter_web_relevance", _filter_web_relevance_node)
     graph.add_node("generate_answer", _generate_node)
     graph.add_node("no_sources_initial", _no_sources_initial_node)
     graph.add_node("no_sources_empty", _no_sources_empty_node)
@@ -718,7 +831,8 @@ def build_qa_graph(checkpointer: BaseCheckpointSaver | None = None) -> object:
         "retrieve": "retrieve",
     })
     graph.add_edge("condense_question", "retrieve")
-    graph.add_conditional_edges("retrieve", _route_retrieved, {
+    graph.add_edge("retrieve", "filter_web_relevance")
+    graph.add_conditional_edges("filter_web_relevance", _route_retrieved, {
         "no_sources": "no_sources_empty",
         "generate": "generate_answer",
     })

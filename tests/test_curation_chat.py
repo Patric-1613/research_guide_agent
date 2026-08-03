@@ -941,6 +941,71 @@ def test_chat_turn_paper_only_answer_has_used_web_search_false_and_no_cited_web_
     assert assistant_turn["added_to_report"] is False
 
 
+# --- curation-chat-web-relevance: stale web_articles_added no longer
+# leaks into a later, unrelated turn ---
+
+def test_chat_turn_used_web_search_false_when_stale_web_pool_exists_but_is_filtered_out():
+    """The direct regression test for the reported bug: a session with a
+    NON-EMPTY web_articles_added (from an earlier, unrelated accepted
+    search) must not tag a later, unrelated answer as used_web_search=True
+    just because the stale pool exists -- qa.py's filter_web_relevance
+    node (patched here at its own seam, not the embedding math) is what
+    keeps it out of this turn's cited_web_articles."""
+    papers = [_paper("p1", "AI Risk Tiering")]
+    stale = WebArticle(title="Stale roundup", url="https://stale.com", snippet="s", published_date=None, source_domain="x.com")
+    session = PaperPoolSession(
+        topic="ai risk", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[stale],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Paper 1], ...", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", return_value=[]):
+        chat_turn(session, "is jailbreaking covered?", client=mock_client)
+
+    assistant_turn = session.chat_history[-1]
+    assert assistant_turn["used_web_search"] is False
+    assert assistant_turn["cited_web_articles"] == []
+
+
+def test_chat_turn_web_search_offer_retriggers_when_stale_web_pool_filtered_out_and_papers_insufficient():
+    """The other direct regression test: once the stale web pool no
+    longer props up a false answerable=True, a genuinely unanswerable
+    follow-up correctly re-arms the web-search offer -- proving the
+    offer-and-decide mechanism (unchanged in this phase) starts working
+    again as a side effect of cleaner input, not because
+    _maybe_set_web_offer itself was touched."""
+    papers = [_paper("p1", "AI Risk Tiering")]
+    stale = WebArticle(title="Stale roundup", url="https://stale.com", snippet="s", published_date=None, source_domain="x.com")
+    session = PaperPoolSession(
+        topic="ai risk", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[stale],
+    )
+    schema = _build_answer_schema(["p1"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=False, answer="Not covered by the retrieved papers.", cited_paper_ids=[],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", return_value=[]):
+        result = chat_turn(session, "is jailbreaking covered?", client=mock_client)
+
+    assert session.pending_web_offer == {"question": "is jailbreaking covered?"}
+    assert result["web_offer_made"] is True
+    assert result["answer"].endswith("Would you like me to search the web for more on this?")
+
+
 def test_second_chat_turn_after_enriched_first_turn_sends_only_role_and_content_to_openai():
     """The actual sanitization regression test: after a first turn leaves
     an enriched (exchange_id/used_web_search/cited_web_articles/

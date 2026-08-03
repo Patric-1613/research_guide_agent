@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from unittest.mock import patch
 
-from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, condense_question, capped_history, _renumber_citation_markers, ask
+from research_agent.qa import MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, condense_question, capped_history, _renumber_citation_markers, _filter_relevant_web_articles, ask
 from research_agent.schema import Paper, WebArticle
 
 
@@ -172,6 +172,112 @@ def test_ask_forces_empty_web_citations_when_model_marks_unanswerable():
 
     assert result["answerable"] is False
     assert result["cited_web_articles"] == []  # forced empty despite model returning a url
+
+
+# --- curation-chat-web-relevance: _filter_relevant_web_articles ---
+
+def test_filter_relevant_web_articles_keeps_relevant_and_removes_stale_articles():
+    """Deterministic via patched embeddings, not a live API call --
+    real cosine-similarity behavior against actual questions/articles is
+    a separate calibration concern (see qa.py's own threshold comment),
+    not what this test proves. This test proves the filtering LOGIC:
+    given known vectors, the article whose embedding points the same
+    direction as the query survives, the orthogonal one doesn't."""
+    query = "is jailbreaking covered?"
+    relevant = _web_article("https://relevant.com", "Jailbreak coverage")
+    stale = _web_article("https://stale.com", "Unrelated roundup")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{relevant.title}\n{relevant.snippet}": [1.0, 0.0],  # same direction -- similarity 1.0
+        f"{stale.title}\n{stale.snippet}": [0.0, 1.0],  # orthogonal -- similarity 0.0
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [relevant, stale], MagicMock())
+
+    assert kept == [relevant]
+
+
+def test_filter_relevant_web_articles_returns_original_articles_on_embedding_exception():
+    """Fail OPEN, not closed -- same defensive posture as this module's
+    existing search_web/condense_question try/except guards. Also proves
+    the original list itself is returned (not a copy), matching the
+    'never mutate the original list' contract trivially since nothing
+    about it is touched on this path."""
+    articles = [_web_article("https://a.com", "A"), _web_article("https://b.com", "B")]
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = _filter_relevant_web_articles("some query", articles, MagicMock())
+
+    assert result == articles
+    assert result is articles
+
+
+def test_filter_relevant_web_articles_empty_list_is_a_noop_with_no_embedding_calls():
+    with patch("research_agent.qa._embed_with_cache") as mock_embed:
+        result = _filter_relevant_web_articles("some query", [], MagicMock())
+
+    assert result == []
+    mock_embed.assert_not_called()
+
+
+def test_ask_stale_web_pool_filtered_out_is_not_passed_into_the_model_prompt_for_unrelated_question():
+    """End-to-end through ask()'s real graph (filter_web_relevance patched
+    at the seam, not the embedding math -- that's covered by the direct
+    unit tests above): proves the WIRING -- once the filter says "nothing
+    relevant," the stale article's content never reaches the model's
+    prompt, even though it's still sitting in session.web_articles."""
+    paper = _paper("p1", "AI Risk Tiering")
+    stale = _web_article("https://stale.com", "Stale roundup")
+    session = ChatSession(papers=[paper], web_articles=[stale])
+    schema = _build_answer_schema(["p1"], None)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=False, answer="Not covered by the retrieved papers.", cited_paper_ids=[],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", return_value=[]):
+        result = ask(session, "is jailbreaking covered?", client=mock_client)
+
+    assert result["retrieved_web_articles"] == []
+    assert result["cited_web_articles"] == []
+    generate_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in generate_messages)
+    assert "Stale roundup" not in joined
+    assert "https://stale.com" not in joined
+
+
+def test_ask_mixed_web_pool_passes_only_the_relevant_article_to_the_model_prompt():
+    paper = _paper("p1", "AI Risk Tiering")
+    relevant = _web_article("https://relevant.com", "Fresh relevant article")
+    stale = _web_article("https://stale.com", "Stale roundup")
+    session = ChatSession(papers=[paper], web_articles=[stale, relevant])
+    schema = _build_answer_schema(["p1"], ["https://relevant.com"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], the latest development is X.",
+        cited_paper_ids=[], cited_web_urls=["https://relevant.com"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", return_value=[relevant]):
+        result = ask(session, "what's the latest on this?", client=mock_client)
+
+    generate_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in generate_messages)
+    assert "Fresh relevant article" in joined
+    assert "Stale roundup" not in joined
+    assert len(result["cited_web_articles"]) == 1
+    assert result["cited_web_articles"][0].url == "https://relevant.com"
 
 
 def test_ask_forces_empty_citations_when_model_marks_unanswerable():
