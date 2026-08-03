@@ -294,6 +294,131 @@ def test_report_sections_survive_serialize_deserialize_when_present():
         assert loaded.report["sections"][0]["reference_numbers"] == [1]
 
 
+# --- report-quality Phase R2C: report_template + 8-section round-trip fix ---
+
+def test_report_template_survives_serialize_deserialize():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        report = {
+            "findings": {"content": "F", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [],
+            "report_template": "expert",
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-template", cp)
+            loaded = load_curation_session("session-report-template", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert loaded.report["report_template"] == "expert"
+
+
+def test_report_all_eight_analytical_sections_survive_serialize_deserialize_with_cited_papers_and_web_articles():
+    """report-quality Phase R2C serialization fix: previously only the 3
+    legacy keys (findings/limitations/future_scope) got their full
+    {content, cited_papers, cited_web_articles, reference_numbers} dict
+    reconstructed on load -- the 5 non-legacy-mapped Analytical keys
+    (executive_summary, introduction_scope, methodology_landscape,
+    gap_analysis, conclusion) silently vanished as top-level dict keys
+    after a save/load round trip, which meant report.py's own citation-
+    preservation helpers could never find prior citations for them on
+    any regeneration reached through the real HTTP API (every request
+    reloads the session fresh from the checkpointer -- there is no
+    in-process cache). This proves all 8 keys, not just the 3 legacy
+    ones, now round-trip intact -- including a web citation on one of
+    the previously-dropped keys -- through real SQLite."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        p0, p1 = _paper("p0"), _paper("p1")
+        web_article = WebArticle(
+            title="A Survey", url="https://example.com/survey",
+            snippet="a snippet", published_date="2024-01-01", source_domain="example.com",
+        )
+
+        def section(content, papers, articles=None, refs=None):
+            return {
+                "content": content, "cited_papers": papers,
+                "cited_web_articles": articles or [], "reference_numbers": refs or [],
+            }
+
+        report = {
+            "executive_summary": section("Exec.", [p0], refs=[1]),
+            "introduction_scope": section("Intro.", []),
+            "thematic_findings": section("Findings.", [p0, p1], refs=[1, 2]),
+            "methodology_landscape": section("Methods.", []),
+            "contradictions_open_debates": section("Debates.", []),
+            "gap_analysis": section("Gaps.", [p1], [web_article], refs=[2, 3]),
+            "future_research_directions": section("Future.", []),
+            "conclusion": section("Done.", []),
+            "findings": section("Findings.", [p0, p1], refs=[1, 2]),
+            "limitations": section("Debates.", []),
+            "future_scope": section("Future.", []),
+            "skipped_papers": [],
+            "references": [
+                {"number": 1, "kind": "paper", "paper_id": "p0", "url": None, "title": "Paper p0", "formatted": "x", "link_url": None},
+                {"number": 2, "kind": "paper", "paper_id": "p1", "url": None, "title": "Paper p1", "formatted": "x", "link_url": None},
+                {"number": 3, "kind": "web", "paper_id": None, "url": "https://example.com/survey", "title": "A Survey", "formatted": "x", "link_url": "https://example.com/survey"},
+            ],
+            "report_template": "analytical",
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0", "p1"], selected_papers=[p0, p1], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-full-report", cp)
+            loaded = load_curation_session("session-full-report", cp)
+
+        assert loaded is not None
+        r = loaded.report
+        assert r is not None
+        for key in ("executive_summary", "introduction_scope", "methodology_landscape", "gap_analysis", "conclusion"):
+            assert key in r, f"{key} missing from deserialized report"
+        assert [p.paper_id for p in r["executive_summary"]["cited_papers"]] == ["p0"]
+        assert r["executive_summary"]["reference_numbers"] == [1]
+        assert [p.paper_id for p in r["gap_analysis"]["cited_papers"]] == ["p1"]
+        assert len(r["gap_analysis"]["cited_web_articles"]) == 1
+        assert isinstance(r["gap_analysis"]["cited_web_articles"][0], WebArticle)
+        assert r["gap_analysis"]["cited_web_articles"][0].url == "https://example.com/survey"
+        assert r["gap_analysis"]["reference_numbers"] == [2, 3]
+        # Legacy fields still present too -- the fix is additive, never a
+        # replacement for the pre-existing legacy round-trip.
+        assert [p.paper_id for p in r["findings"]["cited_papers"]] == ["p0", "p1"]
+        assert r["report_template"] == "analytical"
+
+
+def test_report_without_report_template_still_loads():
+    """A pre-R2C persisted report has no report_template key at all --
+    must still load cleanly, not crash, and simply lack the key (the
+    API serializer, not this module, is what defaults it to "analytical"
+    on the way out -- see api_app/serializers.py's _report_to_out)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        old_report = {
+            "findings": {"content": "Old prose.", "cited_papers": [cited_paper]},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        session = PaperPoolSession(topic="q", stage="synthesize", selected_papers=[cited_paper], report=old_report)
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-old-report-no-template", cp)
+            loaded = load_curation_session("session-old-report-no-template", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert "report_template" not in loaded.report
+
+
 def test_list_curation_sessions_returns_empty_for_no_sessions():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"

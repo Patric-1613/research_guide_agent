@@ -20,8 +20,10 @@ from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
     ANALYTICAL_SECTION_NAMES,
     REPORT_SECTION_DEFINITIONS,
+    REPORT_TEMPLATES,
     _build_references_and_renumber,
     _build_report_schema,
+    _build_report_system_prompt,
     _cleanup_marker_stripped_whitespace,
     derive_legacy_references,
     derive_sections_from_legacy_report,
@@ -1164,6 +1166,168 @@ def test_regenerate_report_with_new_sources_old_report_without_references_key_st
     sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
     joined = " ".join(m["content"] for m in sent_messages)
     assert "x.com" in joined
+
+
+# --- report-quality Phase R2C: report templates (Foundational/Analytical/Expert) ---
+
+_ALL_TEMPLATES = ("foundational", "analytical", "expert")
+
+
+def test_report_templates_all_share_the_same_eight_keys_and_titles():
+    """The deliberate, low-risk design constraint this whole phase rests
+    on: no template ever introduces/renames/reorders a section, only
+    varies its own description/word-budget text."""
+    reference = [(d["key"], d["title"]) for d in REPORT_SECTION_DEFINITIONS]
+    for template in _ALL_TEMPLATES:
+        assert [(d["key"], d["title"]) for d in REPORT_TEMPLATES[template]] == reference
+
+
+def test_build_report_system_prompt_omitted_template_matches_explicit_analytical():
+    """Non-regression guard: Analytical's generated prompt must be
+    byte-identical whether template is omitted or passed explicitly --
+    _TEMPLATE_DEPTH_GUIDANCE maps "analytical" to "", so nothing is
+    appended in either case."""
+    omitted = _build_report_system_prompt(REPORT_SECTION_DEFINITIONS)
+    explicit = _build_report_system_prompt(REPORT_SECTION_DEFINITIONS, "analytical")
+    assert omitted == explicit
+
+
+def test_generate_report_omitted_template_defaults_to_analytical():
+    papers = [_paper("1111", "Paper One")]
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report("topic", papers, client=mock_client)
+
+    assert result["report_template"] == "analytical"
+
+
+def test_generate_report_stamps_report_template_and_produces_all_eight_sections_for_every_template():
+    for template in _ALL_TEMPLATES:
+        papers = [_paper("1111", "Paper One")]
+        schema = _build_report_schema(["1111"], None, REPORT_TEMPLATES[template])
+        parsed = _analytical_parsed(schema)
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+        result = generate_report("topic", papers, client=mock_client, report_template=template)
+
+        assert result["report_template"] == template
+        assert set(s["key"] for s in result["sections"]) == set(ANALYTICAL_SECTION_NAMES)
+        assert len(result["sections"]) == 8
+
+
+def test_generate_report_empty_selection_stamps_report_template_for_every_template():
+    for template in _ALL_TEMPLATES:
+        result = generate_report("topic", [], client=MagicMock(), report_template=template)
+        assert result["report_template"] == template
+        assert len(result["sections"]) == 8
+
+
+def test_legacy_field_projection_works_for_every_template():
+    for template in _ALL_TEMPLATES:
+        papers = [_paper("1111", "Paper One")]
+        schema = _build_report_schema(["1111"], None, REPORT_TEMPLATES[template])
+        section_cls = schema.model_fields["executive_summary"].annotation
+        parsed = _analytical_parsed(
+            schema, thematic_findings=section_cls(content=f"{template} findings", cited_paper_ids=["1111"]),
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+        result = generate_report("topic", papers, client=mock_client, report_template=template)
+
+        assert result["findings"]["content"] == f"{template} findings"
+        assert result["findings"] == result["thematic_findings"]
+
+
+def test_regenerate_report_with_new_sources_omitted_template_preserves_existing():
+    p1 = _paper("1111", "Paper One")
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [], "skipped_papers": [], "report_template": "expert",
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[],
+    )
+    schema = _build_report_schema(["1111"], None, REPORT_TEMPLATES["expert"])
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    assert result["report_template"] == "expert"
+
+
+def test_regenerate_report_with_new_sources_explicit_template_switches():
+    p1 = _paper("1111", "Paper One")
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [], "skipped_papers": [], "report_template": "analytical",
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[],
+    )
+    schema = _build_report_schema(["1111"], None, REPORT_TEMPLATES["foundational"])
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client, report_template="foundational")
+
+    assert result["report_template"] == "foundational"
+
+
+def test_regenerate_report_with_approved_web_sources_never_accepts_an_explicit_template_from_its_caller():
+    """report-quality Phase R2C decision 8: chat's add-to-report flow
+    never passes report_template, so this always preserves the existing
+    report's template -- proven here by simply never passing it, same
+    as curation_chat_service.py's real call site."""
+    p1 = _paper("1111", "Paper One")
+    approved = _web_article("https://a.com", "A")
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [], "skipped_papers": [], "report_template": "foundational",
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[approved],
+    )
+    schema = _build_report_schema(["1111"], ["https://a.com"], REPORT_TEMPLATES["foundational"])
+    parsed = _analytical_parsed(schema, web_urls_used=True)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_approved_web_sources(session, [approved], client=mock_client)
+
+    assert result["report_template"] == "foundational"
+
+
+def test_regenerate_report_with_new_sources_old_report_without_report_template_defaults_to_analytical():
+    p1 = _paper("1111", "Paper One")
+    existing_report = {
+        "findings": {"content": "old", "cited_papers": []},
+        "limitations": {"content": "old", "cited_papers": []},
+        "future_scope": {"content": "old", "cited_papers": []},
+        "skipped_papers": [],
+    }  # no "report_template" key at all -- predates R2C
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[],
+    )
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    assert result["report_template"] == "analytical"
 
 
 if __name__ == "__main__":

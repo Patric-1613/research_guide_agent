@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from research_agent.citations import CitationStyle
+from research_agent.report import ReportTemplate
 
 
 class SearchRequest(BaseModel):
@@ -293,6 +294,31 @@ class ReportOut(BaseModel):
     # existing consumers reading findings/limitations/future_scope
     # directly are completely unaffected.
     sections: list[ReportSection] = Field(default_factory=list)
+    # report-quality Phase R2C: which reader-depth template generated (or
+    # is treated as having generated) this report. Defaulted to
+    # "analytical" so an old, pre-R2C persisted report -- which has no
+    # report_template key on its own dict at all -- serializes cleanly
+    # without _report_to_out having to special-case it further than the
+    # same "absence means analytical" default report.py's own regenerate
+    # functions already apply.
+    report_template: ReportTemplate = "analytical"
+
+
+class CurationGenerateReportRequest(BaseModel):
+    # report-quality Phase R2C: None/omitted means "use the default
+    # template" (analytical) -- see services/curation_report_service.py's
+    # get_or_create_report for the exact resolution. Every existing
+    # client that POSTs {} or no body at all keeps working unchanged.
+    report_template: ReportTemplate | None = None
+
+
+class CurationRegenerateReportRequest(BaseModel):
+    # report-quality Phase R2C: None/omitted means "preserve the
+    # existing report's current template" -- an explicit value switches
+    # it for this regeneration. See report.py's
+    # _regenerate_report_sections_with_sources for the exact resolution
+    # rule (the same one this field's absence maps onto).
+    report_template: ReportTemplate | None = None
 
 
 class TurnHistoryEntryOut(BaseModel):

@@ -43,6 +43,17 @@ logger = logging.getLogger(__name__)
 # more than cost for a call this rare.
 REPORT_MODEL = "gpt-4.1"
 
+# report-quality Phase R2C: which reader-depth template generated (or
+# should generate) a report. Same plain-Literal-type convention as
+# citations.py's own CitationStyle -- not a Python Enum class, matching
+# how this codebase already represents "one of a small fixed set of
+# strings" elsewhere (e.g. PaperPoolSession.stage's own "curate"/
+# "synthesize"/"terminate" values). All three templates share the exact
+# same 8 section keys/titles (see REPORT_TEMPLATES below) -- only prompt
+# instructions and word-budget guidance vary per template.
+ReportTemplate = Literal["foundational", "analytical", "expert"]
+DEFAULT_REPORT_TEMPLATE: ReportTemplate = "analytical"
+
 FINDINGS_DESCRIPTION = "Synthesized findings and key contributions across the selected papers, grounded strictly in their abstracts."
 LIMITATIONS_DESCRIPTION = "Limitations or shortcomings noted across the selected papers, and/or gaps or disagreements between them. State explicitly if none are apparent -- don't invent one."
 FUTURE_SCOPE_DESCRIPTION = "Future research directions plausibly implied by the selected papers -- may be more speculative than the other two sections, but must still stay grounded in what the papers actually cover, not outside knowledge."
@@ -159,7 +170,200 @@ REPORT_SECTION_DEFINITIONS: list[dict] = [
     },
 ]
 
+# report-quality Phase R2C: the Foundational template -- same 8 keys/
+# titles as REPORT_SECTION_DEFINITIONS above (a deliberate, low-risk
+# design constraint: no template ever introduces/renames/reorders a
+# section, only varies its own instructions and word-budget guidance),
+# written for a reader newer to the topic -- defines key concepts before
+# using them, explains why a method/result matters, wider word-budget
+# ranges where clarity genuinely needs the room. Still evidence-grounded
+# and cited exactly like every other template (that requirement lives in
+# the shared prompt scaffolding in _build_report_system_prompt, not
+# here, so it can never be accidentally dropped per-template).
+_FOUNDATIONAL_SECTION_DEFINITIONS: list[dict] = [
+    {
+        "key": "executive_summary", "title": "Executive Summary",
+        "description": (
+            "A concise, high-level summary of what this literature review covers and its most "
+            "important takeaway(s), written so a reader new to the topic can follow it without prior "
+            "background -- briefly say what the general area is about before summarizing the "
+            "findings. Target roughly 120-180 words."
+        ),
+    },
+    {
+        "key": "introduction_scope", "title": "Introduction & Scope",
+        "description": (
+            "Introduces the research topic and states plainly what this review covers -- exactly the "
+            "hand-picked paper set given below, nothing broader. Define any key terms or concepts a "
+            "newcomer to this topic would need before the rest of the report makes sense. Target "
+            "roughly 200-300 words."
+        ),
+    },
+    {
+        "key": "thematic_findings", "title": "Thematic Findings",
+        "description": (
+            "Synthesized findings and key contributions across the selected papers, grounded strictly "
+            "in their abstracts. Organize by theme, not paper-by-paper, and synthesize across papers "
+            "within each theme. For each theme, explain in plain terms why the finding or method "
+            "matters, not just what it is. Target roughly 400-650 words."
+        ),
+    },
+    {
+        "key": "methodology_landscape", "title": "Methodology Landscape",
+        "description": (
+            "Compares the methods/approaches the selected papers actually use -- similarities, "
+            "differences, and tradeoffs between them, grounded strictly in their abstracts. Briefly "
+            "explain any method-specific terminology before comparing methods that use it. Target "
+            "roughly 220-350 words."
+        ),
+    },
+    {
+        "key": "contradictions_open_debates", "title": "Contradictions & Open Debates",
+        "description": (
+            "Disagreements, conflicting findings, methodological tensions, tradeoffs, or unresolved "
+            "design choices across the selected papers -- direct contradictions are only one form "
+            "this can take; papers more often differ by prioritizing different metrics, making "
+            "different tradeoffs, or leaving a design question unresolved, and those count too. "
+            "Explain plainly why a given tension matters for someone learning this area. State "
+            "explicitly if genuinely none of these are apparent across this specific paper set -- "
+            "don't invent one. Target roughly 200-320 words."
+        ),
+    },
+    {
+        "key": "gap_analysis", "title": "Gap Analysis",
+        "description": (
+            "What the selected papers, taken together, do NOT cover or leave unaddressed -- missing "
+            "populations, settings, comparisons, or evaluations, grounded in what's actually absent "
+            "from their abstracts, not outside knowledge. Diagnostic, not prescriptive: identify and "
+            "describe the absence itself, without proposing how to address it -- that belongs in "
+            "Future Research Directions below, not here. Target roughly 200-320 words."
+        ),
+    },
+    {
+        "key": "future_research_directions", "title": "Future Research Directions",
+        "description": (
+            "Concrete future research directions plausibly implied by the selected papers -- may be "
+            "more speculative than other sections, but must still stay grounded in what the papers "
+            "actually cover, not outside knowledge. Prescriptive, not just diagnostic: propose what "
+            "should actually be studied or built next, going beyond restating what Gap Analysis "
+            "already identified as missing. Target roughly 170-280 words."
+        ),
+    },
+    {
+        "key": "conclusion", "title": "Conclusion",
+        "description": (
+            "A short closing synthesis -- not a repeat of the Executive Summary, a final word tying "
+            "the review together for a reader who is now newly familiar with this topic. Target "
+            "roughly 90-150 words."
+        ),
+    },
+]
+
+# report-quality Phase R2C: the Expert template -- same 8 keys/titles as
+# REPORT_SECTION_DEFINITIONS above, written for a reader already
+# confident in the topic -- denser, skips textbook background unless a
+# specific comparison needs it, emphasizes cross-paper relationships,
+# tensions, methodological nuance, unstated assumptions, and concrete
+# research opportunities, tighter word-budget ranges than Foundational.
+_EXPERT_SECTION_DEFINITIONS: list[dict] = [
+    {
+        "key": "executive_summary", "title": "Executive Summary",
+        "description": (
+            "A dense, high-level summary of what this literature review covers and its most "
+            "important takeaway(s) for a reader already familiar with the area -- skip introductory "
+            "framing, lead directly with the substance. Target roughly 80-130 words."
+        ),
+    },
+    {
+        "key": "introduction_scope", "title": "Introduction & Scope",
+        "description": (
+            "States plainly what this review covers -- exactly the hand-picked paper set given below, "
+            "nothing broader -- without re-explaining background a reader already confident in this "
+            "topic doesn't need. Target roughly 100-160 words."
+        ),
+    },
+    {
+        "key": "thematic_findings", "title": "Thematic Findings",
+        "description": (
+            "Synthesized findings and key contributions across the selected papers, grounded strictly "
+            "in their abstracts. Organize by theme, not paper-by-paper, and synthesize across papers "
+            "within each theme -- emphasize how findings relate to and qualify each other, not just "
+            "what each one independently shows. Target roughly 320-500 words."
+        ),
+    },
+    {
+        "key": "methodology_landscape", "title": "Methodology Landscape",
+        "description": (
+            "Compares the methods/approaches the selected papers actually use, grounded strictly in "
+            "their abstracts -- emphasize methodological nuance and the specific assumptions each "
+            "approach makes, not just a surface-level similarities/differences list. Target roughly "
+            "180-300 words."
+        ),
+    },
+    {
+        "key": "contradictions_open_debates", "title": "Contradictions & Open Debates",
+        "description": (
+            "Disagreements, conflicting findings, methodological tensions, tradeoffs, or unresolved "
+            "design choices across the selected papers -- direct contradictions are only one form "
+            "this can take; papers more often differ by prioritizing different metrics, making "
+            "different tradeoffs, or leaving a design question unresolved, and those count too. "
+            "Surface unstated assumptions behind a given position where the abstracts make them "
+            "inferable. State explicitly if genuinely none of these are apparent across this specific "
+            "paper set -- don't invent one. Target roughly 180-300 words."
+        ),
+    },
+    {
+        "key": "gap_analysis", "title": "Gap Analysis",
+        "description": (
+            "What the selected papers, taken together, do NOT cover or leave unaddressed -- missing "
+            "populations, settings, comparisons, or evaluations, grounded in what's actually absent "
+            "from their abstracts, not outside knowledge. Diagnostic, not prescriptive: identify and "
+            "describe the absence itself, without proposing how to address it -- that belongs in "
+            "Future Research Directions below, not here. Target roughly 160-260 words."
+        ),
+    },
+    {
+        "key": "future_research_directions", "title": "Future Research Directions",
+        "description": (
+            "Concrete, specific research opportunities plausibly implied by the selected papers -- "
+            "may be more speculative than other sections, but must still stay grounded in what the "
+            "papers actually cover, not outside knowledge. Prescriptive, not just diagnostic: propose "
+            "what should actually be studied or built next, going beyond restating what Gap Analysis "
+            "already identified as missing -- favor precise, actionable directions over broad "
+            "statements. Target roughly 130-220 words."
+        ),
+    },
+    {
+        "key": "conclusion", "title": "Conclusion",
+        "description": (
+            "A short closing synthesis -- not a repeat of the Executive Summary, a final word tying "
+            "the review together. Target roughly 70-120 words."
+        ),
+    },
+]
+
+# report-quality Phase R2C: the one place all three templates are
+# collected -- REPORT_TEMPLATES[report_template] resolves a template
+# name to its section-definitions list, the same list _build_report_
+# schema/_build_report_system_prompt already accept generically. Kept as
+# three independent, fully-spelled-out lists rather than one templated-
+# with-overrides structure -- matches this module's own existing
+# precedent (_LEGACY_SECTION_DEFINITIONS vs. REPORT_SECTION_DEFINITIONS
+# were already two independent full lists, not one derived from the
+# other) and keeps each template's actual prompt text trivially
+# greppable/reviewable on its own.
+REPORT_TEMPLATES: dict[str, list[dict]] = {
+    "foundational": _FOUNDATIONAL_SECTION_DEFINITIONS,
+    "analytical": REPORT_SECTION_DEFINITIONS,
+    "expert": _EXPERT_SECTION_DEFINITIONS,
+}
+
 ANALYTICAL_SECTION_NAMES: tuple[str, ...] = tuple(d["key"] for d in REPORT_SECTION_DEFINITIONS)
+# report-quality Phase R2C: despite the name (kept unchanged from R2B to
+# minimize churn across existing call sites), this tuple of 8 keys is
+# now shared by EVERY template, not just Analytical -- REPORT_TEMPLATES'
+# three lists all use the exact same key set by design, so any one of
+# them would produce an identical tuple here.
 
 # Maps a legacy compatibility field to whichever NEW Analytical section
 # it's projected from (see _project_legacy_fields) -- reused in reverse
@@ -231,7 +435,36 @@ def _build_report_schema(
     )
 
 
-def _build_report_system_prompt(section_definitions: list[dict]) -> str:
+# report-quality Phase R2C: the ONE template-specific paragraph appended
+# to the otherwise fully shared prompt scaffolding below -- this is
+# deliberately the ONLY place templates diverge in the shared-scaffolding
+# text (everything else -- grounding, citation density, web-source
+# constraints, marker instructions -- stays identical across templates).
+# "analytical" maps to "" (nothing appended) SPECIFICALLY so Analytical's
+# generated prompt stays byte-identical to what R2B/R2B.1 already shipped
+# -- see tests/test_report.py's own non-regression test for this.
+_TEMPLATE_DEPTH_GUIDANCE: dict[str, str] = {
+    "foundational": (
+        "\n\nThis is a FOUNDATIONAL-depth report, written for a reader newer to this topic: define key "
+        "concepts and background terms before using them, explain in plain terms why a method or "
+        "result matters, and use simpler, more explicit transitions between ideas. Sections may run "
+        "toward the upper end of their word budget (or slightly past it) where genuinely needed for "
+        "clarity -- clarity takes priority over brevity here. Still ground and cite every claim exactly "
+        "as instructed above; explanatory depth is not a license to skip evidence."
+    ),
+    "analytical": "",
+    "expert": (
+        "\n\nThis is an EXPERT-depth report, written for a reader already confident in this topic: skip "
+        "introductory or textbook-level background explanation unless it's genuinely needed to make a "
+        "specific comparison land, and prioritize depth over accessibility. Emphasize relationships "
+        "between papers, tradeoffs, methodological nuance, unstated assumptions, and concrete research "
+        "opportunities over restating what each paper does. Still ground and cite every claim exactly "
+        "as instructed above; density is not a license to assert unsupported claims."
+    ),
+}
+
+
+def _build_report_system_prompt(section_definitions: list[dict], template: str = DEFAULT_REPORT_TEMPLATE) -> str:
     """report-quality Phase R2B: builds the system prompt for an
     arbitrary section_definitions list -- generalizes the exact same
     framing/grounding/citation-marker instructions SYSTEM_PROMPT above
@@ -241,6 +474,13 @@ def _build_report_system_prompt(section_definitions: list[dict]) -> str:
     new, independent builder that generate_report/_regenerate_report_
     sections_with_sources now call explicitly with REPORT_SECTION_
     DEFINITIONS, not a refactor of SYSTEM_PROMPT's own text.
+
+    report-quality Phase R2C: `template` selects one paragraph from
+    _TEMPLATE_DEPTH_GUIDANCE, appended after the shared scaffolding below
+    -- everything else in this function's returned text is identical
+    across templates (only the passed-in section_definitions' own
+    per-section description/word-budget text differs by template,
+    resolved by the caller via REPORT_TEMPLATES before this is called).
     """
     numbered_sections = "\n".join(
         f"{i}. {d['title']}: {d['description']}" for i, d in enumerate(section_definitions, start=1)
@@ -260,7 +500,7 @@ If web articles are also provided below, you may additionally cite them (news, t
 Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself. When a single claim is directly supported by more than one source (e.g. comparing two papers' methods in the same sentence), mark each one with its own bracket back-to-back, e.g. [Paper 2][Paper 5] -- never combine multiple citations into one bracket like [Paper 2, Paper 5].
 
 Word budgets given above are guidance, not a hard limit -- stay roughly within them, erring toward being concise and evidence-dense rather than padding to hit a count, especially if the given paper set is small. Avoid generic, textbook-style phrasing that could apply to any paper set on this general topic -- ground each claim in what THESE specific selected papers actually say, not a general summary of the field.
-"""
+""" + _TEMPLATE_DEPTH_GUIDANCE.get(template, "")
 
 
 # --- report-quality Phase R1: inline numbered citations + References ---
@@ -681,22 +921,30 @@ def _sections_list(sections_out: dict) -> list[dict]:
 def generate_report(
     topic: str, selected_papers: list[Paper], web_articles: list[WebArticle] | None = None,
     client: OpenAI | None = None, model: str = REPORT_MODEL,
+    report_template: str = DEFAULT_REPORT_TEMPLATE,
 ) -> dict:
-    """report-quality Phase R2B: generates the real 8-section Analytical
-    report body (see REPORT_SECTION_DEFINITIONS) over EXACTLY
-    selected_papers -- the model is structurally unable to cite any
-    paper_id outside this set (Literal-constrained, same guarantee level
-    as summarize.py's own citations, and as this report's own pre-R2B
-    3-section body). Returns one dict entry per REPORT_SECTION_
-    DEFINITIONS key ({"content", "cited_papers", ...}), a top-level
+    """report-quality Phase R2B: generates the real 8-section report
+    body over EXACTLY selected_papers -- the model is structurally
+    unable to cite any paper_id outside this set (Literal-constrained,
+    same guarantee level as summarize.py's own citations, and as this
+    report's own pre-R2B 3-section body). Returns one dict entry per
+    section key ({"content", "cited_papers", ...}), a top-level
     "sections" list (the real ReportOut.sections the API serializer
     already reads), the legacy findings/limitations/future_scope keys as
-    straight PROJECTIONS of their mapped Analytical section (see
+    straight PROJECTIONS of their mapped section (see
     _project_legacy_fields) -- not independently generated -- plus
     "skipped_papers" (selected papers never cited in ANY section,
     mirroring summarize.py's own convention, logged as a warning not an
-    error) and "references" (report-quality Phase R1's global numbered
-    citations, now spanning all 8 sections).
+    error), "references" (report-quality Phase R1's global numbered
+    citations, now spanning all 8 sections), and "report_template" (the
+    resolved template name, report-quality Phase R2C -- the report dict
+    itself is the one source of truth for which template produced it).
+
+    report_template (report-quality Phase R2C) selects which of
+    REPORT_TEMPLATES' three section-definitions lists governs this
+    call's prompt/schema -- defaults to DEFAULT_REPORT_TEMPLATE
+    ("analytical"), so every existing caller that doesn't pass it keeps
+    generating exactly what it always has.
 
     web_articles (curation-chat-web-escalation Phase 5d) is optional and
     backward-compatible: every existing caller that doesn't pass it gets
@@ -705,22 +953,24 @@ def generate_report(
     the same convention _build_report_schema() uses for the schema
     field itself.
     """
+    section_definitions = REPORT_TEMPLATES[report_template]
     web_articles = web_articles or []
     if not selected_papers:
         empty_section = {"content": "", "cited_papers": [], "reference_numbers": []}
         if web_articles:
             empty_section["cited_web_articles"] = []
-        sections_out = {d["key"]: dict(empty_section) for d in REPORT_SECTION_DEFINITIONS}
+        sections_out = {d["key"]: dict(empty_section) for d in section_definitions}
         result = _project_legacy_fields(sections_out)
         result["sections"] = _sections_list(sections_out)
         result["skipped_papers"] = []
         result["references"] = []
+        result["report_template"] = report_template
         return result
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
-    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, REPORT_SECTION_DEFINITIONS)
-    system_prompt = _build_report_system_prompt(REPORT_SECTION_DEFINITIONS)
+    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, section_definitions)
+    system_prompt = _build_report_system_prompt(section_definitions, report_template)
 
     client = client or OpenAI()
     parsed = _generate_report_sections(topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt)
@@ -755,10 +1005,14 @@ def generate_report(
     result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
     result = _project_legacy_fields(result)
     result["sections"] = _sections_list(result)
+    result["report_template"] = report_template
     return result
 
 
-def generate_report_for_session(session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL) -> dict:
+def generate_report_for_session(
+    session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL,
+    report_template: str = DEFAULT_REPORT_TEMPLATE,
+) -> dict:
     """Session-aware wrapper: refuses cleanly if the session isn't
     actually ready for synthesis yet (stage != "synthesize") rather than
     generating prematurely over a still-in-progress pick set, then
@@ -772,7 +1026,7 @@ def generate_report_for_session(session: PaperPoolSession, client: OpenAI | None
             f"Session is not ready for report synthesis (stage={session.stage!r}, expected 'synthesize') -- "
             "curation must finish (target met, user stopped, or topic exhausted) before generating a report."
         )
-    return generate_report(session.topic, session.selected_papers, client=client, model=model)
+    return generate_report(session.topic, session.selected_papers, client=client, model=model, report_template=report_template)
 
 
 def _resolve_prior_citations_for_regeneration(existing_report: dict, section_key: str) -> list[Paper]:
@@ -798,12 +1052,14 @@ def _resolve_prior_citations_for_regeneration(existing_report: dict, section_key
     return []
 
 
-def _build_regeneration_system_prompt(existing_report: dict, section_definitions: list[dict]) -> str:
+def _build_regeneration_system_prompt(
+    existing_report: dict, section_definitions: list[dict], template: str = DEFAULT_REPORT_TEMPLATE,
+) -> str:
     per_section_citations = "\n".join(
         f"- {d['key']}: {[p.paper_id for p in _resolve_prior_citations_for_regeneration(existing_report, d['key'])]}"
         for d in section_definitions
     )
-    return _build_report_system_prompt(section_definitions) + f"""
+    return _build_report_system_prompt(section_definitions, template) + f"""
 This is a REGENERATION of an existing report -- additional web sources have been approved since it was first written, and you should incorporate them where genuinely relevant. You MUST preserve every paper_id already cited in a section below: never drop an existing paper citation from a section just because new web sources are now available. You may add new web citations, cite additional papers, and refine the prose, but an already-cited paper must remain cited in any section that previously cited it.
 
 Previously cited paper_ids per section:
@@ -837,6 +1093,7 @@ def _restore_dropped_citations(existing_report: dict, section_name: str, cited_p
 
 def _regenerate_report_sections_with_sources(
     session: PaperPoolSession, web_articles: list[WebArticle], client: OpenAI | None, model: str, caller_name: str,
+    report_template: str | None = None,
 ) -> dict:
     """Shared body for regenerate_report_with_new_sources (whole-pool) and
     regenerate_report_with_approved_web_sources (curation-chat-add-to-
@@ -850,6 +1107,17 @@ def _regenerate_report_sections_with_sources(
     Same preconditions as before this refactor (session.report must
     already exist; stage must be "synthesize") -- unchanged, just moved
     here from regenerate_report_with_new_sources's own body.
+
+    report_template (report-quality Phase R2C): None (the default) means
+    PRESERVE session.report's own current template, resolved below via
+    existing_report.get("report_template", DEFAULT_REPORT_TEMPLATE) --
+    an old report predating this phase has no "report_template" key at
+    all, correctly defaulting to Analytical. An explicit value switches
+    the report to that template for this regeneration. This same
+    None-means-preserve default is what makes curation_chat_service.py's
+    add-to-report flow (which never passes report_template at all)
+    automatically preserve the existing template with zero changes
+    needed at that call site.
 
     report-quality Phase R2D citation-revocation fix: before building
     the schema/prompt, any web_articles entry whose URL is in session.
@@ -882,14 +1150,16 @@ def _regenerate_report_sections_with_sources(
 
     existing_report = session.report
     selected_papers = session.selected_papers
+    resolved_template = report_template if report_template is not None else existing_report.get("report_template", DEFAULT_REPORT_TEMPLATE)
+    section_definitions = REPORT_TEMPLATES[resolved_template]
 
     if session.revoked_web_article_urls:
         web_articles = [a for a in web_articles if a.url not in session.revoked_web_article_urls]
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
-    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, REPORT_SECTION_DEFINITIONS)
-    system_prompt = _build_regeneration_system_prompt(existing_report, REPORT_SECTION_DEFINITIONS)
+    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, section_definitions)
+    system_prompt = _build_regeneration_system_prompt(existing_report, section_definitions, resolved_template)
 
     client = client or OpenAI()
     parsed = _generate_report_sections(
@@ -937,11 +1207,13 @@ def _regenerate_report_sections_with_sources(
     result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
     result = _project_legacy_fields(result)
     result["sections"] = _sections_list(result)
+    result["report_template"] = resolved_template
     return result
 
 
 def regenerate_report_with_new_sources(
     session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL,
+    report_template: str | None = None,
 ) -> dict:
     """curation-chat-web-escalation Phase 5d: regenerates session.report
     over the SAME session.selected_papers plus ALL of
@@ -981,15 +1253,23 @@ def regenerate_report_with_new_sources(
     still means every web article chat has ever surfaced, just no longer
     including one whose only chat backing has since been deleted or
     edited away.
+
+    report-quality Phase R2C: report_template=None (the default)
+    preserves session.report's own current template; an explicit value
+    switches the report to that template for this regeneration. See
+    _regenerate_report_sections_with_sources's own docstring for the
+    exact resolution rule.
     """
     return _regenerate_report_sections_with_sources(
         session, session.web_articles_added, client, model, "regenerate_report_with_new_sources",
+        report_template=report_template,
     )
 
 
 def regenerate_report_with_approved_web_sources(
     session: PaperPoolSession, approved_web_articles: list[WebArticle],
     client: OpenAI | None = None, model: str = REPORT_MODEL,
+    report_template: str | None = None,
 ) -> dict:
     """curation-chat-add-to-report Phase 4: regenerates session.report over
     session.selected_papers plus ONLY approved_web_articles -- deliberately
@@ -1028,7 +1308,19 @@ def regenerate_report_with_approved_web_sources(
     correct against Phase B pruning before it ever reaches this call, so
     a revoked URL should never even be IN approved_web_articles to begin
     with. A defensive backstop, not a behavior change for this function.
+
+    report-quality Phase R2C: report_template exists on this function's
+    signature purely for symmetry with regenerate_report_with_new_
+    sources and because the shared body needs it either way -- the ONE
+    real caller (curation_chat.py's add-to-report flow, via
+    curation_chat_service.py's add_curation_chat_exchanges_to_report)
+    never passes it, so this always resolves to "preserve the existing
+    report's current template" (the default, report_template=None). The
+    add-to-report HTTP endpoint itself has no report_template field on
+    its own request schema at all -- chat-triggered regeneration is not
+    a product moment for choosing a template.
     """
     return _regenerate_report_sections_with_sources(
         session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",
+        report_template=report_template,
     )

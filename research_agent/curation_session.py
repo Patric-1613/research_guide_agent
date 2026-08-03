@@ -40,6 +40,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from research_agent.query_expansion import PaperPoolSession
+from research_agent.report import ANALYTICAL_SECTION_NAMES
 from research_agent.schema import Paper, WebArticle
 
 # Distinct prefix so curation-session rows in the shared
@@ -53,7 +54,30 @@ def curation_thread_id(session_id: str) -> str:
     return f"{THREAD_ID_PREFIX}{session_id}"
 
 
-_REPORT_SECTION_NAMES = ("findings", "limitations", "future_scope")
+_LEGACY_REPORT_SECTION_NAMES = ("findings", "limitations", "future_scope")
+# report-quality Phase R2C serialization fix: a fresh (post-R2B) report
+# dict carries BOTH the 3 legacy compatibility keys (findings/
+# limitations/future_scope, projected copies -- see report.py's
+# _project_legacy_fields) AND all 8 real Analytical/template section
+# keys as top-level entries simultaneously. The two tuples never
+# overlap in key spelling (e.g. "findings" vs. "thematic_findings"), so
+# this is a plain concatenation, not a dedup. Previously only
+# _LEGACY_REPORT_SECTION_NAMES was serialized/deserialized here, which
+# meant the 5 non-legacy-mapped keys (executive_summary,
+# introduction_scope, methodology_landscape, gap_analysis, conclusion)
+# silently vanished as top-level dict keys on every save/load round trip
+# -- harmless for _report_to_out (which only ever reads the 3 legacy
+# keys plus the already-plain "sections" list), but it meant
+# report.py's own citation-preservation helpers
+# (_resolve_prior_citations_for_regeneration/_restore_dropped_citations)
+# could never find prior citations for those 5 sections on ANY
+# regeneration reached through the real HTTP API (every request reloads
+# the session fresh from the checkpointer -- see load_curation_session's
+# own docstring, there is no in-process cache). Iterating over the union
+# below, filtered to keys the report dict actually has, fixes this while
+# staying fully backward compatible: an old report with only the 3
+# legacy keys present still round-trips exactly as it always did.
+_ALL_REPORT_SECTION_NAMES = _LEGACY_REPORT_SECTION_NAMES + ANALYTICAL_SECTION_NAMES
 
 
 def _serialize_report(report: dict | None) -> dict | None:
@@ -75,6 +99,13 @@ def _serialize_report(report: dict | None) -> dict | None:
     (api_app/serializers.py's _report_to_out) uses to know to derive
     them fresh via report.py's derive_legacy_references() instead of
     trusting a stored (nonexistent) value.
+
+    report-quality Phase R2C: loops over _ALL_REPORT_SECTION_NAMES
+    (legacy + every Analytical/template key), not just the 3 legacy
+    names -- see that tuple's own comment for why. `if name in report`
+    means an old, pre-R2B report dict (only the 3 legacy keys) still
+    round-trips exactly as before; a fresh report (all 11 keys present)
+    now fully round-trips every section, not just 3 of them.
     """
     if report is None:
         return None
@@ -85,7 +116,7 @@ def _serialize_report(report: dict | None) -> dict | None:
             "cited_web_articles": [a.to_dict() for a in report[name].get("cited_web_articles", [])],
             "reference_numbers": report[name].get("reference_numbers", []),
         }
-        for name in _REPORT_SECTION_NAMES
+        for name in _ALL_REPORT_SECTION_NAMES if name in report
     }
     serialized["skipped_papers"] = [p.to_dict() for p in report["skipped_papers"]]
     if "references" in report:
@@ -93,12 +124,16 @@ def _serialize_report(report: dict | None) -> dict | None:
     # report-quality Phase R2A: same opaque pass-through convention as
     # references above -- `sections` is already a list of plain dicts
     # (no Paper/WebArticle objects nested in it), so there's nothing to
-    # convert, only a presence check. Absent for every report today
-    # (generation doesn't stamp it on yet -- see report.py's
-    # derive_sections_from_legacy_report), but round-tripped opaquely
-    # here in case a future phase ever does persist a genuine one.
+    # convert, only a presence check.
     if "sections" in report:
         serialized["sections"] = report["sections"]
+    # report-quality Phase R2C: report_template is a plain string,
+    # opaque pass-through same as references/sections above -- absent
+    # for a report generated before this phase, which is exactly the
+    # signal api_app/serializers.py's _report_to_out uses to default it
+    # to "analytical" at read time rather than assuming one here.
+    if "report_template" in report:
+        serialized["report_template"] = report["report_template"]
     return serialized
 
 
@@ -112,13 +147,15 @@ def _deserialize_report(d: dict | None) -> dict | None:
             "cited_web_articles": [WebArticle(**a) for a in d[name].get("cited_web_articles", [])],
             "reference_numbers": d[name].get("reference_numbers", []),
         }
-        for name in _REPORT_SECTION_NAMES
+        for name in _ALL_REPORT_SECTION_NAMES if name in d
     }
     deserialized["skipped_papers"] = [Paper(**p) for p in d["skipped_papers"]]
     if "references" in d:
         deserialized["references"] = d["references"]
     if "sections" in d:
         deserialized["sections"] = d["sections"]
+    if "report_template" in d:
+        deserialized["report_template"] = d["report_template"]
     return deserialized
 
 

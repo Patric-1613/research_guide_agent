@@ -992,6 +992,86 @@ def test_curation_report_regenerate_overwrites_persisted_report():
     assert state_resp.json()["report"]["findings"]["content"] == "v2, now with a web source"
 
 
+# --- report-quality Phase R2C: report templates ---
+
+def test_curation_report_generate_omitted_body_defaults_to_analytical():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report) as mock_gen:
+            resp = client.post(f"/curation/{session_id}/report")
+
+    assert resp.status_code == 200
+    assert resp.json()["report_template"] == "analytical"
+    assert mock_gen.call_args.kwargs["report_template"] == "analytical"
+
+
+def test_curation_report_generate_explicit_template_returns_that_template():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "expert",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report) as mock_gen:
+            resp = client.post(f"/curation/{session_id}/report", json={"report_template": "expert"})
+
+    assert resp.status_code == 200
+    assert resp.json()["report_template"] == "expert"
+    assert mock_gen.call_args.kwargs["report_template"] == "expert"
+
+
+def test_curation_report_regenerate_omitted_template_preserves_existing():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "foundational",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+
+        second_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report) as mock_regen:
+            resp = client.post(f"/curation/{session_id}/report/regenerate")
+
+    assert resp.status_code == 200
+    assert resp.json()["report_template"] == "foundational"
+    # None reaching report.py means "preserve" -- proven by the mock's
+    # own recorded call args, not just the (mocked) response shape.
+    assert mock_regen.call_args.kwargs["report_template"] is None
+
+
+def test_curation_report_regenerate_explicit_template_switches():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+
+        switched_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}, "report_template": "expert"}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=switched_report) as mock_regen:
+            resp = client.post(f"/curation/{session_id}/report/regenerate", json={"report_template": "expert"})
+
+    assert resp.status_code == 200
+    assert resp.json()["report_template"] == "expert"
+    assert mock_regen.call_args.kwargs["report_template"] == "expert"
+
+
 # --- /curation/{id}/chat ---
 
 def test_curation_chat_answers_and_persists_history_across_a_separate_get_request():
@@ -1243,6 +1323,35 @@ def test_curation_chat_add_to_report_regenerates_with_only_the_selected_sources_
     assert by_exchange["ex-1"]["added_to_report"] is True
     assert by_exchange["ex-2"]["added_to_report"] is False
     assert state_resp.json()["report"]["findings"]["content"] == "v2"
+
+
+def test_curation_chat_add_to_report_regeneration_preserves_existing_report_template():
+    """report-quality Phase R2C decision 8: the add-to-report HTTP
+    endpoint has no report_template field on its own request schema, and
+    curation_chat_service.py's call site never passes one -- this
+    endpoint always preserves whatever template the existing report
+    already has, proven both by the response shape and by checking the
+    underlying regenerate call never received an explicit override."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        with patch.object(
+            api, "generate_report_for_session",
+            return_value={**_report_stub_out("v1"), "report_template": "foundational"},
+        ):
+            client.post(f"/curation/{session_id}/report")
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(
+            api, "regenerate_report_with_approved_web_sources",
+            return_value={**_report_stub_out("v2"), "report_template": "foundational"},
+        ) as mock_regen:
+            resp = client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["report"]["report_template"] == "foundational"
+    assert "report_template" not in mock_regen.call_args.kwargs
 
 
 def test_curation_chat_add_to_report_second_call_includes_previously_approved_sources():

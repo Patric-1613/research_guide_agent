@@ -146,6 +146,12 @@ def _report_to_out(report: dict) -> ReportOut:
         skipped_paper_ids=[p.paper_id for p in report["skipped_papers"]],
         references=[ReferenceEntry(**r) for r in report["references"]],
         sections=[ReportSection(**s) for s in report["sections"]],
+        # report-quality Phase R2C: absence (a report persisted before
+        # this phase, or a fresh report that was somehow never stamped)
+        # defaults to "analytical" -- same absence-is-the-signal
+        # convention as references/sections above, resolved here rather
+        # than assumed anywhere upstream.
+        report_template=report.get("report_template", "analytical"),
     )
 
 
