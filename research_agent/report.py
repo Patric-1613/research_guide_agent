@@ -64,20 +64,133 @@ Use inline bracket markers in each section's content to mark which source suppor
 """
 
 
-def _build_report_schema(paper_ids: list[str], web_urls: list[str] | None = None) -> type[BaseModel]:
+# --- report-quality Phase R2B: Analytical dynamic section generation ---
+# (defined here, ahead of _build_report_schema just below, since that
+# function's own default parameter references _LEGACY_SECTION_DEFINITIONS)
+
+# The exact same 3 sections SECTION_NAMES/SYSTEM_PROMPT above already
+# describe, just repackaged as {key, title, description} definitions so
+# _build_report_schema and the other section-iterating helpers below can
+# be generalized to accept ANY section-definitions list while still
+# defaulting to this one -- every existing caller/test that doesn't
+# explicitly opt into Analytical sections keeps byte-identical behavior.
+_LEGACY_SECTION_DEFINITIONS: list[dict] = [
+    {"key": "findings", "title": "Findings", "description": FINDINGS_DESCRIPTION},
+    {"key": "limitations", "title": "Limitations", "description": LIMITATIONS_DESCRIPTION},
+    {"key": "future_scope", "title": "Future Scope", "description": FUTURE_SCOPE_DESCRIPTION},
+]
+
+# The approved 8-section Analytical report body -- word budgets are
+# prompt GUIDANCE only (see _build_report_system_prompt's closing
+# paragraph), never enforced by truncation.
+REPORT_SECTION_DEFINITIONS: list[dict] = [
+    {
+        "key": "executive_summary", "title": "Executive Summary",
+        "description": (
+            "A concise, high-level summary of what this literature review covers and its most "
+            "important takeaway(s) -- written so a reader could read only this section and still "
+            "understand the gist. Target roughly 100-150 words."
+        ),
+    },
+    {
+        "key": "introduction_scope", "title": "Introduction & Scope",
+        "description": (
+            "Introduces the research topic and states plainly what this review covers -- exactly "
+            "the hand-picked paper set given below, nothing broader. Target roughly 150-220 words."
+        ),
+    },
+    {
+        "key": "thematic_findings", "title": "Thematic Findings",
+        "description": (
+            f"{FINDINGS_DESCRIPTION} Organize by theme rather than paper-by-paper. Target roughly "
+            "350-550 words."
+        ),
+    },
+    {
+        "key": "methodology_landscape", "title": "Methodology Landscape",
+        "description": (
+            "Compares the methods/approaches the selected papers actually use -- similarities, "
+            "differences, and tradeoffs between them, grounded strictly in their abstracts. Target "
+            "roughly 180-300 words."
+        ),
+    },
+    {
+        "key": "contradictions_open_debates", "title": "Contradictions & Open Debates",
+        "description": (
+            f"{LIMITATIONS_DESCRIPTION} Target roughly 180-300 words."
+        ),
+    },
+    {
+        "key": "gap_analysis", "title": "Gap Analysis",
+        "description": (
+            "What the selected papers, taken together, do NOT cover or leave unaddressed -- grounded "
+            "in what's actually absent from their abstracts, not outside knowledge. Target roughly "
+            "180-300 words."
+        ),
+    },
+    {
+        "key": "future_research_directions", "title": "Future Research Directions",
+        "description": (
+            f"{FUTURE_SCOPE_DESCRIPTION} Target roughly 150-250 words."
+        ),
+    },
+    {
+        "key": "conclusion", "title": "Conclusion",
+        "description": (
+            "A short closing synthesis -- not a repeat of the Executive Summary, a final word tying "
+            "the review together. Target roughly 80-140 words."
+        ),
+    },
+]
+
+ANALYTICAL_SECTION_NAMES: tuple[str, ...] = tuple(d["key"] for d in REPORT_SECTION_DEFINITIONS)
+
+# Maps a legacy compatibility field to whichever NEW Analytical section
+# it's projected from (see _project_legacy_fields) -- reused in reverse
+# (_ANALYTICAL_KEY_TO_LEGACY_FIELD below) to resolve prior citations to
+# preserve when regenerating a session whose EXISTING report still has
+# the old 3-section shape under the new 8-section schema (see
+# _resolve_prior_citations_for_regeneration). One decision, reused for
+# both purposes, not two independently-chosen mappings that could
+# disagree. The 5 Analytical sections with no entry here (executive_
+# summary, introduction_scope, methodology_landscape, gap_analysis,
+# conclusion) have no legacy analogue at all -- an old report never had
+# anything corresponding to them.
+_LEGACY_FIELD_TO_ANALYTICAL_KEY: dict[str, str] = {
+    "findings": "thematic_findings",
+    "limitations": "contradictions_open_debates",
+    "future_scope": "future_research_directions",
+}
+_ANALYTICAL_KEY_TO_LEGACY_FIELD: dict[str, str] = {v: k for k, v in _LEGACY_FIELD_TO_ANALYTICAL_KEY.items()}
+
+
+def _build_report_schema(
+    paper_ids: list[str], web_urls: list[str] | None = None,
+    section_definitions: list[dict] | None = None,
+) -> type[BaseModel]:
     """Same technique as summarize.py's _build_response_schema/
     _build_web_response_schema (a per-call dynamic Literal restricted to
     the exact ids passed in) -- reimplemented here, not imported, since
-    the schema SHAPE is genuinely different (3 fixed sections vs. N
+    the schema SHAPE is genuinely different (named fixed sections vs. N
     theme clusters), not because the grounding mechanism differs.
 
     web_urls is optional-guarded exactly like qa.py's
     _build_answer_schema's own web_urls parameter -- a Literal can't be
-    built from an empty tuple, and most reports still have no web
-    sources at all (Phase 4 predates web escalation entirely), so
+    built from an empty tuple, and not every report has web sources, so
     cited_web_urls simply doesn't exist as a field unless there's
     something it could legitimately reference.
+
+    section_definitions (report-quality Phase R2B) defaults to the
+    original 3-section shape (_LEGACY_SECTION_DEFINITIONS) so every
+    existing caller that doesn't pass it gets byte-identical behavior;
+    generate_report/_regenerate_report_sections_with_sources explicitly
+    pass REPORT_SECTION_DEFINITIONS instead. Named REQUIRED pydantic
+    fields (one per section key) make a missing or duplicate section
+    structurally impossible -- pydantic validation rejects it outright --
+    which is why this stays a set of named fields rather than a
+    Literal-constrained list of section items.
     """
+    section_definitions = section_definitions if section_definitions is not None else _LEGACY_SECTION_DEFINITIONS
     paper_id_literal = Literal[tuple(paper_ids)]
 
     section_fields: dict = {
@@ -98,10 +211,38 @@ def _build_report_schema(paper_ids: list[str], web_urls: list[str] | None = None
 
     return create_model(
         "LiteratureReviewReport",
-        findings=(section_model, Field(description=FINDINGS_DESCRIPTION)),
-        limitations=(section_model, Field(description=LIMITATIONS_DESCRIPTION)),
-        future_scope=(section_model, Field(description=FUTURE_SCOPE_DESCRIPTION)),
+        **{d["key"]: (section_model, Field(description=d["description"])) for d in section_definitions},
     )
+
+
+def _build_report_system_prompt(section_definitions: list[dict]) -> str:
+    """report-quality Phase R2B: builds the system prompt for an
+    arbitrary section_definitions list -- generalizes the exact same
+    framing/grounding/citation-marker instructions SYSTEM_PROMPT above
+    hardcodes for the fixed 3-section case, over however many named
+    sections are given. SYSTEM_PROMPT itself stays untouched (still
+    _generate_report_sections' own default parameter value) -- this is a
+    new, independent builder that generate_report/_regenerate_report_
+    sections_with_sources now call explicitly with REPORT_SECTION_
+    DEFINITIONS, not a refactor of SYSTEM_PROMPT's own text.
+    """
+    numbered_sections = "\n".join(
+        f"{i}. {d['title']}: {d['description']}" for i, d in enumerate(section_definitions, start=1)
+    )
+    plural = "s" if len(section_definitions) != 1 else ""
+    return f"""You are writing a literature review report over a specific, deliberately hand-picked set of papers for a research topic. You will be given the topic and exactly this set of papers (id, title, abstract only) -- this is the FINAL set a user has already chosen; do not second-guess or add papers beyond it.
+
+Write exactly {len(section_definitions)} section{plural}, in this order:
+{numbered_sections}
+
+For EACH section, ground every claim STRICTLY in the given abstracts -- do not use outside knowledge about these papers, their authors, or the topic beyond what the abstracts state. List which paper_ids actually support that section's content in its own cited_paper_ids, in the order you'd reference them. A section's citations are independent of every other section's -- a paper cited in one section does not need to also appear in another, and vice versa. Some sections may end up citing few or no papers directly if they're mostly synthesizing across the review as a whole (e.g. an executive summary or conclusion) -- that's fine, don't force citations that aren't genuinely there.
+
+If web articles are also provided below, you may additionally cite them (news, tooling, docs -- current/practical context, not peer-reviewed) via each section's cited_web_urls, but never in place of a paper citation -- keep the two kinds of sources clearly distinguished, the same way qa.py's chat answers do.
+
+Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself.
+
+Word budgets given above are guidance, not a hard limit -- stay roughly within them, erring toward being concise and evidence-dense rather than padding to hit a count, especially if the given paper set is small.
+"""
 
 
 # --- report-quality Phase R1: inline numbered citations + References ---
@@ -182,7 +323,7 @@ class _ReferenceAssigner:
         return number
 
 
-def _build_references_and_renumber(sections_out: dict) -> dict:
+def _build_references_and_renumber(sections_out: dict, section_names: tuple[str, ...] = SECTION_NAMES) -> dict:
     """The R1 post-processing pass: converts each section's temporary,
     section-local [Paper N]/[Web N] markers into ONE global, bare-number
     [N] sequence shared across the whole report, and builds the
@@ -199,9 +340,14 @@ def _build_references_and_renumber(sections_out: dict) -> dict:
     it's safe to call exactly once, as the very last step, regardless of
     caller.
 
+    section_names (report-quality Phase R2B) defaults to the original
+    3-tuple SECTION_NAMES; generate_report/_regenerate_report_sections_
+    with_sources pass ANALYTICAL_SECTION_NAMES instead so the same
+    algorithm below runs unchanged over all 8 Analytical sections.
+
     Algorithm:
-      1. Per section, in FIXED order (findings, limitations,
-         future_scope): densify that section's own markers (see
+      1. Per section, in the given section_names order: densify that
+         section's own markers (see
          _densify_section_markers), then resolve each densified marker
          to the underlying paper_id/url via that section's own
          cited_papers[n-1]/cited_web_articles[n-1] (0-indexed from the
@@ -225,10 +371,10 @@ def _build_references_and_renumber(sections_out: dict) -> dict:
     """
     references: list[dict] = []
     assigner = _ReferenceAssigner(references)
-    section_marked_keys: dict[str, set[tuple[str, str]]] = {name: set() for name in SECTION_NAMES}
+    section_marked_keys: dict[str, set[tuple[str, str]]] = {name: set() for name in section_names}
     rewritten_content: dict[str, str] = {}
 
-    for section_name in SECTION_NAMES:
+    for section_name in section_names:
         section = sections_out[section_name]
         cited_papers = section["cited_papers"]
         cited_web_articles = section.get("cited_web_articles", [])
@@ -265,7 +411,7 @@ def _build_references_and_renumber(sections_out: dict) -> dict:
         rewritten_content[section_name] = _SECTION_CITATION_MARKER_RE.sub(_resolve, densified)
 
     # Trailing pass: structurally cited but never marked -- still counts.
-    for section_name in SECTION_NAMES:
+    for section_name in section_names:
         section = sections_out[section_name]
         for paper in section["cited_papers"]:
             if ("paper", paper.paper_id) not in section_marked_keys[section_name]:
@@ -274,7 +420,7 @@ def _build_references_and_renumber(sections_out: dict) -> dict:
             if ("web", article.url) not in section_marked_keys[section_name]:
                 assigner.get_or_assign("web", article.url, article.title, article=article)
 
-    for section_name in SECTION_NAMES:
+    for section_name in section_names:
         section = sections_out[section_name]
         section["content"] = rewritten_content[section_name]
         all_keys = (
@@ -407,19 +553,65 @@ def _generate_report_sections(
     return parsed
 
 
+def _project_legacy_fields(sections_out: dict) -> dict:
+    """report-quality Phase R2B: stamps the three legacy findings/
+    limitations/future_scope keys onto a freshly-Analytical-generated
+    sections_out dict, as straight aliases of their mapped Analytical
+    section (see _LEGACY_FIELD_TO_ANALYTICAL_KEY) -- not independently
+    generated text of their own. Exists purely so callers that still
+    read report["findings"] directly (ReportOut's own required findings/
+    limitations/future_scope fields, api_app/serializers.py's
+    _report_to_out) keep working unchanged for a genuinely new report,
+    without the model ever being asked to write three additional,
+    redundant sections. Must run AFTER _build_references_and_renumber --
+    the projected dict needs each section's FINAL content/
+    reference_numbers, not the pre-renumbering ones.
+    """
+    return {
+        **sections_out,
+        **{
+            legacy_key: dict(sections_out[analytical_key])
+            for legacy_key, analytical_key in _LEGACY_FIELD_TO_ANALYTICAL_KEY.items()
+        },
+    }
+
+
+def _sections_list(sections_out: dict) -> list[dict]:
+    """Builds the ReportOut.sections-shaped list (the real, generated
+    counterpart to R2A's derive_sections_from_legacy_report) straight
+    from a finalized sections_out dict -- one entry per
+    REPORT_SECTION_DEFINITIONS key, in order, carrying each section's
+    already-renumbered content/reference_numbers."""
+    return [
+        {
+            "key": d["key"], "title": d["title"],
+            "content": sections_out[d["key"]]["content"],
+            "reference_numbers": sections_out[d["key"]]["reference_numbers"],
+        }
+        for d in REPORT_SECTION_DEFINITIONS
+    ]
+
+
 @observe(name="generate_report", capture_input=False, capture_output=False)
 def generate_report(
     topic: str, selected_papers: list[Paper], web_articles: list[WebArticle] | None = None,
     client: OpenAI | None = None, model: str = REPORT_MODEL,
 ) -> dict:
-    """Generates the 3-part report over EXACTLY selected_papers -- the
-    model is structurally unable to cite any paper_id outside this set
-    (Literal-constrained, same guarantee level as summarize.py's own
-    citations). Returns {"findings": {"content", "cited_papers"},
-    "limitations": {...}, "future_scope": {...}, "skipped_papers"} --
-    skipped_papers (mirroring summarize.py's own convention) is which
-    selected papers were never cited in ANY of the 3 sections, logged as
-    a warning, not an error.
+    """report-quality Phase R2B: generates the real 8-section Analytical
+    report body (see REPORT_SECTION_DEFINITIONS) over EXACTLY
+    selected_papers -- the model is structurally unable to cite any
+    paper_id outside this set (Literal-constrained, same guarantee level
+    as summarize.py's own citations, and as this report's own pre-R2B
+    3-section body). Returns one dict entry per REPORT_SECTION_
+    DEFINITIONS key ({"content", "cited_papers", ...}), a top-level
+    "sections" list (the real ReportOut.sections the API serializer
+    already reads), the legacy findings/limitations/future_scope keys as
+    straight PROJECTIONS of their mapped Analytical section (see
+    _project_legacy_fields) -- not independently generated -- plus
+    "skipped_papers" (selected papers never cited in ANY section,
+    mirroring summarize.py's own convention, logged as a warning not an
+    error) and "references" (report-quality Phase R1's global numbered
+    citations, now spanning all 8 sections).
 
     web_articles (curation-chat-web-escalation Phase 5d) is optional and
     backward-compatible: every existing caller that doesn't pass it gets
@@ -433,21 +625,24 @@ def generate_report(
         empty_section = {"content": "", "cited_papers": [], "reference_numbers": []}
         if web_articles:
             empty_section["cited_web_articles"] = []
-        return {
-            "findings": dict(empty_section), "limitations": dict(empty_section), "future_scope": dict(empty_section),
-            "skipped_papers": [], "references": [],
-        }
+        sections_out = {d["key"]: dict(empty_section) for d in REPORT_SECTION_DEFINITIONS}
+        result = _project_legacy_fields(sections_out)
+        result["sections"] = _sections_list(sections_out)
+        result["skipped_papers"] = []
+        result["references"] = []
+        return result
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
-    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None)
+    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, REPORT_SECTION_DEFINITIONS)
+    system_prompt = _build_report_system_prompt(REPORT_SECTION_DEFINITIONS)
 
     client = client or OpenAI()
-    parsed = _generate_report_sections(topic, selected_papers, web_articles, schema, client, model)
+    parsed = _generate_report_sections(topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt)
 
     referenced_ids: set[str] = set()
     sections_out = {}
-    for section_name in SECTION_NAMES:
+    for section_name in ANALYTICAL_SECTION_NAMES:
         section = getattr(parsed, section_name)
         cited_papers = [papers_by_id[pid] for pid in section.cited_paper_ids]  # guaranteed present: Literal enforced it structurally
         referenced_ids.update(section.cited_paper_ids)
@@ -467,14 +662,15 @@ def generate_report(
     get_client().update_current_span(
         input={"topic": topic, "num_selected_papers": len(selected_papers), "num_web_articles": len(web_articles)},
         output={
-            "findings_citation_count": len(sections_out["findings"]["cited_papers"]),
-            "limitations_citation_count": len(sections_out["limitations"]["cited_papers"]),
-            "future_scope_citation_count": len(sections_out["future_scope"]["cited_papers"]),
+            **{f"{name}_citation_count": len(sections_out[name]["cited_papers"]) for name in ANALYTICAL_SECTION_NAMES},
             "skipped_papers": paper_metadata(skipped),
         },
     )
 
-    return _build_references_and_renumber({**sections_out, "skipped_papers": skipped})
+    result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
+    result = _project_legacy_fields(result)
+    result["sections"] = _sections_list(result)
+    return result
 
 
 def generate_report_for_session(session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL) -> dict:
@@ -494,12 +690,35 @@ def generate_report_for_session(session: PaperPoolSession, client: OpenAI | None
     return generate_report(session.topic, session.selected_papers, client=client, model=model)
 
 
-def _build_regeneration_system_prompt(existing_report: dict) -> str:
+def _resolve_prior_citations_for_regeneration(existing_report: dict, section_key: str) -> list[Paper]:
+    """report-quality Phase R2B: resolves which papers (if any) were
+    cited under `section_key` in the PRIOR report, for citation-
+    preservation purposes. Handles both the ordinary case (existing_
+    report already has this exact key -- e.g. a second Analytical
+    regeneration) and the cross-version case (existing_report still has
+    the OLD 3-section shape, e.g. its first report predates R2B):
+    thematic_findings/contradictions_open_debates/future_research_
+    directions fall back to their mapped legacy key's prior citations
+    (_ANALYTICAL_KEY_TO_LEGACY_FIELD) if the new key itself isn't
+    present. Every other new section key has no old-report analogue at
+    all -- an old report never had anything to preserve for e.g.
+    Executive Summary or Gap Analysis -- so those simply resolve to an
+    empty prior-citations list, which _restore_dropped_citations already
+    treats as a valid, unremarkable case (nothing to restore)."""
+    if section_key in existing_report:
+        return existing_report[section_key]["cited_papers"]
+    legacy_field = _ANALYTICAL_KEY_TO_LEGACY_FIELD.get(section_key)
+    if legacy_field is not None and legacy_field in existing_report:
+        return existing_report[legacy_field]["cited_papers"]
+    return []
+
+
+def _build_regeneration_system_prompt(existing_report: dict, section_definitions: list[dict]) -> str:
     per_section_citations = "\n".join(
-        f"- {name}: {[p.paper_id for p in existing_report[name]['cited_papers']]}"
-        for name in SECTION_NAMES
+        f"- {d['key']}: {[p.paper_id for p in _resolve_prior_citations_for_regeneration(existing_report, d['key'])]}"
+        for d in section_definitions
     )
-    return SYSTEM_PROMPT + f"""
+    return _build_report_system_prompt(section_definitions) + f"""
 This is a REGENERATION of an existing report -- additional web sources have been approved since it was first written, and you should incorporate them where genuinely relevant. You MUST preserve every paper_id already cited in a section below: never drop an existing paper citation from a section just because new web sources are now available. You may add new web citations, cite additional papers, and refine the prose, but an already-cited paper must remain cited in any section that previously cited it.
 
 Previously cited paper_ids per section:
@@ -517,9 +736,15 @@ def _restore_dropped_citations(existing_report: dict, section_name: str, cited_p
     a best-effort nudge, so it holds even if the prompt instruction
     above is ignored entirely (see tests/test_report.py's isolation test,
     which defeats the prompt layer on purpose to prove this layer alone
-    is what's actually load-bearing)."""
+    is what's actually load-bearing).
+
+    report-quality Phase R2B: prior citations are resolved via
+    _resolve_prior_citations_for_regeneration rather than direct
+    existing_report[section_name] access, so this also works correctly
+    (never KeyErrors) when existing_report still has the old 3-section
+    shape and section_name is a new Analytical key."""
     restored = list(cited_paper_ids)
-    for pid in [p.paper_id for p in existing_report[section_name]["cited_papers"]]:
+    for pid in [p.paper_id for p in _resolve_prior_citations_for_regeneration(existing_report, section_name)]:
         if pid not in restored:
             restored.append(pid)
     return restored
@@ -556,8 +781,8 @@ def _regenerate_report_sections_with_sources(
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
-    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None)
-    system_prompt = _build_regeneration_system_prompt(existing_report)
+    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, REPORT_SECTION_DEFINITIONS)
+    system_prompt = _build_regeneration_system_prompt(existing_report, REPORT_SECTION_DEFINITIONS)
 
     client = client or OpenAI()
     parsed = _generate_report_sections(
@@ -566,7 +791,7 @@ def _regenerate_report_sections_with_sources(
 
     referenced_ids: set[str] = set()
     sections_out = {}
-    for section_name in SECTION_NAMES:
+    for section_name in ANALYTICAL_SECTION_NAMES:
         section = getattr(parsed, section_name)
         cited_paper_ids = _restore_dropped_citations(existing_report, section_name, list(section.cited_paper_ids))
 
@@ -591,9 +816,7 @@ def _regenerate_report_sections_with_sources(
             "num_web_articles": len(web_articles),
         },
         output={
-            "findings_citation_count": len(sections_out["findings"]["cited_papers"]),
-            "limitations_citation_count": len(sections_out["limitations"]["cited_papers"]),
-            "future_scope_citation_count": len(sections_out["future_scope"]["cited_papers"]),
+            **{f"{name}_citation_count": len(sections_out[name]["cited_papers"]) for name in ANALYTICAL_SECTION_NAMES},
             "skipped_papers": paper_metadata(skipped),
         },
     )
@@ -604,7 +827,10 @@ def _regenerate_report_sections_with_sources(
     # model's own regenerated content never bracketed correctly falls
     # into this pass's own "structurally cited but never marked" handling
     # rather than being silently missing from References.
-    return _build_references_and_renumber({**sections_out, "skipped_papers": skipped})
+    result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
+    result = _project_legacy_fields(result)
+    result["sections"] = _sections_list(result)
+    return result
 
 
 def regenerate_report_with_new_sources(

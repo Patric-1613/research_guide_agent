@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
+    ANALYTICAL_SECTION_NAMES,
+    REPORT_SECTION_DEFINITIONS,
     _build_references_and_renumber,
     _build_report_schema,
     derive_legacy_references,
@@ -46,6 +48,27 @@ def _mock_parsed_response(parsed):
     return mock_response
 
 
+def _analytical_parsed(schema, web_urls_used: bool = False, **section_overrides):
+    """report-quality Phase R2B: builds a full 8-field parsed report
+    response for a REPORT_SECTION_DEFINITIONS-shaped schema, defaulting
+    every section not explicitly passed in section_overrides to empty
+    content/no citations -- lets each test only spell out the section(s)
+    it actually cares about, matching this file's existing convention of
+    hand-building `parsed` via the schema/section_cls rather than a raw
+    dict."""
+    section_cls = schema.model_fields["executive_summary"].annotation
+    kwargs = {}
+    for key in ANALYTICAL_SECTION_NAMES:
+        if key in section_overrides:
+            kwargs[key] = section_overrides[key]
+        else:
+            empty_kwargs = {"content": "", "cited_paper_ids": []}
+            if web_urls_used:
+                empty_kwargs["cited_web_urls"] = []
+            kwargs[key] = section_cls(**empty_kwargs)
+    return schema(**kwargs)
+
+
 def test_report_schema_rejects_unknown_paper_id():
     schema = _build_report_schema(["a", "b"])
     section_cls = schema.model_fields["findings"].annotation
@@ -60,25 +83,29 @@ def test_report_schema_rejects_unknown_paper_id():
 
 def test_generate_report_attaches_citations_per_section_and_flags_skipped():
     papers = [_paper("1111", "Paper One"), _paper("2222", "Paper Two"), _paper("3333", "Paper Three")]
-    schema = _build_report_schema([p.paper_id for p in papers])
-    section_cls = schema.model_fields["findings"].annotation
+    schema = _build_report_schema([p.paper_id for p in papers], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
 
     # Different sections cite different, non-overlapping subsets;
     # "3333" is never cited anywhere -> must show up as skipped.
-    parsed = schema(
-        findings=section_cls(content="Findings text.", cited_paper_ids=["1111", "2222"]),
-        limitations=section_cls(content="Limitations text.", cited_paper_ids=["1111"]),
-        future_scope=section_cls(content="Future scope text.", cited_paper_ids=[]),
+    parsed = _analytical_parsed(
+        schema,
+        thematic_findings=section_cls(content="Findings text.", cited_paper_ids=["1111", "2222"]),
+        contradictions_open_debates=section_cls(content="Limitations text.", cited_paper_ids=["1111"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
 
     result = generate_report("some topic", papers, client=mock_client)
 
-    assert [p.paper_id for p in result["findings"]["cited_papers"]] == ["1111", "2222"]
-    assert [p.paper_id for p in result["limitations"]["cited_papers"]] == ["1111"]
-    assert result["future_scope"]["cited_papers"] == []
+    assert [p.paper_id for p in result["thematic_findings"]["cited_papers"]] == ["1111", "2222"]
+    assert [p.paper_id for p in result["contradictions_open_debates"]["cited_papers"]] == ["1111"]
+    assert result["future_research_directions"]["cited_papers"] == []
     assert [p.paper_id for p in result["skipped_papers"]] == ["3333"]
+    # legacy fields are straight projections of their mapped Analytical section
+    assert result["findings"] == result["thematic_findings"]
+    assert result["limitations"] == result["contradictions_open_debates"]
+    assert result["future_scope"] == result["future_research_directions"]
 
 
 def test_generate_report_returns_empty_for_no_selected_papers():
@@ -103,20 +130,19 @@ def test_generate_report_for_session_refuses_when_stage_is_not_synthesize():
 
 def test_generate_report_with_just_one_selected_paper():
     papers = [_paper("1111", "Paper One")]
-    schema = _build_report_schema([p.paper_id for p in papers])
-    section_cls = schema.model_fields["findings"].annotation
+    schema = _build_report_schema([p.paper_id for p in papers], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
 
-    parsed = schema(
-        findings=section_cls(content="Findings text.", cited_paper_ids=["1111"]),
-        limitations=section_cls(content="Limitations text.", cited_paper_ids=["1111"]),
-        future_scope=section_cls(content="Future scope text.", cited_paper_ids=["1111"]),
+    parsed = _analytical_parsed(
+        schema,
+        **{key: section_cls(content=f"{key} text.", cited_paper_ids=["1111"]) for key in ANALYTICAL_SECTION_NAMES},
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
 
     result = generate_report("some topic", papers, client=mock_client)
 
-    for section in ("findings", "limitations", "future_scope"):
+    for section in ANALYTICAL_SECTION_NAMES:
         assert [p.paper_id for p in result[section]["cited_papers"]] == ["1111"]
     assert result["skipped_papers"] == []
 
@@ -147,12 +173,10 @@ def test_generate_report_falls_back_to_placeholder_text_for_missing_abstract():
         abstract=None, url=None, doi=None, citation_count=None,
         source="arxiv", paper_id="thin-1",
     )
-    schema = _build_report_schema(["thin-1"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="Findings text.", cited_paper_ids=["thin-1"]),
-        limitations=section_cls(content="Limitations text.", cited_paper_ids=[]),
-        future_scope=section_cls(content="Future scope text.", cited_paper_ids=[]),
+    schema = _build_report_schema(["thin-1"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, thematic_findings=section_cls(content="Findings text.", cited_paper_ids=["thin-1"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -191,12 +215,11 @@ def test_report_schema_without_web_urls_has_no_cited_web_urls_field():
 def test_generate_report_with_web_articles_attaches_cited_web_articles_per_section():
     papers = [_paper("1111", "Paper One")]
     web = _web_article("https://x.com/a", "Article A")
-    schema = _build_report_schema(["1111"], ["https://x.com/a"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="f", cited_paper_ids=["1111"], cited_web_urls=["https://x.com/a"]),
-        limitations=section_cls(content="l", cited_paper_ids=[], cited_web_urls=[]),
-        future_scope=section_cls(content="fs", cited_paper_ids=[], cited_web_urls=[]),
+    schema = _build_report_schema(["1111"], ["https://x.com/a"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="f", cited_paper_ids=["1111"], cited_web_urls=["https://x.com/a"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -204,7 +227,7 @@ def test_generate_report_with_web_articles_attaches_cited_web_articles_per_secti
     result = generate_report("topic", papers, web_articles=[web], client=mock_client)
 
     assert [a.url for a in result["findings"]["cited_web_articles"]] == ["https://x.com/a"]
-    assert result["limitations"]["cited_web_articles"] == []
+    assert result["contradictions_open_debates"]["cited_web_articles"] == []
 
 
 def test_generate_report_without_web_articles_omits_cited_web_articles_key():
@@ -212,19 +235,16 @@ def test_generate_report_without_web_articles_omits_cited_web_articles_key():
     empty-papers early-return path already covered above -- existing
     callers that never pass web_articles must see byte-identical shape."""
     papers = [_paper("1111", "Paper One")]
-    schema = _build_report_schema(["1111"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="f", cited_paper_ids=["1111"]),
-        limitations=section_cls(content="l", cited_paper_ids=[]),
-        future_scope=section_cls(content="fs", cited_paper_ids=[]),
-    )
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(schema, thematic_findings=section_cls(content="f", cited_paper_ids=["1111"]))
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
 
     result = generate_report("topic", papers, client=mock_client)
 
     assert "cited_web_articles" not in result["findings"]
+    assert "cited_web_articles" not in result["thematic_findings"]
 
 
 def test_regenerate_report_refuses_when_no_existing_report():
@@ -271,12 +291,13 @@ def test_regenerate_report_preserves_all_original_citations_and_adds_web_citatio
         report=existing_report, web_articles_added=[web],
     )
 
-    schema = _build_report_schema(["1111", "2222", "3333"], ["https://x.com/a"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="new findings", cited_paper_ids=["1111", "2222"], cited_web_urls=["https://x.com/a"]),
-        limitations=section_cls(content="new limitations", cited_paper_ids=["1111"], cited_web_urls=[]),
-        future_scope=section_cls(content="new future, now covers paper three", cited_paper_ids=["3333"], cited_web_urls=[]),
+    schema = _build_report_schema(["1111", "2222", "3333"], ["https://x.com/a"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="new findings", cited_paper_ids=["1111", "2222"], cited_web_urls=["https://x.com/a"]),
+        contradictions_open_debates=section_cls(content="new limitations", cited_paper_ids=["1111"], cited_web_urls=[]),
+        future_research_directions=section_cls(content="new future, now covers paper three", cited_paper_ids=["3333"], cited_web_urls=[]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -314,16 +335,16 @@ def test_regenerate_report_defensive_layer_restores_citation_the_prompt_instruct
         report=existing_report, web_articles_added=[],
     )
 
-    schema = _build_report_schema(["1111", "2222"])
-    section_cls = schema.model_fields["findings"].annotation
+    schema = _build_report_schema(["1111", "2222"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
     # The mocked regeneration DROPS "2222" from findings entirely -- this
     # IS the prompt instruction failing, not a simulation of it: the mock
     # never even sees the real prompt text, so this result is reachable
     # regardless of what the instruction says.
-    parsed = schema(
-        findings=section_cls(content="new findings, missing a citation", cited_paper_ids=["1111"]),
-        limitations=section_cls(content="new limitations", cited_paper_ids=["1111"]),
-        future_scope=section_cls(content="new future", cited_paper_ids=[]),
+    parsed = _analytical_parsed(
+        schema,
+        thematic_findings=section_cls(content="new findings, missing a citation", cited_paper_ids=["1111"]),
+        contradictions_open_debates=section_cls(content="new limitations", cited_paper_ids=["1111"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -361,12 +382,11 @@ def test_regenerate_with_approved_web_sources_only_reaches_the_model_for_the_pas
         web_articles_added=[approved, unapproved],
     )
 
-    schema = _build_report_schema(["1111"], ["https://approved.com"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved.com"]),
-        limitations=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
-        future_scope=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+    schema = _build_report_schema(["1111"], ["https://approved.com"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved.com"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -401,12 +421,11 @@ def test_regenerate_with_approved_web_sources_ignores_web_articles_added_entirel
         web_articles_added=[pool_only_article],
     )
 
-    schema = _build_report_schema(["1111"], ["https://approved-elsewhere.com"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved-elsewhere.com"]),
-        limitations=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
-        future_scope=section_cls(content="", cited_paper_ids=[], cited_web_urls=[]),
+    schema = _build_report_schema(["1111"], ["https://approved-elsewhere.com"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="new", cited_paper_ids=["1111"], cited_web_urls=["https://approved-elsewhere.com"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -622,14 +641,14 @@ def test_generate_report_end_to_end_converts_section_local_model_markers_to_glob
     [N] markers and a populated references list."""
     p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
     web = _web_article("https://x.com/a", "Article A")
-    schema = _build_report_schema(["1111", "2222"], ["https://x.com/a"])
-    section_cls = schema.model_fields["findings"].annotation
-    parsed = schema(
-        findings=section_cls(
+    schema = _build_report_schema(["1111", "2222"], ["https://x.com/a"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(
             content="Per [Paper 1] and [Web 1], X.", cited_paper_ids=["1111"], cited_web_urls=["https://x.com/a"],
         ),
-        limitations=section_cls(content="Also [Paper 1] shows Y.", cited_paper_ids=["1111"], cited_web_urls=[]),
-        future_scope=section_cls(content="No citations here.", cited_paper_ids=[], cited_web_urls=[]),
+        contradictions_open_debates=section_cls(content="Also [Paper 1] shows Y.", cited_paper_ids=["1111"], cited_web_urls=[]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
@@ -641,6 +660,137 @@ def test_generate_report_end_to_end_converts_section_local_model_markers_to_glob
     assert len(result["references"]) == 2
     assert result["references"][0]["kind"] == "paper"
     assert result["references"][1]["kind"] == "web"
+
+
+# --- report-quality Phase R2B: Analytical dynamic section generation ---
+
+def test_analytical_report_schema_requires_all_eight_sections():
+    """Named required pydantic fields (not a Literal-constrained list)
+    make a missing section structurally impossible -- pydantic rejects
+    an incomplete section set outright rather than silently defaulting."""
+    schema = _build_report_schema(["a"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    section = section_cls(content="x", cited_paper_ids=[])
+    incomplete_kwargs = {key: section for key in ANALYTICAL_SECTION_NAMES if key != "conclusion"}
+    try:
+        schema(**incomplete_kwargs)
+        assert False, "expected a validation error for a missing required section"
+    except Exception:
+        pass
+
+
+def test_generate_report_produces_sections_list_with_all_eight_analytical_keys_in_order():
+    papers = [_paper("1111", "Paper One")]
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report("topic", papers, client=mock_client)
+
+    assert [s["key"] for s in result["sections"]] == list(ANALYTICAL_SECTION_NAMES)
+    assert [s["title"] for s in result["sections"]] == [d["title"] for d in REPORT_SECTION_DEFINITIONS]
+
+
+def test_generate_report_for_empty_selection_still_produces_all_eight_sections():
+    result = generate_report("topic", [], client=MagicMock())
+
+    assert [s["key"] for s in result["sections"]] == list(ANALYTICAL_SECTION_NAMES)
+    assert all(s["content"] == "" for s in result["sections"])
+    assert result["findings"] == {"content": "", "cited_papers": [], "reference_numbers": []}
+    assert result["limitations"] == {"content": "", "cited_papers": [], "reference_numbers": []}
+    assert result["future_scope"] == {"content": "", "cited_papers": [], "reference_numbers": []}
+    assert result["skipped_papers"] == []
+    assert result["references"] == []
+
+
+def test_legacy_fields_are_projections_of_their_mapped_analytical_section_not_independent_text():
+    papers = [_paper("1111", "Paper One")]
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema,
+        thematic_findings=section_cls(content="thematic findings text", cited_paper_ids=["1111"]),
+        contradictions_open_debates=section_cls(content="contradictions text", cited_paper_ids=[]),
+        future_research_directions=section_cls(content="future directions text", cited_paper_ids=[]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report("topic", papers, client=mock_client)
+
+    assert result["findings"]["content"] == "thematic findings text"
+    assert result["limitations"]["content"] == "contradictions text"
+    assert result["future_scope"]["content"] == "future directions text"
+
+
+def test_build_references_and_renumber_works_across_all_eight_analytical_sections():
+    """Same global-renumbering guarantee as the 3-section tests above,
+    proven again over the full 8-section ANALYTICAL_SECTION_NAMES set --
+    a source cited in the first and last section still keeps one
+    number."""
+    p1 = _paper("p1", "Paper One")
+    sections_out = {key: {"content": "", "cited_papers": []} for key in ANALYTICAL_SECTION_NAMES}
+    sections_out["executive_summary"] = {"content": "Per [Paper 1], X.", "cited_papers": [p1]}
+    sections_out["conclusion"] = {"content": "Again, [Paper 1] shows Y.", "cited_papers": [p1]}
+    sections_out["skipped_papers"] = []
+
+    result = _build_references_and_renumber(sections_out, ANALYTICAL_SECTION_NAMES)
+
+    assert result["executive_summary"]["content"] == "Per [1], X."
+    assert result["conclusion"]["content"] == "Again, [1] shows Y."
+    assert len(result["references"]) == 1
+    assert result["references"][0]["number"] == 1
+
+
+def test_generate_report_for_session_produces_all_eight_analytical_sections():
+    p1 = _paper("1111", "Paper One")
+    session = PaperPoolSession(topic="q", stage="synthesize", selected_papers=[p1])
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report_for_session(session, client=mock_client)
+
+    assert set(s["key"] for s in result["sections"]) == set(ANALYTICAL_SECTION_NAMES)
+
+
+def test_regenerate_report_cross_version_maps_legacy_priors_and_never_crashes_on_new_only_sections():
+    """report-quality Phase R2B: a session's existing report may still
+    predate R2B entirely (only has findings/limitations/future_scope,
+    never thematic_findings/contradictions_open_debates/future_research_
+    directions at all) -- regenerating it under the new 8-section schema
+    must not KeyError, and must resolve prior citations for the three
+    mapped sections from their legacy counterpart, while every other new
+    section (no legacy analogue at all) simply has nothing to restore."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    existing_report = {
+        "findings": {"content": "old", "cited_papers": [p1, p2]},
+        "limitations": {"content": "old", "cited_papers": []},
+        "future_scope": {"content": "old", "cited_papers": []},
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1, p2], selected_paper_ids=["1111", "2222"],
+        report=existing_report, web_articles_added=[],
+    )
+
+    schema = _build_report_schema(["1111", "2222"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    # The mocked regeneration drops BOTH prior citations from
+    # thematic_findings entirely, and writes nothing for the brand-new
+    # gap_analysis section -- neither should crash or lose data.
+    parsed = _analytical_parsed(schema, thematic_findings=section_cls(content="new", cited_paper_ids=[]))
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    assert [p.paper_id for p in result["thematic_findings"]["cited_papers"]] == ["1111", "2222"]
+    assert result["gap_analysis"]["cited_papers"] == []
+    assert set(s["key"] for s in result["sections"]) == set(ANALYTICAL_SECTION_NAMES)
 
 
 if __name__ == "__main__":
