@@ -18,7 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
+    _build_references_and_renumber,
     _build_report_schema,
+    derive_legacy_references,
     generate_report,
     generate_report_for_session,
     regenerate_report_with_approved_web_sources,
@@ -80,10 +82,11 @@ def test_generate_report_attaches_citations_per_section_and_flags_skipped():
 
 def test_generate_report_returns_empty_for_no_selected_papers():
     result = generate_report("topic", [], client=MagicMock())
-    assert result["findings"] == {"content": "", "cited_papers": []}
-    assert result["limitations"] == {"content": "", "cited_papers": []}
-    assert result["future_scope"] == {"content": "", "cited_papers": []}
+    assert result["findings"] == {"content": "", "cited_papers": [], "reference_numbers": []}
+    assert result["limitations"] == {"content": "", "cited_papers": [], "reference_numbers": []}
+    assert result["future_scope"] == {"content": "", "cited_papers": [], "reference_numbers": []}
     assert result["skipped_papers"] == []
+    assert result["references"] == []
 
 
 def test_generate_report_for_session_refuses_when_stage_is_not_synthesize():
@@ -438,6 +441,169 @@ def test_regenerate_with_approved_web_sources_refuses_when_stage_is_not_synthesi
         assert False, "expected a ValueError for a session not in the synthesize stage"
     except ValueError as e:
         assert "curate" in str(e)
+
+
+# --- report-quality Phase R1: inline numbered citations + References ---
+
+def _sections_out(findings: dict, limitations: dict | None = None, future_scope: dict | None = None) -> dict:
+    return {
+        "findings": findings,
+        "limitations": limitations or {"content": "", "cited_papers": []},
+        "future_scope": future_scope or {"content": "", "cited_papers": []},
+        "skipped_papers": [],
+    }
+
+
+def test_build_references_and_renumber_converts_section_local_markers_to_one_global_sequence():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    web = _web_article("https://w.com", "Web One")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [Paper 1] and [Paper 2], X. Also [Web 1].",
+            "cited_papers": [p1, p2], "cited_web_articles": [web],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1] and [2], X. Also [3]."
+    assert result["findings"]["reference_numbers"] == [1, 2, 3]
+    assert [r["number"] for r in result["references"]] == [1, 2, 3]
+
+
+def test_build_references_and_renumber_same_source_cited_in_multiple_sections_keeps_one_number():
+    p1 = _paper("p1", "Paper One")
+    sections_out = _sections_out(
+        findings={"content": "Per [Paper 1], X.", "cited_papers": [p1]},
+        limitations={"content": "Also [Paper 1] shows Y.", "cited_papers": [p1]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1], X."
+    assert result["limitations"]["content"] == "Also [1] shows Y."
+    assert len(result["references"]) == 1
+    assert result["references"][0]["number"] == 1
+    assert result["findings"]["reference_numbers"] == [1]
+    assert result["limitations"]["reference_numbers"] == [1]
+
+
+def test_build_references_and_renumber_strips_out_of_range_marker():
+    p1 = _paper("p1", "Paper One")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [Paper 1], X. But [Paper 9] is invented.",
+            "cited_papers": [p1],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1], X. But  is invented."
+    assert len(result["references"]) == 1  # the invented one never got a reference
+
+
+def test_build_references_and_renumber_structurally_cited_but_unmarked_source_appears_in_references():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    sections_out = _sections_out(
+        findings={"content": "Only [Paper 1] is marked.", "cited_papers": [p1, p2]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    # p2 was structurally cited (in cited_papers) but never bracketed --
+    # still gets a trailing reference, not silently dropped.
+    assert result["findings"]["content"] == "Only [1] is marked."
+    assert len(result["references"]) == 2
+    assert {r["paper_id"] for r in result["references"]} == {"p1", "p2"}
+    assert result["findings"]["reference_numbers"] == [1, 2]
+
+
+def test_build_references_and_renumber_includes_paper_and_web_entries():
+    p1 = _paper("p1", "Paper One")
+    web = _web_article("https://w.com", "Web One")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [Paper 1] and [Web 1].",
+            "cited_papers": [p1], "cited_web_articles": [web],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    kinds = {r["kind"] for r in result["references"]}
+    assert kinds == {"paper", "web"}
+
+
+def test_reference_entry_link_url_prefers_doi_then_falls_back_to_paper_url_and_uses_article_url_for_web():
+    with_doi = Paper(
+        title="Has DOI", authors=["A"], year=2024, venue="X", abstract="a",
+        url="http://arxiv.org/abs/withdoi", doi="10.1234/xyz", citation_count=None,
+        source="arxiv", paper_id="withdoi",
+    )
+    without_doi = _paper("nodoi", "No DOI")
+    web = _web_article("https://w.com", "Web One")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [Paper 1], [Paper 2], and [Web 1].",
+            "cited_papers": [with_doi, without_doi], "cited_web_articles": [web],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    by_id = {r.get("paper_id") or r.get("url"): r for r in result["references"]}
+    assert by_id["withdoi"]["link_url"] == "https://doi.org/10.1234/xyz"
+    assert by_id["nodoi"]["link_url"] == without_doi.url
+    assert by_id["https://w.com"]["link_url"] == "https://w.com"
+
+
+def test_derive_legacy_references_does_not_rewrite_content_and_builds_references():
+    """The backward-compat path: an old, pre-R1 report dict has no
+    inline markers at all in its content -- derive_legacy_references
+    must never invent any, only build the References list."""
+    p1 = _paper("p1", "Paper One")
+    old_report = {
+        "findings": {"content": "Old prose with no markers at all.", "cited_papers": [p1]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [],
+    }
+
+    result = derive_legacy_references(old_report)
+
+    assert result["findings"]["content"] == "Old prose with no markers at all."
+    assert result["findings"]["reference_numbers"] == [1]
+    assert len(result["references"]) == 1
+    assert result["references"][0]["paper_id"] == "p1"
+
+
+def test_generate_report_end_to_end_converts_section_local_model_markers_to_global_numbers():
+    """Proves the wiring, not just the isolated post-processing function:
+    a mocked model response using section-local [Paper N]/[Web N]
+    markers comes back through the real generate_report() with global
+    [N] markers and a populated references list."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    web = _web_article("https://x.com/a", "Article A")
+    schema = _build_report_schema(["1111", "2222"], ["https://x.com/a"])
+    section_cls = schema.model_fields["findings"].annotation
+    parsed = schema(
+        findings=section_cls(
+            content="Per [Paper 1] and [Web 1], X.", cited_paper_ids=["1111"], cited_web_urls=["https://x.com/a"],
+        ),
+        limitations=section_cls(content="Also [Paper 1] shows Y.", cited_paper_ids=["1111"], cited_web_urls=[]),
+        future_scope=section_cls(content="No citations here.", cited_paper_ids=[], cited_web_urls=[]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report("some topic", [p1, p2], web_articles=[web], client=mock_client)
+
+    assert result["findings"]["content"] == "Per [1] and [2], X."
+    assert result["limitations"]["content"] == "Also [1] shows Y."
+    assert len(result["references"]) == 2
+    assert result["references"][0]["kind"] == "paper"
+    assert result["references"][1]["kind"] == "web"
 
 
 if __name__ == "__main__":

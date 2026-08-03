@@ -60,34 +60,55 @@ def _serialize_report(report: dict | None) -> dict | None:
     """report.py's generate_report() return shape nests raw Paper objects
     in each section's cited_papers and in the top-level skipped_papers --
     not JSON-native, so (same reasoning as every other field here) they
-    must become plain dicts before a checkpointer sees them."""
+    must become plain dicts before a checkpointer sees them. Same for
+    each section's cited_web_articles (raw WebArticle objects).
+
+    report-quality Phase R1 bug fix: cited_web_articles used to be
+    dropped here entirely -- only content/cited_papers ever survived a
+    save/load round trip, silently losing every web citation a section
+    had on reload. Fixed by serializing it the same way cited_papers
+    already was. reference_numbers (plain ints, already JSON-native) and
+    the top-level references list (plain dicts, already JSON-native) are
+    passed through with .get(..., default) -- a report generated before
+    this phase has neither key at all, and that ABSENCE (not an empty
+    list) is exactly the signal the API serializer
+    (api_app/serializers.py's _report_to_out) uses to know to derive
+    them fresh via report.py's derive_legacy_references() instead of
+    trusting a stored (nonexistent) value.
+    """
     if report is None:
         return None
-    return {
-        **{
-            name: {
-                "content": report[name]["content"],
-                "cited_papers": [p.to_dict() for p in report[name]["cited_papers"]],
-            }
-            for name in _REPORT_SECTION_NAMES
-        },
-        "skipped_papers": [p.to_dict() for p in report["skipped_papers"]],
+    serialized = {
+        name: {
+            "content": report[name]["content"],
+            "cited_papers": [p.to_dict() for p in report[name]["cited_papers"]],
+            "cited_web_articles": [a.to_dict() for a in report[name].get("cited_web_articles", [])],
+            "reference_numbers": report[name].get("reference_numbers", []),
+        }
+        for name in _REPORT_SECTION_NAMES
     }
+    serialized["skipped_papers"] = [p.to_dict() for p in report["skipped_papers"]]
+    if "references" in report:
+        serialized["references"] = report["references"]
+    return serialized
 
 
 def _deserialize_report(d: dict | None) -> dict | None:
     if d is None:
         return None
-    return {
-        **{
-            name: {
-                "content": d[name]["content"],
-                "cited_papers": [Paper(**p) for p in d[name]["cited_papers"]],
-            }
-            for name in _REPORT_SECTION_NAMES
-        },
-        "skipped_papers": [Paper(**p) for p in d["skipped_papers"]],
+    deserialized = {
+        name: {
+            "content": d[name]["content"],
+            "cited_papers": [Paper(**p) for p in d[name]["cited_papers"]],
+            "cited_web_articles": [WebArticle(**a) for a in d[name].get("cited_web_articles", [])],
+            "reference_numbers": d[name].get("reference_numbers", []),
+        }
+        for name in _REPORT_SECTION_NAMES
     }
+    deserialized["skipped_papers"] = [Paper(**p) for p in d["skipped_papers"]]
+    if "references" in d:
+        deserialized["references"] = d["references"]
+    return deserialized
 
 
 def _session_to_dict(session: PaperPoolSession) -> dict:

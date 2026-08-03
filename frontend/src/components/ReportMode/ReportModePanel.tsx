@@ -1,10 +1,39 @@
-import type { ReportSectionOut, CurationStateResponse } from '../../types'
+import type { ReactNode } from 'react'
+import type { ReportSectionOut, CurationStateResponse, ReferenceEntry } from '../../types'
 
 interface ReportModePanelProps {
   state: CurationStateResponse
   disabled: boolean
   onGenerateReport: () => void
   onRegenerateReport: () => void
+}
+
+// report-quality Phase R1: report prose now carries inline, report-wide
+// numbered markers like [1], [2], [3] (see research_agent/report.py's
+// _build_references_and_renumber) -- this splits on them and renders each
+// one as a clickable anchor jumping to its entry in the References
+// section below, rather than as plain, inert text. A content string with
+// no markers at all (e.g. an old, pre-R1 report -- see
+// derive_legacy_references, which deliberately never retrofits markers
+// into old prose) just renders as one plain segment, unchanged.
+const MARKER_RE = /(\[\d+\])/g
+
+function renderContentWithMarkers(content: string): ReactNode[] {
+  return content.split(MARKER_RE).map((part, i) => {
+    const match = /^\[(\d+)\]$/.exec(part)
+    if (!match) return <span key={i}>{part}</span>
+    const number = match[1]
+    return (
+      <a
+        key={i}
+        href={`#ref-${number}`}
+        data-testid={`citation-marker-${number}`}
+        className="font-medium text-accent hover:underline"
+      >
+        [{number}]
+      </a>
+    )
+  })
 }
 
 // Point 1 of the redesign brief: there was previously NO way to see a
@@ -29,7 +58,7 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
     )
   }
 
-  const { findings, limitations, future_scope, skipped_paper_ids } = state.report
+  const { findings, limitations, future_scope, skipped_paper_ids, references } = state.report
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
@@ -53,6 +82,7 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
           {skipped_paper_ids.length} selected paper{skipped_paper_ids.length === 1 ? '' : 's'} skipped from synthesis.
         </p>
       )}
+      <ReferencesSection references={references ?? []} />
     </div>
   )
 }
@@ -61,27 +91,39 @@ function ReportSection({ title, section }: { title: string; section: ReportSecti
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{title}</h3>
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">{section.content}</p>
-      {(section.cited_papers.length > 0 || section.cited_web_articles.length > 0) && (
-        <div className="flex flex-wrap gap-1.5 pt-1">
-          {section.cited_papers.map((p) => (
-            <span key={p.paper_id} className="rounded-full bg-panel-alt px-2 py-0.5 text-[11px] text-text-secondary">
-              {p.title}
-            </span>
-          ))}
-          {section.cited_web_articles.map((a) => (
-            <a
-              key={a.url}
-              href={a.url}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent hover:underline"
-            >
-              {a.title}
-            </a>
-          ))}
-        </div>
-      )}
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">
+        {renderContentWithMarkers(section.content)}
+      </p>
+    </section>
+  )
+}
+
+// report-quality Phase R1: the report's actual References list -- inline
+// markers above link into this, by number. Renders nothing at all when
+// there are no references (rather than an empty "References" heading),
+// which safely covers a genuinely reference-less report and an old
+// report where `references` itself is absent (see ReportOut.references'
+// own optionality) the same way.
+function ReferencesSection({ references }: { references: ReferenceEntry[] }) {
+  if (references.length === 0) return null
+
+  return (
+    <section data-testid="report-references" className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">References</h3>
+      <ol className="flex flex-col gap-1.5 text-sm text-text">
+        {references.map((ref) => (
+          <li key={ref.number} id={`ref-${ref.number}`} data-testid={`reference-${ref.number}`} className="flex gap-2">
+            <span className="shrink-0 text-text-muted">[{ref.number}]</span>
+            {ref.link_url ? (
+              <a href={ref.link_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                {ref.formatted}
+              </a>
+            ) : (
+              <span>{ref.formatted}</span>
+            )}
+          </li>
+        ))}
+      </ol>
     </section>
   )
 }

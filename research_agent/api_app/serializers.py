@@ -16,12 +16,14 @@ from research_agent.api_app.schemas import (
     CitedWebArticleOut,
     CurationTurnResponse,
     PaperOut,
+    ReferenceEntry,
     ReportOut,
     ReportSectionOut,
     TurnHistoryEntryOut,
     WebArticleOut,
 )
 from research_agent.citations import CitationStyle, select_citation
+from research_agent.report import derive_legacy_references
 from research_agent.schema import Paper, WebArticle
 
 
@@ -110,17 +112,29 @@ def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
 
 
 def _report_to_out(report: dict) -> ReportOut:
+    # report-quality Phase R1: a report persisted before this phase has
+    # no top-level "references" key at all (see curation_session.py's
+    # _deserialize_report) -- absence, not an empty list, is the "this
+    # is a pre-R1 report" signal, since a genuinely reference-less fresh
+    # report is also a valid (if rare) real case. Derived fresh on every
+    # read, never persisted back -- the old report's own prose is never
+    # retroactively rewritten with markers it was never generated with.
+    if "references" not in report:
+        report = derive_legacy_references(report)
+
     def _section(name: str) -> ReportSectionOut:
         s = report[name]
         return ReportSectionOut(
             content=s["content"],
             cited_papers=[CitedPaperOut(paper_id=p.paper_id, title=p.title) for p in s["cited_papers"]],
             cited_web_articles=[CitedWebArticleOut(url=a.url, title=a.title) for a in s.get("cited_web_articles", [])],
+            reference_numbers=s.get("reference_numbers", []),
         )
 
     return ReportOut(
         findings=_section("findings"), limitations=_section("limitations"), future_scope=_section("future_scope"),
         skipped_paper_ids=[p.paper_id for p in report["skipped_papers"]],
+        references=[ReferenceEntry(**r) for r in report["references"]],
     )
 
 

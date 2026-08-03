@@ -214,10 +214,40 @@ class CurationTurnResponse(BaseModel):
     refinement_notes: list[str] = []
 
 
+class ReferenceEntry(BaseModel):
+    """report-quality Phase R1: one entry in a report's global, report-
+    wide References list -- the target of that report's inline [1],
+    [2], [3]... markers. `number` is stable across the whole report
+    (the same source always shows the same number, never per-section).
+    `link_url` is the frontend's one hyperlink target regardless of
+    kind -- a paper's DOI/arXiv/plain url (whichever format_apa_citation
+    itself preferred) for a paper, or the article's own url for a web
+    source -- so the UI never needs to branch on `kind` to know what to
+    link to."""
+
+    number: int
+    kind: Literal["paper", "web"]
+    title: str
+    formatted: str
+    paper_id: str | None = None
+    url: str | None = None
+    link_url: str | None = None
+
+
 class ReportSectionOut(BaseModel):
     content: str
+    # cited_papers/cited_web_articles are kept as compatibility fields --
+    # the frontend no longer renders them as pills (superseded by the
+    # inline markers + references below), but the API shape stays
+    # additive, not a breaking change.
     cited_papers: list[CitedPaperOut]
     cited_web_articles: list[CitedWebArticleOut] = []
+    # Which global reference numbers (see ReportOut.references below)
+    # this section's content actually cites -- kept as data, not
+    # rendered directly, so a future chat-reference explorer can answer
+    # "where is reference N used" without re-parsing content for marker
+    # positions.
+    reference_numbers: list[int] = Field(default_factory=list)
 
 
 class ReportOut(BaseModel):
@@ -225,6 +255,14 @@ class ReportOut(BaseModel):
     limitations: ReportSectionOut
     future_scope: ReportSectionOut
     skipped_paper_ids: list[str]
+    # report-quality Phase R1: the global, deduped, report-wide reference
+    # list every section's inline [N] markers point into. Defaulted so an
+    # old, pre-R1 ReportOut construction site (if any ever existed) still
+    # builds cleanly -- in practice always populated by _report_to_out,
+    # either from a freshly-generated report or derived on the fly for an
+    # old persisted one (see serializers.py/report.py's
+    # derive_legacy_references).
+    references: list[ReferenceEntry] = Field(default_factory=list)
 
 
 class TurnHistoryEntryOut(BaseModel):

@@ -67,10 +67,34 @@ export interface CurationTurnResponse {
   refinement_notes: string[]
 }
 
+// report-quality Phase R1: one entry in a report's global, report-wide
+// References list -- the target of that report's inline [1], [2], [3]...
+// markers. `number` is stable across the whole report (the same source
+// always shows the same number, never per-section). `link_url` is the
+// one hyperlink target regardless of kind, so the UI never needs to
+// branch on `kind` to know what to link to.
+export interface ReferenceEntry {
+  number: number
+  kind: 'paper' | 'web'
+  title: string
+  formatted: string
+  paper_id?: string | null
+  url?: string | null
+  link_url?: string | null
+}
+
 export interface ReportSectionOut {
   content: string
+  // Compatibility fields -- no longer rendered as pills (superseded by
+  // inline markers + the References section), kept additive on the API
+  // shape, not removed.
   cited_papers: CitedPaperOut[]
   cited_web_articles: CitedWebArticleOut[]
+  // Which global reference numbers (see ReportOut.references) this
+  // section's content actually cites. Optional/defaulted since an
+  // old-shape report predating this field could in principle still
+  // reach the frontend without it.
+  reference_numbers?: number[]
 }
 
 export interface ReportOut {
@@ -78,6 +102,12 @@ export interface ReportOut {
   limitations: ReportSectionOut
   future_scope: ReportSectionOut
   skipped_paper_ids: string[]
+  // The global, deduped, report-wide reference list every section's
+  // inline [N] markers point into. Optional/defaulted for the same
+  // old-shape-report reason as reference_numbers above -- the backend
+  // always derives it (fresh generation or on-the-fly for an old
+  // report), but the frontend renders safely even if it's ever absent.
+  references?: ReferenceEntry[]
 }
 
 export interface TurnHistoryEntryOut {

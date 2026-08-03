@@ -173,6 +173,87 @@ def test_phase5_fields_roundtrip_including_nested_papers_inside_report():
         assert loaded.pending_report_update == {"reason": "new web source approved"}
 
 
+def test_report_cited_web_articles_and_references_survive_serialize_deserialize():
+    """report-quality Phase R1 bug fix: cited_web_articles used to be
+    dropped entirely by _serialize_report/_deserialize_report -- only
+    content/cited_papers ever survived a save/load round trip. This
+    proves a section's web citations, its reference_numbers, and the
+    top-level references list all round-trip through real SQLite intact."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        web_article = WebArticle(
+            title="A Survey", url="https://example.com/survey",
+            snippet="a snippet", published_date="2024-01-01", source_domain="example.com",
+        )
+        report = {
+            "findings": {
+                "content": "Per [1] and [2], X.", "cited_papers": [cited_paper],
+                "cited_web_articles": [web_article], "reference_numbers": [1, 2],
+            },
+            "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [],
+            "references": [
+                {"number": 1, "kind": "paper", "paper_id": "p0", "url": None, "title": "Paper p0",
+                 "formatted": "A. (2024). Paper p0. X.", "link_url": None},
+                {"number": 2, "kind": "web", "paper_id": None, "url": "https://example.com/survey",
+                 "title": "A Survey", "formatted": "A Survey. example.com. https://example.com/survey",
+                 "link_url": "https://example.com/survey"},
+            ],
+        }
+        session = PaperPoolSession(
+            topic="parameter-efficient fine-tuning", stage="synthesize",
+            selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-web-refs", cp)
+            loaded = load_curation_session("session-report-web-refs", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        findings = loaded.report["findings"]
+        assert len(findings["cited_web_articles"]) == 1
+        assert isinstance(findings["cited_web_articles"][0], WebArticle)
+        assert findings["cited_web_articles"][0].url == "https://example.com/survey"
+        assert findings["reference_numbers"] == [1, 2]
+        assert [r["number"] for r in loaded.report["references"]] == [1, 2]
+        assert loaded.report["references"][1]["kind"] == "web"
+
+
+def test_report_without_references_or_web_citations_still_loads_old_shape():
+    """A pre-R1 persisted report has neither cited_web_articles nor
+    reference_numbers/references at all -- must still load cleanly,
+    not crash, and simply lack those keys (the API serializer, not this
+    module, is what derives them on the fly -- see
+    test_report_to_out_derives_references_for_an_old_shape_report_dict
+    in test_curation_api.py)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        old_report = {
+            "findings": {"content": "Old prose, no markers.", "cited_papers": [cited_paper]},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_papers=[cited_paper], report=old_report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-old-report", cp)
+            loaded = load_curation_session("session-old-report", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert loaded.report["findings"]["content"] == "Old prose, no markers."
+        assert loaded.report["findings"]["cited_web_articles"] == []
+        assert loaded.report["findings"]["reference_numbers"] == []
+        assert "references" not in loaded.report
+
+
 def test_list_curation_sessions_returns_empty_for_no_sessions():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"

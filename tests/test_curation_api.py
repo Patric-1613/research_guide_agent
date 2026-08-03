@@ -897,6 +897,13 @@ def test_curation_report_generates_and_persists_across_a_separate_get_request():
     with _client() as client:
         session_id, pick_ids = _finish_curation(client)
 
+        # report-quality Phase R1: this fake_report is deliberately an
+        # OLD-SHAPE dict -- no "references"/"reference_numbers" keys at
+        # all, exactly what a pre-R1 generate_report_for_session() (or a
+        # report loaded from before this phase) would return/persist.
+        # Proves _report_to_out derives a references list for it on the
+        # fly (via report.py's derive_legacy_references) rather than
+        # crashing or omitting the field.
         fake_report = {
             "findings": {"content": "f", "cited_papers": [_paper(pick_ids[0], "Paper 0")]},
             "limitations": {"content": "l", "cited_papers": []},
@@ -912,9 +919,20 @@ def test_curation_report_generates_and_persists_across_a_separate_get_request():
         assert resp2.status_code == 200
         mock_gen.assert_called_once()  # cached on the second call
 
+        # An old-shape report dict (no references key at all) still
+        # serializes cleanly -- a References list is derived, naming the
+        # one cited paper, and cited_papers/cited_web_articles are still
+        # present on the section (compatibility fields, unremoved).
+        body = resp.json()
+        assert [r["paper_id"] for r in body["references"]] == [pick_ids[0]]
+        assert body["findings"]["reference_numbers"] == [1]
+        assert body["findings"]["cited_papers"][0]["paper_id"] == pick_ids[0]
+        assert body["findings"]["cited_web_articles"] == []
+
         # Persisted state visible via a genuinely separate request too.
         state_resp = client.get(f"/curation/{session_id}")
     assert state_resp.json()["report"]["findings"]["content"] == "f"
+    assert [r["paper_id"] for r in state_resp.json()["report"]["references"]] == [pick_ids[0]]
 
 
 def test_curation_report_before_curation_finished_returns_400():

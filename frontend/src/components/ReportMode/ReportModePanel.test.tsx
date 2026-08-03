@@ -30,10 +30,13 @@ describe('ReportModePanel', () => {
   it('renders findings, limitations, and future scope content once a report exists', () => {
     const state = baseState({
       report: {
-        findings: { content: 'Finding A.', cited_papers: [{ paper_id: 'p1', title: 'Paper One' }], cited_web_articles: [] },
-        limitations: { content: 'Limitation A.', cited_papers: [], cited_web_articles: [] },
-        future_scope: { content: 'Future A.', cited_papers: [], cited_web_articles: [{ url: 'https://x.com', title: 'Web Article' }] },
+        findings: { content: 'Finding A.', cited_papers: [{ paper_id: 'p1', title: 'Paper One' }], cited_web_articles: [], reference_numbers: [1] },
+        limitations: { content: 'Limitation A.', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        future_scope: { content: 'Future A.', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
         skipped_paper_ids: [],
+        references: [
+          { number: 1, kind: 'paper', title: 'Paper One', formatted: 'A. Uthor (2024). Paper One.', paper_id: 'p1', link_url: null },
+        ],
       },
     })
     render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
@@ -41,8 +44,87 @@ describe('ReportModePanel', () => {
     expect(screen.getByText('Finding A.')).toBeInTheDocument()
     expect(screen.getByText('Limitation A.')).toBeInTheDocument()
     expect(screen.getByText('Future A.')).toBeInTheDocument()
-    expect(screen.getByText('Paper One')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Web Article' })).toHaveAttribute('href', 'https://x.com')
+  })
+
+  it('old citation pills are no longer rendered -- title-only pills are superseded by References', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'Finding A.', cited_papers: [{ paper_id: 'p1', title: 'Paper One' }], cited_web_articles: [{ url: 'https://x.com', title: 'Web Article' }], reference_numbers: [1, 2] },
+        limitations: { content: 'Limitation A.', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        future_scope: { content: 'Future A.', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        skipped_paper_ids: [],
+        references: [
+          { number: 1, kind: 'paper', title: 'Paper One', formatted: 'A. Uthor (2024). Paper One.', paper_id: 'p1', link_url: null },
+          { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com. https://x.com', url: 'https://x.com', link_url: 'https://x.com' },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    // The bare pill text (just a title, no citation/link) must not appear
+    // on its own anymore -- only inside the References section's full
+    // formatted citation.
+    expect(screen.queryByText('Paper One')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Web Article' })).not.toBeInTheDocument()
+  })
+
+  it('renders a References section with formatted paper citations and hyperlinked web sources', () => {
+    const state = baseState({
+      report: {
+        findings: {
+          content: 'Per [1] and [2], X is true.',
+          cited_papers: [{ paper_id: 'p1', title: 'Paper One' }],
+          cited_web_articles: [{ url: 'https://x.com', title: 'Web Article' }],
+          reference_numbers: [1, 2],
+        },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        skipped_paper_ids: [],
+        references: [
+          { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One. arXiv preprint.', paper_id: 'p1', link_url: 'https://doi.org/10.1/x' },
+          { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com. https://x.com', url: 'https://x.com', link_url: 'https://x.com' },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    const references = screen.getByTestId('report-references')
+    expect(references).toBeInTheDocument()
+
+    // Inline markers render as clickable anchors pointing into References.
+    expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#ref-1')
+    expect(screen.getByTestId('citation-marker-2')).toHaveAttribute('href', '#ref-2')
+
+    // Paper reference shows real formatted citation text, not a bare title.
+    expect(screen.getByText('Uthor, A. (2024). Paper One. arXiv preprint.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Uthor, A. (2024). Paper One. arXiv preprint.' })).toHaveAttribute(
+      'href', 'https://doi.org/10.1/x',
+    )
+
+    // Web reference is hyperlinked via link_url.
+    expect(screen.getByRole('link', { name: 'Web Article. x.com. https://x.com' })).toHaveAttribute(
+      'href', 'https://x.com',
+    )
+  })
+
+  it('an old report with no references field at all still renders safely, with no References section', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'Old prose, no markers.', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+        // references deliberately omitted entirely, matching an old,
+        // pre-R1 report shape reaching the frontend.
+      },
+    })
+
+    expect(() =>
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />),
+    ).not.toThrow()
+
+    expect(screen.getByText('Old prose, no markers.')).toBeInTheDocument()
+    expect(screen.queryByTestId('report-references')).not.toBeInTheDocument()
   })
 
   it('clicking Regenerate calls onRegenerateReport', async () => {

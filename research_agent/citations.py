@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from research_agent.schema import Paper
+from research_agent.schema import Paper, WebArticle
 
 CitationStyle = Literal["apa", "harvard", "bibtex"]
 
@@ -68,6 +68,26 @@ def format_apa_citation(paper: Paper) -> str:
     if link:
         citation += f" {link}"
     return citation
+
+
+def format_web_citation(article: WebArticle) -> str:
+    """report-quality Phase R1: deterministic, non-LLM reference-list entry
+    for a web source, alongside format_apa_citation/format_harvard_citation
+    above for papers -- same "no LLM, never invent missing metadata"
+    philosophy. No established academic style (APA/Harvard) has a single
+    universally-agreed convention for a web source the way it does for a
+    journal article, so this is one simple, readable format rather than
+    a second full style system: title, source domain, published date if
+    known, then the url. published_date is omitted gracefully when
+    absent, same spirit as format_apa_citation's own "n.d."/venue
+    fallbacks -- never fabricated.
+    """
+    title = article.title.rstrip(".")
+    parts = [f"{title}.", f"{article.source_domain}."]
+    if article.published_date:
+        parts.append(f"{article.published_date}.")
+    parts.append(article.url)
+    return " ".join(parts)
 
 
 def _format_author_harvard(name: str) -> str:
