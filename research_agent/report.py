@@ -248,13 +248,29 @@ Word budgets given above are guidance, not a hard limit -- stay roughly within t
 # --- report-quality Phase R1: inline numbered citations + References ---
 
 # Matches a section-local, temporary marker as prompted above -- e.g.
-# "[Paper 2]" or "[Web 1]". Deliberately reimplemented here rather than
-# imported from qa.py's own _CITATION_MARKER_RE: the pattern itself is
-# identical, but this module already reimplements _build_report_schema
-# for the same reason (see that function's own docstring) -- avoiding a
-# coupling on qa.py's private internals for what's a genuinely
-# self-contained, three-line regex.
-_SECTION_CITATION_MARKER_RE = re.compile(r"\[(Paper|Web) (\d+)\]")
+# "[Paper 2]" or "[Web 1]" -- AND (report-quality Phase R2C citation-
+# marker fix) a GROUPED marker bundling two or more comma-separated
+# entries in one bracket, e.g. "[Paper 6, Paper 8]" or "[Paper 3, Web
+# 1]": the model is instructed to write one marker per citation, but in
+# practice sometimes bundles several into a single bracket when a claim
+# is backed by more than one source (observed most often in sections
+# that explicitly ask for cross-paper comparison, like Methodology
+# Landscape). A bracket that doesn't match this shape at all (anything
+# other than one-or-more "Paper N"/"Web N" entries separated by commas)
+# is left untouched, same as before. Deliberately reimplemented here
+# rather than imported from qa.py's own _CITATION_MARKER_RE: the
+# single-marker pattern itself is identical, but this module already
+# reimplements _build_report_schema for the same reason (see that
+# function's own docstring) -- avoiding a coupling on qa.py's private
+# internals for what's a genuinely self-contained regex.
+_SECTION_CITATION_MARKER_RE = re.compile(
+    r"\[\s*(?:Paper|Web)\s+\d+(?:\s*,\s*(?:Paper|Web)\s+\d+)*\s*\]"
+)
+# Extracts each individual (kind, number) entry out of a marker matched
+# by _SECTION_CITATION_MARKER_RE above -- run via .findall() on the
+# whole matched bracket text, so it works identically whether that
+# bracket held one entry or several.
+_SECTION_CITATION_MARKER_ENTRY_RE = re.compile(r"(Paper|Web)\s+(\d+)")
 
 
 def _densify_section_markers(content: str) -> str:
@@ -270,17 +286,28 @@ def _densify_section_markers(content: str) -> str:
     final report-wide numbering, only guarantees each section's own
     markers are clean (1, 2, 3, ... with no gaps) before that mapping is
     attempted.
+
+    report-quality Phase R2C citation-marker fix: a GROUPED raw marker
+    like "[Paper 6, Paper 8]" is split into separate single-entry
+    brackets here ("[Paper 2][Paper 3]", densified) rather than kept
+    grouped -- every marker downstream of this function (including
+    _build_references_and_renumber's own re-use of
+    _SECTION_CITATION_MARKER_RE) then only ever needs to reason about
+    however many entries a given bracket happens to hold, single or
+    multiple, with no special-casing required.
     """
     next_number = {"Paper": 1, "Web": 1}
     seen: dict[tuple[str, str], int] = {}
 
     def _replace(match: re.Match[str]) -> str:
-        kind, old_number = match.group(1), match.group(2)
-        key = (kind, old_number)
-        if key not in seen:
-            seen[key] = next_number[kind]
-            next_number[kind] += 1
-        return f"[{kind} {seen[key]}]"
+        parts = []
+        for kind, old_number in _SECTION_CITATION_MARKER_ENTRY_RE.findall(match.group()):
+            key = (kind, old_number)
+            if key not in seen:
+                seen[key] = next_number[kind]
+                next_number[kind] += 1
+            parts.append(f"[{kind} {seen[key]}]")
+        return "".join(parts)
 
     return _SECTION_CITATION_MARKER_RE.sub(_replace, content)
 
@@ -384,29 +411,45 @@ def _build_references_and_renumber(sections_out: dict, section_names: tuple[str,
             match: re.Match[str], section_name: str = section_name,
             cited_papers: list[Paper] = cited_papers, cited_web_articles: list[WebArticle] = cited_web_articles,
         ) -> str:
-            kind, densified_number = match.group(1), int(match.group(2))
-            index = densified_number - 1
-            if kind == "Paper":
-                if index >= len(cited_papers):
-                    logger.warning(
-                        "_build_references_and_renumber: dropping out-of-range marker [Paper %d] in %r section "
-                        "(only %d paper(s) cited there)", densified_number, section_name, len(cited_papers),
-                    )
-                    return ""
-                paper = cited_papers[index]
-                section_marked_keys[section_name].add(("paper", paper.paper_id))
-                number = assigner.get_or_assign("paper", paper.paper_id, paper.title, paper=paper)
-            else:
-                if index >= len(cited_web_articles):
-                    logger.warning(
-                        "_build_references_and_renumber: dropping out-of-range marker [Web %d] in %r section "
-                        "(only %d web article(s) cited there)", densified_number, section_name, len(cited_web_articles),
-                    )
-                    return ""
-                article = cited_web_articles[index]
-                section_marked_keys[section_name].add(("web", article.url))
-                number = assigner.get_or_assign("web", article.url, article.title, article=article)
-            return f"[{number}]"
+            # report-quality Phase R2C citation-marker fix: densify above
+            # already split every raw marker into single-entry brackets,
+            # but this function is written to handle 1+ entries per
+            # bracket regardless -- resolving each entry independently
+            # and re-joining as separate "[N]" brackets (never "[N, M]",
+            # see _SECTION_CITATION_MARKER_ENTRY_RE's own docstring for
+            # why: the frontend's own marker regex only ever recognizes
+            # single-number brackets). An entry whose index is out of
+            # range is dropped on its own, not the whole bracket -- e.g.
+            # "[Paper 1, Paper 9]" with only one paper cited there
+            # resolves to just "[<n>]", the same "strip what's invalid,
+            # keep what's valid" policy the old single-marker code used,
+            # just applied per-entry instead of per-bracket.
+            parts = []
+            for kind, densified_number_str in _SECTION_CITATION_MARKER_ENTRY_RE.findall(match.group()):
+                densified_number = int(densified_number_str)
+                index = densified_number - 1
+                if kind == "Paper":
+                    if index >= len(cited_papers):
+                        logger.warning(
+                            "_build_references_and_renumber: dropping out-of-range marker [Paper %d] in %r section "
+                            "(only %d paper(s) cited there)", densified_number, section_name, len(cited_papers),
+                        )
+                        continue
+                    paper = cited_papers[index]
+                    section_marked_keys[section_name].add(("paper", paper.paper_id))
+                    number = assigner.get_or_assign("paper", paper.paper_id, paper.title, paper=paper)
+                else:
+                    if index >= len(cited_web_articles):
+                        logger.warning(
+                            "_build_references_and_renumber: dropping out-of-range marker [Web %d] in %r section "
+                            "(only %d web article(s) cited there)", densified_number, section_name, len(cited_web_articles),
+                        )
+                        continue
+                    article = cited_web_articles[index]
+                    section_marked_keys[section_name].add(("web", article.url))
+                    number = assigner.get_or_assign("web", article.url, article.title, article=article)
+                parts.append(f"[{number}]")
+            return "".join(parts)
 
         rewritten_content[section_name] = _SECTION_CITATION_MARKER_RE.sub(_resolve, densified)
 

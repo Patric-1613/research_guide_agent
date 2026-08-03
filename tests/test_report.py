@@ -555,6 +555,125 @@ def test_build_references_and_renumber_includes_paper_and_web_entries():
     assert kinds == {"paper", "web"}
 
 
+# --- report-quality Phase R2C: grouped citation-marker parsing fix ---
+# The model sometimes bundles more than one citation into a single
+# bracket (e.g. "[Paper 6, Paper 8]") instead of one marker per
+# citation as prompted -- these must still be converted to global
+# numbers, not leak through as raw, unresolved text.
+
+def test_build_references_and_renumber_converts_grouped_paper_marker_to_separate_global_markers():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    sections_out = _sections_out(
+        findings={"content": "See [Paper 1, Paper 2] for details.", "cited_papers": [p1, p2]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "See [1][2] for details."
+    assert result["findings"]["reference_numbers"] == [1, 2]
+    assert len(result["references"]) == 2
+    assert "Paper" not in result["findings"]["content"]
+
+
+def test_build_references_and_renumber_converts_grouped_web_marker_to_separate_global_markers():
+    web1, web2 = _web_article("https://w1.com", "Web One"), _web_article("https://w2.com", "Web Two")
+    sections_out = _sections_out(
+        findings={
+            "content": "See [Web 1, Web 2] for coverage.",
+            "cited_papers": [], "cited_web_articles": [web1, web2],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "See [1][2] for coverage."
+    assert len(result["references"]) == 2
+    assert {r["kind"] for r in result["references"]} == {"web"}
+    assert "Web" not in result["findings"]["content"]
+
+
+def test_build_references_and_renumber_converts_mixed_paper_and_web_grouped_marker():
+    p1 = _paper("p1", "Paper One")
+    web = _web_article("https://w.com", "Web One")
+    sections_out = _sections_out(
+        findings={
+            "content": "See [Paper 1, Web 1] together.",
+            "cited_papers": [p1], "cited_web_articles": [web],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "See [1][2] together."
+    kinds_by_number = {r["number"]: r["kind"] for r in result["references"]}
+    assert kinds_by_number == {1: "paper", 2: "web"}
+
+
+def test_build_references_and_renumber_grouped_marker_source_reused_elsewhere_keeps_same_number():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    sections_out = _sections_out(
+        findings={"content": "First [Paper 1] alone.", "cited_papers": [p1]},
+        limitations={"content": "Then [Paper 1, Paper 2] together.", "cited_papers": [p1, p2]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "First [1] alone."
+    assert result["limitations"]["content"] == "Then [1][2] together."
+    assert len(result["references"]) == 2
+
+
+def test_build_references_and_renumber_grouped_marker_drops_only_the_invalid_entry():
+    """Only one paper is actually cited in this section -- the "[Paper
+    9]" entry inside the group is out of range and must be dropped on
+    its own, leaving the valid "[Paper 1]" entry resolved normally
+    rather than stripping the whole bracket."""
+    p1 = _paper("p1", "Paper One")
+    sections_out = _sections_out(
+        findings={"content": "See [Paper 1, Paper 9] here.", "cited_papers": [p1]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "See [1] here."
+    assert len(result["references"]) == 1
+    assert "Paper" not in result["findings"]["content"]
+
+
+def test_build_references_and_renumber_grouped_marker_all_entries_invalid_leaves_no_raw_text():
+    sections_out = _sections_out(
+        findings={"content": "See [Paper 1, Paper 2] here.", "cited_papers": []},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "See  here."
+    assert result["references"] == []
+    assert "Paper" not in result["findings"]["content"]
+
+
+def test_generate_report_end_to_end_converts_grouped_model_markers_to_global_numbers():
+    """Proves the wiring, not just the isolated post-processing function
+    -- a mocked model response using a grouped section-local marker
+    comes back through the real generate_report() fully resolved."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    schema = _build_report_schema(["1111", "2222"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema,
+        thematic_findings=section_cls(
+            content="Both approaches agree [Paper 1, Paper 2].", cited_paper_ids=["1111", "2222"],
+        ),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = generate_report("some topic", [p1, p2], client=mock_client)
+
+    assert result["thematic_findings"]["content"] == "Both approaches agree [1][2]."
+    assert len(result["references"]) == 2
+
+
 def test_reference_entry_link_url_prefers_doi_then_falls_back_to_paper_url_and_uses_article_url_for_web():
     with_doi = Paper(
         title="Has DOI", authors=["A"], year=2024, venue="X", abstract="a",
