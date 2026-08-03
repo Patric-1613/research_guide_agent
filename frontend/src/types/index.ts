@@ -110,6 +110,12 @@ export interface ReportSection {
   reference_numbers?: number[]
 }
 
+// report-quality Phase R2C: which reader-depth template generated (or
+// is treated as having generated) a report. Same plain string-union
+// convention as this file already uses elsewhere (e.g. no enum), mirrors
+// the backend's own report.py ReportTemplate Literal field-for-field.
+export type ReportTemplate = 'foundational' | 'analytical' | 'expert'
+
 export interface ReportOut {
   // Legacy fields -- kept as compatibility fields, not the primary
   // report body once dynamic sections (below) are generated
@@ -130,6 +136,23 @@ export interface ReportOut {
   // _report_to_out) -- the frontend still defends against it being
   // absent, independent of trusting that derivation.
   sections?: ReportSection[]
+  // report-quality Phase R2C: optional/defaulted the same way -- the
+  // backend always derives it (defaults old/omitted reports to
+  // "analytical"), the frontend still defends against absence.
+  report_template?: ReportTemplate
+}
+
+// report-quality Phase R2C: both request bodies are fully optional --
+// omitting report_template entirely preserves every existing caller's
+// behavior (generate defaults to analytical, regenerate preserves the
+// existing report's template), matching the backend's own
+// CurationGenerateReportRequest/CurationRegenerateReportRequest.
+export interface CurationGenerateReportRequest {
+  report_template?: ReportTemplate
+}
+
+export interface CurationRegenerateReportRequest {
+  report_template?: ReportTemplate
 }
 
 export interface TurnHistoryEntryOut {

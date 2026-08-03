@@ -16,6 +16,7 @@ import type {
   CurationStateResponse,
   CurationTurnResponse,
   ReportOut,
+  ReportTemplate,
 } from '../../types'
 import { ApiError } from '../../types'
 
@@ -60,11 +61,15 @@ export const curationApi = {
 
   getState: (sessionId: string): Promise<CurationStateResponse> => request(`/curation/${sessionId}`),
 
-  generateReport: (sessionId: string): Promise<ReportOut> =>
-    postJson(`/curation/${sessionId}/report`, {}),
+  // report-quality Phase R2C: reportTemplate is optional on both --
+  // omitted sends the exact same {} body every existing caller/test
+  // already relies on (generate defaults to analytical server-side,
+  // regenerate preserves the existing report's template server-side).
+  generateReport: (sessionId: string, reportTemplate?: ReportTemplate): Promise<ReportOut> =>
+    postJson(`/curation/${sessionId}/report`, reportTemplate ? { report_template: reportTemplate } : {}),
 
-  regenerateReport: (sessionId: string): Promise<ReportOut> =>
-    postJson(`/curation/${sessionId}/report/regenerate`, {}),
+  regenerateReport: (sessionId: string, reportTemplate?: ReportTemplate): Promise<ReportOut> =>
+    postJson(`/curation/${sessionId}/report/regenerate`, reportTemplate ? { report_template: reportTemplate } : {}),
 
   chat: (sessionId: string, req: CurationChatRequest): Promise<CurationChatResponse> =>
     postJson(`/curation/${sessionId}/chat`, req),

@@ -67,6 +67,63 @@ describe('curationApi', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://test-api.local/curation/s1', expect.not.objectContaining({ method: 'POST' }))
   })
 
+  // report-quality Phase R2C
+  it('generateReport() posts {} when no template is given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.generateReport('s1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
+  it('generateReport() posts { report_template } when a template is given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.generateReport('s1', 'foundational')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ report_template: 'foundational' }) }),
+    )
+  })
+
+  it('regenerateReport() posts {} when no template is given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.regenerateReport('s1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report/regenerate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
+  it('regenerateReport() posts { report_template } when a template is given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.regenerateReport('s1', 'expert')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report/regenerate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ report_template: 'expert' }) }),
+    )
+  })
+
   it('deleteReview() issues a DELETE to the session-scoped path', async () => {
     const fetchMock = mockFetchOnce(200, { session_id: 's1', deleted: true })
 

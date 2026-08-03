@@ -287,3 +287,95 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
     expect(screen.getByTestId('report-section-nav')).toBeInTheDocument()
   })
 })
+
+describe('ReportModePanel -- report-quality Phase R2C: report templates', () => {
+  function reportWithTemplate(template?: 'foundational' | 'analytical' | 'expert') {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+      ...(template ? { report_template: template } : {}),
+    }
+  }
+
+  it('renders all three template options', () => {
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('report-template-option-foundational')).toBeInTheDocument()
+    expect(screen.getByTestId('report-template-option-analytical')).toBeInTheDocument()
+    expect(screen.getByTestId('report-template-option-expert')).toBeInTheDocument()
+  })
+
+  it('defaults the selector to Analytical when there is no report yet', () => {
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('report-template-option-foundational')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('initializes the selector from an existing report_template', () => {
+    const state = baseState({ report: reportWithTemplate('expert') })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('selecting Foundational and clicking Generate calls onGenerateReport("foundational")', async () => {
+    const user = userEvent.setup()
+    const onGenerateReport = vi.fn()
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} />)
+
+    await user.click(screen.getByTestId('report-template-option-foundational'))
+    await user.click(screen.getByTestId('generate-report'))
+
+    expect(onGenerateReport).toHaveBeenCalledWith('foundational')
+  })
+
+  it('selecting Expert and clicking Regenerate calls onRegenerateReport("expert")', async () => {
+    const user = userEvent.setup()
+    const onRegenerateReport = vi.fn()
+    const state = baseState({ report: reportWithTemplate('analytical') })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} />)
+
+    await user.click(screen.getByTestId('report-template-option-expert'))
+    await user.click(screen.getByTestId('regenerate-report'))
+
+    expect(onRegenerateReport).toHaveBeenCalledWith('expert')
+  })
+
+  it('shows a template badge for an existing report', () => {
+    const state = baseState({ report: reportWithTemplate('foundational') })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Foundational')
+  })
+
+  it('defaults the badge and selector to Analytical for an old report with no report_template field', () => {
+    const state = baseState({ report: reportWithTemplate() })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Analytical')
+    expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('syncs the selector when the active report changes to a different template', () => {
+    const { rerender } = render(
+      <ReportModePanel
+        state={baseState({ report: reportWithTemplate('analytical') })}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
+
+    rerender(
+      <ReportModePanel
+        state={baseState({ report: reportWithTemplate('expert') })}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'false')
+  })
+})

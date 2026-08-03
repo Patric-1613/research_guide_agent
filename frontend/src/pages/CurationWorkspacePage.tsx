@@ -9,6 +9,7 @@ import { ChatModePanel } from '../components/ChatMode/ChatModePanel'
 import { ReportModePanel } from '../components/ReportMode/ReportModePanel'
 import { TurnHistoryBrowser } from '../components/TurnHistory/TurnHistoryBrowser'
 import type { WorkspaceMode } from '../components/WorkspaceMode/WorkspaceModeSwitcher'
+import type { ReportTemplate } from '../types'
 
 const MODE_PARAM = 'mode'
 
@@ -166,13 +167,13 @@ export default function CurationWorkspacePage() {
     setReviewsRefreshToken((t) => t + 1)
   }
 
-  async function handleGenerateReport() {
-    await generateReport()
+  async function handleGenerateReport(reportTemplate?: ReportTemplate) {
+    await generateReport(reportTemplate)
     setReviewsRefreshToken((t) => t + 1)
   }
 
-  async function handleRegenerateReport() {
-    await regenerateReport()
+  async function handleRegenerateReport(reportTemplate?: ReportTemplate) {
+    await regenerateReport(reportTemplate)
     setReviewsRefreshToken((t) => t + 1)
   }
 

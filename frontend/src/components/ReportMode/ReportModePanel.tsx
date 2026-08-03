@@ -1,12 +1,26 @@
 import { Globe } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { ReportOut, ReportSection, CurationStateResponse, ReferenceEntry } from '../../types'
+import { useEffect, useState } from 'react'
+import type { ReportOut, ReportSection, ReportTemplate, CurationStateResponse, ReferenceEntry } from '../../types'
 
 interface ReportModePanelProps {
   state: CurationStateResponse
   disabled: boolean
-  onGenerateReport: () => void
-  onRegenerateReport: () => void
+  // report-quality Phase R2C: both now receive the panel's own currently
+  // SELECTED template (never omitted from this panel's own call sites --
+  // the selector always has a concrete value, defaulted to "analytical").
+  onGenerateReport: (reportTemplate: ReportTemplate) => void
+  onRegenerateReport: (reportTemplate: ReportTemplate) => void
+}
+
+const TEMPLATE_OPTIONS: { value: ReportTemplate; label: string }[] = [
+  { value: 'foundational', label: 'Foundational' },
+  { value: 'analytical', label: 'Analytical' },
+  { value: 'expert', label: 'Expert' },
+]
+
+const TEMPLATE_LABELS: Record<ReportTemplate, string> = {
+  foundational: 'Foundational', analytical: 'Analytical', expert: 'Expert',
 }
 
 // report-quality Phase R1: report prose now carries inline, report-wide
@@ -42,14 +56,27 @@ function renderContentWithMarkers(content: string): ReactNode[] {
 // backend but never rendered. This panel is the first place it's
 // actually shown.
 export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerateReport }: ReportModePanelProps) {
+  // report-quality Phase R2C: initialized from the current report's own
+  // template (defaulting to analytical before a first generation), kept
+  // in sync whenever the ACTIVE report's template changes underneath
+  // this panel -- a session switch, a completed generate/regenerate, or
+  // any other report-replacing action -- without clobbering an in-
+  // progress selector choice the user made but hasn't acted on yet
+  // (this effect only fires when report_template's own VALUE changes).
+  const [selectedTemplate, setSelectedTemplate] = useState<ReportTemplate>(state.report?.report_template ?? 'analytical')
+  useEffect(() => {
+    setSelectedTemplate(state.report?.report_template ?? 'analytical')
+  }, [state.report?.report_template])
+
   if (!state.report) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
         <p className="text-sm text-text-secondary">No report yet for this review.</p>
+        <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
         <button
           type="button"
           data-testid="generate-report"
-          onClick={onGenerateReport}
+          onClick={() => onGenerateReport(selectedTemplate)}
           disabled={disabled}
           className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
         >
@@ -64,17 +91,23 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-text">Literature review report</h2>
-        <button
-          type="button"
-          data-testid="regenerate-report"
-          onClick={onRegenerateReport}
-          disabled={disabled}
-          className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
-        >
-          Regenerate
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-text">Literature review report</h2>
+          <TemplateBadge template={state.report.report_template ?? 'analytical'} />
+        </div>
+        <div className="flex items-center gap-2">
+          <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
+          <button
+            type="button"
+            data-testid="regenerate-report"
+            onClick={() => onRegenerateReport(selectedTemplate)}
+            disabled={disabled}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
+          >
+            Regenerate
+          </button>
+        </div>
       </div>
       {sections.length > 1 && <SectionNav sections={sections} />}
       {sections.map((section) => (
@@ -87,6 +120,62 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
       )}
       <ReferencesSection references={references ?? []} />
     </div>
+  )
+}
+
+// report-quality Phase R2C: a compact segmented control, not a select --
+// only 3 options, all worth seeing at a glance. No confirmation on
+// switching (Regenerate already overwrites the report immediately with
+// no confirmation today; adding one only for a template switch would be
+// a new, inconsistent one-off pattern).
+function TemplateSelector({
+  selected, onChange, disabled,
+}: {
+  selected: ReportTemplate
+  onChange: (template: ReportTemplate) => void
+  disabled: boolean
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Report template"
+      data-testid="report-template-selector"
+      className="inline-flex shrink-0 rounded-md border border-border p-0.5 text-xs"
+    >
+      {TEMPLATE_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={selected === option.value}
+          data-testid={`report-template-option-${option.value}`}
+          onClick={() => onChange(option.value)}
+          disabled={disabled}
+          className={
+            selected === option.value
+              ? 'rounded bg-accent px-2.5 py-1 font-medium text-accent-fg'
+              : 'rounded px-2.5 py-1 text-text-secondary hover:text-text disabled:opacity-40'
+          }
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// The current report's own template, so a user opening an already-
+// generated report knows which mode produced it without having to
+// remember or re-derive it from the selector's (independently
+// changeable) current value.
+function TemplateBadge({ template }: { template: ReportTemplate }) {
+  return (
+    <span
+      data-testid="report-template-badge"
+      className="rounded-full border border-border px-2 py-0.5 text-[11px] text-text-secondary"
+    >
+      {TEMPLATE_LABELS[template]}
+    </span>
   )
 }
 
