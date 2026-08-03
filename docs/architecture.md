@@ -1539,6 +1539,78 @@ tests/test_curation_api.py` → 100 passed; full backend suite → 449
 passed. Backend-only — no schema, endpoint, or frontend changes. Commit
 `4e14024`.
 
+### R2B.1 — Analytical report prompt tuning and citation whitespace cleanup (2026-08-03) — complete
+
+Small, prompt-only quality pass over `research_agent/report.py`'s
+Analytical generation (R2B), done before starting templates (R2C) so
+tuning happens once against a single template rather than being
+multiplied across Foundational/Expert later. No schema, section-key,
+section-title, endpoint, or frontend changes — `_build_report_system_
+prompt` and `REPORT_SECTION_DEFINITIONS`' description text only, plus
+one small deterministic cleanup helper.
+
+**Prompt changes** (`_build_report_system_prompt`):
+- **Citation density**: a new paragraph instructs citing specific
+  evidence-bearing claims (methods, techniques, datasets, metrics,
+  results, direct comparisons) inline where they occur, while
+  explicitly telling the model not to mechanically force a marker onto
+  every sentence — density should track where the evidence actually is.
+- **Grouped comparative claims**: the marker-instruction paragraph now
+  tells the model that when one claim is backed by more than one
+  source, it should write adjacent markers like `[Paper 2][Paper 5]`,
+  never a combined bracket like `[Paper 2, Paper 5]` — steering toward
+  the form the frontend renders natively, on top of (not instead of)
+  the deterministic grouped-marker parser from the prior fix above.
+- **Web-source constraint**: the web paragraph was tightened —
+  selected papers are always the primary evidence base; a web source
+  may only be cited when it directly supports or extends a claim
+  already grounded in the papers (current/practical context); web
+  sources must never substitute for a paper citation or introduce a
+  topic the paper set itself doesn't cover; an empty `cited_web_urls`
+  for a section is explicitly called out as fine.
+- **Generic phrasing guard**: one clause added to the closing
+  word-budget paragraph telling the model to avoid generic,
+  textbook-style phrasing and ground claims in what THESE specific
+  selected papers actually say.
+
+**Section-description changes** (`REPORT_SECTION_DEFINITIONS` — key and
+title unchanged for every section; three descriptions decoupled from the
+legacy `FINDINGS_DESCRIPTION`/`LIMITATIONS_DESCRIPTION`/`FUTURE_SCOPE_
+DESCRIPTION` constants, which stay byte-identical for the still-untouched
+legacy path):
+- **Contradictions & Open Debates**: broadened from "disagreements... or
+  gaps" to explicitly include methodological tensions, tradeoffs, and
+  unresolved design choices, not just direct contradictions — many
+  selected paper sets don't disagree outright but do make different
+  tradeoffs or leave a question unresolved. Still explicitly says to
+  state plainly if none are apparent rather than inventing one.
+- **Gap Analysis vs. Future Research Directions**: both got standalone,
+  cross-referencing descriptions to stop them overlapping — Gap
+  Analysis is now explicit that it's diagnostic only (identify missing
+  populations/settings/comparisons/evaluations, don't propose fixes);
+  Future Research Directions is explicit that it's prescriptive
+  (propose what should actually be studied/built next, going beyond
+  restating what Gap Analysis already found missing).
+- **Thematic Findings**: now explicitly instructs organizing by theme
+  and synthesizing across papers within each theme, rather than
+  summarizing papers one by one.
+
+**Deterministic whitespace cleanup**: a stripped invalid/out-of-range
+marker (see the citation-marker fix above) leaves behind the space that
+used to separate it from surrounding text — e.g. `"classification
+[Paper 9]."` stripping to `"classification ."` instead of
+`"classification."`. New `_cleanup_marker_stripped_whitespace()`
+(`_MULTI_SPACE_RE`/`_SPACE_BEFORE_PUNCTUATION_RE`) collapses repeated
+spaces and removes a space immediately before `,.;:!?`. Applied only
+inside `_build_references_and_renumber`'s final per-section content
+assignment, on freshly generated report content — never in
+`derive_legacy_references` or any other old-report compatibility path,
+which promise never to rewrite an old report's prose at all. Idempotent
+and a no-op on already-clean text.
+
+**Validation**: `tests/test_report.py` → 52 passed; full backend suite
+→ 463 passed. No schema, endpoint, or frontend changes.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

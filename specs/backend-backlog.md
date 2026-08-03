@@ -226,6 +226,43 @@ invented:
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-03).
 
+### R2B.1: Analytical report prompt tuning and citation whitespace cleanup
+- **Goal**: improve Analytical report body quality (R2B) before starting
+  Foundational/Expert templates (R2C), so tuning happens once against a
+  single template instead of being multiplied across several later.
+- **Why it matters**: a real generated report showed uneven citation
+  density (evidence-bearing claims without markers), awkward leftover
+  spacing where an invalid marker was stripped (`"classification ,"`,
+  `"training ."`), web sources cited for loosely-related adjacent
+  context rather than direct evidence, "Contradictions & Open Debates"
+  reading too narrow for paper sets with no direct contradictions (but
+  real tensions/tradeoffs), Gap Analysis and Future Research Directions
+  overlapping in content, and some sections reading generically.
+- **Implementation**: prompt-only changes in `research_agent/report.py`
+  — `_build_report_system_prompt` gained paragraphs/clauses for citation
+  density, adjacent grouped-citation markers (`[Paper 2][Paper 5]`, not
+  `[Paper 2, Paper 5]`), a stricter web-source-as-secondary-evidence
+  constraint, and a generic-phrasing guard. Three `REPORT_SECTION_
+  DEFINITIONS` descriptions (Contradictions & Open Debates, Gap
+  Analysis, Future Research Directions, Thematic Findings) were
+  decoupled from the legacy `FINDINGS_DESCRIPTION`/`LIMITATIONS_
+  DESCRIPTION`/`FUTURE_SCOPE_DESCRIPTION` constants (which stay
+  byte-identical for the untouched legacy path) and rewritten to be
+  broader/more distinct/more synthesis-oriented. New deterministic
+  `_cleanup_marker_stripped_whitespace()` collapses repeated spaces and
+  removes a space before punctuation, applied only in `_build_
+  references_and_renumber`'s fresh-report path, never in `derive_
+  legacy_references`. No schema, section-key, section-title, endpoint,
+  or frontend changes. See `docs/architecture.md`'s "R2B.1 — Analytical
+  report prompt tuning and citation whitespace cleanup" section for the
+  full design record.
+- **Location**: `research_agent/report.py`
+  (`_build_report_system_prompt`, `REPORT_SECTION_DEFINITIONS`,
+  `_cleanup_marker_stripped_whitespace`, `_build_references_and_
+  renumber`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-03). Commit `73e899b`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
