@@ -115,7 +115,17 @@ function ReferencesSection({ references }: { references: ReferenceEntry[] }) {
           <li key={ref.number} id={`ref-${ref.number}`} data-testid={`reference-${ref.number}`} className="flex gap-2">
             <span className="shrink-0 text-text-muted">[{ref.number}]</span>
             {ref.link_url ? (
-              <a href={ref.link_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              <a
+                href={ref.link_url}
+                target="_blank"
+                rel="noreferrer"
+                // Underlined by default (dotted, same convention as this
+                // app's other secondary links, e.g. the stale-report
+                // "Dismiss" control) -- a link that only changes color on
+                // hover is easy to miss at rest, especially against this
+                // dark theme's already-muted body text.
+                className="rounded-sm text-accent underline decoration-dotted underline-offset-2 hover:text-accent-hover hover:decoration-solid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
                 {ref.formatted}
               </a>
             ) : (

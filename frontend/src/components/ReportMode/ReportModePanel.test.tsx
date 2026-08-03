@@ -97,14 +97,39 @@ describe('ReportModePanel', () => {
 
     // Paper reference shows real formatted citation text, not a bare title.
     expect(screen.getByText('Uthor, A. (2024). Paper One. arXiv preprint.')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Uthor, A. (2024). Paper One. arXiv preprint.' })).toHaveAttribute(
-      'href', 'https://doi.org/10.1/x',
-    )
+    const paperLink = screen.getByRole('link', { name: 'Uthor, A. (2024). Paper One. arXiv preprint.' })
+    expect(paperLink).toHaveAttribute('href', 'https://doi.org/10.1/x')
 
     // Web reference is hyperlinked via link_url.
-    expect(screen.getByRole('link', { name: 'Web Article. x.com. https://x.com' })).toHaveAttribute(
-      'href', 'https://x.com',
-    )
+    const webLink = screen.getByRole('link', { name: 'Web Article. x.com. https://x.com' })
+    expect(webLink).toHaveAttribute('href', 'https://x.com')
+
+    // Both linked references must be visibly clickable AT REST -- an
+    // underline, not just a color that changes on hover (easy to miss).
+    for (const link of [paperLink, webLink]) {
+      expect(link.className).toContain('underline')
+    }
+  })
+
+  it('a reference with no link_url renders as plain, non-linked text', () => {
+    const state = baseState({
+      report: {
+        findings: {
+          content: 'Per [1], X is true.', cited_papers: [{ paper_id: 'p1', title: 'Paper One' }],
+          cited_web_articles: [], reference_numbers: [1],
+        },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [], reference_numbers: [] },
+        skipped_paper_ids: [],
+        references: [
+          { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (n.d.). Paper One.', paper_id: 'p1', link_url: null },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByText('Uthor, A. (n.d.). Paper One.')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Uthor, A. (n.d.). Paper One.' })).not.toBeInTheDocument()
   })
 
   it('an old report with no references field at all still renders safely, with no References section', () => {
