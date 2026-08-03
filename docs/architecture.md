@@ -1048,8 +1048,9 @@ ChatMessageRow.tsx`, `frontend/src/components/ChatMode/
 ChatModePanel.tsx`. All five planned phases are now done — see
 "Chat feature arc: closing status" at the end of this section for the
 final validation baseline and what's explicitly left as optional
-follow-up (including "Phase B," a backend-only follow-up fix to
-approved-source pruning, documented right after that closing status).
+follow-up (including "Phase B" and "Phase C," two backend-only follow-up
+fixes — approved-source pruning and the QA web-article relevance gate,
+respectively — documented right after that closing status).
 
 **Phase 1 — persisted web-answer metadata.** Before this phase,
 `chat_history` entries were plain `{role, content}` dicts, and whether an
@@ -1308,6 +1309,100 @@ uv run pytest -q                                                          → 41
    support remain entirely out of scope and not started** — unchanged
    from every prior phase's own note on this, including everything in
    `specs/production-readiness-roadmap.md`.
+
+### Phase C — QA web-article relevance gate (2026-08-03) — complete
+
+Another follow-up fix on top of the arc above, this time in `research_agent/
+qa.py` rather than `curation_chat.py`. Reported symptom: once one web
+search had ever been accepted in a curation-chat session, nearly every
+later assistant answer got tagged `used_web_search=true` (the blue web
+badge appeared almost everywhere), and a genuinely new, unrelated
+follow-up question stopped triggering a fresh web-search offer at all.
+
+**Root cause**: `qa.py`'s retrieval step handed the model the ENTIRE
+accumulated `web_articles_added` pool on every turn, unfiltered by
+relevance to the current question (papers get real per-question
+semantic-search ranking; web articles never did — see the module
+docstring's own prior note, now superseded). The model would often cite
+something from that stale pool regardless of topical relevance, which
+both (a) made `used_web_search` (derived from whatever got cited) true
+far too often, and (b) let the model claim `answerable=true` on
+genuinely off-topic follow-ups, since it had *something* tangential to
+cite — starving `curation_chat.py`'s existing `_maybe_set_web_offer`
+(unchanged) of the `answerable=false` signal it depends on to re-offer a
+search.
+
+**Fix — new graph node, not a new conditional edge.** `qa.py`'s
+`build_qa_graph()` gained `filter_web_relevance`, inserted as a
+straight-line transformation between `retrieve` and `route_retrieved`:
+
+```
+... → condense_question/retrieve(first turn) → retrieve → filter_web_relevance → route_retrieved → generate_answer → END
+                                                                                        │
+                                                                                 (unchanged: still a
+                                                                                  presence check, not
+                                                                                  a relevance check)
+```
+
+`route_retrieved`'s own branching condition is deliberately **unchanged**
+— it still just asks "was anything retrieved at all," the same way it
+always has (papers included — `semantic_search` has never had a
+relevance threshold either, see the limitation below). Only the
+*contents* `retrieved_web_articles` carries into that check and into
+`generate_answer` changed.
+
+**Algorithm** (`_filter_relevant_web_articles()`): embedding cosine
+similarity, reusing `_embed_with_cache`/`_cosine_similarity` verbatim —
+the exact same pathway (same persistent, content-hash-keyed cache DB)
+`classify_message`'s non-substantive check already uses, not a second
+embedding mechanism.
+- Query text: `state["standalone_query"] or state["question"]` — the
+  same text already driving paper retrieval this turn.
+- Article text: `title + "\n" + snippet` — the same text the model is
+  already shown in `generate_answer`'s context.
+- Threshold: `_WEB_ARTICLE_RELEVANCE_THRESHOLD = 0.25`, a documented
+  **starting point, not an empirically tuned value** (unlike the
+  neighboring `_NON_SUBSTANTIVE_SIMILARITY_THRESHOLD = 0.45`, which has a
+  real measured dataset behind it — see that constant's own comment).
+- Fails **open** on any embedding-call exception (logs a warning, returns
+  the unfiltered pool) — same defensive posture as this module's existing
+  `search_web`/`condense_question` try/except guards.
+
+`used_web_search` (`curation_chat.py`'s `bool(cited_web_articles)`)
+needed **zero code changes** — it now reflects reality automatically,
+since `cited_web_articles` only ever contains articles that survived the
+filter and were actually cited.
+
+**Limitations / follow-ups, not fixed in this phase:**
+- **Threshold needs live calibration.** 0.25 is reasoned, not measured —
+  a future calibration pass (in the style of
+  `scripts/test_semantic_classify_live.py`) is the natural next step.
+- **`answerable` is still ultimately an LLM judgment call, not a hard
+  rule.** This fix removes one specific known failure mode (irrelevant-
+  but-present web context propping up a false `answerable=true`); it
+  cannot guarantee the model always correctly flags every off-topic
+  follow-up.
+- **Paper retrieval still has no hard relevance threshold either** —
+  `semantic_search` always returns up to `top_k` nearest neighbors
+  regardless of match quality, same as before this phase. A future
+  improvement could apply an analogous relevance gate to papers, but
+  that's a separate decision, not implied by this fix.
+- **`curation_chat.py`'s pending-web-offer accept/decline/other flow was
+  deliberately NOT restructured into LangGraph nodes** in this phase —
+  that reopens the Phase 5a "plain functions, not a graph node" decision
+  intentionally, and was explicitly out of scope here.
+
+**Validation baseline for Phase C:**
+
+```
+uv run pytest tests/test_qa.py tests/test_curation_chat.py -q         → 100 passed
+uv run pytest tests/test_api.py tests/test_curation_api.py -q          → 100 passed
+uv run pytest -q                                                       → 422 passed
+```
+
+Backend-only: no frontend files changed, no endpoint/response-schema
+changes, no changes to `curation_chat.py`'s offer-and-decide flow or
+report generation.
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 

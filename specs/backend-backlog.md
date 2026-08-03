@@ -122,6 +122,38 @@ invented:
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-03).
 
+### Phase C: QA web-article relevance gate
+- **Goal**: stop the accumulated `web_articles_added` pool from being
+  reused blindly on later, unrelated curation-chat turns.
+- **Why it matters**: reported as two symptoms of the same root cause —
+  (1) nearly every later assistant answer got tagged `used_web_search=
+  true` (blue web badge appeared almost everywhere) once one web search
+  had ever been accepted in a session, and (2) a genuinely new/unrelated
+  follow-up question stopped triggering a fresh web-search offer, because
+  the model could always find *something* tangential in the stale pool
+  to cite, propping up a false `answerable=true`.
+- **Implementation**: `research_agent/qa.py`'s LangGraph gained a new
+  node, `filter_web_relevance`, inserted between `retrieve` and
+  `route_retrieved`. Cosine-similarity filter (`_filter_relevant_web_
+  articles()`) reusing the existing `_embed_with_cache`/`_cosine_
+  similarity` helpers — same embedding pathway `classify_message`'s
+  non-substantive check already uses. Query = `standalone_query or
+  question`; article text = `title + snippet`; threshold = `0.25`
+  (documented starting point, not yet calibrated); fails open (keeps the
+  unfiltered pool) on any embedding exception. `route_retrieved`'s own
+  branching condition and `curation_chat.py`'s offer-and-decide flow are
+  both unchanged. `used_web_search` needed no code changes — it derives
+  correctly now as a side effect. See `docs/architecture.md`'s "Phase C —
+  QA web-article relevance gate" section for the full design record.
+- **Follow-ups not done in this phase** (see that same doc section for
+  detail): the 0.25 threshold needs live calibration; `answerable` is
+  still an LLM judgment call, not a hard rule; paper retrieval
+  (`semantic_search`) still has no relevance threshold of its own,
+  same as before this phase; `curation_chat.py`'s pending-web-offer flow
+  was deliberately not restructured into LangGraph nodes.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-03).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]

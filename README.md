@@ -780,3 +780,7 @@ first introduced.
   can't fully prevent an LLM from mis-stating a detail *within* a correctly
   cited paper's summary — an inherent limit of free-text generation, not
   specific to this project.
+- Curation chat's web-source relevance filter (keeps stale, previously
+  found web articles from leaking into later, unrelated answers) uses a
+  starting embedding-similarity threshold that hasn't been empirically
+  calibrated yet — see `docs/architecture.md`'s "Phase C" section.
