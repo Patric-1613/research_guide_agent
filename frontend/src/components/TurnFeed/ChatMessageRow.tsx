@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ChatTurn } from '../../types'
 import { ChatMessage } from './ChatMessage'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
@@ -61,6 +61,36 @@ export function ChatMessageRow({
   // just rendered as styled overlays instead of native browser dialogs.
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showEditDialog, setShowEditDialog] = useState(false)
+  // curation-chat-menu-dismiss: each row's menu used to only close via its
+  // own button (a toggle) -- opening a DIFFERENT row's menu, or clicking a
+  // checkbox, or clicking blank space, never closed a still-open menu from
+  // an earlier row, so two menus (or a menu and a checkbox) could visually
+  // overlap. Listeners are only attached while this row's OWN menu is open
+  // (not unconditionally on every row, every render) and torn down the
+  // moment it closes.
+  const menuContainerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function handlePointerDown(e: MouseEvent) {
+      if (menuContainerRef.current && !menuContainerRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    // mousedown, not click -- fires before the target's own click handler,
+    // so a click on a DIFFERENT row's "..." button closes this row's menu
+    // first, then that other button's own onClick still opens its menu
+    // normally (no race, no double-toggle).
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [menuOpen])
   const exchangeId = turn.exchange_id ?? null
   const isSelectable = exchangeId !== null
   const isEligibleForReport = isEligibleForAddToReport(turn)
@@ -87,7 +117,7 @@ export function ChatMessageRow({
       <div className="min-w-0 flex-1">
         <ChatMessage turn={turn} />
       </div>
-      <div className="relative shrink-0">
+      <div className="relative shrink-0" ref={menuContainerRef}>
         <button
           type="button"
           data-testid="message-menu-button"

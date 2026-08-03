@@ -383,6 +383,121 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
   })
 })
 
+describe('ChatModePanel -- curation-chat-menu-dismiss: closing the "..." menu on outside interaction', () => {
+  function exchangeState(): CurationStateResponse {
+    return baseState({
+      chat_history: [
+        { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
+        { role: 'assistant', content: 'A PEFT method [Paper 1].', exchange_id: 'ex-1', used_web_search: false, added_to_report: false },
+        { role: 'user', content: 'anything recent?', exchange_id: 'ex-2' },
+        { role: 'assistant', content: 'Per [Web 1], ...', exchange_id: 'ex-2', used_web_search: true, added_to_report: false },
+      ],
+    })
+  }
+
+  function renderPanel() {
+    render(
+      <ChatModePanel
+        state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+  }
+
+  it('opens on "..." click', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+  })
+
+  it('clicking the same "..." button again closes it', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    const menuButtons = screen.getAllByTestId('message-menu-button')
+
+    await user.click(menuButtons[0])
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+
+    await user.click(menuButtons[0])
+    expect(screen.queryAllByTestId('message-menu')).toHaveLength(0)
+  })
+
+  it('clicking outside the open menu closes it', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+
+    // Blank space -- not any message row, not any menu.
+    await user.click(document.body)
+
+    await waitFor(() => expect(screen.queryAllByTestId('message-menu')).toHaveLength(0))
+  })
+
+  it('pressing Escape closes the open menu', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+
+    await user.keyboard('{Escape}')
+
+    await waitFor(() => expect(screen.queryAllByTestId('message-menu')).toHaveLength(0))
+  })
+
+  it('clicking another row\'s "..." button closes the first menu and opens the second, never both at once', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    const menuButtons = screen.getAllByTestId('message-menu-button')
+
+    await user.click(menuButtons[0]) // ex-1's user message menu
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+    expect(screen.getByTestId('message-menu-select')).toBeInTheDocument()
+
+    await user.click(menuButtons[2]) // ex-2's user message menu -- a DIFFERENT row
+
+    // Still exactly one menu open at a time -- never two overlapping.
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+  })
+
+  it('clicking a menu action closes the menu after dispatching the action', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+
+    await user.click(screen.getAllByTestId('message-menu-button')[0])
+    await user.click(screen.getByTestId('message-menu-select'))
+
+    expect(screen.queryAllByTestId('message-menu')).toHaveLength(0)
+    // The Select action's own effect (entering select mode) still ran.
+    expect(screen.getAllByTestId('exchange-select-checkbox').length).toBeGreaterThan(0)
+  })
+
+  it('checking a select-mode checkbox on another row does not leave a previous menu open', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    const menuButtons = screen.getAllByTestId('message-menu-button')
+
+    await user.click(menuButtons[0])
+    await user.click(screen.getByTestId('message-menu-select')) // enters select mode, menu closes itself
+
+    // Re-open a menu, then interact with a checkbox on a DIFFERENT row instead
+    // of that menu's own actions -- the still-open menu must not linger.
+    await user.click(menuButtons[2])
+    expect(screen.getAllByTestId('message-menu')).toHaveLength(1)
+
+    const checkboxes = screen.getAllByTestId('exchange-select-checkbox')
+    await user.click(checkboxes[0])
+
+    await waitFor(() => expect(screen.queryAllByTestId('message-menu')).toHaveLength(0))
+  })
+})
+
 describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', () => {
   function exchangeState(): CurationStateResponse {
     return baseState({
