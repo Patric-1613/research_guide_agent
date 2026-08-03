@@ -1310,6 +1310,84 @@ uv run pytest -q                                                          → 41
    from every prior phase's own note on this, including everything in
    `specs/production-readiness-roadmap.md`.
 
+### Revoked web citation resurrection fix — persistent revocation tracking (2026-08-03) — complete
+
+Follow-up fix closing the exact gap Phase B's own "(The existing
+whole-pool `/report/regenerate` path is unaffected...)" note flagged but
+deliberately left unresolved. Reported symptom: a web reference that
+came from a chat exchange was added to the report, the chat exchange was
+then deleted, a regeneration appeared to drop the reference correctly —
+but a SECOND regeneration brought it back into the report body and
+References list, even though it was no longer a legitimate source.
+
+**The three distinct web-source sets on `PaperPoolSession`** (this is
+the section to read to understand chat/report web-source semantics
+going forward):
+
+1. **`web_articles_added`** — the raw, unfiltered pool of every web
+   article ever discovered during chat (Phase 5c's search-and-accept
+   flow). Deliberately never pruned by anything, ever — it's a
+   discovery log, not a validity record.
+2. **`report_approved_web_article_urls`** (Phase B) — URLs explicitly
+   approved (via chat's "Add to report" action) for the *selective*
+   report-regeneration path (`regenerate_report_with_approved_web_
+   sources`). Recomputed from scratch on delete/edit by `prune_report_
+   approved_web_article_urls()`, scoped specifically to entries with
+   `added_to_report=True`.
+3. **`revoked_web_article_urls`** (new, this fix) — URLs that WERE
+   live-backed by at least one chat exchange (regardless of whether
+   that exchange was ever formally added to the report) but whose only
+   backing exchange(s) have since been deleted or edited away.
+
+**Root cause**: `regenerate_report_with_new_sources` (the whole-pool
+path — both the Report tab's "Regenerate" button and chat's "update the
+report with new sources" accept flow) always read `web_articles_added`
+directly, unfiltered. Phase B's pruning only ever touched
+`report_approved_web_article_urls`, which that whole-pool path doesn't
+consult at all — so a revoked source stayed structurally citable
+forever, and whether the model happened to re-cite it on any given
+regeneration was pure chance (explaining "gone after the 1st regen,
+back after the 2nd"). An initial fix attempt that inferred revocation
+from whichever sources the *immediately prior* report happened to cite
+was insufficient: the moment a clean regeneration successfully excluded
+the revoked URL, that report's own references stopped mentioning it,
+so the very next regeneration's inference saw "nothing to revoke" and
+re-offered the same URL again — self-defeating after exactly one cycle.
+This is why revocation needed to be a **persistent, session-level
+record** (`revoked_web_article_urls`), not something re-derived from
+`session.report` on every call.
+
+**Fix**: `curation_chat.py`'s `delete_chat_exchanges`/`edit_chat_
+exchange` now snapshot `live_cited_web_article_urls()` (the union of
+`cited_web_articles` URLs across every CURRENT assistant chat_history
+entry, deliberately broader than `report_approved_web_article_urls`'s
+own `added_to_report`-only scope) before and after the mutation;
+`_sync_revoked_web_article_urls()` adds any URL that lost live backing
+to `revoked_web_article_urls` and removes any URL that's live again.
+`_accept_web_offer` also calls the same un-revoke step after appending
+a fresh answer, so a URL rediscovered/re-cited later stops being treated
+as revoked. `report.py`'s shared `_regenerate_report_sections_with_
+sources` excludes every `revoked_web_article_urls` entry from the
+candidate web-article pool before building the schema/prompt — applied
+uniformly to both `regenerate_report_with_new_sources` (where it's the
+real fix) and `regenerate_report_with_approved_web_sources` (where it's
+a no-op defensive backstop, since that path is already correctly scoped
+upstream by `resolve_approved_web_articles_for_regeneration`). Persisted
+via `curation_session.py`'s existing serialize/deserialize convention,
+defaulting to an empty set for sessions saved before this fix.
+
+**Validation baseline** (commit `f826ad6`):
+
+```
+uv run pytest tests/test_report.py -q                                                                → 48 passed
+uv run pytest tests/test_curation_chat.py -q                                                          → 72 passed
+uv run pytest tests/test_curation_chat.py tests/test_curation_api.py tests/test_api.py tests/test_curation_session.py -q → 254 passed
+uv run pytest -q                                                                                      → 459 passed
+```
+
+Backend-only: no frontend files changed, no endpoint or response-schema
+changes.
+
 ### Phase C — QA web-article relevance gate (2026-08-03) — complete
 
 Another follow-up fix on top of the arc above, this time in `research_agent/

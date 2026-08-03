@@ -48,6 +48,47 @@ review carries forward as open.)
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-03). Commit `4e14024`.
 
+### Revoked chat web source resurrected during report regeneration
+- **Reported**: 2026-08-03. A web reference from a chat exchange was
+  added to the report; the chat exchange was then deleted; a
+  regeneration appeared to drop the reference correctly, but a SECOND
+  regeneration brought it back into the report body and References list
+  even though it was no longer a legitimate source.
+- **Symptom**: `regenerate_report_with_new_sources` (the whole-pool
+  path — both the Report tab's "Regenerate" button and chat's "update
+  report with new sources" accept flow) always offered the model
+  `session.web_articles_added` unfiltered. Phase B's delete/edit pruning
+  only ever touched `session.report_approved_web_article_urls`, which
+  this whole-pool path never consults — so a revoked source stayed
+  structurally citable forever, and whether the model re-cited it on
+  any given regeneration was pure chance.
+- **Root cause**: no persistent record existed of "this URL lost its
+  only live chat backing." An initial fix attempt that inferred
+  revocation from whatever the *immediately prior* report happened to
+  cite was insufficient — it self-defeated after one clean regeneration
+  (the prior report stopped mentioning the excluded URL, so the next
+  call's inference saw "nothing to revoke" and re-offered it).
+- **Fix**: added a new persistent session field, `revoked_web_article_
+  urls`. `curation_chat.py`'s `delete_chat_exchanges`/`edit_chat_
+  exchange` snapshot live chat-backed URLs before/after each mutation
+  and record any that lost backing (`live_cited_web_article_urls`,
+  `_sync_revoked_web_article_urls`); `_accept_web_offer` un-revokes a
+  URL the moment it's cited again. `report.py`'s shared regeneration
+  body excludes every `revoked_web_article_urls` entry from the
+  candidate web-article pool before building the schema/prompt, for
+  both regeneration paths. See `docs/architecture.md`'s "Revoked web
+  citation resurrection fix" section for the full design record,
+  including the three-distinct-web-source-sets explanation.
+- **Location**: `research_agent/report.py`
+  (`_regenerate_report_sections_with_sources`), `research_agent/
+  curation_chat.py` (`live_cited_web_article_urls`, `_sync_revoked_web_
+  article_urls`, `delete_chat_exchanges`, `edit_chat_exchange`,
+  `_accept_web_offer`), `research_agent/query_expansion.py` (new
+  `revoked_web_article_urls` field), `research_agent/curation_
+  session.py` (serialize/deserialize).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-03). Commit `f826ad6`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — bug 1]
