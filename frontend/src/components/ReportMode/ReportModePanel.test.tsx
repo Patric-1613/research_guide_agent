@@ -109,6 +109,11 @@ describe('ReportModePanel', () => {
     for (const link of [paperLink, webLink]) {
       expect(link.className).toContain('underline')
     }
+
+    // Web reference gets a subtle "Web source" indicator; the paper
+    // reference (same list, same numbering) does not.
+    expect(screen.getByTestId('reference-web-icon-2')).toHaveAttribute('aria-label', 'Web source')
+    expect(screen.queryByTestId('reference-web-icon-1')).not.toBeInTheDocument()
   })
 
   it('a reference with no link_url renders as plain, non-linked text', () => {

@@ -1,3 +1,4 @@
+import { Globe } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { ReportSectionOut, CurationStateResponse, ReferenceEntry } from '../../types'
 
@@ -112,8 +113,26 @@ function ReferencesSection({ references }: { references: ReferenceEntry[] }) {
       <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">References</h3>
       <ol className="flex flex-col gap-1.5 text-sm text-text">
         {references.map((ref) => (
-          <li key={ref.number} id={`ref-${ref.number}`} data-testid={`reference-${ref.number}`} className="flex gap-2">
+          <li
+            key={ref.number} id={`ref-${ref.number}`} data-testid={`reference-${ref.number}`}
+            className="flex items-start gap-2"
+          >
             <span className="shrink-0 text-text-muted">[{ref.number}]</span>
+            {ref.kind === 'web' && (
+              // Same shared numbering as papers -- this is purely a
+              // subtle, secondary visual cue (not a second numbering
+              // scheme, not a heavy pill) so a web source is
+              // distinguishable from a peer-reviewed paper at a glance.
+              <span
+                data-testid={`reference-web-icon-${ref.number}`}
+                role="img"
+                aria-label="Web source"
+                title="Web source"
+                className="mt-0.5 shrink-0 text-text-muted"
+              >
+                <Globe className="h-3.5 w-3.5" aria-hidden="true" />
+              </span>
+            )}
             {ref.link_url ? (
               <a
                 href={ref.link_url}
