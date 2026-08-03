@@ -17,6 +17,37 @@ found already fixed against the current codebase — see the Obsidian
 vault's `Mentor-Feedback.md` for that full accounting; nothing from that
 review carries forward as open.)
 
+### Grouped report citation markers leaked into report body
+- **Reported**: 2026-08-03, via a live report screenshot showing raw
+  `[Paper 6, Paper 8]` text still in the rendered Methodology Landscape
+  section.
+- **Symptom**: when the model backed one claim with more than one
+  source, it sometimes wrote a single bundled bracket (`[Paper 6, Paper
+  8]`, or mixed kinds like `[Paper 3, Web 1]`) instead of one marker per
+  citation. `research_agent/report.py`'s citation-marker regex only
+  matched a bracket holding exactly one citation, so a bundled bracket
+  didn't match at all and passed straight through to the rendered report
+  as raw, unresolved text instead of a numbered citation.
+- **Root cause**: `_SECTION_CITATION_MARKER_RE = re.compile(r"\[(Paper|
+  Web) (\d+)\]")` structurally could not match more than one entry per
+  bracket.
+- **Fix**: generalized `_SECTION_CITATION_MARKER_RE` to match one-or-more
+  comma-separated entries per bracket, extracted via a new
+  `_SECTION_CITATION_MARKER_ENTRY_RE`; `_densify_section_markers` and
+  `_build_references_and_renumber` both now resolve every entry in a
+  bracket independently, emitting adjacent single-number brackets (e.g.
+  `[6][8]`, not `[6, 8]`) since the frontend's marker renderer only
+  recognizes single-number brackets. Invalid entries are dropped
+  individually; an all-invalid group is stripped entirely. Same-source
+  numbering still goes through the existing global `_ReferenceAssigner`
+  registry, unchanged. Deterministic post-processing only — no prompt
+  change. See `docs/architecture.md`'s "Report citation marker fix —
+  grouped inline citations" section for the full design record.
+- **Location**: `research_agent/report.py` (`_SECTION_CITATION_MARKER_RE`,
+  `_densify_section_markers`, `_build_references_and_renumber`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-03). Commit `4e14024`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — bug 1]

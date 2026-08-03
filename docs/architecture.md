@@ -1404,6 +1404,63 @@ Backend-only: no frontend files changed, no endpoint/response-schema
 changes, no changes to `curation_chat.py`'s offer-and-decide flow or
 report generation.
 
+### Report citation marker fix — grouped inline citations (2026-08-03) — complete
+
+Follow-up fix in `research_agent/report.py`'s citation-marker pipeline
+(the same deterministic post-processing pass that report-quality Phase
+R1 introduced, and Phase R2B's 8-section Analytical generation now runs
+over). Reported symptom: raw, unresolved marker text like `[Paper 6,
+Paper 8]` was leaking straight into the rendered report body instead of
+being converted to numbered citations.
+
+**Root cause**: `_SECTION_CITATION_MARKER_RE` was written to match
+exactly one citation per bracket (`\[(Paper|Web) (\d+)\]`). The model is
+prompted to write one marker per citation, but in practice sometimes
+bundles several into a single bracket when a claim is backed by more
+than one source — observed most often in sections that explicitly ask
+for cross-paper comparison (Methodology Landscape, Contradictions & Open
+Debates). A bundled bracket like `[Paper 6, Paper 8]` or a mixed one like
+`[Paper 3, Web 1]` simply didn't match the old regex at all, so it passed
+through both `_densify_section_markers` and `_build_references_and_
+renumber` completely untouched.
+
+**Fix — deterministic post-processing, not a prompt change.**
+`_SECTION_CITATION_MARKER_RE` now matches a bracket containing one-or-
+more comma-separated `Paper N`/`Web N` entries (mixed kinds allowed,
+e.g. `[Paper 3, Web 1]`); a new `_SECTION_CITATION_MARKER_ENTRY_RE`
+extracts each individual entry out of a matched bracket. Both
+`_densify_section_markers` and `_build_references_and_renumber`'s
+resolve step now loop over however many entries a bracket holds instead
+of assuming exactly one.
+
+**Output form: adjacent single-number brackets, not one combined
+bracket.** `[Paper 6, Paper 8]` resolves to `[6][8]`, not `[6, 8]` —
+checked against the frontend's own marker renderer first
+(`ReportModePanel.tsx`'s `MARKER_RE = /(\[\d+\])/g` plus its per-part
+`/^\[(\d+)\]$/` check), which only ever recognizes single-number
+brackets. Emitting adjacent brackets instead of a combined one means
+every citation still renders as its own clickable `#ref-N` anchor with
+zero frontend changes required.
+
+**Invalid entries and all-invalid groups**: an out-of-range entry inside
+a group (e.g. `[Paper 1, Paper 9]` when only one paper is actually cited
+in that section) is dropped on its own, leaving the valid entries
+resolved normally — not the whole bracket discarded. A bracket where
+every entry is invalid resolves to empty text, the same "strip it, don't
+guess" policy the original single-marker code already used, just applied
+per-entry instead of per-bracket.
+
+**Same-source numbering is still global and unchanged.** Entry
+resolution still goes through the same `_ReferenceAssigner` registry
+`_build_references_and_renumber` already used — a source cited once
+inside a group and again elsewhere in the report (grouped or not) still
+gets exactly one reference number everywhere.
+
+**Validation**: `tests/test_report.py` → 43 passed; `tests/test_api.py
+tests/test_curation_api.py` → 100 passed; full backend suite → 449
+passed. Backend-only — no schema, endpoint, or frontend changes. Commit
+`4e14024`.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
