@@ -22,6 +22,7 @@ from research_agent.report import (
     REPORT_SECTION_DEFINITIONS,
     _build_references_and_renumber,
     _build_report_schema,
+    _cleanup_marker_stripped_whitespace,
     derive_legacy_references,
     derive_sections_from_legacy_report,
     generate_report,
@@ -519,7 +520,9 @@ def test_build_references_and_renumber_strips_out_of_range_marker():
 
     result = _build_references_and_renumber(sections_out)
 
-    assert result["findings"]["content"] == "Per [1], X. But  is invented."
+    # report-quality Phase R2B.1: the stripped marker's now-orphaned
+    # double space is collapsed by the deterministic whitespace cleanup.
+    assert result["findings"]["content"] == "Per [1], X. But is invented."
     assert len(result["references"]) == 1  # the invented one never got a reference
 
 
@@ -647,9 +650,53 @@ def test_build_references_and_renumber_grouped_marker_all_entries_invalid_leaves
 
     result = _build_references_and_renumber(sections_out)
 
-    assert result["findings"]["content"] == "See  here."
+    # report-quality Phase R2B.1: whitespace cleanup collapses the
+    # stripped group's now-orphaned double space.
+    assert result["findings"]["content"] == "See here."
     assert result["references"] == []
     assert "Paper" not in result["findings"]["content"]
+
+
+# --- report-quality Phase R2B.1: deterministic whitespace cleanup ---
+
+def test_cleanup_marker_stripped_whitespace_collapses_repeated_spaces():
+    assert _cleanup_marker_stripped_whitespace("But  is invented.") == "But is invented."
+    assert _cleanup_marker_stripped_whitespace("See   here.") == "See here."
+
+
+def test_cleanup_marker_stripped_whitespace_removes_space_before_punctuation():
+    assert _cleanup_marker_stripped_whitespace("classification ,") == "classification,"
+    assert _cleanup_marker_stripped_whitespace("training .") == "training."
+    assert _cleanup_marker_stripped_whitespace("a claim ; another") == "a claim; another"
+    assert _cleanup_marker_stripped_whitespace("a question ?") == "a question?"
+
+
+def test_cleanup_marker_stripped_whitespace_is_a_no_op_on_already_clean_text():
+    clean = "Per [1] and [2], X. Also [3] shows Y -- Z's own claim, still fine."
+    assert _cleanup_marker_stripped_whitespace(clean) == clean
+
+
+def test_build_references_and_renumber_end_to_end_strips_marker_before_punctuation_cleanly():
+    """Root-cause repro for the observed "classification ," / "training
+    ." bug: an out-of-range marker sitting directly before punctuation
+    must not leave an orphaned space once stripped, through the real
+    _build_references_and_renumber path (not just the isolated helper
+    above)."""
+    # No papers actually cited -- both distinct raw markers below (which
+    # densify still numbers 1 and 2, since densify only cares about
+    # DISTINCT raw values, not validity) are out of range and stripped.
+    sections_out = _sections_out(
+        findings={
+            "content": "Strong results for classification [Paper 1], and training [Paper 2].",
+            "cited_papers": [],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Strong results for classification, and training."
+    assert " ," not in result["findings"]["content"]
+    assert " ." not in result["findings"]["content"]
 
 
 def test_generate_report_end_to_end_converts_grouped_model_markers_to_global_numbers():

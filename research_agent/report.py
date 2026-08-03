@@ -102,7 +102,10 @@ REPORT_SECTION_DEFINITIONS: list[dict] = [
     {
         "key": "thematic_findings", "title": "Thematic Findings",
         "description": (
-            f"{FINDINGS_DESCRIPTION} Organize by theme rather than paper-by-paper. Target roughly "
+            "Synthesized findings and key contributions across the selected papers, grounded strictly "
+            "in their abstracts. Organize by theme, not paper-by-paper, and synthesize across papers "
+            "within each theme -- what do they collectively show, where do their emphases differ -- "
+            "rather than summarizing each paper in isolation one after another. Target roughly "
             "350-550 words."
         ),
     },
@@ -117,21 +120,34 @@ REPORT_SECTION_DEFINITIONS: list[dict] = [
     {
         "key": "contradictions_open_debates", "title": "Contradictions & Open Debates",
         "description": (
-            f"{LIMITATIONS_DESCRIPTION} Target roughly 180-300 words."
+            "Disagreements, conflicting findings, methodological tensions, tradeoffs, or unresolved "
+            "design choices across the selected papers -- direct contradictions are only one form "
+            "this can take; papers more often differ by prioritizing different metrics, making "
+            "different tradeoffs, or leaving a design question unresolved, and those count too. State "
+            "explicitly if genuinely none of these are apparent across this specific paper set -- "
+            "don't invent one. Target roughly 180-300 words."
         ),
     },
     {
         "key": "gap_analysis", "title": "Gap Analysis",
         "description": (
-            "What the selected papers, taken together, do NOT cover or leave unaddressed -- grounded "
-            "in what's actually absent from their abstracts, not outside knowledge. Target roughly "
-            "180-300 words."
+            "What the selected papers, taken together, do NOT cover or leave unaddressed -- missing "
+            "populations, settings, comparisons, or evaluations, grounded in what's actually absent "
+            "from their abstracts, not outside knowledge. Diagnostic, not prescriptive: identify and "
+            "describe the absence itself, without proposing how to address it -- that belongs in "
+            "Future Research Directions below, not here. Target roughly 180-300 words."
         ),
     },
     {
         "key": "future_research_directions", "title": "Future Research Directions",
         "description": (
-            f"{FUTURE_SCOPE_DESCRIPTION} Target roughly 150-250 words."
+            "Concrete future research directions plausibly implied by the selected papers -- may be "
+            "more speculative than other sections, but must still stay grounded in what the papers "
+            "actually cover, not outside knowledge. Prescriptive, not just diagnostic: propose what "
+            "should actually be studied or built next, going beyond restating what Gap Analysis "
+            "already identified as missing -- turn each relevant gap into an actionable direction, or "
+            "propose a genuinely new angle the papers' own results suggest. Target roughly 150-250 "
+            "words."
         ),
     },
     {
@@ -237,11 +253,13 @@ Write exactly {len(section_definitions)} section{plural}, in this order:
 
 For EACH section, ground every claim STRICTLY in the given abstracts -- do not use outside knowledge about these papers, their authors, or the topic beyond what the abstracts state. List which paper_ids actually support that section's content in its own cited_paper_ids, in the order you'd reference them. A section's citations are independent of every other section's -- a paper cited in one section does not need to also appear in another, and vice versa. Some sections may end up citing few or no papers directly if they're mostly synthesizing across the review as a whole (e.g. an executive summary or conclusion) -- that's fine, don't force citations that aren't genuinely there.
 
-If web articles are also provided below, you may additionally cite them (news, tooling, docs -- current/practical context, not peer-reviewed) via each section's cited_web_urls, but never in place of a paper citation -- keep the two kinds of sources clearly distinguished, the same way qa.py's chat answers do.
+Cite specific, evidence-bearing claims as they occur, not just once per paragraph or only for a paper's overall thesis: whenever you name a specific method, technique, dataset, metric, result, or direct comparison drawn from a paper, mark it inline right there. Do not, however, force a marker onto purely transitional or synthesis sentences that make no new, specific claim -- citation density should track where the evidence actually is, not appear on every sentence mechanically.
 
-Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself.
+If web articles are also provided below, you may additionally cite them (news, tooling, docs -- current/practical context, not peer-reviewed) via each section's cited_web_urls, but never in place of a paper citation, and never as your primary source of evidence for a section -- the selected papers are always the primary evidence base. Only cite a web article when it directly supports or extends a claim already grounded in the papers (e.g. a tool's current real-world adoption, a technique's practical deployment status, a recent development building on a paper's method) -- do not cite a web article merely because it is topically adjacent, and do not use one to introduce a new topic the paper set itself doesn't cover. If none of the given web articles are directly relevant to a section's content, cite none there -- an empty cited_web_urls for a section is expected and fine.
 
-Word budgets given above are guidance, not a hard limit -- stay roughly within them, erring toward being concise and evidence-dense rather than padding to hit a count, especially if the given paper set is small.
+Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself. When a single claim is directly supported by more than one source (e.g. comparing two papers' methods in the same sentence), mark each one with its own bracket back-to-back, e.g. [Paper 2][Paper 5] -- never combine multiple citations into one bracket like [Paper 2, Paper 5].
+
+Word budgets given above are guidance, not a hard limit -- stay roughly within them, erring toward being concise and evidence-dense rather than padding to hit a count, especially if the given paper set is small. Avoid generic, textbook-style phrasing that could apply to any paper set on this general topic -- ground each claim in what THESE specific selected papers actually say, not a general summary of the field.
 """
 
 
@@ -271,6 +289,30 @@ _SECTION_CITATION_MARKER_RE = re.compile(
 # whole matched bracket text, so it works identically whether that
 # bracket held one entry or several.
 _SECTION_CITATION_MARKER_ENTRY_RE = re.compile(r"(Paper|Web)\s+(\d+)")
+
+# report-quality Phase R2B.1: an invalid/out-of-range marker resolves to
+# "" in _build_references_and_renumber's own _resolve (see that
+# function's docstring) -- the space that used to separate the marker
+# from surrounding text is left behind, e.g. "classification [Paper 9]."
+# becomes "classification ." once the bracket is stripped. These two
+# regexes clean that up; deliberately narrow (collapse repeated spaces,
+# drop a space immediately before punctuation) rather than a general
+# prose reformatter.
+_MULTI_SPACE_RE = re.compile(r" {2,}")
+_SPACE_BEFORE_PUNCTUATION_RE = re.compile(r" +([,.;:!?])")
+
+
+def _cleanup_marker_stripped_whitespace(content: str) -> str:
+    """report-quality Phase R2B.1: applied only to freshly generated
+    report content, inside _build_references_and_renumber, AFTER marker
+    resolution/stripping -- never to derive_legacy_references or any
+    other old-report compatibility path, which promise never to rewrite
+    an old report's prose at all. Idempotent and a no-op on already-
+    clean text (no markers were ever stripped), so it's safe to run
+    unconditionally on every section rather than only when a marker was
+    actually dropped."""
+    content = _MULTI_SPACE_RE.sub(" ", content)
+    return _SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", content)
 
 
 def _densify_section_markers(content: str) -> str:
@@ -465,7 +507,7 @@ def _build_references_and_renumber(sections_out: dict, section_names: tuple[str,
 
     for section_name in section_names:
         section = sections_out[section_name]
-        section["content"] = rewritten_content[section_name]
+        section["content"] = _cleanup_marker_stripped_whitespace(rewritten_content[section_name])
         all_keys = (
             section_marked_keys[section_name]
             | {("paper", p.paper_id) for p in section["cited_papers"]}
