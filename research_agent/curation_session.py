@@ -149,6 +149,7 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "turn_history": list(session.turn_history),
         "stop_reason": session.stop_reason,
         "report_approved_web_article_urls": list(session.report_approved_web_article_urls),
+        "revoked_web_article_urls": list(session.revoked_web_article_urls),
     }
 
 
@@ -187,6 +188,12 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         # a non-crashing fallback, same backward-compat convention as
         # every other field above.
         report_approved_web_article_urls=set(d.get("report_approved_web_article_urls", [])),
+        # report-quality Phase R2D: older sessions predating this fix have
+        # no revoked URLs recorded yet -- an empty set is correct (nothing
+        # was tracked as revoked before this field existed), same
+        # backward-compat convention as report_approved_web_article_urls
+        # immediately above.
+        revoked_web_article_urls=set(d.get("revoked_web_article_urls", [])),
     )
 
 

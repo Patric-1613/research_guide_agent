@@ -912,6 +912,213 @@ def test_regenerate_report_cross_version_maps_legacy_priors_and_never_crashes_on
     assert set(s["key"] for s in result["sections"]) == set(ANALYTICAL_SECTION_NAMES)
 
 
+# --- report-quality Phase R2D: revoked web citation must not resurrect ---
+#
+# session.revoked_web_article_urls (query_expansion.py) is the persistent
+# record curation_chat.py's delete_chat_exchanges/edit_chat_exchange
+# populate whenever a web source loses its only live chat backing --
+# these tests exercise report.py's OWN consumption of that field
+# (regenerate_report_with_new_sources/regenerate_report_with_approved_
+# web_sources excluding anything in it from the model's candidates), not
+# how the field itself gets populated -- see tests/test_curation_chat.py
+# for that half.
+
+def test_regenerate_report_with_new_sources_excludes_revoked_web_citation_from_candidates():
+    """Root-cause repro: a web article marked revoked (session.revoked_
+    web_article_urls) must not be offered to the model as a citable
+    candidate on the next whole-pool regeneration -- even though
+    session.web_articles_added (the raw, unfiltered discovery pool)
+    still contains it, since it's deliberately never pruned. Checked at
+    the prompt level (what's actually sent to the model), not just the
+    parsed response, since the leak is in what's OFFERED as a candidate."""
+    p1 = _paper("1111", "Paper One")
+    revoked = _web_article("https://revoked.com", "Revoked Article")
+
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [],
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report,
+        web_articles_added=[revoked],  # Phase B never prunes this raw pool
+        revoked_web_article_urls={"https://revoked.com"},
+    )
+
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "revoked.com" not in joined
+    assert "Revoked Article" not in joined
+    assert "cited_web_articles" not in result["thematic_findings"]
+    assert result["references"] == []
+
+
+def test_regenerate_report_with_new_sources_still_offers_a_non_revoked_web_article():
+    """The counterpart to the revocation test above: a web article NOT
+    in session.revoked_web_article_urls must still be offered as a
+    candidate -- the fix must not become so aggressive that it excludes
+    every web source, only ones actually marked revoked."""
+    p1 = _paper("1111", "Paper One")
+    still_live = _web_article("https://still-live.com", "Still Live Article")
+
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [],
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report,
+        web_articles_added=[still_live],
+        revoked_web_article_urls=set(),
+    )
+
+    schema = _build_report_schema(["1111"], ["https://still-live.com"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(
+            content="Per [Web 1].", cited_paper_ids=[], cited_web_urls=["https://still-live.com"],
+        ),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "still-live.com" in joined
+    assert [a.url for a in result["thematic_findings"]["cited_web_articles"]] == ["https://still-live.com"]
+
+
+def test_regenerate_report_with_new_sources_repeated_regeneration_does_not_resurrect_revoked_citation():
+    """Requirement: the fix must hold across repeated regenerations, not
+    just the first one. session.revoked_web_article_urls is a PERSISTENT
+    session-level record -- unlike inferring revocation from the prior
+    report's own references (which would self-heal to "nothing to
+    revoke" the moment the revoked source drops out of the report,
+    letting a LATER regeneration re-offer it) -- so it stays excluded
+    across arbitrarily many regeneration cycles, not just the first."""
+    p1 = _paper("1111", "Paper One")
+    revoked = _web_article("https://revoked.com", "Revoked Article")
+
+    existing_report = {
+        "thematic_findings": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "references": [],
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[revoked],
+        revoked_web_article_urls={"https://revoked.com"},
+    )
+
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    first = regenerate_report_with_new_sources(session, client=mock_client)
+    assert first["references"] == []
+
+    # Second regeneration starts from the report the FIRST call produced
+    # -- revoked_web_article_urls itself is untouched by regeneration
+    # (only curation_chat.py's delete/edit/accept flows ever change it),
+    # so the exclusion holds again here with no extra bookkeeping needed.
+    session.report = first
+    second = regenerate_report_with_new_sources(session, client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "revoked.com" not in joined
+    assert second["references"] == []
+
+
+def test_regenerate_report_with_approved_web_sources_never_offers_a_url_outside_the_approved_list():
+    """The selective path's own scoping: only approved_web_articles
+    actually passed into this call are ever offered as candidates -- a
+    web reference the PRIOR report cited that isn't in THIS call's
+    approved list is excluded, matching curation_chat.py's own resolve_
+    approved_web_articles_for_regeneration filtering upstream (this is a
+    defense-in-depth confirmation, not a replacement for it)."""
+    p1 = _paper("1111", "Paper One")
+    approved = _web_article("https://approved.com", "Approved Article")
+    no_longer_approved = _web_article("https://no-longer-approved.com", "No Longer Approved")
+
+    existing_report = {
+        "thematic_findings": {
+            "content": "Per [1] and [2].", "cited_papers": [], "cited_web_articles": [approved, no_longer_approved],
+            "reference_numbers": [1, 2],
+        },
+        "references": [
+            {"number": 1, "kind": "web", "paper_id": None, "url": "https://approved.com", "title": "Approved Article", "formatted": "x", "link_url": "https://approved.com"},
+            {"number": 2, "kind": "web", "paper_id": None, "url": "https://no-longer-approved.com", "title": "No Longer Approved", "formatted": "x", "link_url": "https://no-longer-approved.com"},
+        ],
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[approved, no_longer_approved],
+    )
+
+    schema = _build_report_schema(["1111"], ["https://approved.com"], REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema, web_urls_used=True)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_approved_web_sources(session, [approved], client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "no-longer-approved.com" not in joined
+    assert "approved.com" in joined
+
+
+def test_regenerate_report_with_new_sources_old_report_without_references_key_stays_compatible():
+    """Old reports without references/sections remain compatible: an
+    existing_report predating R1 (no "references" key at all), combined
+    with a session that predates this fix entirely (revoked_web_article_
+    urls defaults to an empty set), must not crash and must not
+    spuriously exclude a normal, never-revoked candidate."""
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://x.com", "Article X")
+    existing_report = {
+        "findings": {"content": "old", "cited_papers": []},
+        "limitations": {"content": "old", "cited_papers": []},
+        "future_scope": {"content": "old", "cited_papers": []},
+        "skipped_papers": [],
+    }
+    session = PaperPoolSession(
+        topic="q", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+        report=existing_report, web_articles_added=[web],
+    )
+
+    schema = _build_report_schema(["1111"], ["https://x.com"], REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema, web_urls_used=True)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    sent_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in sent_messages)
+    assert "x.com" in joined
+
+
 if __name__ == "__main__":
     test_report_schema_rejects_unknown_paper_id()
     test_generate_report_attaches_citations_per_section_and_flags_skipped()

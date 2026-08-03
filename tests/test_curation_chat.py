@@ -28,6 +28,7 @@ from research_agent.curation_chat import (
     cited_web_article_urls_for_exchanges,
     delete_chat_exchanges,
     edit_chat_exchange,
+    live_cited_web_article_urls,
     mark_exchanges_added_to_report,
     prune_report_approved_web_article_urls,
     resolve_approved_web_articles_for_regeneration,
@@ -1236,6 +1237,102 @@ def test_delete_chat_exchanges_pruned_url_is_excluded_from_a_future_selective_re
 
     resolved = resolve_approved_web_articles_for_regeneration(session, set())
     assert resolved == []  # the revoked URL no longer resolves to anything
+
+
+# --- report-quality Phase R2D: persistent web-citation revocation tracking ---
+
+def test_live_cited_web_article_urls_includes_entries_never_added_to_report():
+    """live_cited_web_article_urls is deliberately BROADER than
+    approved_web_article_urls_from_added_to_report_entries -- it counts
+    every assistant entry's cited_web_articles regardless of
+    added_to_report, since a source never formally added to the report
+    can still be revoked by chat deleting its only backing exchange."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=False)],
+    )
+    assert live_cited_web_article_urls(session) == {"https://a.com"}
+
+
+def test_delete_chat_exchanges_marks_revoked_when_no_remaining_exchange_backs_it():
+    """The general case: a web source's only backing exchange is
+    deleted, regardless of whether it was ever added_to_report -- must
+    land in revoked_web_article_urls so a later whole-pool regeneration
+    (report.py's regenerate_report_with_new_sources) permanently
+    excludes it, even though web_articles_added itself is never pruned."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[*_web_exchange("ex-1", "https://a.com", added_to_report=False)],
+    )
+
+    delete_chat_exchanges(session, ["ex-1"])
+
+    assert session.revoked_web_article_urls == {"https://a.com"}
+
+
+def test_delete_chat_exchanges_does_not_revoke_a_url_still_backed_by_another_exchange():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com"),
+            *_web_exchange("ex-2", "https://a.com"),  # same URL, different exchange
+        ],
+    )
+
+    delete_chat_exchanges(session, ["ex-1"])
+
+    assert session.revoked_web_article_urls == set()
+
+
+def test_delete_chat_exchanges_un_revokes_a_url_that_becomes_live_again():
+    """A URL previously revoked by an earlier delete, then re-cited by a
+    later exchange (before this delete call), must not stay marked
+    revoked just because THIS delete also happens to touch chat_history
+    -- _sync_revoked_web_article_urls's own "subtract what's live now"
+    half."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-1", "https://a.com"),
+            *_web_exchange("ex-2", "https://b.com"),
+        ],
+        revoked_web_article_urls={"https://a.com"},  # stale revocation from some earlier operation
+    )
+
+    delete_chat_exchanges(session, ["ex-2"])
+
+    # https://a.com is still live via ex-1 (untouched by this delete) --
+    # un-revoked even though this call never re-cited it itself. https://
+    # b.com is newly dead (its only exchange, ex-2, was just removed) --
+    # correctly becomes revoked by this same call.
+    assert session.revoked_web_article_urls == {"https://b.com"}
+
+
+def test_edit_chat_exchange_marks_revoked_when_truncation_removes_the_only_backing_exchange():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "q1", "exchange_id": "ex-1"},
+            {
+                "role": "assistant", "content": "a1", "exchange_id": "ex-1",
+                "used_web_search": True, "cited_web_articles": [{"url": "https://a.com", "title": "A"}],
+                "added_to_report": False,
+            },
+        ],
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parse_response(_build_answer_schema([]), answerable=False, answer="No sources for this.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[]), \
+         patch("research_agent.curation_chat.search_web", return_value=[]):
+        edit_chat_exchange(session, "ex-1", "a different question", client=mock_client)
+
+    assert session.revoked_web_article_urls == {"https://a.com"}
 
 
 def test_deleted_exchange_content_is_excluded_from_the_next_chat_turns_openai_messages():

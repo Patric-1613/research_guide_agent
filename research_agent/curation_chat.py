@@ -232,6 +232,12 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     if len(session.chat_history) >= 2:
         session.chat_history[-2] = {"role": "user", "content": f'Search the web for: "{search_query}"'}
     result = {**result, "web_search_used": True, "new_web_articles_found": len(new_articles)}
+    # report-quality Phase R2D citation-revocation fix: this call only
+    # ever ADDS to chat_history, never removes -- so no live_before
+    # snapshot is needed, just un-revoke whatever the fresh answer
+    # above actually cited (a genuine re-discovery/re-approval of a URL
+    # previously marked revoked by an earlier delete/edit).
+    session.revoked_web_article_urls -= live_cited_web_article_urls(session)
     # curation-refinement-and-auto-offer Phase 6f-3: the "immediately, as
     # soon as the trigger condition is true" point this design settled
     # on -- right after new web articles land, not deferred/batched.
@@ -469,11 +475,21 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
         has any added_to_report exchange backing it -- the already-
         generated session.report itself is still left untouched here,
         same as before.
+
+        report-quality Phase R2D citation-revocation fix: independent of
+        report_possibly_stale/added_to_report, session.revoked_web_
+        article_urls is also synced (see _sync_revoked_web_article_urls)
+        -- any web article URL that had a live chat backing before this
+        delete and no longer does after it is recorded as revoked, so a
+        LATER whole-pool regeneration (regenerate_report_with_new_
+        sources) can permanently exclude it as a candidate even though
+        session.web_articles_added itself is never pruned.
     """
     target_ids = {eid for eid in exchange_ids if eid}
     if not target_ids:
         return [], False
 
+    live_before = live_cited_web_article_urls(session)
     matched_ids: set[str] = set()
     report_possibly_stale = False
     kept: list[dict] = []
@@ -489,6 +505,7 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
     session.chat_history = kept
     if report_possibly_stale:
         prune_report_approved_web_article_urls(session)
+    _sync_revoked_web_article_urls(session, live_before)
     return sorted(matched_ids), report_possibly_stale
 
 
@@ -511,6 +528,45 @@ def approved_web_article_urls_from_added_to_report_entries(session: PaperPoolSes
             for article in turn.get("cited_web_articles") or []:
                 urls.add(article["url"])
     return urls
+
+
+def live_cited_web_article_urls(session: PaperPoolSession) -> set[str]:
+    """report-quality Phase R2D citation-revocation fix: union of
+    cited_web_articles URLs across every assistant entry CURRENTLY
+    present in session.chat_history -- deliberately NOT filtered to
+    added_to_report=True entries, unlike approved_web_article_urls_
+    from_added_to_report_entries just above (which is scoped
+    specifically to that narrower invariant). This answers the broader
+    question "does ANY live chat exchange still back this source at
+    all," which is what actually gets revoked when a chat exchange is
+    deleted or edited away -- regardless of whether that source was
+    ever run through the separate add-to-report approval flow. Pure --
+    does not mutate session."""
+    urls: set[str] = set()
+    for turn in session.chat_history:
+        if turn.get("role") == "assistant":
+            for article in turn.get("cited_web_articles") or []:
+                urls.add(article["url"])
+    return urls
+
+
+def _sync_revoked_web_article_urls(session: PaperPoolSession, live_before: set[str]) -> None:
+    """report-quality Phase R2D citation-revocation fix: updates
+    session.revoked_web_article_urls given a snapshot of what was live
+    in chat BEFORE a chat_history-mutating operation (delete, edit, or
+    a fresh web-search accept) -- any URL that was live before but isn't
+    live now gets marked revoked (added to the set); any URL that's live
+    now (including one marked revoked by an EARLIER call, now
+    rediscovered/re-cited) gets un-revoked (removed from the set).
+    Called with the CURRENT (post-mutation) session.chat_history already
+    in place, so live_cited_web_article_urls(session) here reflects
+    "after." Deliberately NOT gated on report_possibly_stale/added_to_
+    report -- this tracks ANY loss of live chat backing, broader than
+    that narrower invariant (see live_cited_web_article_urls's own
+    docstring)."""
+    live_after = live_cited_web_article_urls(session)
+    newly_dead = live_before - live_after
+    session.revoked_web_article_urls = (session.revoked_web_article_urls | newly_dead) - live_after
 
 
 def prune_report_approved_web_article_urls(session: PaperPoolSession) -> None:
@@ -677,6 +733,15 @@ def edit_chat_exchange(
     True if ANY assistant entry in the truncated-away range (the edited
     exchange's own old answer, or any later exchange) had
     added_to_report=True, computed BEFORE truncation.
+
+    report-quality Phase R2D citation-revocation fix: session.revoked_
+    web_article_urls is synced (_sync_revoked_web_article_urls) across
+    this WHOLE operation -- truncation AND the fresh chat_turn() call
+    together -- using a live-urls snapshot taken before either. A URL
+    the truncated-away exchange(s) alone backed is recorded revoked; a
+    URL the FRESH replacement answer re-cites (even if it's the exact
+    same URL) is correctly left un-revoked, since the snapshot comparison
+    only sees the net before/after effect of the edit as a whole.
     """
     user_idx = next(
         (i for i, turn in enumerate(session.chat_history) if turn.get("role") == "user" and turn.get("exchange_id") == exchange_id),
@@ -685,6 +750,7 @@ def edit_chat_exchange(
     if user_idx is None:
         raise ValueError(f"No editable user question found for exchange_id {exchange_id!r}")
 
+    live_before = live_cited_web_article_urls(session)
     removed = session.chat_history[user_idx:]
     report_possibly_stale = any(turn.get("role") == "assistant" and turn.get("added_to_report") for turn in removed)
 
@@ -695,4 +761,5 @@ def edit_chat_exchange(
     session.pending_report_update = None
 
     result = chat_turn(session, new_question, client=client, top_k=top_k)
+    _sync_revoked_web_article_urls(session, live_before)
     return result, report_possibly_stale

@@ -808,6 +808,25 @@ def _regenerate_report_sections_with_sources(
     Same preconditions as before this refactor (session.report must
     already exist; stage must be "synthesize") -- unchanged, just moved
     here from regenerate_report_with_new_sources's own body.
+
+    report-quality Phase R2D citation-revocation fix: before building
+    the schema/prompt, any web_articles entry whose URL is in session.
+    revoked_web_article_urls is dropped entirely -- structurally, not
+    just probabilistically, so the model is never even offered a
+    revoked source as a citable candidate. session.revoked_web_article_
+    urls (curation_chat.py's delete_chat_exchanges/edit_chat_exchange
+    populate it; _accept_web_offer clears an entry the moment it's
+    re-cited) is the PERSISTENT record of "this URL lost its only live
+    chat backing" -- deliberately not re-derived here from session.
+    report's own current references, which would self-heal to "nothing
+    to revoke" after just one clean regeneration and let a later
+    regeneration re-offer (and the model re-cite) the same source, since
+    session.web_articles_added itself is never pruned. Applies to BOTH
+    regenerate_report_with_new_sources and regenerate_report_with_
+    approved_web_sources uniformly -- for the latter this is normally a
+    no-op (approved_web_articles is already filtered against revocation
+    upstream by curation_chat.py's resolve_approved_web_articles_for_
+    regeneration), just a defensive backstop, not a behavior change.
     """
     if session.report is None:
         raise ValueError(
@@ -821,6 +840,9 @@ def _regenerate_report_sections_with_sources(
 
     existing_report = session.report
     selected_papers = session.selected_papers
+
+    if session.revoked_web_article_urls:
+        web_articles = [a for a in web_articles if a.url not in session.revoked_web_article_urls]
 
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
@@ -903,6 +925,20 @@ def regenerate_report_with_new_sources(
     intentionally independent (see that function's own docstring for
     why using both on the same session has a real interaction worth
     knowing about).
+
+    report-quality Phase R2D citation-revocation fix: still whole-pool
+    over session.web_articles_added -- but any URL in session.revoked_
+    web_article_urls (curation_chat.py's delete_chat_exchanges/edit_
+    chat_exchange populate it whenever a URL loses its only live chat
+    backing) is excluded from the candidates offered this call, even
+    though it's still sitting in the raw, unfiltered web_articles_added
+    pool -- see _regenerate_report_sections_with_sources's own
+    docstring for why this needs to be a persistent, session-level
+    record rather than something re-derived from the prior report alone.
+    A source that was simply never revoked is unaffected -- "whole pool"
+    still means every web article chat has ever surfaced, just no longer
+    including one whose only chat backing has since been deleted or
+    edited away.
     """
     return _regenerate_report_sections_with_sources(
         session, session.web_articles_added, client, model, "regenerate_report_with_new_sources",
@@ -934,7 +970,22 @@ def regenerate_report_with_approved_web_sources(
     web articles never approved through this selective path -- the two
     mechanisms don't defer to each other. Not resolved in Phase 4 (kept
     as an explicit, named follow-up), since /report/regenerate's own
-    behavior must stay whole-pool and unchanged this phase.
+    behavior must stay whole-pool and unchanged this phase. (Partially
+    addressed by report-quality Phase R2D: whole-pool regeneration no
+    longer resurrects a web citation whose only chat backing has since
+    been deleted/edited away -- see regenerate_report_with_new_sources's
+    own docstring. The two mechanisms are still independent in every
+    other respect: a whole-pool regeneration can still include a web
+    article never approved through THIS selective path at all.)
+
+    report-quality Phase R2D citation-revocation fix: the shared
+    regeneration body's session.revoked_web_article_urls exclusion also
+    applies here, though it's normally a no-op in practice for this
+    function specifically -- curation_chat.py's resolve_approved_web_
+    articles_for_regeneration already keeps approved_web_articles itself
+    correct against Phase B pruning before it ever reaches this call, so
+    a revoked URL should never even be IN approved_web_articles to begin
+    with. A defensive backstop, not a behavior change for this function.
     """
     return _regenerate_report_sections_with_sources(
         session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",

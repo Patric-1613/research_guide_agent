@@ -785,6 +785,27 @@ class PaperPoolSession:
     # by this set; see report.py's regenerate_report_with_new_sources.)
     # Same set-field convention as seen_paper_ids/seen_titles above.
     report_approved_web_article_urls: set[str] = field(default_factory=set)
+    # report-quality Phase R2D citation-revocation fix: URLs that WERE
+    # live-backed by at least one chat exchange (and possibly cited in a
+    # report) but whose only backing exchange(s) have since been deleted
+    # or edited away. Exists because web_articles_added (above) is
+    # deliberately NEVER pruned -- see that field's own comment -- so
+    # without a persistent revocation record, a regeneration can only
+    # tell "this URL was cited in the immediately PRIOR report" from
+    # session.report itself, which self-heals to no longer mention a
+    # revoked URL after just one clean regeneration, letting a later
+    # regeneration re-offer (and the model re-cite) it as if it were
+    # never revoked at all. curation_chat.py's delete_chat_exchanges/
+    # edit_chat_exchange add to this set whenever a live-backed URL
+    # loses its only backing; _accept_web_offer removes a URL from it
+    # the moment any assistant turn cites it again (a genuine
+    # re-discovery/re-approval). report.py's regenerate_report_with_new_
+    # sources reads this to permanently exclude a revoked URL from
+    # whole-pool regeneration candidates, across arbitrarily many
+    # regeneration cycles, without needing session.report to still
+    # mention it. Same set-field convention as report_approved_web_
+    # article_urls immediately above.
+    revoked_web_article_urls: set[str] = field(default_factory=set)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""
