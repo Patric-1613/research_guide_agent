@@ -188,3 +188,102 @@ describe('ReportModePanel', () => {
     expect(screen.getByText(/1 selected paper skipped from synthesis/)).toBeInTheDocument()
   })
 })
+
+describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => {
+  it('renders an arbitrary number of backend-provided sections, in backend order, with headings from title', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+        sections: [
+          { key: 'executive_summary', title: 'Executive Summary', content: 'Summary content.', reference_numbers: [] },
+          { key: 'thematic_findings', title: 'Thematic Findings', content: 'Findings content.', reference_numbers: [] },
+          { key: 'gap_analysis', title: 'Gap Analysis', content: 'Gap content.', reference_numbers: [] },
+          { key: 'conclusion', title: 'Conclusion', content: 'Conclusion content.', reference_numbers: [] },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+    expect(headings).toEqual(['Executive Summary', 'Thematic Findings', 'Gap Analysis', 'Conclusion'])
+    expect(screen.getByText('Summary content.')).toBeInTheDocument()
+    expect(screen.getByText('Conclusion content.')).toBeInTheDocument()
+
+    // The old 3-name assumption is gone -- neither legacy content string
+    // appears, proving rendering came from `sections`, not a fallback.
+    expect(screen.queryByText('F')).not.toBeInTheDocument()
+    expect(screen.queryByText('L')).not.toBeInTheDocument()
+  })
+
+  it('renders a section nav with one entry per section, linking to each section', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+        sections: [
+          { key: 'executive_summary', title: 'Executive Summary', content: 'A', reference_numbers: [] },
+          { key: 'conclusion', title: 'Conclusion', content: 'B', reference_numbers: [] },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    const nav = screen.getByTestId('report-section-nav')
+    expect(nav).toBeInTheDocument()
+    expect(screen.getByTestId('section-nav-link-executive_summary')).toHaveAttribute('href', '#section-executive_summary')
+    expect(screen.getByTestId('section-nav-link-conclusion')).toHaveAttribute('href', '#section-conclusion')
+  })
+
+  it('References still render after all dynamic sections', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+        sections: [
+          { key: 'executive_summary', title: 'Executive Summary', content: 'Per [1], X.', reference_numbers: [1] },
+        ],
+        references: [
+          { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+        ],
+      },
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+
+    expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#ref-1')
+    expect(screen.getByTestId('report-references')).toBeInTheDocument()
+    expect(screen.getByText('Uthor, A. (2024). Paper One.')).toBeInTheDocument()
+  })
+
+  it('a report with only legacy fields (sections absent) still renders safely via the same fallback path, with no section nav for just one implicit group', () => {
+    const state = baseState({
+      report: {
+        findings: { content: 'Old findings prose.', cited_papers: [], cited_web_articles: [] },
+        limitations: { content: 'Old limitations prose.', cited_papers: [], cited_web_articles: [] },
+        future_scope: { content: 'Old future prose.', cited_papers: [], cited_web_articles: [] },
+        skipped_paper_ids: [],
+        // sections deliberately omitted -- simulates a raw pre-R2A shape
+        // reaching the frontend, independent of trusting that the
+        // backend always derives it.
+      },
+    })
+
+    expect(() =>
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />),
+    ).not.toThrow()
+
+    expect(screen.getByText('Old findings prose.')).toBeInTheDocument()
+    expect(screen.getByText('Old limitations prose.')).toBeInTheDocument()
+    expect(screen.getByText('Old future prose.')).toBeInTheDocument()
+    // Still three sections worth of headings, even via the fallback path.
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+    expect(headings).toEqual(['Findings', 'Limitations', 'Future Scope'])
+    expect(screen.getByTestId('report-section-nav')).toBeInTheDocument()
+  })
+})

@@ -323,6 +323,42 @@ def derive_legacy_references(report: dict) -> dict:
     return {**report, **updated_sections, "references": references}
 
 
+# --- report-quality Phase R2A: dynamic section model (schema/rendering
+# migration only -- generation itself is unchanged, still exactly the
+# fixed findings/limitations/future_scope pipeline above) ---
+
+_LEGACY_SECTION_TITLES = {"findings": "Findings", "limitations": "Limitations", "future_scope": "Future Scope"}
+
+
+def derive_sections_from_legacy_report(report: dict) -> list[dict]:
+    """Every report today -- old persisted ones, and every currently-
+    generated one, since generation hasn't changed yet -- only ever has
+    the fixed findings/limitations/future_scope shape. This derives the
+    new `sections` list (ReportOut.sections, the future primary report
+    body) straight from that existing shape, 1:1 and in order. Called by
+    the API serializer (api_app/serializers.py's _report_to_out)
+    whenever a report dict has no "sections" key of its own yet -- in
+    practice, every report right now. Same "derive at read time, never
+    rewrite persisted storage" philosophy as derive_legacy_references
+    above -- never mutates `report`.
+
+    Once real multi-section generation ships (a later phase), a fresh
+    report will carry its own genuine `sections` list and this function
+    simply won't be reached for it (see _report_to_out's `"sections" not
+    in report` guard) -- this is a bridge for the pre-R2B/pre-R2C world,
+    not a replacement for real dynamic generation.
+    """
+    return [
+        {
+            "key": name,
+            "title": _LEGACY_SECTION_TITLES[name],
+            "content": report[name]["content"],
+            "reference_numbers": report[name].get("reference_numbers", []),
+        }
+        for name in SECTION_NAMES
+    ]
+
+
 @observe(name="generate_report_sections", as_type="generation", capture_input=False, capture_output=False)
 def _generate_report_sections(
     topic: str, papers: list[Paper], web_articles: list[WebArticle], schema: type[BaseModel],

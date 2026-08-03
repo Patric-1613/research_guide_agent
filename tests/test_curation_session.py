@@ -252,6 +252,46 @@ def test_report_without_references_or_web_citations_still_loads_old_shape():
         assert loaded.report["findings"]["cited_web_articles"] == []
         assert loaded.report["findings"]["reference_numbers"] == []
         assert "references" not in loaded.report
+        assert "sections" not in loaded.report
+
+
+def test_report_sections_survive_serialize_deserialize_when_present():
+    """report-quality Phase R2A: `sections` is opaquely round-tripped the
+    same way `references` already is -- a report dict that already
+    carries a `sections` list (as a future real multi-section generation
+    would produce) must survive a save/load cycle through real SQLite
+    intact, in order."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        report = {
+            "findings": {"content": "F", "cited_papers": [cited_paper], "cited_web_articles": [], "reference_numbers": [1]},
+            "limitations": {"content": "L", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "S", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [],
+            "references": [
+                {"number": 1, "kind": "paper", "paper_id": "p0", "url": None, "title": "Paper p0",
+                 "formatted": "A. (2024). Paper p0. X.", "link_url": None},
+            ],
+            "sections": [
+                {"key": "findings", "title": "Findings", "content": "F", "reference_numbers": [1]},
+                {"key": "limitations", "title": "Limitations", "content": "L", "reference_numbers": []},
+                {"key": "future_scope", "title": "Future Scope", "content": "S", "reference_numbers": []},
+            ],
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-sections", cp)
+            loaded = load_curation_session("session-report-sections", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert [s["key"] for s in loaded.report["sections"]] == ["findings", "limitations", "future_scope"]
+        assert loaded.report["sections"][0]["content"] == "F"
+        assert loaded.report["sections"][0]["reference_numbers"] == [1]
 
 
 def test_list_curation_sessions_returns_empty_for_no_sessions():

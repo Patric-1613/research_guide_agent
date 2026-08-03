@@ -97,7 +97,23 @@ export interface ReportSectionOut {
   reference_numbers?: number[]
 }
 
+// report-quality Phase R2A: one entry in a report's dynamic section list
+// (ReportOut.sections) -- the future primary report body. For now, every
+// report's `sections` is derived 1:1, in order, from the legacy
+// findings/limitations/future_scope fields below (see the backend's
+// derive_sections_from_legacy_report) -- real independent multi-section
+// generation is a later phase, not this one.
+export interface ReportSection {
+  key: string
+  title: string
+  content: string
+  reference_numbers?: number[]
+}
+
 export interface ReportOut {
+  // Legacy fields -- kept as compatibility fields, not the primary
+  // report body once dynamic sections (below) are generated
+  // independently in a later phase.
   findings: ReportSectionOut
   limitations: ReportSectionOut
   future_scope: ReportSectionOut
@@ -108,6 +124,12 @@ export interface ReportOut {
   // always derives it (fresh generation or on-the-fly for an old
   // report), but the frontend renders safely even if it's ever absent.
   references?: ReferenceEntry[]
+  // report-quality Phase R2A: the future primary report body. Optional
+  // for the same old-shape-report reason as references above, though in
+  // practice the backend always derives it (see the backend's
+  // _report_to_out) -- the frontend still defends against it being
+  // absent, independent of trusting that derivation.
+  sections?: ReportSection[]
 }
 
 export interface TurnHistoryEntryOut {

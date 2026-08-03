@@ -21,6 +21,7 @@ from research_agent.report import (
     _build_references_and_renumber,
     _build_report_schema,
     derive_legacy_references,
+    derive_sections_from_legacy_report,
     generate_report,
     generate_report_for_session,
     regenerate_report_with_approved_web_sources,
@@ -576,6 +577,42 @@ def test_derive_legacy_references_does_not_rewrite_content_and_builds_references
     assert result["findings"]["reference_numbers"] == [1]
     assert len(result["references"]) == 1
     assert result["references"][0]["paper_id"] == "p1"
+
+
+# --- report-quality Phase R2A: dynamic section model (schema/rendering
+# migration only, no generation change) ---
+
+def test_derive_sections_from_legacy_report_maps_the_three_fixed_sections_in_order():
+    report = {
+        "findings": {"content": "F content", "cited_papers": [], "reference_numbers": [1]},
+        "limitations": {"content": "L content", "cited_papers": [], "reference_numbers": []},
+        "future_scope": {"content": "S content", "cited_papers": [], "reference_numbers": [2]},
+        "skipped_papers": [],
+    }
+
+    sections = derive_sections_from_legacy_report(report)
+
+    assert [s["key"] for s in sections] == ["findings", "limitations", "future_scope"]
+    assert [s["title"] for s in sections] == ["Findings", "Limitations", "Future Scope"]
+    assert [s["content"] for s in sections] == ["F content", "L content", "S content"]
+    assert sections[0]["reference_numbers"] == [1]
+    assert sections[2]["reference_numbers"] == [2]
+
+
+def test_derive_sections_from_legacy_report_defaults_missing_reference_numbers_to_empty():
+    """A report predating even R1's reference_numbers field (older than
+    the references field itself) still derives a sections list safely --
+    reference_numbers degrades to [] rather than a KeyError."""
+    report = {
+        "findings": {"content": "F", "cited_papers": []},
+        "limitations": {"content": "L", "cited_papers": []},
+        "future_scope": {"content": "S", "cited_papers": []},
+        "skipped_papers": [],
+    }
+
+    sections = derive_sections_from_legacy_report(report)
+
+    assert all(s["reference_numbers"] == [] for s in sections)
 
 
 def test_generate_report_end_to_end_converts_section_local_model_markers_to_global_numbers():

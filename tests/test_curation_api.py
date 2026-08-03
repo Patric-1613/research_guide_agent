@@ -929,10 +929,21 @@ def test_curation_report_generates_and_persists_across_a_separate_get_request():
         assert body["findings"]["cited_papers"][0]["paper_id"] == pick_ids[0]
         assert body["findings"]["cited_web_articles"] == []
 
+        # report-quality Phase R2A: the SAME old-shape dict (no "sections"
+        # key either) still derives a 3-entry sections list, in order,
+        # matching the legacy findings/limitations/future_scope fields --
+        # and those legacy fields themselves stay populated, not dropped.
+        assert [s["key"] for s in body["sections"]] == ["findings", "limitations", "future_scope"]
+        assert body["sections"][0]["title"] == "Findings"
+        assert body["sections"][0]["content"] == "f"
+        assert body["limitations"]["content"] == "l"
+        assert body["future_scope"]["content"] == "fs"
+
         # Persisted state visible via a genuinely separate request too.
         state_resp = client.get(f"/curation/{session_id}")
     assert state_resp.json()["report"]["findings"]["content"] == "f"
     assert [r["paper_id"] for r in state_resp.json()["report"]["references"]] == [pick_ids[0]]
+    assert [s["key"] for s in state_resp.json()["report"]["sections"]] == ["findings", "limitations", "future_scope"]
 
 
 def test_curation_report_before_curation_finished_returns_400():

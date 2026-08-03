@@ -1,6 +1,6 @@
 import { Globe } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { ReportSectionOut, CurationStateResponse, ReferenceEntry } from '../../types'
+import type { ReportOut, ReportSection, CurationStateResponse, ReferenceEntry } from '../../types'
 
 interface ReportModePanelProps {
   state: CurationStateResponse
@@ -59,7 +59,8 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
     )
   }
 
-  const { findings, limitations, future_scope, skipped_paper_ids, references } = state.report
+  const { skipped_paper_ids, references } = state.report
+  const sections = sectionsFromReport(state.report)
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
@@ -75,9 +76,10 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
           Regenerate
         </button>
       </div>
-      <ReportSection title="Findings" section={findings} />
-      <ReportSection title="Limitations" section={limitations} />
-      <ReportSection title="Future scope" section={future_scope} />
+      {sections.length > 1 && <SectionNav sections={sections} />}
+      {sections.map((section) => (
+        <ReportSectionBlock key={section.key} section={section} />
+      ))}
       {skipped_paper_ids.length > 0 && (
         <p className="text-xs text-text-muted">
           {skipped_paper_ids.length} selected paper{skipped_paper_ids.length === 1 ? '' : 's'} skipped from synthesis.
@@ -88,10 +90,54 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
   )
 }
 
-function ReportSection({ title, section }: { title: string; section: ReportSectionOut }) {
+// report-quality Phase R2A: prefers the backend's own dynamic `sections`
+// list (already backend-ordered, and already derived from the legacy
+// fields when a report has none of its own -- see the backend's
+// derive_sections_from_legacy_report) so this is the ONLY place the
+// component reads findings/limitations/future_scope directly, purely as
+// a defense-in-depth fallback independent of trusting that derivation --
+// not a second rendering path the rest of the component needs to know
+// about.
+function sectionsFromReport(report: ReportOut): ReportSection[] {
+  if (report.sections && report.sections.length > 0) return report.sections
+
+  const legacy: { key: string; title: string; section: typeof report.findings }[] = [
+    { key: 'findings', title: 'Findings', section: report.findings },
+    { key: 'limitations', title: 'Limitations', section: report.limitations },
+    { key: 'future_scope', title: 'Future Scope', section: report.future_scope },
+  ]
+  return legacy
+    .filter((s) => s.section)
+    .map((s) => ({
+      key: s.key, title: s.title, content: s.section.content, reference_numbers: s.section.reference_numbers,
+    }))
+}
+
+// A compact "jump to section" list -- only worth showing once there's
+// more than one section to jump between (a single-section report, e.g.
+// today's own derived fallback shape used pre-generation, gains nothing
+// from a table of contents with one entry in it).
+function SectionNav({ sections }: { sections: ReportSection[] }) {
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{title}</h3>
+    <nav data-testid="report-section-nav" aria-label="Report sections" className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+      {sections.map((section) => (
+        <a
+          key={section.key}
+          href={`#section-${section.key}`}
+          data-testid={`section-nav-link-${section.key}`}
+          className="text-text-secondary underline decoration-dotted underline-offset-2 hover:text-accent hover:decoration-solid"
+        >
+          {section.title}
+        </a>
+      ))}
+    </nav>
+  )
+}
+
+function ReportSectionBlock({ section }: { section: ReportSection }) {
+  return (
+    <section id={`section-${section.key}`} className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{section.title}</h3>
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">
         {renderContentWithMarkers(section.content)}
       </p>

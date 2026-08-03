@@ -90,6 +90,15 @@ def _serialize_report(report: dict | None) -> dict | None:
     serialized["skipped_papers"] = [p.to_dict() for p in report["skipped_papers"]]
     if "references" in report:
         serialized["references"] = report["references"]
+    # report-quality Phase R2A: same opaque pass-through convention as
+    # references above -- `sections` is already a list of plain dicts
+    # (no Paper/WebArticle objects nested in it), so there's nothing to
+    # convert, only a presence check. Absent for every report today
+    # (generation doesn't stamp it on yet -- see report.py's
+    # derive_sections_from_legacy_report), but round-tripped opaquely
+    # here in case a future phase ever does persist a genuine one.
+    if "sections" in report:
+        serialized["sections"] = report["sections"]
     return serialized
 
 
@@ -108,6 +117,8 @@ def _deserialize_report(d: dict | None) -> dict | None:
     deserialized["skipped_papers"] = [Paper(**p) for p in d["skipped_papers"]]
     if "references" in d:
         deserialized["references"] = d["references"]
+    if "sections" in d:
+        deserialized["sections"] = d["sections"]
     return deserialized
 
 

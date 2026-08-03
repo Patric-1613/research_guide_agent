@@ -250,7 +250,30 @@ class ReportSectionOut(BaseModel):
     reference_numbers: list[int] = Field(default_factory=list)
 
 
+class ReportSection(BaseModel):
+    """report-quality Phase R2A: one entry in a report's dynamic section
+    list (ReportOut.sections below) -- the future primary report body.
+    For now, every report's `sections` is derived 1:1, in order, from
+    the existing findings/limitations/future_scope fields (see
+    report.py's derive_sections_from_legacy_report) -- real independent
+    multi-section generation is a later phase, not this one. `key` is a
+    stable machine id (e.g. "findings"), `title` the human-readable
+    heading (e.g. "Findings") -- kept separate so a future template can
+    rename/reorder headings without the frontend needing to hardcode
+    them."""
+
+    key: str
+    title: str
+    content: str
+    reference_numbers: list[int] = Field(default_factory=list)
+
+
 class ReportOut(BaseModel):
+    # Legacy fields -- kept as compatibility fields, not the primary
+    # report body once dynamic sections (below) are actually generated
+    # independently in a later phase. Still required/always populated in
+    # THIS phase, since report generation itself hasn't changed yet --
+    # every report, old or new, genuinely has these three.
     findings: ReportSectionOut
     limitations: ReportSectionOut
     future_scope: ReportSectionOut
@@ -263,6 +286,13 @@ class ReportOut(BaseModel):
     # old persisted one (see serializers.py/report.py's
     # derive_legacy_references).
     references: list[ReferenceEntry] = Field(default_factory=list)
+    # report-quality Phase R2A: the future primary report body. Additive
+    # and always populated by _report_to_out (derived from
+    # findings/limitations/future_scope above when a report has no
+    # `sections` of its own yet, which is every report in this phase) --
+    # existing consumers reading findings/limitations/future_scope
+    # directly are completely unaffected.
+    sections: list[ReportSection] = Field(default_factory=list)
 
 
 class TurnHistoryEntryOut(BaseModel):
