@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import type { MouseEvent } from 'react'
 import type { CurationReviewSummary } from '../../types'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
 
 interface ReviewCardProps {
   review: CurationReviewSummary
@@ -31,43 +33,70 @@ const toneClasses: Record<string, string> = {
 
 export function ReviewCard({ review, active, onSelect, onDelete }: ReviewCardProps) {
   const status = statusLabel(review)
+  // chat-ux-polish Phase A parity: review deletion used window.confirm()
+  // directly here, never migrated when chat delete moved onto the shared
+  // in-app ConfirmDialog -- same triggers, same cancel-does-nothing
+  // behavior, just a styled overlay instead of the native browser dialog.
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
-  function handleDelete(e: MouseEvent) {
+  function handleDeleteClick(e: MouseEvent) {
     // Stops the click from also bubbling into the card's own onSelect --
     // deleting a review must never simultaneously open it.
     e.stopPropagation()
-    if (window.confirm(`Delete "${review.display_title}"? This permanently removes the review and cannot be undone.`)) {
-      onDelete(review.session_id)
-    }
+    setShowDeleteConfirm(true)
   }
 
   return (
-    <button
-      type="button"
-      data-testid={`review-card-${review.session_id}`}
-      onClick={onSelect}
-      className={`group relative w-full rounded-lg border p-3 text-left transition-colors ${
-        active ? 'border-accent bg-accent-soft' : 'border-border bg-card hover:border-text-muted'
-      }`}
-    >
+    // display: contents -- an invisible-to-layout wrapper, purely so
+    // ConfirmDialog (a fixed-position overlay) can be rendered as a
+    // SIBLING of the card button rather than nested inside it. Nesting it
+    // inside would put its Confirm/Cancel <button>s inside this card's own
+    // <button onClick={onSelect}>, which is invalid HTML and would need
+    // fragile stopPropagation gymnastics on every dialog interaction to
+    // stop a click from also selecting the review. `contents` keeps this
+    // wrapper completely out of ReviewsList's flex layout -- the card
+    // button behaves exactly as if it were still a direct flex child.
+    <div className="contents">
       <button
         type="button"
-        data-testid={`delete-review-${review.session_id}`}
-        onClick={handleDelete}
-        aria-label={`Delete ${review.display_title}`}
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full text-text-muted opacity-0 hover:bg-danger-soft hover:text-danger group-hover:opacity-100"
+        data-testid={`review-card-${review.session_id}`}
+        onClick={onSelect}
+        className={`group relative w-full rounded-lg border p-3 text-left transition-colors ${
+          active ? 'border-accent bg-accent-soft' : 'border-border bg-card hover:border-text-muted'
+        }`}
       >
-        ×
+        <button
+          type="button"
+          data-testid={`delete-review-${review.session_id}`}
+          onClick={handleDeleteClick}
+          aria-label={`Delete ${review.display_title}`}
+          className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full text-text-muted opacity-0 hover:bg-danger-soft hover:text-danger group-hover:opacity-100"
+        >
+          ×
+        </button>
+        <p className="truncate pr-5 text-sm font-medium text-text">{review.display_title}</p>
+        <div className="mt-1.5 flex items-center justify-between">
+          <span className="text-xs text-text-secondary">
+            {review.selected_count} of {review.target_count} papers
+          </span>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${toneClasses[status.tone]}`}>
+            {status.text}
+          </span>
+        </div>
       </button>
-      <p className="truncate pr-5 text-sm font-medium text-text">{review.display_title}</p>
-      <div className="mt-1.5 flex items-center justify-between">
-        <span className="text-xs text-text-secondary">
-          {review.selected_count} of {review.target_count} papers
-        </span>
-        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${toneClasses[status.tone]}`}>
-          {status.text}
-        </span>
-      </div>
-    </button>
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          title="Delete review"
+          message={`Delete "${review.display_title}"? This permanently removes the saved review/session and cannot be undone.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            setShowDeleteConfirm(false)
+            onDelete(review.session_id)
+          }}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+    </div>
   )
 }

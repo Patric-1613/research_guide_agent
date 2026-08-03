@@ -124,11 +124,11 @@ describe('ReviewsList', () => {
     expect(onSelectReview).toHaveBeenCalledWith('s1')
   })
 
-  it('clicking delete asks for confirmation, then calls onDeleteReview WITHOUT also selecting the review (Phase 8, item 1)', async () => {
+  it('clicking delete opens the in-app ConfirmDialog (not window.confirm), naming the review', async () => {
     const user = userEvent.setup()
     const onSelectReview = vi.fn()
     const onDeleteReview = vi.fn()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     vi.mocked(curationApi.listReviews).mockResolvedValue([review({ session_id: 's1', topic: 'My topic' })])
 
     render(
@@ -140,17 +140,37 @@ describe('ReviewsList', () => {
     await waitFor(() => expect(screen.getByText('My topic')).toBeInTheDocument())
     await user.click(screen.getByTestId('delete-review-s1'))
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('My topic'))
-    expect(onDeleteReview).toHaveBeenCalledWith('s1')
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId('confirm-dialog')).toHaveTextContent('My topic')
+    expect(onDeleteReview).not.toHaveBeenCalled() // not yet -- still needs confirmation
     // The click must not also bubble into the card's own onSelect.
     expect(onSelectReview).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
   })
 
-  it('declining the confirmation does not call onDeleteReview', async () => {
+  it('confirming the dialog calls onDeleteReview WITHOUT also selecting the review (Phase 8, item 1)', async () => {
+    const user = userEvent.setup()
+    const onSelectReview = vi.fn()
+    const onDeleteReview = vi.fn()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([review({ session_id: 's1', topic: 'My topic' })])
+
+    render(
+      <ReviewsList
+        activeSessionId={null} onSelectReview={onSelectReview} onStartReview={vi.fn()} onDeleteReview={onDeleteReview} refreshToken={0}
+        workspaceMode="review" workspaceUnlocked={false} onWorkspaceModeChange={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText('My topic')).toBeInTheDocument())
+    await user.click(screen.getByTestId('delete-review-s1'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    expect(onDeleteReview).toHaveBeenCalledWith('s1')
+    expect(onSelectReview).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+  })
+
+  it('cancelling the dialog does not call onDeleteReview, and closes the dialog', async () => {
     const user = userEvent.setup()
     const onDeleteReview = vi.fn()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     vi.mocked(curationApi.listReviews).mockResolvedValue([review({ session_id: 's1', topic: 'My topic' })])
 
     render(
@@ -161,8 +181,9 @@ describe('ReviewsList', () => {
     )
     await waitFor(() => expect(screen.getByText('My topic')).toBeInTheDocument())
     await user.click(screen.getByTestId('delete-review-s1'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
 
     expect(onDeleteReview).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 })
