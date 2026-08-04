@@ -10,6 +10,7 @@ function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
+    report_versions: [], active_report_version_id: null,
     ...overrides,
   }
 }
@@ -19,7 +20,7 @@ describe('ReportModePanel', () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
     render(
-      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} />,
+      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />,
     )
 
     expect(screen.getByText('No report yet for this review.')).toBeInTheDocument()
@@ -39,7 +40,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByText('Finding A.')).toBeInTheDocument()
     expect(screen.getByText('Limitation A.')).toBeInTheDocument()
@@ -59,7 +60,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     // The bare pill text (just a title, no citation/link) must not appear
     // on its own anymore -- only inside the References section's full
@@ -86,7 +87,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     const references = screen.getByTestId('report-references')
     expect(references).toBeInTheDocument()
@@ -131,7 +132,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByText('Uthor, A. (n.d.). Paper One.')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Uthor, A. (n.d.). Paper One.' })).not.toBeInTheDocument()
@@ -150,7 +151,7 @@ describe('ReportModePanel', () => {
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />),
     ).not.toThrow()
 
     expect(screen.getByText('Old prose, no markers.')).toBeInTheDocument()
@@ -168,7 +169,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: [],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
 
     await user.click(screen.getByTestId('regenerate-report'))
     expect(onRegenerateReport).toHaveBeenCalledTimes(1)
@@ -183,7 +184,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: ['p9'],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByText(/1 selected paper skipped from synthesis/)).toBeInTheDocument()
   })
@@ -205,7 +206,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
     expect(headings).toEqual(['Executive Summary', 'Thematic Findings', 'Gap Analysis', 'Conclusion'])
@@ -231,7 +232,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     const nav = screen.getByTestId('report-section-nav')
     expect(nav).toBeInTheDocument()
@@ -254,7 +255,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#ref-1')
     expect(screen.getByTestId('report-references')).toBeInTheDocument()
@@ -275,7 +276,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />),
     ).not.toThrow()
 
     expect(screen.getByText('Old findings prose.')).toBeInTheDocument()
@@ -300,7 +301,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   }
 
   it('renders all three template options', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-foundational')).toBeInTheDocument()
     expect(screen.getByTestId('report-template-option-analytical')).toBeInTheDocument()
@@ -308,7 +309,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   })
 
   it('defaults the selector to Analytical when there is no report yet', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('report-template-option-foundational')).toHaveAttribute('aria-checked', 'false')
@@ -316,7 +317,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('initializes the selector from an existing report_template', () => {
     const state = baseState({ report: reportWithTemplate('expert') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
   })
@@ -324,7 +325,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   it('selecting Foundational and clicking Generate calls onGenerateReport("foundational")', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     await user.click(screen.getByTestId('report-template-option-foundational'))
     await user.click(screen.getByTestId('generate-report'))
@@ -336,7 +337,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const user = userEvent.setup()
     const onRegenerateReport = vi.fn()
     const state = baseState({ report: reportWithTemplate('analytical') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
 
     await user.click(screen.getByTestId('report-template-option-expert'))
     await user.click(screen.getByTestId('regenerate-report'))
@@ -346,14 +347,14 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('shows a template badge for an existing report', () => {
     const state = baseState({ report: reportWithTemplate('foundational') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Foundational')
   })
 
   it('defaults the badge and selector to Analytical for an old report with no report_template field', () => {
     const state = baseState({ report: reportWithTemplate() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Analytical')
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -363,7 +364,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const { rerender } = render(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('analytical') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -371,11 +372,121 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     rerender(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('expert') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
       />,
     )
 
     expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+describe('ReportModePanel -- report-quality Phase R3: report version selector', () => {
+  const V1 = {
+    version_id: 'v1', version_number: 1, created_at: '2026-08-05T00:00:00+00:00',
+    report_template: 'analytical' as const, generation_reason: 'initial', is_active: false,
+  }
+  const V2 = {
+    version_id: 'v2', version_number: 2, created_at: '2026-08-05T01:00:00+00:00',
+    report_template: 'expert' as const, generation_reason: 'regenerate', is_active: false,
+  }
+  const V3 = {
+    version_id: 'v3', version_number: 3, created_at: '2026-08-05T02:00:00+00:00',
+    report_template: 'foundational' as const, generation_reason: 'chat_add_to_report', is_active: true,
+  }
+
+  function reportStub() {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+    }
+  }
+
+  it('hides the version selector when report_versions is empty (old-report fixture, no version metadata)', () => {
+    const state = baseState({ report: reportStub(), report_versions: [], active_report_version_id: null })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.queryByTestId('report-version-selector')).not.toBeInTheDocument()
+    // Rest of the panel still renders safely without version metadata.
+    expect(screen.getByText('F')).toBeInTheDocument()
+  })
+
+  it('renders one option per available version', () => {
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
+    expect(select.options).toHaveLength(3)
+  })
+
+  it('selects the option matching active_report_version_id', () => {
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v2',
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
+    expect(select.value).toBe('v2')
+  })
+
+  it('labels include the version number, template, and generation reason', () => {
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByText('Version 1 — Analytical — Initial')).toBeInTheDocument()
+    expect(screen.getByText('Version 2 — Expert — Regenerate')).toBeInTheDocument()
+    expect(screen.getByText('Version 3 — Foundational — Chat add')).toBeInTheDocument()
+  })
+
+  it('changing the selector calls onActivateReportVersion with the chosen version_id', async () => {
+    const user = userEvent.setup()
+    const onActivateReportVersion = vi.fn()
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
+    })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={onActivateReportVersion}
+      />,
+    )
+
+    await user.selectOptions(screen.getByTestId('report-version-selector'), 'v1')
+
+    expect(onActivateReportVersion).toHaveBeenCalledWith('v1')
+  })
+
+  it('the template selector remains independent of the version selector', async () => {
+    const user = userEvent.setup()
+    const onRegenerateReport = vi.fn()
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
+    })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport}
+        onActivateReportVersion={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByTestId('report-template-option-expert'))
+    await user.click(screen.getByTestId('regenerate-report'))
+
+    expect(onRegenerateReport).toHaveBeenCalledWith('expert')
+  })
+
+  it('is disabled while a report action is in progress, same as the other report controls', () => {
+    const state = baseState({
+      report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
+    })
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('report-version-selector')).toBeDisabled()
   })
 })

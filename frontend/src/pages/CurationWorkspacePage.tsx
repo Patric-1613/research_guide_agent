@@ -34,8 +34,8 @@ export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion, sendChatMessage,
+    deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -175,6 +175,13 @@ export default function CurationWorkspacePage() {
   async function handleRegenerateReport(reportTemplate?: ReportTemplate) {
     await regenerateReport(reportTemplate)
     setReviewsRefreshToken((t) => t + 1)
+  }
+
+  // report-quality Phase R3: a pure pointer switch -- doesn't change
+  // has_report/has_chat/stage, so unlike generate/regenerate above,
+  // there's nothing here the reviews sidebar needs to refresh for.
+  async function handleActivateReportVersion(versionId: string) {
+    await activateReportVersion(versionId)
   }
 
   // curation-refinement-and-auto-offer Phase 6f-4: report regeneration
@@ -320,6 +327,7 @@ export default function CurationWorkspacePage() {
                       disabled={loading}
                       onGenerateReport={handleGenerateReport}
                       onRegenerateReport={handleRegenerateReport}
+                      onActivateReportVersion={handleActivateReportVersion}
                     />
                   )}
                 </>

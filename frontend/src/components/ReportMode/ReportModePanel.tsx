@@ -1,7 +1,7 @@
 import { Globe } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import type { ReportOut, ReportSection, ReportTemplate, CurationStateResponse, ReferenceEntry } from '../../types'
+import type { ReportOut, ReportSection, ReportTemplate, ReportVersionSummary, CurationStateResponse, ReferenceEntry } from '../../types'
 
 interface ReportModePanelProps {
   state: CurationStateResponse
@@ -11,6 +11,8 @@ interface ReportModePanelProps {
   // the selector always has a concrete value, defaulted to "analytical").
   onGenerateReport: (reportTemplate: ReportTemplate) => void
   onRegenerateReport: (reportTemplate: ReportTemplate) => void
+  // report-quality Phase R3: switches the active report version.
+  onActivateReportVersion: (versionId: string) => void
 }
 
 const TEMPLATE_OPTIONS: { value: ReportTemplate; label: string }[] = [
@@ -21,6 +23,18 @@ const TEMPLATE_OPTIONS: { value: ReportTemplate; label: string }[] = [
 
 const TEMPLATE_LABELS: Record<ReportTemplate, string> = {
   foundational: 'Foundational', analytical: 'Analytical', expert: 'Expert',
+}
+
+// report-quality Phase R3: short, title-cased labels for the version
+// selector's own generation_reason column -- a reason this frontend
+// doesn't recognize (a future backend-only addition) still renders
+// safely via the raw string fallback in versionLabel() below, rather
+// than an empty/undefined label.
+const GENERATION_REASON_LABELS: Record<string, string> = {
+  initial: 'Initial',
+  regenerate: 'Regenerate',
+  chat_add_to_report: 'Chat add',
+  chat_auto_update: 'Chat update',
 }
 
 // report-quality Phase R1: report prose now carries inline, report-wide
@@ -55,7 +69,9 @@ function renderContentWithMarkers(content: string): ReactNode[] {
 // report anywhere in the UI -- state.report was fetched from the
 // backend but never rendered. This panel is the first place it's
 // actually shown.
-export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerateReport }: ReportModePanelProps) {
+export function ReportModePanel({
+  state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion,
+}: ReportModePanelProps) {
   // report-quality Phase R2C: initialized from the current report's own
   // template (defaulting to analytical before a first generation), kept
   // in sync whenever the ACTIVE report's template changes underneath
@@ -97,6 +113,12 @@ export function ReportModePanel({ state, disabled, onGenerateReport, onRegenerat
           <TemplateBadge template={state.report.report_template ?? 'analytical'} />
         </div>
         <div className="flex items-center gap-2">
+          <VersionSelector
+            versions={state.report_versions}
+            activeVersionId={state.active_report_version_id}
+            onChange={onActivateReportVersion}
+            disabled={disabled}
+          />
           <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
           <button
             type="button"
@@ -162,6 +184,48 @@ function TemplateSelector({
       ))}
     </div>
   )
+}
+
+// report-quality Phase R3: a dropdown, not a segmented control -- unlike
+// the fixed 3-option template selector above, version count grows
+// without bound as a session accumulates more report generations/
+// regenerations, so a segmented control would eventually overflow.
+// Hidden entirely (not just disabled) when there are no versions yet --
+// nothing to switch between before a first report exists. Switching is
+// a real API call (POST .../activate), not a frontend-local view swap,
+// so the newly active version's content only appears once the parent's
+// onActivateReportVersion handler has refreshed state.
+function VersionSelector({
+  versions, activeVersionId, onChange, disabled,
+}: {
+  versions: ReportVersionSummary[]
+  activeVersionId: string | null
+  onChange: (versionId: string) => void
+  disabled: boolean
+}) {
+  if (versions.length === 0) return null
+
+  return (
+    <select
+      aria-label="Report version"
+      data-testid="report-version-selector"
+      value={activeVersionId ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      className="rounded-md border border-border bg-transparent px-2 py-1.5 text-xs text-text-secondary disabled:opacity-40"
+    >
+      {versions.map((version) => (
+        <option key={version.version_id} value={version.version_id}>
+          {versionOptionLabel(version)}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function versionOptionLabel(version: ReportVersionSummary): string {
+  const reason = GENERATION_REASON_LABELS[version.generation_reason] ?? version.generation_reason
+  return `Version ${version.version_number} — ${TEMPLATE_LABELS[version.report_template]} — ${reason}`
 }
 
 // The current report's own template, so a user opening an already-

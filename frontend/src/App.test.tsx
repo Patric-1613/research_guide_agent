@@ -23,6 +23,7 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     selected_paper_ids: [], selected_papers: [], pending_batch: [], refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
+    report_versions: [], active_report_version_id: null,
     ...overrides,
   }
 }
@@ -43,6 +44,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     submitPicks: vi.fn(),
     generateReport: vi.fn(),
     regenerateReport: vi.fn(),
+    activateReportVersion: vi.fn(),
     sendChatMessage: vi.fn(),
     deleteExchanges: vi.fn(),
     addExchangesToReport: vi.fn(),

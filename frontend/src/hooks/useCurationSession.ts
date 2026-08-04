@@ -138,6 +138,9 @@ interface UseCurationSessionResult {
   // template server-side).
   generateReport: (reportTemplate?: ReportTemplate) => Promise<CurationStateResponse | undefined>
   regenerateReport: (reportTemplate?: ReportTemplate) => Promise<CurationStateResponse | undefined>
+  // report-quality Phase R3: switches which report version is active --
+  // same return convention as generate/regenerateReport above.
+  activateReportVersion: (versionId: string) => Promise<CurationStateResponse | undefined>
   sendChatMessage: (message: string) => Promise<void>
   // curation-chat-delete Phase 3: exchange_ids, not individual message
   // ids -- deleting an exchange always removes both the user question and
@@ -301,6 +304,21 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState],
   )
 
+  // report-quality Phase R3: a pure pointer switch, not a report-
+  // changing action -- but still routed through the same runAction/
+  // loadState refresh pattern as generateReport/regenerateReport above,
+  // since the activated version's content only becomes visible once
+  // state is reloaded from the backend.
+  const activateReportVersion = useCallback(
+    (versionId: string) =>
+      runAction(async () => {
+        if (!sessionId) return undefined
+        await curationApi.activateReportVersion(sessionId, versionId)
+        return loadState(sessionId)
+      }),
+    [runAction, sessionId, loadState],
+  )
+
   const sendChatMessage = useCallback(
     (message: string) =>
       runAction(async () => {
@@ -424,7 +442,7 @@ export function useCurationSession(): UseCurationSessionResult {
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, sendChatMessage, deleteExchanges,
-    addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion, sendChatMessage,
+    deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   }
 }

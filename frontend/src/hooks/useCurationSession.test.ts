@@ -11,6 +11,7 @@ vi.mock('../lib/api/client', () => ({
     picks: vi.fn(),
     generateReport: vi.fn(),
     regenerateReport: vi.fn(),
+    activateReportVersion: vi.fn(),
     chat: vi.fn(),
     listReviews: vi.fn(),
     deleteReview: vi.fn(),
@@ -26,6 +27,7 @@ function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
+    report_versions: [], active_report_version_id: null,
     ...overrides,
   }
 }
@@ -88,6 +90,43 @@ describe('useCurationSession', () => {
     expect(getSessionIdFromUrl()).toBe('new-session')
     expect(result.current.sessionId).toBe('new-session')
     expect(result.current.state?.session_id).toBe('new-session')
+  })
+
+  it('report-quality Phase R3: activateReportVersion calls the API and refreshes state to the newly active version', async () => {
+    vi.mocked(curationApi.getState)
+      .mockResolvedValueOnce(fullState({
+        session_id: 's1',
+        report_versions: [
+          { version_id: 'v1', version_number: 1, created_at: null, report_template: 'analytical', generation_reason: 'initial', is_active: false },
+          { version_id: 'v2', version_number: 2, created_at: null, report_template: 'analytical', generation_reason: 'regenerate', is_active: true },
+        ],
+        active_report_version_id: 'v2',
+      }))
+      .mockResolvedValueOnce(fullState({
+        session_id: 's1',
+        report_versions: [
+          { version_id: 'v1', version_number: 1, created_at: null, report_template: 'analytical', generation_reason: 'initial', is_active: true },
+          { version_id: 'v2', version_number: 2, created_at: null, report_template: 'analytical', generation_reason: 'regenerate', is_active: false },
+        ],
+        active_report_version_id: 'v1',
+      }))
+    vi.mocked(curationApi.activateReportVersion).mockResolvedValue({
+      findings: { content: '', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: '', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: '', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+    })
+    window.history.pushState({}, '', '/?session=s1')
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.active_report_version_id).toBe('v2'))
+
+    await act(async () => {
+      await result.current.activateReportVersion('v1')
+    })
+
+    expect(curationApi.activateReportVersion).toHaveBeenCalledWith('s1', 'v1')
+    expect(result.current.state?.active_report_version_id).toBe('v1')
   })
 
   it('submitPicks records a TurnEvent from the PRIOR state before reloading fresh state', async () => {

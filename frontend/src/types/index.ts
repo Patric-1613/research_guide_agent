@@ -140,6 +140,28 @@ export interface ReportOut {
   // backend always derives it (defaults old/omitted reports to
   // "analytical"), the frontend still defends against absence.
   report_template?: ReportTemplate
+  // report-quality Phase R3: version metadata for the specific report
+  // VERSION this ReportOut represents. All optional -- a construction
+  // site without version context (or an old session's derived-implicit
+  // version, whose real creation time was never recorded) still has a
+  // well-formed ReportOut with these simply absent.
+  version_id?: string | null
+  version_number?: number | null
+  created_at?: string | null
+  generation_reason?: string | null
+}
+
+// report-quality Phase R3: one lightweight entry in CurationStateResponse
+// .report_versions -- deliberately does NOT carry the full report body
+// (that's what activating a version and reading the refreshed `report`
+// is for), just enough to render a compact version selector.
+export interface ReportVersionSummary {
+  version_id: string
+  version_number: number
+  created_at: string | null
+  report_template: ReportTemplate
+  generation_reason: string
+  is_active: boolean
 }
 
 // report-quality Phase R2C: both request bodies are fully optional --
@@ -187,6 +209,11 @@ export interface CurationStateResponse {
   // Persisted so a reload/reopen can still show WHY curation stopped
   // (target_met / user_stopped / exhausted). None while stage=="curate".
   stop_reason: string | null
+  // report-quality Phase R3: lightweight summaries of every report
+  // version this session has ever produced, in order. `report` above
+  // stays exactly what it always was (the ACTIVE version's full body).
+  report_versions: ReportVersionSummary[]
+  active_report_version_id: string | null
 }
 
 export interface CurationChatResponse {

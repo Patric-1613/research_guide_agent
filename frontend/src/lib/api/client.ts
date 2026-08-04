@@ -71,6 +71,12 @@ export const curationApi = {
   regenerateReport: (sessionId: string, reportTemplate?: ReportTemplate): Promise<ReportOut> =>
     postJson(`/curation/${sessionId}/report/regenerate`, reportTemplate ? { report_template: reportTemplate } : {}),
 
+  // report-quality Phase R3: version_id is a path parameter (matches the
+  // backend router), no body -- same {} POST-with-no-payload convention
+  // as reopen() below.
+  activateReportVersion: (sessionId: string, versionId: string): Promise<ReportOut> =>
+    postJson(`/curation/${sessionId}/reports/${versionId}/activate`, {}),
+
   chat: (sessionId: string, req: CurationChatRequest): Promise<CurationChatResponse> =>
     postJson(`/curation/${sessionId}/chat`, req),
 

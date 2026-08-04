@@ -124,6 +124,21 @@ describe('curationApi', () => {
     )
   })
 
+  // report-quality Phase R3
+  it('activateReportVersion() posts {} to the version-scoped activate path', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.activateReportVersion('s1', 'v2')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/reports/v2/activate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
   it('deleteReview() issues a DELETE to the session-scoped path', async () => {
     const fetchMock = mockFetchOnce(200, { session_id: 's1', deleted: true })
 
