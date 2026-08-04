@@ -1783,6 +1783,127 @@ source's real identifier in explanatory prose doesn't change what the
 → 489 passed. No schema, endpoint, or frontend changes. Commit
 `0189c2f`.
 
+### R3 — report history/versioning (2026-08-05) — complete
+
+Before this phase, every report generation/regeneration overwrote the
+single `session.report` field — there was no way to compare templates,
+keep a good report before trying another, or come back to what a report
+looked like before a regeneration. R3 makes report generation/
+regeneration append an immutable **version** instead of silently
+replacing the only report, while keeping `session.report` itself as the
+exact same compatibility field every pre-R3 reader still uses.
+
+**Persistence model — in-session, not a separate table.** `PaperPoolSession`
+(`research_agent/query_expansion.py`) gained two fields:
+- `report_versions: list[dict]` — every report this session has ever
+  produced, in order, never truncated/capped.
+- `active_report_version_id: str | None` — which entry `session.report`
+  currently mirrors.
+
+Each entry in `report_versions` is a **ReportVersion** dict:
+
+```
+{
+  "version_id": str,          # uuid4 hex
+  "version_number": int,      # 1-indexed, sequential, never reused
+  "created_at": str | None,   # ISO 8601, None for an old session's derived-implicit version
+  "report_template": str,     # "foundational" | "analytical" | "expert"
+  "generation_reason": str,   # "initial" | "regenerate" | "chat_add_to_report" | "chat_auto_update"
+  "report": dict,             # the exact same dict shape session.report always was
+}
+```
+
+Deliberately an in-session list, not a separate SQLite table — this
+codebase's session persistence is already whole-session JSON-in-
+SQLite (`curation_session.py`'s `_session_to_dict`/`_dict_to_session`),
+and there's no query pattern yet that needs "all versions across all
+sessions" or "one version without loading its session" — every real
+access pattern is "load this session, then look at its versions,"
+which the list field already serves. A genuine table is the right call
+once the eventual Postgres/multi-user phase needs cross-session
+queries; premature before that.
+
+**The one shared mutation point**: `report.py`'s `append_report_version
+(session, report, generation_reason)` — appends a new ReportVersion,
+sets it active, and mirrors `session.report` to it as a side effect.
+`get_active_report_version(session)` and `activate_report_version
+(session, version_id)` (returns `None` on no match, never raises — same
+convention `load_curation_session` already uses for absence) round out
+the domain API. Old versions are **immutable historical snapshots**
+once appended — nothing (including later source-revocation/pruning)
+ever reaches back and rewrites one already in the list; a version that
+cited a web source since revoked simply keeps citing it forever, a
+deliberate, accepted tradeoff.
+
+**All four real report-mutation call sites go through
+`append_report_version`, each with its own `generation_reason`:**
+1. `services/curation_report_service.py`'s `get_or_create_report`
+   (explicit first generation) → `"initial"`.
+2. `services/curation_report_service.py`'s `regenerate_report`
+   (explicit whole-pool `/report/regenerate`) → `"regenerate"`.
+3. `services/curation_chat_service.py`'s
+   `add_curation_chat_exchanges_to_report` (chat's selective add-to-
+   report regeneration) → `"chat_add_to_report"`.
+4. `curation_chat.py`'s `_accept_report_update` (chat's own accept-the-
+   report-update-offer flow) → `"chat_auto_update"`. This is domain
+   logic living outside either report service module, and was the
+   easiest of the four to miss — it has its own dedicated test coverage
+   in `tests/test_curation_chat.py` for exactly that reason (`tests/
+   test_curation_api.py` can't exercise it at all, since those tests
+   fully mock `api.chat_turn`, bypassing this function entirely).
+
+**Activation**: `POST /curation/{session_id}/reports/{version_id}/
+activate` switches which version is active — a pure pointer switch,
+never a regeneration, never a mutation of any version's content.
+Unknown `version_id` (or one belonging to a different session) 404s,
+same as an unknown `session_id`. `state.report` (via `GET /curation/
+{id}`) is always the ACTIVE version's full body — same field, same
+shape, as before R3 existed.
+
+**Regenerate builds from the active version, not always the latest
+one.** This required no new plumbing: `report.py`'s regenerate
+functions already read `session.report` directly, and `session.report`
+is kept in lockstep with whichever version is active by
+`append_report_version`/`activate_report_version` as an invariant — so
+activating an older version and then hitting Regenerate correctly
+builds forward from that older version's own citations/content, not
+from whatever was most recently generated.
+
+**Old-session compatibility**: `curation_session.py`'s `_dict_to_session`
+treats `"report_versions"` key ABSENCE (not emptiness) as the "this
+session predates R3" signal, same convention every other backward-compat
+field in that file already uses. `_derive_implicit_report_versions`:
+a session with an existing `report` but no `report_versions` key derives
+exactly ONE implicit version (`generation_reason="initial"`,
+`created_at=None` — the real creation time was never recorded before
+this phase existed, and is never fabricated); a session with no report
+at all gets `([], None)`. Derived fresh at load time, never written back
+to storage until the next real mutation.
+
+**Frontend**: a compact `<select>` version dropdown in `ReportModePanel`,
+next to the existing template selector — hidden entirely (not just
+disabled) when a session has no report versions yet. Labels read
+`Version N — {Template} — {Reason}` (e.g. `Version 3 — Foundational —
+Chat add`). Selecting a version calls the new `activate` endpoint and
+refreshes state, same pattern generate/regenerate already use, with no
+confirmation dialog (matches Regenerate's own existing immediate-
+overwrite behavior). No rename, no delete/archive, no full history
+dashboard — deliberately out of scope this phase.
+
+**Known deferred tradeoff, stated not solved**: `report_versions` stores
+each version's FULL report body inside the session's own JSON blob — a
+session with N report versions costs roughly N× the report-serialization
+work on every single save/load, including saves triggered by unrelated
+actions (a chat message, a pick). Acceptable for single-user SQLite at
+today's realistic version counts (same "real, growing cost, stated not
+hidden" precedent `turn_history`'s own field already set) — worth
+revisiting with a real table and/or a retention policy once the
+Postgres/multi-user phase changes the cost/query-pattern tradeoff.
+
+**Validation**: full backend suite → 510 passed; frontend `npm test` →
+199 passed; frontend build clean (`tsc -b && vite build`). Commits
+`93e1a63` (backend versioning + API) and `70875fa` (frontend selector).
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

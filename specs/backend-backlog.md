@@ -353,6 +353,57 @@ invented:
 - **Status**: Closed (2026-08-04). Commits `1020a02` (backend) and
   `68ea849` (frontend).
 
+### R3: report history/versioning
+- **Goal**: stop report generation/regeneration from silently
+  overwriting the only stored report — let each generate/regenerate
+  append a new, immutable version instead, with a clear active/current
+  one and a way to switch back.
+- **Why it matters**: R2C's templates made this a real, common need —
+  users comparing Foundational vs. Analytical vs. Expert, or wanting to
+  keep a good report before trying a regeneration, had no way to do
+  either; a regeneration just destroyed whatever was there before. Also
+  the right foundation to have in place before any future evaluator/
+  refinement loop, which will want to attach scores/feedback to a
+  specific report version, not "whatever the report currently is."
+- **Implementation split across two chunks**:
+  - **Chunk 1+2 (backend)**: `PaperPoolSession` gained `report_versions:
+    list[dict]` (in-session, not a separate SQLite table — see
+    `docs/architecture.md`'s own reasoning) and `active_report_
+    version_id`. `report.py`'s `append_report_version`/`get_active_
+    report_version`/`activate_report_version` are the one shared
+    domain API every report-mutation call site goes through — all 4 of
+    them (`get_or_create_report`, `regenerate_report`, chat's add-to-
+    report, and chat's own auto-report-update-accept flow in
+    `curation_chat.py`, the easiest of the four to miss). `session.
+    report` stays the exact same active/current compatibility field it
+    always was, kept in lockstep by construction. New `POST /curation/
+    {session_id}/reports/{version_id}/activate` endpoint; `ReportOut`/
+    `CurationStateResponse` gained additive version metadata fields.
+    Old sessions with a `report` but no `report_versions` key derive
+    one implicit version 1 at load time, never rewritten into storage
+    until a real mutation happens.
+  - **Chunk 3 (frontend)**: a compact version `<select>` dropdown in
+    `ReportModePanel`, next to the template selector — hidden when
+    there are no versions yet, labels read `Version N — Template —
+    Reason`, no rename/delete/dashboard.
+  - See `docs/architecture.md`'s "R3 — report history/versioning"
+    section for the full design record.
+- **Deferred follow-ups, not done in this phase**:
+  - Report version rename/display-name support.
+  - Report version deletion/archiving.
+  - Version retention/capping — no limit today, unbounded growth per
+    session, same explicitly-accepted tradeoff `turn_history` already
+    set precedent for.
+  - A real, table-backed `report_versions` model — deferred to the
+    eventual Postgres/multi-user phase, once cross-session version
+    queries are an actual need.
+  - Evaluator/refinement scores/feedback attached to a specific report
+    version — R3 exists partly to make this safe to build later, not to
+    build it now.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commits `93e1a63` (backend) and
+  `70875fa` (frontend).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
