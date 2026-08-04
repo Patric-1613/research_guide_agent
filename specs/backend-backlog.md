@@ -263,6 +263,55 @@ invented:
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-03). Commit `73e899b`.
 
+### R2C: report templates / reader-depth modes
+- **Goal**: let a user choose a reader-depth template (Foundational,
+  Analytical, Expert) before generating or regenerating a report,
+  without touching the section schema/layout.
+- **Why it matters**: the tuned Analytical report (R2B/R2B.1) works well
+  for a reader already comfortable with the topic, but is either too
+  dense for a newcomer or not dense enough for an expert — a single
+  fixed depth doesn't fit every reader.
+- **Design decision**: all three templates share the exact same 8
+  section keys/titles (Executive Summary, Introduction & Scope,
+  Thematic Findings, Methodology Landscape, Contradictions & Open
+  Debates, Gap Analysis, Future Research Directions, Conclusion) — only
+  prompt instructions and word-budget guidance differ per template, kept
+  deliberately low-risk over introducing per-template section layouts.
+- **Implementation split across two chunks**:
+  - **Chunk 1 (backend)**: `report_template` (`Literal["foundational",
+    "analytical", "expert"]`) added to `research_agent/report.py`
+    (`REPORT_TEMPLATES`, `_TEMPLATE_DEPTH_GUIDANCE`), stamped onto the
+    report dict itself (the source of truth, not a session field), and
+    exposed via `ReportOut.report_template` (defaults to `"analytical"`
+    when absent — an old or otherwise template-less report). `POST
+    /curation/{id}/report`'s optional `report_template` only matters on
+    first generation (omitted → analytical); `POST /curation/{id}/report/
+    regenerate`'s optional `report_template` omitted preserves the
+    existing report's current template, an explicit value switches it.
+    Chat's add-to-report regeneration has no `report_template` field on
+    its request schema at all and always preserves the existing
+    template. Also fixed a pre-existing `curation_session.py`
+    serialization gap in this same chunk (`_serialize_report`/
+    `_deserialize_report` only ever reconstructed the 3 legacy section
+    keys on load, silently dropping the 5 non-legacy-mapped Analytical
+    keys' `cited_papers`/`cited_web_articles`/`reference_numbers` on
+    every save/load round trip) — fixed by iterating the full set of
+    present section keys instead of a hardcoded 3-tuple.
+  - **Chunk 2 (frontend)**: a compact segmented control
+    (Foundational/Analytical/Expert) in `ReportModePanel`, initialized
+    from the current report's `report_template` (or Analytical
+    pre-generation), re-synced on report change; a small badge shows
+    which template produced the current report; no confirmation dialog
+    on switching. `curationApi.generateReport`/`regenerateReport` gained
+    an optional `reportTemplate` parameter, threaded through
+    `useCurationSession` and `CurationWorkspacePage` with no template
+    state introduced at the page level.
+  - See `docs/architecture.md`'s "R2C — report templates / reader-depth
+    modes" section for the full design record.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-04). Commits `1020a02` (backend) and
+  `68ea849` (frontend).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]

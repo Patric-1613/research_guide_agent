@@ -1611,6 +1611,105 @@ and a no-op on already-clean text.
 **Validation**: `tests/test_report.py` → 52 passed; full backend suite
 → 463 passed. No schema, endpoint, or frontend changes.
 
+### R2C — report templates / reader-depth modes (2026-08-04) — complete
+
+Adds three report templates a user can choose before generation or
+regeneration: **Foundational** (newer to the topic — defines key
+concepts before using them, explains why a method/result matters,
+simpler transitions, wider word-budget ranges where clarity needs the
+room), **Analytical** (the existing R2B/R2B.1 default, unchanged), and
+**Expert** (already confident in the topic — skips textbook background
+unless a specific comparison needs it, emphasizes cross-paper
+relationships, tradeoffs, methodological nuance, unstated assumptions,
+and concrete research opportunities). All three still ground and cite
+every claim exactly as before — depth/density is never a license to
+drop evidence.
+
+**Same 8 section keys/titles across every template, on purpose.** This
+was the deliberate, low-risk design constraint the whole phase rests
+on: no template introduces, renames, or reorders a section — only
+`research_agent/report.py`'s `REPORT_TEMPLATES[template]` per-section
+`description` text (and therefore the word-budget guidance inside it)
+differs. Schema shape, section navigation, and frontend rendering are
+completely unaffected by which template generated a report.
+
+**Prompt architecture**: `_build_report_system_prompt`'s shared
+scaffolding (grounding, citation density, web-source constraints, marker
+instructions) stays identical across templates; a single
+`_TEMPLATE_DEPTH_GUIDANCE[template]` paragraph is appended at the end —
+`"analytical"` maps to `""` specifically so Analytical's generated
+prompt stays byte-identical to what R2B/R2B.1 already shipped (verified
+by its own non-regression test). Three independent, fully-spelled-out
+section-definitions lists (`REPORT_SECTION_DEFINITIONS` reused as-is for
+Analytical, plus new `_FOUNDATIONAL_SECTION_DEFINITIONS`/`_EXPERT_
+SECTION_DEFINITIONS`) are collected in `REPORT_TEMPLATES` — matching
+this module's own established precedent of keeping each template's
+actual prompt text as a separate, greppable/reviewable list rather than
+one templated-with-overrides structure.
+
+**Data model**: `report_template` (`Literal["foundational", "analytical",
+"expert"]`) is stamped onto the report dict itself — the one source of
+truth, not a separate field on the session — and exposed on `ReportOut.
+report_template`. An old or otherwise missing `report_template` (no key
+at all on the dict) defaults to `"analytical"`, resolved by
+`api_app/serializers.py`'s `_report_to_out` at read time, the same
+absence-is-the-signal convention R1's `derive_legacy_references`/R2A's
+`derive_sections_from_legacy_report` already established.
+
+**Generate vs. regenerate semantics**: `POST /curation/{id}/report`'s
+optional `report_template` (omitted → `"analytical"`) only matters on
+first generation — an already-existing report is returned as-is
+regardless, unchanged cache-first behavior. `POST /curation/{id}/report/
+regenerate`'s optional `report_template` (omitted → **preserves** the
+existing report's current template; an explicit value **switches** it)
+is resolved inside `report.py`'s `_regenerate_report_sections_with_
+sources` itself: `report_template if report_template is not None else
+existing_report.get("report_template", "analytical")`. Chat's
+add-to-report regeneration (`regenerate_report_with_approved_web_
+sources`, driven by `curation_chat_service.py`'s `add_curation_chat_
+exchanges_to_report`) has no `report_template` field on its own request
+schema at all and never passes one — chat-triggered regeneration isn't a
+product moment for choosing a template, so it always preserves the
+existing report's template via that exact same default resolution.
+
+**Serialization gap fixed in the same chunk** (`curation_session.py`):
+`_serialize_report`/`_deserialize_report` previously only reconstructed
+the 3 legacy section keys (`findings`/`limitations`/`future_scope`) as
+full `{content, cited_papers, cited_web_articles, reference_numbers}`
+dicts on load — the 5 non-legacy-mapped Analytical keys (`executive_
+summary`, `introduction_scope`, `methodology_landscape`, `gap_analysis`,
+`conclusion`) silently vanished as top-level dict keys after every
+save/load round trip. Since every HTTP request reloads the session fresh
+from the checkpointer (no in-process cache), this meant `report.py`'s
+own citation-preservation helpers could never find prior citations for
+those 5 sections on any regeneration reached through the real API —
+already true before R2C, just newly fixed here since the same two
+functions needed touching anyway to persist `report_template`. Fixed by
+iterating `_ALL_REPORT_SECTION_NAMES` (legacy + all 8 analytical keys,
+filtered to whichever the report dict actually has) instead of the old
+hardcoded 3-tuple; a report with only the 3 legacy keys still round-trips
+exactly as it always did.
+
+**Frontend**: a compact segmented control (Foundational/Analytical/
+Expert) in `ReportModePanel`, next to Generate before a first report and
+next to Regenerate afterward — initialized from the current report's own
+`report_template` (defaulting to Analytical pre-generation), re-synced
+via a `useEffect` whenever the active report's template value changes
+underneath the panel. A small badge next to the report heading shows
+which template produced the current report. No confirmation dialog on
+switching templates — matches Regenerate's existing immediate-overwrite
+behavior. `curationApi.generateReport`/`regenerateReport` gained an
+optional `reportTemplate` parameter that posts `{}` (byte-identical to
+before) when omitted, or `{ report_template }` when given — threaded
+through `useCurationSession`'s `generateReport`/`regenerateReport`
+callbacks and `CurationWorkspacePage`'s handlers with no template state
+introduced at the page level.
+
+**Validation**: backend full suite → 481 passed; frontend `npm test` →
+190 passed; frontend build clean (`tsc -b && vite build`). Commits
+`1020a02` (backend template support + persistence/API) and `68ea849`
+(frontend selector).
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
