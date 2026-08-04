@@ -1904,6 +1904,181 @@ Postgres/multi-user phase changes the cost/query-pattern tradeoff.
 199 passed; frontend build clean (`tsc -b && vite build`). Commits
 `93e1a63` (backend versioning + API) and `70875fa` (frontend selector).
 
+### R3.1 — approved web citation enforcement across regeneration (2026-08-05) — complete
+
+**Bug**: a web source added to the report via chat (an approved,
+`allowed_web_urls`-gated source — see R3.2 below and `session.report_
+approved_web_article_urls`) could silently disappear from the report
+on a later regeneration, even though it was never revoked. Papers
+already had a preservation guarantee across regeneration
+(`_restore_dropped_citations`, pre-dating this fix); web sources had
+no equivalent — a regeneration's own model call was free to simply
+not mention an approved web source again, and nothing forced it back
+in.
+
+**Fix — backend-only, in `research_agent/report.py`**, gated entirely
+by a new `allowed_web_urls: set[str] | None = None` parameter threaded
+through `_regenerate_report_sections_with_sources` and both public
+regenerate functions:
+
+- `_restore_dropped_web_citations(existing_report, section_name,
+  cited_web_urls, allowed_web_urls)` — the web counterpart to the
+  existing `_restore_dropped_citations`. Appends back, in original
+  order, any web url a section cited in the PRIOR report but this
+  regeneration's own output dropped. Unlike the paper version,
+  restoration is gated by `allowed_web_urls`: a paper has no
+  revocation concept, so every prior paper citation is unconditionally
+  restorable, but a web source can have been explicitly revoked since
+  the prior report was generated (`curation_chat.py`'s `delete_chat_
+  exchanges`/`edit_chat_exchange`, tracked in `session.revoked_web_
+  article_urls` — see the "Revoked chat web source resurrected during
+  report regeneration" entry in `specs/backend-backlog.md`). Only a
+  URL still currently allowed (approved and not revoked) is restored;
+  a revoked one stays dropped, same as the model's own choice not to
+  cite it — this fix does not reopen that earlier revocation fix.
+- `_force_include_allowed_web_articles(sections_out, allowed_web_urls,
+  web_by_url)` — closes the gap `_restore_dropped_web_citations` can't:
+  a web source approved for the very FIRST time (never cited in any
+  prior report, so there's nothing to "restore") that the model simply
+  never mentions this round. Deterministically appends any still-
+  missing approved URL's `WebArticle` to one section's
+  `cited_web_articles` list — never touches that section's own prose —
+  so `_build_references_and_renumber`'s existing "structurally cited
+  but unmarked" trailing pass picks it up in References exactly like
+  any citation the model forgot to bracket. Target section is the one
+  already citing the most web sources this round, falling back to
+  `thematic_findings` when none cited any.
+
+**What this does NOT do**: no prose is ever invented or edited — both
+functions only affect which `WebArticle` objects a section's
+citation/reference metadata carries, never section `content` text.
+Force-inclusion only ever adds a source to References/citation
+metadata; it never fabricates a sentence claiming the model discussed
+it.
+
+**Callers**: `regenerate_report_with_new_sources` (whole-pool path)
+passes `session.report_approved_web_article_urls`;
+`regenerate_report_with_approved_web_sources` (chat's selective
+add-to-report path) passes `{a.url for a in approved_web_articles}`.
+Whole-pool regeneration never force-includes a merely-discovered-but-
+unapproved source — only URLs already in the approved set are ever
+eligible.
+
+**Validation**: full backend suite → 517 passed. No schema, endpoint,
+or frontend changes. Commit `bc4fc86`.
+
+### R3.2 — chat-side references with independent numbering (2026-08-05) — complete
+
+**Problem this replaces**: chat answers cited sources using the raw
+`[Paper N]`/`[Web N]` marker shape the model itself writes — never
+resolved to a clean, stable `[1]`/`[2]`… numbering the way report
+sections already were (R1), and there was no equivalent of the
+report's References list for chat at all. The product decision made
+before implementation (see `specs/backend-backlog.md`/this session's
+own planning discussion): chat's own numbering must be **independent**
+of the report's — the same source can legitimately be `[1]` in chat
+and `[5]` in the report, or vice versa, and deleting/editing a chat
+exchange must correctly reflect in chat's own references without
+touching the report's.
+
+**Chunk 1 — `ChatTurn.cited_papers` persistence.** Before this chunk,
+`qa.ask()`'s result already carried `cited_papers`, but `curation_chat.
+py`'s `_attach_exchange_metadata` discarded it before persisting the
+turn — only `cited_web_articles` was ever stamped. Now both are
+stamped identically: `cited_papers = [{"paper_id": p.paper_id, "title":
+p.title} for p in result.get("cited_papers") or []]`. Same lightweight
+shape as `cited_web_articles` — never a full `Paper` object — resolved
+back to full objects only at read/derivation time. `qa.py`'s
+`capped_history()` (the sanitization boundary every LLM-bound history
+read already goes through) needed no code change — it already strips
+to `{role, content}` regardless of what extra keys a turn dict carries.
+
+**Chunk 2 — backend-derived `chat_references`.**
+`research_agent/report.py` gained a public wrapper,
+`build_references_and_renumber(sections_out, section_names=SECTION_
+NAMES)`, a thin pass-through around the existing, multi-phase-hardened
+`_build_references_and_renumber` (grouped-marker parsing, raw-source-
+id-marker resolution, invalid-marker stripping, whitespace cleanup —
+see the "Grouped report citation markers" and "Raw source-id citation
+hardening" entries in `specs/backend-backlog.md`). This is a
+deliberate, one-off exception to this codebase's usual "reimplement a
+small regex rather than couple across module-private internals"
+precedent (`qa.py`'s own separately-defined `_CITATION_MARKER_RE`) —
+justified because the report algorithm is large enough that a third
+reimplementation would be a real maintenance risk, not a 3-line regex.
+
+`research_agent/curation_chat.py`'s new `derive_chat_references
+(session) -> dict` is the chat-side counterpart:
+- Builds a fresh `sections_out`-shaped dict keyed by each qualifying
+  assistant turn's own `exchange_id` (not `ANALYTICAL_SECTION_NAMES`),
+  resolving each turn's lightweight `cited_papers`/`cited_web_articles`
+  back to full `Paper`/`WebArticle` objects via lookup against `session.
+  selected_papers`/`session.web_articles_added` (`_resolve_cited_web_
+  article` degrades gracefully to a domain-derived stub if a URL is
+  somehow missing from `web_articles_added`, never crashes).
+- Calls the same `build_references_and_renumber` reports use — since
+  that function builds a brand-new reference registry on every single
+  call, a chat-scoped call and a report-scoped call structurally cannot
+  see or influence each other's numbers, by construction, not
+  convention.
+- Only assistant turns with a real `exchange_id` participate (same
+  eligibility rule `_assistant_entries_by_exchange_id` already uses); a
+  turn missing `cited_papers`/`cited_web_articles` (pre-Chunk-1 legacy
+  data) degrades to "cited nothing" rather than crashing.
+- Returns `{"chat_history": [...], "references": [...]}` — `chat_
+  history` is the FULL list, same length/order as `session.chat_
+  history`, with only each qualifying assistant turn's `content`
+  replaced by its marker-rewritten version; every other turn passes
+  through as an untouched copy. **`session.chat_history` itself is
+  never mutated** — this is response-only rewriting, mirroring the
+  exact convention `_report_to_out` already established for reports.
+- Derived FRESH on every call, never persisted — this is why delete/
+  edit "just work" for chat references with zero extra bookkeeping: a
+  shorter `chat_history` after a delete naturally re-derives a clean,
+  re-compacted `1..N` sequence on its own next read.
+
+`services/curation_session_service.py`'s `get_state()` calls `derive_
+chat_references(session)` and uses its output for both `CurationState
+Response.chat_history` (the rewritten copy, not `session.chat_history`
+directly) and the new `CurationStateResponse.chat_references: list
+[ReferenceEntry]` field (reusing the same `ReferenceEntry` Pydantic
+model report References already used — no new schema).
+
+**Chunk 3 — frontend rendering.** The report's own marker renderer and
+References-list renderer were extracted into two shared pieces,
+reused by both report and chat rather than reimplemented a third time:
+- `frontend/src/lib/citationMarkers.tsx`'s `renderContentWithMarkers
+  (content, refIdPrefix = 'ref')` — extracted from `ReportModePanel`
+  verbatim, now parameterized by anchor prefix so report call sites
+  (which omit the parameter) get byte-identical output to before the
+  extraction, while `ChatMessage.tsx` passes `'chat-ref'`.
+- `frontend/src/components/shared/ReferencesList.tsx` — extracted from
+  `ReportModePanel`'s own `ReferencesSection`, with `idPrefix`/
+  `entryTestIdPrefix` props defaulting to report's exact original
+  values (`ref`/`reference`) for the same zero-diff-for-report reason.
+
+`ChatMessage.tsx` renders an assistant turn's `[N]` markers as
+clickable links into chat's own references (only assistant content —
+a user's own typed message is never linkified, even if it happens to
+contain bracketed digits). `ChatModePanel.tsx` gained a compact "Chat
+references" panel, positioned just above the chat input, using the
+shared `ReferencesList` — renders nothing at all when `chat_
+references` is empty, shows both paper and web references, Globe icon
+on web entries, links open in a new tab. Chat's own anchor/testid
+namespace (`chat-ref`/`chat-reference`) is fully distinct from
+report's (`ref`/`reference`) as defense-in-depth, even though
+`CurationWorkspacePage.tsx`'s mutually-exclusive `workspaceMode`
+conditionals mean report and chat panels are never simultaneously
+mounted today. Delete/edit updates the panel automatically, with no
+new frontend logic — `useCurationSession` already reloads full state
+after those actions, and the backend's own fresh-derivation guarantees
+the reloaded `chat_references` is already correct.
+
+**Validation**: full backend suite → 531 passed (Chunks 1–2); frontend
+`npm test` → 208 passed, build clean (`tsc -b && vite build`) (Chunk
+3). Commits `58e8c00` (Chunk 1), `6bb4c05` (Chunk 2), `e6941a4`
+(Chunk 3).
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

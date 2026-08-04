@@ -404,6 +404,124 @@ invented:
 - **Status**: Closed (2026-08-05). Commits `93e1a63` (backend) and
   `70875fa` (frontend).
 
+### R3.1: approved web citation enforcement across regeneration
+- **Goal**: a web source approved for the report via chat must actually
+  survive report regeneration — not just papers, which already had this
+  guarantee.
+- **Why it matters**: reported live — a chat-approved web source added
+  to the report disappeared after regenerating, even though it was
+  never revoked. Papers already had `_restore_dropped_citations`
+  keeping a cited paper in place across regeneration; web sources had
+  no equivalent, so whether an approved web source survived any given
+  regeneration was pure chance (whatever the model happened to
+  re-cite).
+- **Implementation**: `research_agent/report.py` gained
+  `_restore_dropped_web_citations` (revocation-gated restoration of a
+  web url a section cited in the prior report but this regeneration
+  dropped — only restores if still currently allowed and not revoked,
+  so this does not reopen the earlier revoked-source-resurrection fix)
+  and `_force_include_allowed_web_articles` (deterministic
+  force-inclusion of an approved web source the model has NEVER cited
+  in any prior or current report, into whichever section already cites
+  the most web sources this round, falling back to
+  `thematic_findings`). Both are gated by a new `allowed_web_urls: set
+  [str] | None = None` parameter threaded through
+  `_regenerate_report_sections_with_sources` and both public regenerate
+  functions — `regenerate_report_with_new_sources` passes `session.
+  report_approved_web_article_urls`, `regenerate_report_with_approved_
+  web_sources` passes `{a.url for a in approved_web_articles}`. Neither
+  function ever edits section prose — only which `WebArticle` objects a
+  section's citation/reference metadata carries. See
+  `docs/architecture.md`'s "R3.1 — approved web citation enforcement
+  across regeneration" section for the full design record.
+- **Location**: `research_agent/report.py`
+  (`_restore_dropped_web_citations`, `_force_include_allowed_web_
+  articles`, `_regenerate_report_sections_with_sources`,
+  `regenerate_report_with_new_sources`, `regenerate_report_with_
+  approved_web_sources`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commit `bc4fc86`.
+
+### R3.2: chat-side references with independent numbering
+- **Goal**: give curation chat its own resolved `[N]` citation numbering
+  and References list, matching the report's own R1 treatment, with
+  numbering kept structurally independent from the report's — the same
+  source can be `[1]` in chat and `[5]` in the report, and deleting/
+  editing a chat exchange must correctly update chat's own references
+  without touching the report's.
+- **Why it matters**: chat answers previously showed raw, unresolved
+  `[Paper N]`/`[Web N]` marker text with no References list at all —
+  the report had already solved this exact problem (R1) but chat never
+  got the equivalent treatment.
+- **Implementation split across three chunks**:
+  - **Chunk 1 (backend)**: `ChatTurn.cited_papers` is now stamped
+    alongside the existing `cited_web_articles` (same lightweight
+    `{paper_id, title}` shape, never a full `Paper` object) —
+    `qa.ask()`'s result already carried this; `curation_chat.py`'s
+    `_attach_exchange_metadata` was simply discarding it before this
+    chunk.
+  - **Chunk 2 (backend)**: `research_agent/report.py`'s
+    `_build_references_and_renumber` promoted to a public wrapper,
+    `build_references_and_renumber` — a deliberate, one-off exception
+    to this codebase's "reimplement small regexes rather than couple
+    across module-private internals" precedent, justified because this
+    is a large, multi-phase-hardened algorithm a third reimplementation
+    would put at real maintenance risk. `curation_chat.py`'s new
+    `derive_chat_references(session)` builds a fresh, `exchange_id`-
+    keyed `sections_out` dict from `session.chat_history` and reuses
+    that same function — since it builds a brand-new reference registry
+    per call, chat-scoped and report-scoped numbering structurally
+    cannot collide. Derived fresh every call, never persisted;
+    `session.chat_history` itself is never mutated — only the response
+    payload carries rewritten markers, same convention `_report_to_out`
+    already established. This is also why delete/edit "just work" with
+    zero extra bookkeeping. `services/curation_session_service.py`'s
+    `get_state()` wires the result into the new `CurationStateResponse.
+    chat_references: list[ReferenceEntry]` field (reusing the existing
+    `ReferenceEntry` model, no new schema) and the rewritten `chat_
+    history`.
+  - **Chunk 3 (frontend)**: the report's marker renderer and
+    References-list renderer were extracted into shared, reusable
+    pieces (`frontend/src/lib/citationMarkers.tsx`, `frontend/src/
+    components/shared/ReferencesList.tsx`) with report's own default
+    parameters producing byte-identical output to before the
+    extraction. `ChatMessage.tsx` renders assistant `[N]` markers as
+    links (never a user's own typed text); `ChatModePanel.tsx` gained a
+    compact "Chat references" panel above the input, hidden when empty,
+    showing paper and web references (Globe icon for web), links
+    opening in a new tab. Chat's own anchor/testid namespace (`chat-
+    ref`/`chat-reference`) is kept distinct from report's as defense-
+    in-depth, though the two panels are never simultaneously mounted
+    today.
+  - See `docs/architecture.md`'s "R3.2 — chat-side references with
+    independent numbering" section for the full design record.
+- **Location**: `research_agent/curation_chat.py`
+  (`_attach_exchange_metadata`, `_resolve_cited_web_article`, `derive_
+  chat_references`), `research_agent/report.py`
+  (`build_references_and_renumber`), `research_agent/api_app/
+  schemas.py` (`ChatTurn.cited_papers`, `CurationStateResponse.chat_
+  references`), `research_agent/services/curation_session_service.py`,
+  `frontend/src/lib/citationMarkers.tsx`, `frontend/src/components/
+  shared/ReferencesList.tsx`, `frontend/src/components/TurnFeed/
+  ChatMessage.tsx`, `frontend/src/components/ChatMode/ChatModePanel.
+  tsx`, `frontend/src/types/index.ts`.
+- **Deferred follow-ups, not done in this arc**:
+  - Report version rename/delete/archive UI (carried over from R3,
+    still not built).
+  - Report version retention/capping — unbounded growth per session,
+    same accepted tradeoff as R3 and `turn_history`.
+  - A real, table-backed `report_versions` model for the eventual
+    Postgres/multi-user phase.
+  - Chat reference UX polish (e.g. scroll-to-reference animation,
+    collapsing a long chat references list) — the current panel is
+    deliberately minimal, not iterated on further.
+  - Evaluator/refinement scores/feedback attached to a specific report
+    version — R3 exists partly to make this safe to build later, not to
+    build it now.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commits `58e8c00` (Chunk 1),
+  `6bb4c05` (Chunk 2), `e6941a4` (Chunk 3).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
