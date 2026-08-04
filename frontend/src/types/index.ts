@@ -51,6 +51,8 @@ export interface ChatTurn {
   // per-answer (assistant only).
   exchange_id?: string | null
   used_web_search?: boolean
+  // report-quality Phase R3.2 Chunk 1
+  cited_papers?: CitedPaperOut[]
   cited_web_articles?: CitedWebArticleOut[]
   added_to_report?: boolean
 }
@@ -214,6 +216,11 @@ export interface CurationStateResponse {
   // stays exactly what it always was (the ACTIVE version's full body).
   report_versions: ReportVersionSummary[]
   active_report_version_id: string | null
+  // report-quality Phase R3.2 Chunk 2: chat's own References list,
+  // derived fresh from chat_history on every read -- independent
+  // numbering from report.references entirely (see
+  // research_agent/curation_chat.py's derive_chat_references).
+  chat_references: ReferenceEntry[]
 }
 
 export interface CurationChatResponse {

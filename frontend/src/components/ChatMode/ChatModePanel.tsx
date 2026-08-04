@@ -4,6 +4,7 @@ import type { AddToReportResult, ChatSearchMeta } from '../../hooks/useCurationS
 import { ChatMessage } from '../TurnFeed/ChatMessage'
 import { ChatMessageRow, isEligibleForAddToReport } from '../TurnFeed/ChatMessageRow'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { ReferencesList } from '../shared/ReferencesList'
 
 interface ChatModePanelProps {
   state: CurationStateResponse
@@ -256,6 +257,26 @@ export function ChatModePanel({
       </div>
 
       <div className="border-t border-border bg-panel p-3">
+        {/* report-quality Phase R3.2 Chunk 3: chat's own compact
+            References panel, just above the chat input -- renders
+            nothing at all when state.chat_references is empty (see
+            ReferencesList), so a chat with no cited papers/web sources
+            yet looks exactly like it did before this phase. Numbering is
+            independent from the report's own References -- see
+            derive_chat_references' own docstring -- so a marker here
+            resolving to [2] carries no relationship to a [2] in the
+            report. */}
+        {state.chat_references.length > 0 && (
+          <div className="mb-2">
+            <ReferencesList
+              references={state.chat_references}
+              heading="Chat references"
+              sectionTestId="chat-references"
+              idPrefix="chat-ref"
+              entryTestIdPrefix="chat-reference"
+            />
+          </div>
+        )}
         {reportPossiblyStale && (
           <p data-testid="report-possibly-stale-warning" className="mb-2 flex items-center justify-center gap-2 text-center text-xs text-danger">
             <span>A deleted or edited exchange had been added to the report — the report may now be stale.</span>

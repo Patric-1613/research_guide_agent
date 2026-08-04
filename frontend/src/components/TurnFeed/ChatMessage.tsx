@@ -1,5 +1,6 @@
 import { Globe } from 'lucide-react'
 import type { ChatTurn } from '../../types'
+import { renderContentWithMarkers } from '../../lib/citationMarkers'
 
 // curation-chat-metadata Phase 1 / chat-ux-polish Phase A: blue while
 // used_web_search is true and added_to_report is still false; grey once
@@ -38,7 +39,12 @@ export function ChatMessage({ turn }: { turn: ChatTurn }) {
           isUser ? 'bg-accent text-accent-fg' : 'border border-border bg-panel-alt text-text'
         }`}
       >
-        {turn.content}
+        {/* report-quality Phase R3.2 Chunk 3: only assistant content ever
+            carries [N] markers (derive_chat_references only rewrites
+            assistant turns) -- a user's own typed message is rendered as
+            plain text unconditionally, so literal bracketed numbers they
+            type are never mistaken for citation links. */}
+        {isUser ? turn.content : renderContentWithMarkers(turn.content, 'chat-ref')}
       </div>
     </div>
   )

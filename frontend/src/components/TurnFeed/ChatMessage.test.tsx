@@ -52,4 +52,30 @@ describe('ChatMessage', () => {
 
     expect(screen.queryByTestId('chat-web-badge')).not.toBeInTheDocument()
   })
+
+  it('report-quality Phase R3.2 Chunk 3: renders a numeric [N] marker in an assistant message as a clickable link, not plain text', () => {
+    const turn: ChatTurn = { role: 'assistant', content: 'A PEFT method [1].' }
+    render(<ChatMessage turn={turn} />)
+
+    const marker = screen.getByTestId('citation-marker-1')
+    expect(marker.tagName).toBe('A')
+    expect(marker).toHaveTextContent('[1]')
+    expect(marker).toHaveAttribute('href', '#chat-ref-1')
+  })
+
+  it('report-quality Phase R3.2 Chunk 3: a user message never linkifies bracketed numbers, even if it happens to contain one', () => {
+    const turn: ChatTurn = { role: 'user', content: 'see my notes [1] please' }
+    render(<ChatMessage turn={turn} />)
+
+    expect(screen.queryByTestId('citation-marker-1')).not.toBeInTheDocument()
+    expect(screen.getByText('see my notes [1] please')).toBeInTheDocument()
+  })
+
+  it('report-quality Phase R3.2 Chunk 3: old-style [Paper 1]/[Web 1] markers (not yet resolved to numbers) still render as plain text, unchanged', () => {
+    const turn: ChatTurn = { role: 'assistant', content: 'Per [Web 1], ...' }
+    render(<ChatMessage turn={turn} />)
+
+    expect(screen.queryByTestId('citation-marker-1')).not.toBeInTheDocument()
+    expect(screen.getByText('Per [Web 1], ...')).toBeInTheDocument()
+  })
 })

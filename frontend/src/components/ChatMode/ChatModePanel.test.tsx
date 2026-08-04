@@ -10,7 +10,7 @@ function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStat
     selected_paper_ids: [], selected_papers: [], pending_batch: null, refilled: false,
     reserve_remaining: 0, refinement_notes: [], report: null, chat_history: [], web_articles_added: [],
     pending_web_offer: null, pending_report_update: null, turn_history: [], stop_reason: null,
-    report_versions: [], active_report_version_id: null,
+    report_versions: [], active_report_version_id: null, chat_references: [],
     ...overrides,
   }
 }
@@ -1123,5 +1123,88 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
     await user.click(screen.getByTestId('dismiss-stale-warning'))
 
     expect(onDismissReportStaleWarning).toHaveBeenCalled()
+  })
+})
+
+describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references panel', () => {
+  it('hides the Chat references panel when chat_references is empty', () => {
+    render(<ChatModePanel state={baseState({ chat_references: [] })} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+
+    expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
+  })
+
+  it('renders the Chat references panel when chat_references is provided', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
+        { role: 'assistant', content: 'A PEFT method [1].', exchange_id: 'ex-1' },
+      ],
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+
+    const panel = screen.getByTestId('chat-references')
+    expect(panel).toBeInTheDocument()
+    expect(screen.getByText('Chat references')).toBeInTheDocument()
+    expect(screen.getByText('Uthor, A. (2024). Paper One.')).toBeInTheDocument()
+  })
+
+  it('a web chat reference shows the Globe icon; a paper chat reference does not', () => {
+    const state = baseState({
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+        { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+
+    expect(screen.getByTestId('chat-reference-web-icon-2')).toHaveAttribute('aria-label', 'Web source')
+    expect(screen.queryByTestId('chat-reference-web-icon-1')).not.toBeInTheDocument()
+  })
+
+  it('a chat reference link opens in a new tab, same as report references', () => {
+    const state = baseState({
+      chat_references: [
+        { number: 1, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+
+    const link = screen.getByRole('link', { name: 'Web Article. x.com.' })
+    expect(link).toHaveAttribute('href', 'https://x.com')
+    expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('an inline [N] marker in an assistant message links to its own chat-ref anchor, distinct from a report ref anchor', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
+        { role: 'assistant', content: 'A PEFT method [1].', exchange_id: 'ex-1' },
+      ],
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+
+    expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#chat-ref-1')
+    expect(document.getElementById('chat-ref-1')).toBeInTheDocument()
+  })
+
+  it('an old chat fixture with no chat_references field renders safely (pre-Chunk-2 shape reaching the panel)', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'an old question' },
+        { role: 'assistant', content: 'an old answer' },
+      ],
+      chat_references: [],
+    })
+
+    expect(() =>
+      render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />),
+    ).not.toThrow()
+    expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
 })
