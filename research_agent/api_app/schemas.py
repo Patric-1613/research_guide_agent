@@ -302,6 +302,38 @@ class ReportOut(BaseModel):
     # same "absence means analytical" default report.py's own regenerate
     # functions already apply.
     report_template: ReportTemplate = "analytical"
+    # report-quality Phase R3: version metadata for the specific report
+    # VERSION this ReportOut represents -- all optional/defaulted to
+    # None, since a construction site without version context (or an
+    # old session's derived-implicit version, whose real creation time
+    # was never recorded and is never fabricated -- see curation_
+    # session.py's _derive_implicit_report_versions) still builds
+    # cleanly. created_at is an ISO 8601 string when known, same
+    # convention SearchResponse.created_at/LibraryItem.created_at
+    # already use elsewhere in this file.
+    version_id: str | None = None
+    version_number: int | None = None
+    created_at: str | None = None
+    generation_reason: str | None = None
+
+
+class ReportVersionSummary(BaseModel):
+    """report-quality Phase R3: one lightweight entry in CurationState
+    Response.report_versions -- deliberately does NOT embed the full
+    report body (unlike ReportOut above), so a session with several
+    report versions doesn't multiply the size of every single GET
+    /curation/{id} response by however many versions it has. Enough to
+    render a compact version list/selector (version number, template,
+    when, why, and whether it's the one currently active) -- switching
+    to a version's full content is what POST /curation/{id}/reports/
+    {version_id}/activate is for."""
+
+    version_id: str
+    version_number: int
+    created_at: str | None = None
+    report_template: ReportTemplate
+    generation_reason: str
+    is_active: bool
 
 
 class CurationGenerateReportRequest(BaseModel):
@@ -357,6 +389,19 @@ class CurationStateResponse(BaseModel):
     # Persisted so a reload/reopen can still show WHY curation stopped
     # (target_met / user_stopped / exhausted) -- None while stage=="curate".
     stop_reason: str | None = None
+    # report-quality Phase R3: lightweight summaries of every report
+    # version this session has ever produced, in order -- `report`
+    # above stays exactly what it always was (the ACTIVE version's full
+    # body); this is the additional data a compact version selector
+    # needs to render without a second round trip. Empty for a session
+    # that's never generated a report at all, same as `report` itself
+    # being None in that case.
+    report_versions: list[ReportVersionSummary] = []
+    # Mirrors session.active_report_version_id -- None only when
+    # report_versions is empty. Redundant with report_versions' own
+    # is_active flags in principle, but exposed directly so a client
+    # doesn't have to scan the list to find which entry is active.
+    active_report_version_id: str | None = None
 
 
 class CurationChatRequest(BaseModel):

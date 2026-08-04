@@ -5,11 +5,13 @@ from research_agent.api_app.serializers import (
     _paper_out_from_batch_entry,
     _paper_to_out,
     _report_to_out,
+    _report_version_to_summary,
     _turn_history_out,
     _web_article_to_out,
 )
 from research_agent.curation_loop import get_curation_state
 from research_agent.curation_session import delete_curation_session, list_curation_sessions, load_curation_session
+from research_agent.report import get_active_report_version
 
 
 def list_reviews(cp) -> list[CurationReviewSummary]:
@@ -36,13 +38,18 @@ def get_state(session_id: str, cp) -> CurationStateResponse | None:
         refilled=state.get("refilled", False),
         reserve_remaining=max(0, session.remaining()),
         refinement_notes=list(session.refinement_notes),
-        report=_report_to_out(session.report) if session.report is not None else None,
+        report=_report_to_out(session.report, get_active_report_version(session)) if session.report is not None else None,
         chat_history=[ChatTurn(**turn) for turn in session.chat_history],
         web_articles_added=[_web_article_to_out(a) for a in session.web_articles_added],
         pending_web_offer=session.pending_web_offer,
         pending_report_update=session.pending_report_update,
         turn_history=_turn_history_out(session.turn_history),
         stop_reason=session.stop_reason,
+        # report-quality Phase R3
+        report_versions=[
+            _report_version_to_summary(v, session.active_report_version_id) for v in session.report_versions
+        ],
+        active_report_version_id=session.active_report_version_id,
     )
 
 

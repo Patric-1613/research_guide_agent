@@ -36,6 +36,7 @@ from research_agent.curation_chat import (
 )
 from research_agent.qa import _build_answer_schema
 from research_agent.query_expansion import PaperPoolSession
+from research_agent.report import GENERATION_REASON_INITIAL, append_report_version
 from research_agent.schema import Paper, WebArticle
 
 
@@ -730,6 +731,14 @@ def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
     assert session.report is updated_report
     assert session.report_covered_web_article_count == 1
     assert result["report_updated"] is True
+    # report-quality Phase R3: the easiest of the four report-mutation
+    # call sites to miss, since it lives here rather than in either
+    # report service module -- must append a real version, not just
+    # reassign session.report directly.
+    assert len(session.report_versions) == 1
+    assert session.report_versions[0]["generation_reason"] == "chat_auto_update"
+    assert session.report_versions[0]["report"] is updated_report
+    assert session.active_report_version_id == session.report_versions[0]["version_id"]
     user_turn, assistant_turn = session.chat_history[-2], session.chat_history[-1]
     assert user_turn["role"] == "user"
     assert user_turn["content"] == "Update the report to include 1 new source"
@@ -741,6 +750,35 @@ def test_chat_turn_report_update_accept_regenerates_and_clears_offer():
     assert assistant_turn["used_web_search"] is False
     assert assistant_turn["cited_web_articles"] == []
     assert assistant_turn["added_to_report"] is False
+
+
+def test_chat_turn_report_update_accept_appends_version_2_when_an_initial_version_already_exists():
+    """The realistic case: session.report_versions already has a real
+    version 1 (appended via append_report_version, the same way every
+    production code path builds it) -- the auto-update accept must
+    append version 2, not silently restart numbering at 1, and must
+    leave version 1 completely untouched."""
+    papers = [_paper("p1", "RoCoFT")]
+    new_article = WebArticle(title="2026 roundup", url="https://x.com/roundup", snippet="s", published_date=None, source_domain="x.com")
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        report_covered_web_article_count=0, web_articles_added=[new_article],
+        pending_report_update={"new_article_count": 1},
+    )
+    v1 = append_report_version(session, _report_stub(), GENERATION_REASON_INITIAL)
+    updated_report = _report_stub(cited_papers=[papers[0]])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_intent_response("accept")
+
+    with patch("research_agent.curation_chat.regenerate_report_with_new_sources", return_value=updated_report):
+        chat_turn(session, "yes, please update it", client=mock_client)
+
+    assert len(session.report_versions) == 2
+    assert session.report_versions[0] is v1
+    assert session.report_versions[0]["report"] is v1["report"]  # untouched
+    assert session.report_versions[1]["version_number"] == 2
+    assert session.report_versions[1]["generation_reason"] == "chat_auto_update"
+    assert session.active_report_version_id == session.report_versions[1]["version_id"]
 
 
 def test_chat_turn_report_update_decline_clears_offer_without_regenerating():

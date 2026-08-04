@@ -20,6 +20,7 @@ from research_agent.api_app.schemas import (
     ReportOut,
     ReportSection,
     ReportSectionOut,
+    ReportVersionSummary,
     TurnHistoryEntryOut,
     WebArticleOut,
 )
@@ -112,7 +113,7 @@ def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
     ]
 
 
-def _report_to_out(report: dict) -> ReportOut:
+def _report_to_out(report: dict, version: dict | None = None) -> ReportOut:
     # report-quality Phase R1: a report persisted before this phase has
     # no top-level "references" key at all (see curation_session.py's
     # _deserialize_report) -- absence, not an empty list, is the "this
@@ -152,6 +153,35 @@ def _report_to_out(report: dict) -> ReportOut:
         # convention as references/sections above, resolved here rather
         # than assumed anywhere upstream.
         report_template=report.get("report_template", "analytical"),
+        # report-quality Phase R3: version metadata is layered on from a
+        # SEPARATE ReportVersion dict (report.py's own get_active_report_
+        # version/activate_report_version), not from `report` itself --
+        # the report body and its version envelope are two different
+        # things. `version` is None for any call site that doesn't have
+        # (or care about) version context, in which case every field
+        # below stays None -- never guessed at from `report` alone,
+        # which has no version_id/version_number/created_at/generation_
+        # reason of its own.
+        version_id=version["version_id"] if version else None,
+        version_number=version["version_number"] if version else None,
+        created_at=version.get("created_at") if version else None,
+        generation_reason=version["generation_reason"] if version else None,
+    )
+
+
+def _report_version_to_summary(version: dict, active_version_id: str | None) -> ReportVersionSummary:
+    """report-quality Phase R3: the lightweight counterpart to
+    _report_to_out above -- never touches `version["report"]`'s own
+    (potentially large) body at all, only the envelope fields, so
+    building CurationStateResponse.report_versions never re-serializes
+    every version's full content just to list them."""
+    return ReportVersionSummary(
+        version_id=version["version_id"],
+        version_number=version["version_number"],
+        created_at=version.get("created_at"),
+        report_template=version.get("report_template", "analytical"),
+        generation_reason=version["generation_reason"],
+        is_active=version["version_id"] == active_version_id,
     )
 
 

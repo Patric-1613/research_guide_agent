@@ -19,16 +19,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
     ANALYTICAL_SECTION_NAMES,
+    GENERATION_REASON_INITIAL,
+    GENERATION_REASON_REGENERATE,
     REPORT_SECTION_DEFINITIONS,
     REPORT_TEMPLATES,
     _build_references_and_renumber,
     _build_report_schema,
     _build_report_system_prompt,
     _cleanup_marker_stripped_whitespace,
+    activate_report_version,
+    append_report_version,
     derive_legacy_references,
     derive_sections_from_legacy_report,
     generate_report,
     generate_report_for_session,
+    get_active_report_version,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
 )
@@ -1473,6 +1478,143 @@ def test_regenerate_report_with_new_sources_old_report_without_report_template_d
     result = regenerate_report_with_new_sources(session, client=mock_client)
 
     assert result["report_template"] == "analytical"
+
+
+# --- report-quality Phase R3: report versioning ---
+
+def _report_dict(content: str = "content", report_template: str = "analytical") -> dict:
+    return {
+        "findings": {"content": content, "cited_papers": []},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [], "report_template": report_template,
+    }
+
+
+def test_append_report_version_creates_version_1_for_initial_generation():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    report = _report_dict("first report")
+
+    version = append_report_version(session, report, GENERATION_REASON_INITIAL)
+
+    assert version["version_number"] == 1
+    assert version["generation_reason"] == "initial"
+    assert version["report_template"] == "analytical"
+    assert version["report"] is report
+    assert version["version_id"]  # non-empty
+    assert version["created_at"]  # non-empty ISO string
+    assert len(session.report_versions) == 1
+    assert session.report_versions[0] is version
+    assert session.active_report_version_id == version["version_id"]
+    assert session.report is report
+
+
+def test_append_report_version_appends_version_2_for_regenerate_without_mutating_version_1():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    v1_report = _report_dict("first report")
+    v1 = append_report_version(session, v1_report, GENERATION_REASON_INITIAL)
+
+    v2_report = _report_dict("second report", report_template="expert")
+    v2 = append_report_version(session, v2_report, GENERATION_REASON_REGENERATE)
+
+    assert v2["version_number"] == 2
+    assert v2["generation_reason"] == "regenerate"
+    assert len(session.report_versions) == 2
+    assert session.report_versions[0] is v1
+    assert session.report_versions[1] is v2
+    # version 1's own dict is completely untouched -- same object,
+    # same content, never rewritten by the later append.
+    assert session.report_versions[0]["report"]["findings"]["content"] == "first report"
+    assert session.report_versions[0]["version_number"] == 1
+    assert session.active_report_version_id == v2["version_id"]
+    assert session.report is v2_report
+
+
+def test_append_report_version_version_ids_are_unique():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    v1 = append_report_version(session, _report_dict("a"), GENERATION_REASON_INITIAL)
+    v2 = append_report_version(session, _report_dict("b"), GENERATION_REASON_REGENERATE)
+
+    assert v1["version_id"] != v2["version_id"]
+
+
+def test_get_active_report_version_returns_none_for_a_session_with_no_report_yet():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    assert get_active_report_version(session) is None
+
+
+def test_get_active_report_version_returns_the_currently_active_version():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    append_report_version(session, _report_dict("a"), GENERATION_REASON_INITIAL)
+    v2 = append_report_version(session, _report_dict("b"), GENERATION_REASON_REGENERATE)
+
+    assert get_active_report_version(session) is v2
+
+
+def test_activate_report_version_switches_session_report_to_an_older_version():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    v1 = append_report_version(session, _report_dict("first report"), GENERATION_REASON_INITIAL)
+    append_report_version(session, _report_dict("second report"), GENERATION_REASON_REGENERATE)
+    assert session.report["findings"]["content"] == "second report"
+
+    activated = activate_report_version(session, v1["version_id"])
+
+    assert activated is v1
+    assert session.active_report_version_id == v1["version_id"]
+    assert session.report["findings"]["content"] == "first report"
+    assert session.report is v1["report"]
+    # Nothing about report_versions itself changed -- still both entries, in order.
+    assert len(session.report_versions) == 2
+
+
+def test_activate_report_version_unknown_id_returns_none_and_does_not_mutate_session():
+    session = PaperPoolSession(topic="q", stage="synthesize")
+    append_report_version(session, _report_dict("only report"), GENERATION_REASON_INITIAL)
+    active_before = session.active_report_version_id
+
+    result = activate_report_version(session, "does-not-exist")
+
+    assert result is None
+    assert session.active_report_version_id == active_before
+    assert session.report["findings"]["content"] == "only report"
+
+
+def test_regenerate_builds_from_the_active_version_not_always_latest():
+    """report-quality Phase R3 decision 8: regenerate must build from
+    whichever version is currently ACTIVE, not whatever's most recently
+    appended -- proven here via the citation-preservation mechanism
+    itself: activating an OLDER version, then regenerating, must
+    preserve THAT version's prior citations, not the latest version's."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    session = PaperPoolSession(
+        topic="q", stage="synthesize", selected_papers=[p1, p2], selected_paper_ids=["1111", "2222"],
+        web_articles_added=[],
+    )
+    v1_report = {
+        "thematic_findings": {"content": "v1", "cited_papers": [p1], "cited_web_articles": [], "reference_numbers": []},
+        "references": [], "skipped_papers": [], "report_template": "analytical",
+    }
+    v1 = append_report_version(session, v1_report, GENERATION_REASON_INITIAL)
+    v2_report = {
+        "thematic_findings": {"content": "v2", "cited_papers": [p2], "cited_web_articles": [], "reference_numbers": []},
+        "references": [], "skipped_papers": [], "report_template": "analytical",
+    }
+    append_report_version(session, v2_report, GENERATION_REASON_REGENERATE)
+
+    # Activate the OLDER version (which cited p1, not p2) before regenerating.
+    activate_report_version(session, v1["version_id"])
+
+    schema = _build_report_schema(["1111", "2222"], None, REPORT_SECTION_DEFINITIONS)
+    parsed = _analytical_parsed(schema)  # model drops all citations this time
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = regenerate_report_with_new_sources(session, client=mock_client)
+
+    # p1 (v1's own prior citation) is restored -- proves the regeneration
+    # built from the ACTIVE (v1) version, not the latest (v2) one, which
+    # would have restored p2 instead.
+    assert [p.paper_id for p in result["thematic_findings"]["cited_papers"]] == ["1111"]
 
 
 if __name__ == "__main__":

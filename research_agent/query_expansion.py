@@ -806,6 +806,34 @@ class PaperPoolSession:
     # mention it. Same set-field convention as report_approved_web_
     # article_urls immediately above.
     revoked_web_article_urls: set[str] = field(default_factory=set)
+    # report-quality Phase R3: every report generation/regeneration this
+    # session has ever produced, in order -- previously each one silently
+    # overwrote `report` above with no trace of what came before. Each
+    # entry is {"version_id", "version_number", "created_at", "report_
+    # template", "generation_reason", "report"} -- "report" is the exact
+    # same dict shape `report` above always was, so every existing report
+    # dict helper (report.py's own generation functions, api_app/
+    # serializers.py's _report_to_out, curation_session.py's _serialize_
+    # report/_deserialize_report) is reused per-version unchanged, never
+    # reimplemented for the version-list case. Old versions are
+    # IMMUTABLE historical snapshots once appended -- a later regenerate
+    # call's source-revocation/citation rules only ever apply to the NEW
+    # version being built, never rewrite an already-appended one (see
+    # report.py's append_report_version, the one shared mutation point
+    # every report-generating call site goes through).
+    #
+    # No retention/cap policy in this phase -- same explicitly-stated,
+    # deliberate tradeoff turn_history above already makes: real,
+    # growing per-save cost as a session accumulates more report
+    # versions, stated here rather than solved preemptively.
+    report_versions: list[dict] = field(default_factory=list)
+    # Which entry in report_versions above `report` currently mirrors --
+    # report.py's append_report_version/activate_report_version are the
+    # only two places that ever change this, and both always keep
+    # `report` in lockstep with whichever version this points to (never
+    # drift independently). None only when report_versions is empty (no
+    # report has ever been generated for this session yet).
+    active_report_version_id: str | None = None
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

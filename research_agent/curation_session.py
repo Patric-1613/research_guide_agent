@@ -34,13 +34,14 @@ curation loop) — this phase only proves persistence works.
 
 from __future__ import annotations
 
+import uuid
 from typing import TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.report import ANALYTICAL_SECTION_NAMES
+from research_agent.report import ANALYTICAL_SECTION_NAMES, GENERATION_REASON_INITIAL
 from research_agent.schema import Paper, WebArticle
 
 # Distinct prefix so curation-session rows in the shared
@@ -159,6 +160,73 @@ def _deserialize_report(d: dict | None) -> dict | None:
     return deserialized
 
 
+def _serialize_report_version(version: dict) -> dict:
+    """report-quality Phase R3: one ReportVersion entry -- version_id/
+    version_number/created_at/report_template/generation_reason are
+    already JSON-native (plain str/int), passed through as-is; "report"
+    is the exact same dict shape session.report always was, so it
+    reuses _serialize_report unchanged rather than duplicating that
+    Paper/WebArticle-to-dict conversion logic a second time."""
+    return {
+        "version_id": version["version_id"],
+        "version_number": version["version_number"],
+        "created_at": version["created_at"],
+        "report_template": version["report_template"],
+        "generation_reason": version["generation_reason"],
+        "report": _serialize_report(version["report"]),
+    }
+
+
+def _deserialize_report_version(d: dict) -> dict:
+    return {
+        "version_id": d["version_id"],
+        "version_number": d["version_number"],
+        "created_at": d.get("created_at"),
+        "report_template": d.get("report_template", "analytical"),
+        "generation_reason": d.get("generation_reason", GENERATION_REASON_INITIAL),
+        "report": _deserialize_report(d["report"]),
+    }
+
+
+def _derive_implicit_report_versions(report: dict | None) -> tuple[list[dict], str | None]:
+    """report-quality Phase R3 backward compatibility: a session
+    persisted before this phase has no `report_versions`/`active_
+    report_version_id` keys at all. If it already has a `report`, that's
+    exactly ONE implicit version -- generation_reason=GENERATION_REASON_
+    INITIAL, report_template taken from the report dict's own (already
+    R2C-backward-compatible) report_template key, and created_at=None
+    since the real creation time was never recorded before this phase
+    existed and is never fabricated here. A session with no report at
+    all simply has no versions yet either -- ([], None), not a
+    one-entry placeholder list.
+
+    Called from _dict_to_session below, at LOAD time, same "derive
+    fresh on every read, never rewrite storage until a real mutation
+    happens" convention this file already uses for report_approved_
+    web_article_urls/revoked_web_article_urls' own backward-compat
+    defaults -- and the same convention report.py's own derive_legacy_
+    references/derive_sections_from_legacy_report established for old
+    report dicts specifically. The derived version_id is a fresh uuid4
+    hex on every call (not stable across repeated loads of the same old
+    session) -- harmless, since active_report_version_id is always
+    derived from that SAME call's own version_id, so the two never
+    disagree within one _dict_to_session invocation, and nothing
+    persists this derived id back into storage for it to go stale
+    against."""
+    if report is None:
+        return [], None
+    version_id = uuid.uuid4().hex
+    version = {
+        "version_id": version_id,
+        "version_number": 1,
+        "created_at": None,
+        "report_template": report.get("report_template", "analytical"),
+        "generation_reason": GENERATION_REASON_INITIAL,
+        "report": report,
+    }
+    return [version], version_id
+
+
 def _session_to_dict(session: PaperPoolSession) -> dict:
     return {
         "topic": session.topic,
@@ -187,10 +255,24 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "stop_reason": session.stop_reason,
         "report_approved_web_article_urls": list(session.report_approved_web_article_urls),
         "revoked_web_article_urls": list(session.revoked_web_article_urls),
+        "report_versions": [_serialize_report_version(v) for v in session.report_versions],
+        "active_report_version_id": session.active_report_version_id,
     }
 
 
 def _dict_to_session(d: dict) -> PaperPoolSession:
+    report = _deserialize_report(d.get("report"))
+    # report-quality Phase R3: "report_versions" key ABSENCE (not an
+    # empty list) is the "this session predates R3" signal, same
+    # absence-is-the-signal convention as references/sections/
+    # report_template already use elsewhere in this file -- a session
+    # saved once by R3 code always has the key, even if report_versions
+    # itself happens to be empty (no report generated yet).
+    if "report_versions" in d:
+        report_versions = [_deserialize_report_version(v) for v in d["report_versions"]]
+        active_report_version_id = d.get("active_report_version_id")
+    else:
+        report_versions, active_report_version_id = _derive_implicit_report_versions(report)
     return PaperPoolSession(
         topic=d["topic"],
         # Older sessions saved before Phase 8's display_title field existed
@@ -206,7 +288,7 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         target_count=d.get("target_count", 10),
         selected_paper_ids=list(d.get("selected_paper_ids", [])),
         selected_papers=[Paper(**paper_dict) for paper_dict in d.get("selected_papers", [])],
-        report=_deserialize_report(d.get("report")),
+        report=report,
         chat_history=list(d.get("chat_history", [])),
         web_articles_added=[WebArticle(**a) for a in d.get("web_articles_added", [])],
         pending_web_offer=d.get("pending_web_offer"),
@@ -231,6 +313,8 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         # backward-compat convention as report_approved_web_article_urls
         # immediately above.
         revoked_web_article_urls=set(d.get("revoked_web_article_urls", [])),
+        report_versions=report_versions,
+        active_report_version_id=active_report_version_id,
     )
 
 

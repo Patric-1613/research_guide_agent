@@ -1072,6 +1072,173 @@ def test_curation_report_regenerate_explicit_template_switches():
     assert mock_regen.call_args.kwargs["report_template"] == "expert"
 
 
+# --- report-quality Phase R3: report versioning ---
+
+def test_curation_report_generate_creates_version_1_with_initial_reason():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            resp = client.post(f"/curation/{session_id}/report")
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["version_number"] == 1
+    assert resp.json()["generation_reason"] == "initial"
+    assert resp.json()["version_id"]
+
+    body = state_resp.json()
+    assert len(body["report_versions"]) == 1
+    assert body["report_versions"][0]["version_number"] == 1
+    assert body["report_versions"][0]["generation_reason"] == "initial"
+    assert body["report_versions"][0]["is_active"] is True
+    assert body["active_report_version_id"] == body["report_versions"][0]["version_id"]
+
+
+def test_curation_report_regenerate_appends_version_2_and_keeps_version_1_unchanged():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+
+        second_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            resp = client.post(f"/curation/{session_id}/report/regenerate")
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["version_number"] == 2
+    assert resp.json()["generation_reason"] == "regenerate"
+
+    versions = state_resp.json()["report_versions"]
+    assert [v["version_number"] for v in versions] == [1, 2]
+    assert versions[0]["generation_reason"] == "initial"
+    assert versions[1]["generation_reason"] == "regenerate"
+    assert versions[0]["is_active"] is False
+    assert versions[1]["is_active"] is True
+
+
+def test_curation_report_activate_switches_state_report_to_the_selected_version():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+        state_after_v1 = client.get(f"/curation/{session_id}").json()
+        v1_id = state_after_v1["report_versions"][0]["version_id"]
+
+        second_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            client.post(f"/curation/{session_id}/report/regenerate")
+
+        # Activate v1 back -- state.report must switch to v1's own content.
+        activate_resp = client.post(f"/curation/{session_id}/reports/{v1_id}/activate")
+        state_resp = client.get(f"/curation/{session_id}")
+
+    assert activate_resp.status_code == 200
+    assert activate_resp.json()["findings"]["content"] == "v1"
+    assert activate_resp.json()["version_id"] == v1_id
+    assert state_resp.json()["report"]["findings"]["content"] == "v1"
+    assert state_resp.json()["active_report_version_id"] == v1_id
+    versions_by_id = {v["version_id"]: v for v in state_resp.json()["report_versions"]}
+    assert versions_by_id[v1_id]["is_active"] is True
+
+
+def test_curation_report_activate_unknown_version_id_returns_404():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.post(f"/curation/{session_id}/reports/does-not-exist/activate")
+
+    assert resp.status_code == 404
+
+
+def test_curation_report_activate_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.post("/curation/does-not-exist/reports/some-version/activate")
+    assert resp.status_code == 404
+
+
+def test_curation_report_regenerate_builds_from_the_active_not_latest_version():
+    """report-quality Phase R3 decision 8, at the API level: activate an
+    OLDER version, then regenerate -- the mocked regenerate call must
+    see session.report already switched to that older version's own
+    content by the time it's invoked (report.py's own regenerate
+    functions read session.report directly)."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+        v1_id = client.get(f"/curation/{session_id}").json()["report_versions"][0]["version_id"]
+
+        second_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            client.post(f"/curation/{session_id}/report/regenerate")
+
+        client.post(f"/curation/{session_id}/reports/{v1_id}/activate")
+
+        seen_session_report_content = {}
+
+        def _capture_active_report(session, client=None, model="gpt-4.1", report_template=None):
+            seen_session_report_content["content"] = session.report["findings"]["content"]
+            return {**first_report, "findings": {"content": "v3 from v1", "cited_papers": []}}
+
+        with patch.object(api, "regenerate_report_with_new_sources", side_effect=_capture_active_report):
+            resp = client.post(f"/curation/{session_id}/report/regenerate")
+
+    assert seen_session_report_content["content"] == "v1"
+    assert resp.json()["findings"]["content"] == "v3 from v1"
+    assert resp.json()["version_number"] == 3
+
+
+def test_curation_chat_add_to_report_appends_version_with_chat_add_to_report_reason():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            client.post(f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-1"]})
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    versions = state_resp.json()["report_versions"]
+    assert [v["generation_reason"] for v in versions] == ["initial", "chat_add_to_report"]
+    assert versions[1]["is_active"] is True
+
+
 # --- /curation/{id}/chat ---
 
 def test_curation_chat_answers_and_persists_history_across_a_separate_get_request():

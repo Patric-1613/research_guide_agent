@@ -57,7 +57,13 @@ from research_agent.query_expansion import (
     rank_full_pool,
 )
 from research_agent.report import (
+    GENERATION_REASON_CHAT_ADD_TO_REPORT,
+    GENERATION_REASON_INITIAL,
+    GENERATION_REASON_REGENERATE,
+    activate_report_version,
+    append_report_version,
     generate_report_for_session,
+    get_active_report_version,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
 )

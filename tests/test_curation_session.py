@@ -419,6 +419,204 @@ def test_report_without_report_template_still_loads():
         assert "report_template" not in loaded.report
 
 
+# --- report-quality Phase R3: report versioning ---
+
+def test_old_session_with_only_report_loads_as_implicit_version_1():
+    """A checkpoint saved before R3 has a `report` but no `report_
+    versions`/`active_report_version_id` keys at all -- simulated here
+    by invoking the graph directly with a hand-built dict, same
+    established pattern as test_loading_a_pre_phase8_session_without_
+    display_title_falls_back_to_its_own_topic above. Must load as
+    exactly ONE implicit version, generation_reason="initial", with
+    active_report_version_id pointing at it -- never crash, never an
+    empty version list despite a real report being present."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_report = {
+            "findings": {"content": "Old findings.", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [],
+            "report_template": "expert",
+        }
+        old_format_dict = {
+            "topic": "old style session", "reserve": [], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "synthesize", "target_count": 10,
+            "selected_paper_ids": [], "selected_papers": [], "report": old_report, "chat_history": [],
+            "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+            "refinement_notes": [], "report_covered_web_article_count": 0,
+            # deliberately no "report_versions"/"active_report_version_id" keys
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-report-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-report-id", cp)
+
+        assert loaded is not None
+        assert len(loaded.report_versions) == 1
+        version = loaded.report_versions[0]
+        assert version["version_number"] == 1
+        assert version["generation_reason"] == "initial"
+        assert version["created_at"] is None  # real creation time was never recorded, never fabricated
+        assert version["report_template"] == "expert"
+        assert version["report"]["findings"]["content"] == "Old findings."
+        assert loaded.active_report_version_id == version["version_id"]
+        # session.report itself is unaffected by this derivation -- still
+        # exactly the same report body, same pre-R3 compatibility field.
+        assert loaded.report["findings"]["content"] == "Old findings."
+
+
+def test_old_session_with_no_report_at_all_has_no_implicit_version():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_format_dict = {
+            "topic": "old style session", "reserve": [], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+            "selected_paper_ids": [], "selected_papers": [], "report": None, "chat_history": [],
+            "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+            "refinement_notes": [], "report_covered_web_article_count": 0,
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-no-report-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-no-report-id", cp)
+
+        assert loaded is not None
+        assert loaded.report_versions == []
+        assert loaded.active_report_version_id is None
+
+
+def test_report_versions_round_trip_through_real_sqlite():
+    p0 = _paper("p0")
+    v1_report = {
+        "findings": {"content": "V1 findings.", "cited_papers": [p0]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [], "report_template": "analytical",
+    }
+    v2_report = {
+        "findings": {"content": "V2 findings.", "cited_papers": [p0]},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [], "report_template": "expert",
+    }
+    versions = [
+        {
+            "version_id": "v1", "version_number": 1, "created_at": "2026-08-05T00:00:00+00:00",
+            "report_template": "analytical", "generation_reason": "initial", "report": v1_report,
+        },
+        {
+            "version_id": "v2", "version_number": 2, "created_at": "2026-08-05T00:05:00+00:00",
+            "report_template": "expert", "generation_reason": "regenerate", "report": v2_report,
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_papers=[p0], report=v2_report,
+            report_versions=versions, active_report_version_id="v2",
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-versions", cp)
+            loaded = load_curation_session("session-versions", cp)
+
+        assert loaded is not None
+        assert len(loaded.report_versions) == 2
+        assert [v["version_id"] for v in loaded.report_versions] == ["v1", "v2"]
+        assert [v["version_number"] for v in loaded.report_versions] == [1, 2]
+        assert [v["generation_reason"] for v in loaded.report_versions] == ["initial", "regenerate"]
+        assert [v["report_template"] for v in loaded.report_versions] == ["analytical", "expert"]
+        assert loaded.report_versions[0]["created_at"] == "2026-08-05T00:00:00+00:00"
+
+
+def test_active_report_version_id_round_trips():
+    p0 = _paper("p0")
+    report = {
+        "findings": {"content": "F", "cited_papers": []},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_papers": [], "report_template": "analytical",
+    }
+    version = {
+        "version_id": "the-active-one", "version_number": 1, "created_at": None,
+        "report_template": "analytical", "generation_reason": "initial", "report": report,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_papers=[p0], report=report,
+            report_versions=[version], active_report_version_id="the-active-one",
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-active-id", cp)
+            loaded = load_curation_session("session-active-id", cp)
+
+        assert loaded is not None
+        assert loaded.active_report_version_id == "the-active-one"
+
+
+def test_report_version_bodies_preserve_sections_references_and_report_template():
+    """Each version's own `report` dict must round-trip through the SAME
+    machinery session.report already relies on (_serialize_report/
+    _deserialize_report reused per-version) -- sections, references, and
+    cited_papers/cited_web_articles must all survive intact, not just
+    the version envelope fields."""
+    p0 = _paper("p0")
+    web = WebArticle(title="A Survey", url="https://example.com/survey", snippet="s", published_date=None, source_domain="example.com")
+    report = {
+        "executive_summary": {
+            "content": "Per [1].", "cited_papers": [p0], "cited_web_articles": [web], "reference_numbers": [1, 2],
+        },
+        "findings": {"content": "Per [1].", "cited_papers": [p0], "cited_web_articles": [], "reference_numbers": [1]},
+        "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+        "skipped_papers": [],
+        "references": [
+            {"number": 1, "kind": "paper", "paper_id": "p0", "url": None, "title": "Paper p0", "formatted": "x", "link_url": None},
+            {"number": 2, "kind": "web", "paper_id": None, "url": "https://example.com/survey", "title": "A Survey", "formatted": "x", "link_url": "https://example.com/survey"},
+        ],
+        "sections": [
+            {"key": "executive_summary", "title": "Executive Summary", "content": "Per [1].", "reference_numbers": [1, 2]},
+        ],
+        "report_template": "foundational",
+    }
+    version = {
+        "version_id": "v1", "version_number": 1, "created_at": None,
+        "report_template": "foundational", "generation_reason": "initial", "report": report,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_papers=[p0], report=report,
+            report_versions=[version], active_report_version_id="v1",
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-version-body", cp)
+            loaded = load_curation_session("session-version-body", cp)
+
+        assert loaded is not None
+        loaded_report = loaded.report_versions[0]["report"]
+        assert loaded_report["executive_summary"]["content"] == "Per [1]."
+        assert [p.paper_id for p in loaded_report["executive_summary"]["cited_papers"]] == ["p0"]
+        assert len(loaded_report["executive_summary"]["cited_web_articles"]) == 1
+        assert loaded_report["executive_summary"]["cited_web_articles"][0].url == "https://example.com/survey"
+        assert [s["key"] for s in loaded_report["sections"]] == ["executive_summary"]
+        assert [r["kind"] for r in loaded_report["references"]] == ["paper", "web"]
+        assert loaded_report["report_template"] == "foundational"
+
+
 def test_list_curation_sessions_returns_empty_for_no_sessions():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"

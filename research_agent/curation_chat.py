@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 
 from research_agent import qa
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.report import regenerate_report_with_new_sources
+from research_agent.report import GENERATION_REASON_CHAT_AUTO_UPDATE, append_report_version, regenerate_report_with_new_sources
 from research_agent.schema import WebArticle
 from research_agent.web_search import search_web
 
@@ -271,10 +271,21 @@ def _accept_report_update(session: PaperPoolSession, message: str, client: OpenA
     """Unlike _accept_web_offer, doesn't route through ask_in_session at
     all -- there's no user question to re-answer here, just a report to
     regenerate -- so the user/assistant turn is appended directly,
-    mirroring what ask_in_session would have done for any other turn."""
+    mirroring what ask_in_session would have done for any other turn.
+
+    report-quality Phase R3: the regenerated report is appended as a new
+    version (generation_reason=GENERATION_REASON_CHAT_AUTO_UPDATE) via
+    append_report_version, not assigned to session.report directly --
+    this is one of the four real report-mutation call sites report-
+    quality Phase R3 had to update, and the one most easily missed since
+    it lives here rather than in either report service module.
+    append_report_version keeps session.report mirrored to the new
+    version as a side effect, so session.report is updated_report
+    afterward exactly as it always was."""
     new_count = session.pending_report_update.get("new_article_count", 1)
     session.pending_report_update = None
-    session.report = regenerate_report_with_new_sources(session, client=client)
+    updated_report = regenerate_report_with_new_sources(session, client=client)
+    append_report_version(session, updated_report, GENERATION_REASON_CHAT_AUTO_UPDATE)
     session.report_covered_web_article_count = len(session.web_articles_added)
 
     answer = "Done — I've updated the report to include the newly approved web source(s)."

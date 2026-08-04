@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from langfuse import get_client, observe
@@ -1412,3 +1414,128 @@ def regenerate_report_with_approved_web_sources(
         session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",
         report_template=report_template,
     )
+
+
+# --- report-quality Phase R3: report versioning ---
+#
+# Every function above this section is unchanged in shape/behavior --
+# generate_report/_regenerate_report_sections_with_sources still just
+# return a fresh report dict, no session-mutation awareness of their
+# own. append_report_version below is the ONE shared point every call
+# site that used to do `session.report = <one of the functions above>`
+# now goes through instead -- see this module's own generate_report_
+# for_session (still just a wrapper, unchanged) and each of the four
+# real mutation call sites: services/curation_report_service.py's
+# get_or_create_report/regenerate_report, services/curation_chat_
+# service.py's add_curation_chat_exchanges_to_report, and curation_
+# chat.py's _accept_report_update (the easiest of the four to miss,
+# since it's domain logic living outside either service module).
+
+# Public (no leading underscore) since every one of the four real
+# mutation call sites -- spread across services/curation_report_
+# service.py, services/curation_chat_service.py, and curation_chat.py --
+# references these by name rather than hardcoding the string literal
+# independently in four places.
+GENERATION_REASON_INITIAL = "initial"
+GENERATION_REASON_REGENERATE = "regenerate"
+GENERATION_REASON_CHAT_ADD_TO_REPORT = "chat_add_to_report"
+GENERATION_REASON_CHAT_AUTO_UPDATE = "chat_auto_update"
+
+
+def _utcnow_iso() -> str:
+    """Factored out purely so a test can patch this one function
+    (`patch.object(report, "_utcnow_iso", ...)`) for a deterministic
+    created_at, without needing to patch the datetime module itself."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def append_report_version(session: PaperPoolSession, report: dict, generation_reason: str) -> dict:
+    """report-quality Phase R3: the ONE shared mutation point every
+    report-generating call site must go through. Appends `report`
+    (already a complete, freshly-generated/regenerated report dict --
+    report_template already stamped by generate_report/
+    _regenerate_report_sections_with_sources) as a new version on
+    `session.report_versions`, makes it the active version, and mirrors
+    `session.report` to it -- the pre-R3 compatibility field every
+    existing reader still uses, so nothing downstream of this call needs
+    to know versioning exists at all.
+
+    version_number is 1-indexed and simply len(session.report_versions)
+    + 1 at call time -- no gaps, no reuse, since versions are only ever
+    appended, never removed. version_id is a fresh uuid4 hex, same
+    convention curation_chat.py's own exchange_id already uses.
+
+    Never mutates an existing version -- old versions are immutable
+    historical snapshots once appended (see PaperPoolSession.report_
+    versions' own docstring): a later regeneration's citation-
+    preservation/source-revocation rules only ever shape the NEW version
+    being built here, never reach back and rewrite one already in the
+    list.
+
+    generation_reason is a plain descriptive string (this module's usual
+    preference for a small, evolving vocabulary over a Literal/enum --
+    see ReportTemplate's own docstring for the same reasoning applied to
+    templates) -- the four values every current call site uses are
+    "initial" (first-ever generation for a session), "regenerate"
+    (whole-pool /report/regenerate), "chat_add_to_report" (curation-
+    chat-add-to-report's selective regeneration), and "chat_auto_update"
+    (chat's own accept-the-report-update-offer flow). Returns the
+    newly-appended version dict itself, so a caller that also needs its
+    version_id doesn't have to re-derive it.
+    """
+    version_id = uuid.uuid4().hex
+    version = {
+        "version_id": version_id,
+        "version_number": len(session.report_versions) + 1,
+        "created_at": _utcnow_iso(),
+        "report_template": report.get("report_template", DEFAULT_REPORT_TEMPLATE),
+        "generation_reason": generation_reason,
+        "report": report,
+    }
+    session.report_versions.append(version)
+    session.active_report_version_id = version_id
+    session.report = report
+    return version
+
+
+def get_active_report_version(session: PaperPoolSession) -> dict | None:
+    """Looks up session.active_report_version_id in session.report_
+    versions. Returns None if the session has no report/versions yet at
+    all (active_report_version_id is still None), or -- defensively --
+    if it somehow doesn't resolve to anything in report_versions (should
+    never happen in practice: append_report_version/
+    activate_report_version below are the only two places that ever set
+    active_report_version_id, and both always set it to a version_id
+    simultaneously present in report_versions). Returning None rather
+    than raising KeyError keeps this a safe read for callers like the
+    API serializer, which already has its own graceful "no version
+    metadata available" fallback for exactly this case."""
+    if session.active_report_version_id is None:
+        return None
+    for version in session.report_versions:
+        if version["version_id"] == session.active_report_version_id:
+            return version
+    return None
+
+
+def activate_report_version(session: PaperPoolSession, version_id: str) -> dict | None:
+    """report-quality Phase R3: switches session's active report version
+    to `version_id`, mirroring session.report to that version's own
+    report dict -- the same "session.report always mirrors whatever
+    version is active" invariant append_report_version establishes.
+    Never mutates the version list itself, only which entry is active
+    and session.report's own pointer.
+
+    Returns the now-active version dict, or None (mutates NOTHING) if
+    version_id doesn't match anything in session.report_versions -- same
+    "return None for absence rather than raise" convention curation_
+    session.py's own load_curation_session already uses; the caller
+    (services/curation_report_service.py) is what turns a None result
+    into an HTTP 404, not this function itself.
+    """
+    for version in session.report_versions:
+        if version["version_id"] == version_id:
+            session.active_report_version_id = version_id
+            session.report = version["report"]
+            return version
+    return None

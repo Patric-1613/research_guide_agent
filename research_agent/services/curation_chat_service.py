@@ -94,13 +94,18 @@ def add_curation_chat_exchanges_to_report(
     except ValueError as exc:
         raise ServiceError(400, str(exc)) from exc
 
-    session.report = new_report
+    # report-quality Phase R3: appended as a new version (generation_
+    # reason=api.GENERATION_REASON_CHAT_ADD_TO_REPORT), not assigned to
+    # session.report directly -- append_report_version keeps session.
+    # report mirrored to it as a side effect, same as every other
+    # report-mutation call site.
+    api.append_report_version(session, new_report, api.GENERATION_REASON_CHAT_ADD_TO_REPORT)
     api.approve_web_article_urls(session, newly_approved_urls)
     api.mark_exchanges_added_to_report(session, eligible_ids)
     save_curation_session(session, session_id, cp)
 
     return CurationChatAddToReportResponse(
-        report=_report_to_out(session.report),
+        report=_report_to_out(session.report, api.get_active_report_version(session)),
         chat_history=[ChatTurn(**turn) for turn in session.chat_history],
         added_exchange_ids=eligible_ids,
         skipped_exchange_ids=skipped_ids,
