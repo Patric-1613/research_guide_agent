@@ -29,6 +29,7 @@ from research_agent.report import (
     _cleanup_marker_stripped_whitespace,
     activate_report_version,
     append_report_version,
+    build_references_and_renumber,
     derive_legacy_references,
     derive_sections_from_legacy_report,
     generate_report,
@@ -480,6 +481,47 @@ def _sections_out(findings: dict, limitations: dict | None = None, future_scope:
         "future_scope": future_scope or {"content": "", "cited_papers": []},
         "skipped_papers": [],
     }
+
+
+# --- report-quality Phase R3.2 Chunk 2: public wrapper reuse ---
+
+def test_build_references_and_renumber_public_wrapper_matches_private_helper_exactly():
+    """build_references_and_renumber is a pure pass-through to
+    _build_references_and_renumber -- same input, same output, proving
+    the wrapper adds no behavior of its own for chat (or any other
+    future caller) to accidentally diverge from."""
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    web = _web_article("https://w.com", "Web One")
+
+    def _sections():
+        return _sections_out(
+            findings={
+                "content": "Per [Paper 1] and [Paper 2], X. Also [Web 1].",
+                "cited_papers": [p1, p2], "cited_web_articles": [web],
+            },
+        )
+
+    via_private = _build_references_and_renumber(_sections())
+    via_public = build_references_and_renumber(_sections())
+
+    assert via_public == via_private
+    assert via_public["findings"]["content"] == "Per [1] and [2], X. Also [3]."
+
+
+def test_build_references_and_renumber_public_wrapper_accepts_arbitrary_section_names():
+    """Not just a report-shaped call -- proves the wrapper works over an
+    arbitrary section_names tuple the way derive_chat_references will
+    call it (keyed by exchange_id, not ANALYTICAL_SECTION_NAMES)."""
+    p1 = _paper("p1", "Paper One")
+    sections_out = {
+        "exchange-a": {"content": "Per [Paper 1].", "cited_papers": [p1], "cited_web_articles": []},
+        "exchange-b": {"content": "No citation here.", "cited_papers": [], "cited_web_articles": []},
+    }
+
+    result = build_references_and_renumber(sections_out, ("exchange-a", "exchange-b"))
+
+    assert result["exchange-a"]["content"] == "Per [1]."
+    assert len(result["references"]) == 1
 
 
 def test_build_references_and_renumber_converts_section_local_markers_to_one_global_sequence():

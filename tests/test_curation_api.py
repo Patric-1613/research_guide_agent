@@ -1296,6 +1296,44 @@ def test_curation_chat_answers_and_persists_history_across_a_separate_get_reques
     ]
 
 
+def test_curation_state_includes_chat_references_and_marker_rewritten_chat_history():
+    """report-quality Phase R3.2 Chunk 2: GET /curation/{id} returns
+    chat-local numeric [N] markers in chat_history (not the model's raw
+    [Paper N]/[Web N]) plus the chat_references list those markers point
+    into -- derived fresh, independent of report.references."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        pid = pick_ids[0]
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            answer = "Per [Paper 1], X is true."
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": "ex-1"})
+            session.chat_history.append({
+                "role": "assistant", "content": answer, "exchange_id": "ex-1",
+                "used_web_search": False, "cited_web_articles": [],
+                "cited_papers": [{"paper_id": pid, "title": "Paper 0"}],
+                "added_to_report": False,
+            })
+            return {"answer": answer, "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "what does paper 0 say?"})
+
+        state_resp = client.get(f"/curation/{session_id}")
+
+    body = state_resp.json()
+    assistant_turn = next(t for t in body["chat_history"] if t["role"] == "assistant")
+    assert assistant_turn["content"] == "Per [1], X is true."  # rewritten, not raw [Paper 1]
+    assert len(body["chat_references"]) == 1
+    assert body["chat_references"][0]["number"] == 1
+    assert body["chat_references"][0]["kind"] == "paper"
+    assert body["chat_references"][0]["paper_id"] == pid
+    # Independent of report.references -- no report was ever generated
+    # in this session, so report is still None; chat_references is
+    # populated regardless.
+    assert body["report"] is None
+
+
 # --- /curation/{id}/chat/exchanges/delete (curation-chat-delete Phase 3) ---
 
 def _fake_chat_turn_with_exchange(exchange_id: str, used_web_search: bool = False, added_to_report: bool = False):

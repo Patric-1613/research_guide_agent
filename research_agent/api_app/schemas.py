@@ -413,6 +413,17 @@ class CurationStateResponse(BaseModel):
     # is_active flags in principle, but exposed directly so a client
     # doesn't have to scan the list to find which entry is active.
     active_report_version_id: str | None = None
+    # report-quality Phase R3.2 Chunk 2: the global, deduped, chat-wide
+    # reference list every qualifying assistant turn's rewritten inline
+    # [N] markers (in chat_history above) point into -- reuses the exact
+    # same ReferenceEntry shape report.py's own references already use,
+    # but this list and `report.references` are two entirely
+    # independently-numbered derivations; a shared shape does not imply
+    # shared numbering or shared state. Derived fresh from session.
+    # chat_history on every read (curation_chat.py's derive_chat_
+    # references), never persisted -- empty for a session with no
+    # qualifying assistant turns yet.
+    chat_references: list[ReferenceEntry] = []
 
 
 class CurationChatRequest(BaseModel):

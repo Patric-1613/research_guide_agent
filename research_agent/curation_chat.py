@@ -37,13 +37,19 @@ from __future__ import annotations
 import logging
 import uuid
 from typing import Literal
+from urllib.parse import urlparse
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from research_agent import qa
 from research_agent.query_expansion import PaperPoolSession
-from research_agent.report import GENERATION_REASON_CHAT_AUTO_UPDATE, append_report_version, regenerate_report_with_new_sources
+from research_agent.report import (
+    GENERATION_REASON_CHAT_AUTO_UPDATE,
+    append_report_version,
+    build_references_and_renumber,
+    regenerate_report_with_new_sources,
+)
 from research_agent.schema import WebArticle
 from research_agent.web_search import search_web
 
@@ -622,6 +628,107 @@ def _assistant_entries_by_exchange_id(session: PaperPoolSession) -> dict[str, di
         for turn in session.chat_history
         if turn.get("role") == "assistant" and turn.get("exchange_id")
     }
+
+
+def _resolve_cited_web_article(entry: dict, web_by_url: dict[str, WebArticle]) -> WebArticle:
+    """report-quality Phase R3.2 Chunk 2: resolves a chat turn's stored,
+    lightweight {"url", "title"} cited_web_articles entry to a full
+    WebArticle -- looked up in session.web_articles_added first (the
+    raw discovery pool a cited web source should always be findable in,
+    since a source can only ever have been cited by having first been
+    retrieved through that exact pool). Falls back to a degraded
+    WebArticle built from the lightweight data alone only for the
+    unexpected case where it's missing from web_articles_added --
+    source_domain is derived deterministically from the url itself
+    (never fabricated, never an LLM call), snippet/published_date left
+    empty/None -- so format_web_citation still produces something
+    readable rather than an empty-domain artifact, and this can never
+    crash regardless of what web_articles_added currently holds."""
+    url = entry.get("url", "")
+    if url in web_by_url:
+        return web_by_url[url]
+    return WebArticle(
+        title=entry.get("title") or url, url=url, snippet="",
+        published_date=None, source_domain=urlparse(url).netloc or url,
+    )
+
+
+def derive_chat_references(session: PaperPoolSession) -> dict:
+    """report-quality Phase R3.2 Chunk 2: derives a GLOBAL, chat-scoped
+    [N] citation numbering + references list from session.chat_history
+    -- the chat-side counterpart to report.py's own report-scoped
+    derivation, reusing the exact same proven algorithm (report.
+    build_references_and_renumber, a public wrapper around report.py's
+    own _build_references_and_renumber) rather than reimplementing
+    grouped-marker parsing, raw-source-id-marker handling, invalid-
+    marker stripping, and whitespace cleanup a second time.
+
+    Independence from report numbering is structural, not just by
+    convention: this function never reads session.report, never
+    mutates it, and every call to build_references_and_renumber builds
+    its own brand-new reference registry internally (see that
+    function's own docstring) -- there is no shared state a chat-scoped
+    and a report-scoped call could ever collide over, regardless of how
+    many times either runs.
+
+    Derived FRESH every call, from whatever chat_history currently is
+    -- never persisted, and session.chat_history itself is never
+    mutated (a fresh, independent sections_out dict is built from each
+    qualifying turn's own data; build_references_and_renumber's own
+    mutation happens to those copies, not the original stored dicts).
+    This is exactly why delete/edit "just works" for chat references
+    with no extra bookkeeping: call this again after a delete and the
+    shorter chat_history naturally produces a clean, re-compacted 1..N
+    sequence on its own.
+
+    Only assistant turns with a real exchange_id participate -- same
+    structural-ineligibility convention _assistant_entries_by_
+    exchange_id above already uses for pre-Phase-1 legacy turns. A
+    qualifying turn missing cited_papers/cited_web_articles entirely
+    (predates report-quality Phase R3.2 Chunk 1) degrades to "this turn
+    cited nothing" rather than crashing, via the same .get(..., [])
+    discipline this module already uses throughout.
+
+    Returns {"chat_history": [...], "references": [...]}. chat_history
+    is the FULL list, same length/order as session.chat_history --
+    every non-qualifying turn (a user turn, or an assistant turn with
+    no exchange_id) passes through as a plain, independent dict copy
+    with its content untouched; each qualifying assistant turn's own
+    dict copy has just its "content" key replaced with the marker-
+    rewritten version. references is the flat, deduped, numbered list
+    those rewritten markers point into.
+    """
+    papers_by_id = {p.paper_id: p for p in session.selected_papers}
+    web_by_url = {a.url: a for a in session.web_articles_added}
+
+    exchange_ids: list[str] = []
+    sections_out: dict[str, dict] = {}
+    for turn in session.chat_history:
+        exchange_id = turn.get("exchange_id")
+        if turn.get("role") != "assistant" or not exchange_id:
+            continue
+        cited_papers = [
+            papers_by_id[p["paper_id"]]
+            for p in (turn.get("cited_papers") or [])
+            if p.get("paper_id") in papers_by_id
+        ]
+        cited_web_articles = [_resolve_cited_web_article(a, web_by_url) for a in (turn.get("cited_web_articles") or [])]
+        exchange_ids.append(exchange_id)
+        sections_out[exchange_id] = {
+            "content": turn["content"], "cited_papers": cited_papers, "cited_web_articles": cited_web_articles,
+        }
+
+    result = build_references_and_renumber(sections_out, tuple(exchange_ids))
+
+    chat_history_out = []
+    for turn in session.chat_history:
+        exchange_id = turn.get("exchange_id")
+        if turn.get("role") == "assistant" and exchange_id in sections_out:
+            chat_history_out.append({**turn, "content": result[exchange_id]["content"]})
+        else:
+            chat_history_out.append(dict(turn))
+
+    return {"chat_history": chat_history_out, "references": result["references"]}
 
 
 def select_eligible_exchanges_for_report(session: PaperPoolSession, exchange_ids: list[str]) -> tuple[list[str], list[str]]:

@@ -848,6 +848,28 @@ def _build_references_and_renumber(sections_out: dict, section_names: tuple[str,
     return {**sections_out, "references": references}
 
 
+def build_references_and_renumber(sections_out: dict, section_names: tuple[str, ...] = SECTION_NAMES) -> dict:
+    """report-quality Phase R3.2 Chunk 2: a public, stable name for
+    _build_references_and_renumber above, for reuse by callers outside
+    this module -- curation_chat.py's derive_chat_references being the
+    first (chat needs the exact same grouped-marker/raw-source-id/
+    whitespace-cleanup/global-numbering behavior, over "sections" that
+    are really per-exchange chat turns, not report sections). A pure
+    pass-through, not a reimplementation -- _build_references_and_
+    renumber itself is intentionally left in place, unrenamed, so every
+    existing report.py call site and test keeps working unchanged;
+    this is purely an additive, alternate entry point.
+
+    Each call still builds its own brand-new `references` list and
+    `_ReferenceAssigner` internally (see that function's own docstring)
+    -- there is no shared/global numbering state between a caller using
+    this wrapper and report.py's own report-generation call sites, so a
+    chat-scoped and a report-scoped call can never see or influence each
+    other's numbering, regardless of how many times either runs.
+    """
+    return _build_references_and_renumber(sections_out, section_names)
+
+
 def derive_legacy_references(report: dict) -> dict:
     """report-quality Phase R1 backward compatibility: a report persisted
     before this phase has no `references`/`reference_numbers` at all

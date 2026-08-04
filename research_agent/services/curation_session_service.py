@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from research_agent.api_app.schemas import ChatTurn, CurationDeleteResponse, CurationReviewSummary, CurationStateResponse
+from research_agent.api_app.schemas import (
+    ChatTurn,
+    CurationDeleteResponse,
+    CurationReviewSummary,
+    CurationStateResponse,
+    ReferenceEntry,
+)
 from research_agent.api_app.serializers import (
     _paper_out_from_batch_entry,
     _paper_to_out,
@@ -9,6 +15,7 @@ from research_agent.api_app.serializers import (
     _turn_history_out,
     _web_article_to_out,
 )
+from research_agent.curation_chat import derive_chat_references
 from research_agent.curation_loop import get_curation_state
 from research_agent.curation_session import delete_curation_session, list_curation_sessions, load_curation_session
 from research_agent.report import get_active_report_version
@@ -29,6 +36,14 @@ def get_state(session_id: str, cp) -> CurationStateResponse | None:
 
     session = state["session"]
     pending_batch = state["pending_batch"]
+    # report-quality Phase R3.2 Chunk 2: derived fresh from session.
+    # chat_history on every call, never persisted -- chat_history below
+    # is this derivation's own rewritten copy (chat-local numeric [N]
+    # markers), never session.chat_history directly, so a client always
+    # sees resolved citations, not the raw [Paper N]/[Web N] the model
+    # wrote. Independent of report.references entirely -- see derive_
+    # chat_references' own docstring.
+    chat = derive_chat_references(session)
     return CurationStateResponse(
         session_id=session_id, topic=session.topic, display_title=session.display_title,
         stage=session.stage, target_count=session.target_count,
@@ -39,7 +54,7 @@ def get_state(session_id: str, cp) -> CurationStateResponse | None:
         reserve_remaining=max(0, session.remaining()),
         refinement_notes=list(session.refinement_notes),
         report=_report_to_out(session.report, get_active_report_version(session)) if session.report is not None else None,
-        chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+        chat_history=[ChatTurn(**turn) for turn in chat["chat_history"]],
         web_articles_added=[_web_article_to_out(a) for a in session.web_articles_added],
         pending_web_offer=session.pending_web_offer,
         pending_report_update=session.pending_report_update,
@@ -50,6 +65,8 @@ def get_state(session_id: str, cp) -> CurationStateResponse | None:
             _report_version_to_summary(v, session.active_report_version_id) for v in session.report_versions
         ],
         active_report_version_id=session.active_report_version_id,
+        # report-quality Phase R3.2 Chunk 2
+        chat_references=[ReferenceEntry(**r) for r in chat["references"]],
     )
 
 

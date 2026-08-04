@@ -27,6 +27,7 @@ from research_agent.curation_chat import (
     chat_turn,
     cited_web_article_urls_for_exchanges,
     delete_chat_exchanges,
+    derive_chat_references,
     edit_chat_exchange,
     live_cited_web_article_urls,
     mark_exchanges_added_to_report,
@@ -1929,3 +1930,194 @@ def test_edit_chat_exchange_raises_for_pre_phase_1_entries_with_no_exchange_id()
     except ValueError:
         pass
     assert session.chat_history == old_entries  # untouched
+
+
+# --- report-quality Phase R3.2 Chunk 2: derive_chat_references ---
+
+def _user_turn(exchange_id: str, content: str) -> dict:
+    return {"role": "user", "content": content, "exchange_id": exchange_id}
+
+
+def _assistant_turn(exchange_id: str, content: str, cited_papers: list[dict] | None = None, cited_web_articles: list[dict] | None = None) -> dict:
+    return {
+        "role": "assistant", "content": content, "exchange_id": exchange_id,
+        "used_web_search": bool(cited_web_articles),
+        "cited_web_articles": cited_web_articles or [],
+        "cited_papers": cited_papers or [],
+        "added_to_report": False,
+    }
+
+
+def test_derive_chat_references_rewrites_markers_to_numeric_ids_across_multiple_turns():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    web = _web_article("https://w.com", "Web One")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1, p2], web_articles_added=[web],
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+            _user_turn("ex-2", "q2"),
+            _assistant_turn(
+                "ex-2", "Per [Paper 1] and [Web 1].",
+                cited_papers=[{"paper_id": "p2", "title": "Paper Two"}],
+                cited_web_articles=[{"url": "https://w.com", "title": "Web One"}],
+            ),
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    by_exchange = {t["exchange_id"]: t for t in result["chat_history"] if t["role"] == "assistant"}
+    assert by_exchange["ex-1"]["content"] == "Per [1]."
+    assert by_exchange["ex-2"]["content"] == "Per [2] and [3]."
+    assert [r["number"] for r in result["references"]] == [1, 2, 3]
+
+
+def test_derive_chat_references_same_source_across_turns_keeps_one_number():
+    p1 = _paper("p1", "Paper One")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1],
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+            _user_turn("ex-2", "q2"),
+            _assistant_turn("ex-2", "Again, [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    by_exchange = {t["exchange_id"]: t for t in result["chat_history"] if t["role"] == "assistant"}
+    assert by_exchange["ex-1"]["content"] == "Per [1]."
+    assert by_exchange["ex-2"]["content"] == "Again, [1]."
+    assert len(result["references"]) == 1
+
+
+def test_derive_chat_references_handles_grouped_and_raw_paper_id_markers():
+    """Proves the reuse of report.build_references_and_renumber -- these
+    behaviors are NOT reimplemented here, they come free from the shared
+    algorithm."""
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1, p2],
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn(
+                "ex-1", "Both agree [Paper 1, Paper 2]. Also see [p1].",
+                cited_papers=[{"paper_id": "p1", "title": "Paper One"}, {"paper_id": "p2", "title": "Paper Two"}],
+            ),
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    assistant_turn = next(t for t in result["chat_history"] if t["role"] == "assistant")
+    assert assistant_turn["content"] == "Both agree [1][2]. Also see [1]."
+    assert len(result["references"]) == 2
+
+
+def test_derive_chat_references_strips_unknown_markers_without_leaking_raw_text():
+    p1 = _paper("p1", "Paper One")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1],
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn(
+                "ex-1", "Per [Paper 1] but [Paper 9] is invented.",
+                cited_papers=[{"paper_id": "p1", "title": "Paper One"}],
+            ),
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    assistant_turn = next(t for t in result["chat_history"] if t["role"] == "assistant")
+    assert "Paper" not in assistant_turn["content"]
+    assert assistant_turn["content"] == "Per [1] but is invented."
+    assert len(result["references"]) == 1
+
+
+def test_derive_chat_references_deleting_an_exchange_removes_its_reference():
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1, p2],
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+            _user_turn("ex-2", "q2"),
+            _assistant_turn("ex-2", "Per [Paper 1].", cited_papers=[{"paper_id": "p2", "title": "Paper Two"}]),
+        ],
+    )
+    before = derive_chat_references(session)
+    assert len(before["references"]) == 2
+
+    delete_chat_exchanges(session, ["ex-1"])
+    after = derive_chat_references(session)
+
+    assert len(after["references"]) == 1
+    assert after["references"][0]["paper_id"] == "p2"
+    remaining_assistant = next(t for t in after["chat_history"] if t["role"] == "assistant")
+    assert remaining_assistant["content"] == "Per [1]."  # re-compacted, not [2]
+
+
+def test_derive_chat_references_does_not_mutate_stored_chat_history():
+    p1 = _paper("p1", "Paper One")
+    original = [
+        _user_turn("ex-1", "q1"),
+        _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+    ]
+    session = PaperPoolSession(topic="peft", stage="synthesize", selected_papers=[p1], chat_history=original)
+    snapshot = [dict(turn) for turn in original]
+
+    derive_chat_references(session)
+
+    assert session.chat_history == snapshot
+    assert session.chat_history[1]["content"] == "Per [Paper 1]."  # still raw, never rewritten in place
+
+
+def test_derive_chat_references_old_turns_without_cited_papers_or_web_articles_do_not_crash():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "old question", "exchange_id": "ex-1"},
+            {"role": "assistant", "content": "old answer, no metadata at all", "exchange_id": "ex-1"},
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    assistant_turn = next(t for t in result["chat_history"] if t["role"] == "assistant")
+    assert assistant_turn["content"] == "old answer, no metadata at all"
+    assert result["references"] == []
+
+
+def test_derive_chat_references_excludes_pre_phase_1_entries_with_no_exchange_id():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer [Paper 1]"},
+        ],
+    )
+
+    result = derive_chat_references(session)
+
+    assert result["references"] == []
+    assistant_turn = next(t for t in result["chat_history"] if t["role"] == "assistant")
+    assert assistant_turn["content"] == "old answer [Paper 1]"  # untouched -- structurally ineligible
+
+
+def test_derive_chat_references_never_reads_or_mutates_session_report():
+    p1 = _paper("p1", "Paper One")
+    sentinel_report = {"findings": {"content": "report prose", "cited_papers": []}}
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize", selected_papers=[p1], report=sentinel_report,
+        chat_history=[
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+        ],
+    )
+
+    derive_chat_references(session)
+
+    assert session.report is sentinel_report  # same object, completely untouched
