@@ -24,6 +24,7 @@ from research_agent.report import (
     REPORT_SECTION_DEFINITIONS,
     REPORT_TEMPLATES,
     _build_references_and_renumber,
+    _build_regeneration_system_prompt,
     _build_report_schema,
     _build_report_system_prompt,
     _cleanup_marker_stripped_whitespace,
@@ -1522,18 +1523,29 @@ def test_regenerate_report_with_new_sources_old_report_without_report_template_d
     assert result["report_template"] == "analytical"
 
 
-# --- report-quality Phase R2D: approved web sources must survive regeneration ---
-# Root cause: paper citations get force-restored across a regeneration
-# (_restore_dropped_citations), but web citations previously had no
+# --- report-quality Phase R2D/R3.1 (superseded by R3.1b below): approved
+# web sources must survive regeneration ---
+# Original root cause: paper citations get force-restored across a
+# regeneration (_restore_dropped_citations), but web citations had no
 # equivalent -- a web source approved into the report via "Add to
 # report" would silently vanish from References if the model simply
-# never chose to cite it, with no way to recover it on any later
-# regeneration either.
+# never chose to cite it. R2D/R3.1 fixed that with a force-include/
+# restore guarantee -- which then produced its OWN bug (R3.1b below):
+# a References entry with no inline marker anywhere in the body reads
+# as a broken/decorative reference to an actual reader. R3.1b removed
+# that guarantee; the tests below reflect the corrected behavior.
 
-def test_regenerate_report_with_approved_web_sources_force_includes_a_never_cited_approved_url():
-    """Test 1: the core fix -- an approved web URL appears in References
-    even when the mocked model omits cited_web_urls (i.e. cites nothing
-    at all) for every section."""
+# --- report-quality Phase R3.1b: no orphan References entries for
+# approved web sources ---
+# Product rule: a web reference should not appear in References unless
+# at least one inline [N] marker points to it in the report body. The
+# CURRENT round's own model output (cited_web_urls) is the sole source
+# of truth for which web sources a section cites -- no restoration, no
+# force-inclusion, regardless of approval status or prior-report history.
+
+def test_regenerate_report_with_approved_web_sources_never_cited_url_does_not_appear_as_orphan():
+    """The core R3.1b fix: an approved web URL the model doesn't cite in
+    any section this round must not appear in References at all."""
     p1 = _paper("1111", "Paper One")
     web = _web_article("https://new-source.com", "New Source")
     existing_report = {
@@ -1550,22 +1562,16 @@ def test_regenerate_report_with_approved_web_sources_force_includes_a_never_cite
 
     result = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
 
-    assert len(result["references"]) == 1
-    assert result["references"][0]["kind"] == "web"
-    assert result["references"][0]["url"] == "https://new-source.com"
-    # Forced into the fallback section (no section cited any web source
-    # this round) -- prose content is completely untouched, no inline
-    # marker invented.
-    assert result["thematic_findings"]["content"] == ""
-    assert [a.url for a in result["thematic_findings"]["cited_web_articles"]] == ["https://new-source.com"]
+    assert result["references"] == []
+    assert result["thematic_findings"]["cited_web_articles"] == []
 
 
-def test_regenerate_report_with_approved_web_sources_force_includes_into_the_section_with_the_most_web_citations():
-    """The deterministic section-choice signal: when one section DOES
-    cite other web sources this round, the never-cited approved URL
-    lands there, not in the empty-of-web-citations fallback."""
+def test_regenerate_report_with_approved_web_sources_omitted_url_stays_absent_alongside_a_cited_one():
+    """An approved-but-uncited URL stays absent even when a DIFFERENT
+    web source IS genuinely cited that same round -- no deterministic
+    fallback-section injection anymore."""
     p1 = _paper("1111", "Paper One")
-    already_cited = _web_article("https://already-cited.com", "Already Cited")
+    cited = _web_article("https://cited.com", "Cited")
     never_cited = _web_article("https://never-cited.com", "Never Cited")
     existing_report = {
         "gap_analysis": {"content": "old", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
@@ -1574,27 +1580,31 @@ def test_regenerate_report_with_approved_web_sources_force_includes_into_the_sec
     session = PaperPoolSession(
         topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"], report=existing_report,
     )
-    schema = _build_report_schema(["1111"], ["https://already-cited.com", "https://never-cited.com"], REPORT_SECTION_DEFINITIONS)
+    schema = _build_report_schema(["1111"], ["https://cited.com", "https://never-cited.com"], REPORT_SECTION_DEFINITIONS)
     section_cls = schema.model_fields["executive_summary"].annotation
     parsed = _analytical_parsed(
         schema, web_urls_used=True,
-        gap_analysis=section_cls(content="Cites one.", cited_paper_ids=[], cited_web_urls=["https://already-cited.com"]),
+        gap_analysis=section_cls(content="Cites one [Web 1].", cited_paper_ids=[], cited_web_urls=["https://cited.com"]),
     )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
 
-    result = regenerate_report_with_approved_web_sources(session, [already_cited, never_cited], client=mock_client)
+    result = regenerate_report_with_approved_web_sources(session, [cited, never_cited], client=mock_client)
 
-    assert [a.url for a in result["gap_analysis"]["cited_web_articles"]] == ["https://already-cited.com", "https://never-cited.com"]
-    assert result["gap_analysis"]["content"] == "Cites one."  # prose untouched -- no marker was ever there to resolve
-    assert len(result["references"]) == 2
+    assert [a.url for a in result["gap_analysis"]["cited_web_articles"]] == ["https://cited.com"]
+    urls_in_references = {r["url"] for r in result["references"]}
+    assert urls_in_references == {"https://cited.com"}
+    assert "https://never-cited.com" not in urls_in_references
 
 
-def test_regenerate_report_with_approved_web_sources_repeated_regeneration_does_not_drop_the_approved_url():
-    """Test 2: repeated regeneration must not drop it -- once force-
-    included into version N, it must still be there in version N+1."""
+def test_regenerate_report_with_approved_web_sources_organically_cited_url_appears_inline_and_in_references():
+    """The positive path: an approved URL the model genuinely cites --
+    structurally (cited_web_urls) AND with a real inline [Web N] marker
+    -- still appears in References, with the marker resolved to a
+    final [N] in the rendered content. Proves R3.1b didn't break the
+    ordinary, organic citation path."""
     p1 = _paper("1111", "Paper One")
-    web = _web_article("https://persists.com", "Persists")
+    web = _web_article("https://organic.com", "Organic")
     existing_report = {
         "thematic_findings": {"content": "old", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
         "references": [], "skipped_papers": [],
@@ -1602,24 +1612,25 @@ def test_regenerate_report_with_approved_web_sources_repeated_regeneration_does_
     session = PaperPoolSession(
         topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"], report=existing_report,
     )
-    schema = _build_report_schema(["1111"], ["https://persists.com"], REPORT_SECTION_DEFINITIONS)
-    parsed = _analytical_parsed(schema, web_urls_used=True)
+    schema = _build_report_schema(["1111"], ["https://organic.com"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="A claim [Web 1].", cited_paper_ids=[], cited_web_urls=["https://organic.com"]),
+    )
     mock_client = MagicMock()
     mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
 
-    first = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
-    assert len(first["references"]) == 1
+    result = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
 
-    session.report = first
-    second = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
-
-    assert len(second["references"]) == 1
-    assert second["references"][0]["url"] == "https://persists.com"
+    assert len(result["references"]) == 1
+    assert result["references"][0]["url"] == "https://organic.com"
+    assert result["thematic_findings"]["content"] == "A claim [1]."
 
 
-def test_regenerate_report_with_new_sources_does_not_restore_or_force_a_revoked_approved_url():
-    """Test 3: a URL that's BOTH previously approved AND now revoked
-    must not be restored or forced back -- revocation wins."""
+def test_regenerate_report_with_new_sources_revoked_approved_url_never_appears():
+    """A URL that's BOTH previously approved AND now revoked must never
+    appear -- not offered to the model, not in References."""
     p1 = _paper("1111", "Paper One")
     web = _web_article("https://revoked-but-approved.com", "Revoked But Approved")
     existing_report = {
@@ -1635,7 +1646,8 @@ def test_regenerate_report_with_new_sources_does_not_restore_or_force_a_revoked_
     session = PaperPoolSession(
         topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"],
         report=existing_report, web_articles_added=[web],
-        # Approved (so it WOULD get force-include treatment) but also revoked.
+        # Approved (so it WOULD be named in the approved-sources prompt
+        # paragraph) but also revoked -- revocation must win regardless.
         report_approved_web_article_urls={"https://revoked-but-approved.com"},
         revoked_web_article_urls={"https://revoked-but-approved.com"},
     )
@@ -1653,27 +1665,28 @@ def test_regenerate_report_with_new_sources_does_not_restore_or_force_a_revoked_
     assert "cited_web_articles" not in result["thematic_findings"]
 
 
-def test_regenerate_report_with_approved_web_sources_preserves_a_still_approved_prior_citation_the_model_drops():
-    """Test 4: a still-approved URL the PRIOR report cited in a specific
-    section is restored to that section if the model's new draft drops
-    it -- the ordinary restore path, not the force-include-anywhere
-    fallback (proven by checking it lands back in the SAME section)."""
+def test_regenerate_report_with_approved_web_sources_previously_marked_citation_dropped_by_model_disappears():
+    """R3.1b Option B: a URL that had a genuine inline marker in the
+    PRIOR report, but the model's new draft doesn't cite this round,
+    must disappear entirely -- not survive as a metadata-only orphan
+    Reference. The current round's own model output is the sole source
+    of truth; there is no restoration step anymore."""
     p1 = _paper("1111", "Paper One")
-    web = _web_article("https://still-approved.com", "Still Approved")
+    web = _web_article("https://was-cited.com", "Was Cited")
     existing_report = {
         "gap_analysis": {
             "content": "Per [1].", "cited_papers": [], "cited_web_articles": [web], "reference_numbers": [1],
         },
         "references": [{
-            "number": 1, "kind": "web", "paper_id": None, "url": "https://still-approved.com",
-            "title": "Still Approved", "formatted": "x", "link_url": "https://still-approved.com",
+            "number": 1, "kind": "web", "paper_id": None, "url": "https://was-cited.com",
+            "title": "Was Cited", "formatted": "x", "link_url": "https://was-cited.com",
         }],
         "skipped_papers": [],
     }
     session = PaperPoolSession(
         topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"], report=existing_report,
     )
-    schema = _build_report_schema(["1111"], ["https://still-approved.com"], REPORT_SECTION_DEFINITIONS)
+    schema = _build_report_schema(["1111"], ["https://was-cited.com"], REPORT_SECTION_DEFINITIONS)
     section_cls = schema.model_fields["executive_summary"].annotation
     # The model's new draft drops the citation entirely from gap_analysis.
     parsed = _analytical_parsed(
@@ -1685,17 +1698,16 @@ def test_regenerate_report_with_approved_web_sources_preserves_a_still_approved_
 
     result = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
 
-    assert [a.url for a in result["gap_analysis"]["cited_web_articles"]] == ["https://still-approved.com"]
-    assert result["gap_analysis"]["content"] == "New prose, no citation."  # prose itself is untouched
-    assert len(result["references"]) == 1
+    assert result["gap_analysis"]["cited_web_articles"] == []
+    assert result["gap_analysis"]["content"] == "New prose, no citation."
+    assert result["references"] == []
 
 
-def test_regenerate_report_with_new_sources_does_not_force_every_web_articles_added_source():
-    """Test 5: whole-pool regeneration must NOT force every web_
-    articles_added source into References -- only ones actually in
-    report_approved_web_article_urls. A merely-discovered-but-never-
-    approved source the model doesn't cite simply stays absent, exactly
-    as before this fix."""
+def test_regenerate_report_with_new_sources_never_cited_sources_stay_absent_regardless_of_approval():
+    """Whole-pool regeneration: since force-inclusion is gone (R3.1b),
+    an approved-but-uncited source and a merely-discovered-but-never-
+    approved source are now treated identically when the model cites
+    neither -- both stay absent, not just the unapproved one."""
     p1 = _paper("1111", "Paper One")
     approved = _web_article("https://approved.com", "Approved")
     merely_discovered = _web_article("https://merely-discovered.com", "Merely Discovered")
@@ -1715,17 +1727,15 @@ def test_regenerate_report_with_new_sources_does_not_force_every_web_articles_ad
 
     result = regenerate_report_with_new_sources(session, client=mock_client)
 
-    urls_in_references = {r["url"] for r in result["references"]}
-    assert urls_in_references == {"https://approved.com"}
-    assert "https://merely-discovered.com" not in urls_in_references
+    assert result["references"] == []
 
 
 def test_regenerate_report_with_approved_web_sources_paper_citation_preservation_still_works():
-    """Test 6: paper citation preservation (_restore_dropped_citations)
-    is unaffected by any of the new web-citation machinery -- a paper
-    the model's new draft drops is still force-restored, same as
-    before, alongside a never-cited approved web source in the same
-    call."""
+    """Paper citation preservation (_restore_dropped_citations) is
+    unaffected by R3.1b -- a paper the model's new draft drops is still
+    force-restored, same as before, even alongside a never-cited
+    approved web source in the same call (which correctly stays absent
+    now, not force-included)."""
     p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
     web = _web_article("https://new.com", "New")
     existing_report = {
@@ -1751,8 +1761,30 @@ def test_regenerate_report_with_approved_web_sources_paper_citation_preservation
     result = regenerate_report_with_approved_web_sources(session, [web], client=mock_client)
 
     assert {p.paper_id for p in result["thematic_findings"]["cited_papers"]} == {"1111", "2222"}
-    assert [a.url for a in result["thematic_findings"]["cited_web_articles"]] == ["https://new.com"]
+    assert result["thematic_findings"]["cited_web_articles"] == []
     assert result["skipped_papers"] == []
+
+
+def test_build_regeneration_system_prompt_includes_approved_sources_paragraph_when_present():
+    web = _web_article("https://approved.com", "Approved Source")
+    existing_report = {"thematic_findings": {"content": "", "cited_papers": []}, "skipped_papers": []}
+
+    prompt = _build_regeneration_system_prompt(
+        existing_report, REPORT_SECTION_DEFINITIONS, "analytical",
+        allowed_web_urls={"https://approved.com"}, web_by_url={"https://approved.com": web},
+    )
+
+    assert "approved by the user via chat" in prompt
+    assert "Approved Source" in prompt
+    assert "[Web N]" in prompt
+
+
+def test_build_regeneration_system_prompt_omits_approved_sources_paragraph_when_none_given():
+    existing_report = {"thematic_findings": {"content": "", "cited_papers": []}, "skipped_papers": []}
+
+    prompt = _build_regeneration_system_prompt(existing_report, REPORT_SECTION_DEFINITIONS, "analytical")
+
+    assert "approved by the user via chat" not in prompt
 
 
 # --- report-quality Phase R3: report versioning ---

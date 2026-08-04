@@ -1166,17 +1166,40 @@ def _resolve_prior_citations_for_regeneration(existing_report: dict, section_key
 
 def _build_regeneration_system_prompt(
     existing_report: dict, section_definitions: list[dict], template: str = DEFAULT_REPORT_TEMPLATE,
+    allowed_web_urls: set[str] | None = None, web_by_url: dict[str, WebArticle] | None = None,
 ) -> str:
+    """report-quality Phase R3.1b: allowed_web_urls/web_by_url are
+    optional -- when given, appends a paragraph naming the user-approved
+    web sources by title and instructing the model to cite one inline
+    with [Web N] if (and only if) it's genuinely relevant, or omit it
+    entirely otherwise. This is now the ONLY mechanism that gives an
+    approved web source special treatment during regeneration -- there
+    is no deterministic backstop that adds one to the report if the
+    model doesn't cite it inline itself (see _regenerate_report_
+    sections_with_sources' own docstring for why: a metadata-only
+    "restored"/"force-included" citation with no inline marker reads as
+    a broken/decorative reference to an actual reader, so R3.1b removed
+    that guarantee rather than keep producing it)."""
     per_section_citations = "\n".join(
         f"- {d['key']}: {[p.paper_id for p in _resolve_prior_citations_for_regeneration(existing_report, d['key'])]}"
         for d in section_definitions
     )
+    approved_web_paragraph = ""
+    if allowed_web_urls and web_by_url:
+        approved_titles = [web_by_url[url].title for url in allowed_web_urls if url in web_by_url]
+        if approved_titles:
+            titles_list = "\n".join(f"- {title}" for title in approved_titles)
+            approved_web_paragraph = f"""
+
+The following web source(s) were specifically approved by the user via chat, not merely discovered by search:
+{titles_list}
+Integrate one of these only where it is directly relevant to a specific claim you are already making in a section -- if you use it, you MUST cite it inline with a [Web N] marker exactly as instructed above, at the claim it actually supports. If an approved source is not directly relevant to what a section is about, omit it entirely rather than citing it just because it was approved. There is no separate mechanism that adds an approved source to the report on your behalf -- if you don't cite it inline, it will not appear anywhere in the report."""
     return _build_report_system_prompt(section_definitions, template) + f"""
 This is a REGENERATION of an existing report -- additional web sources have been approved since it was first written, and you should incorporate them where genuinely relevant. You MUST preserve every paper_id already cited in a section below: never drop an existing paper citation from a section just because new web sources are now available. You may add new web citations, cite additional papers, and refine the prose, but an already-cited paper must remain cited in any section that previously cited it.
 
 Previously cited paper_ids per section:
 {per_section_citations}
-"""
+""" + approved_web_paragraph
 
 
 def _restore_dropped_citations(existing_report: dict, section_name: str, cited_paper_ids: list[str]) -> list[str]:
@@ -1203,101 +1226,6 @@ def _restore_dropped_citations(existing_report: dict, section_name: str, cited_p
     return restored
 
 
-def _resolve_prior_web_citations_for_regeneration(existing_report: dict, section_key: str) -> list[WebArticle]:
-    """Web-citation analogue of _resolve_prior_citations_for_regeneration
-    above -- same ordinary-case/cross-version-legacy-mapping handling,
-    just reading cited_web_articles instead of cited_papers. `.get(...,
-    [])` throughout: a section from a report generated before any web
-    articles were ever passed in has no cited_web_articles key at all
-    (see generate_report's own "only present if web_by_url" convention),
-    which correctly resolves to "nothing to preserve" rather than a
-    KeyError."""
-    if section_key in existing_report:
-        return existing_report[section_key].get("cited_web_articles", [])
-    legacy_field = _ANALYTICAL_KEY_TO_LEGACY_FIELD.get(section_key)
-    if legacy_field is not None and legacy_field in existing_report:
-        return existing_report[legacy_field].get("cited_web_articles", [])
-    return []
-
-
-def _restore_dropped_web_citations(
-    existing_report: dict, section_name: str, cited_web_urls: list[str], allowed_web_urls: set[str],
-) -> list[str]:
-    """report-quality Phase R2D web-citation-preservation fix: the web
-    counterpart to _restore_dropped_citations above -- appends back, in
-    original order, any web url this exact section cited in the PRIOR
-    report but the regeneration's own output dropped.
-
-    Unlike the paper version, restoration here is gated by
-    allowed_web_urls: a paper has no revocation concept, so every prior
-    paper citation is unconditionally restorable, but a web source can
-    have been explicitly revoked (curation_chat.py's delete_chat_
-    exchanges/edit_chat_exchange -- see session.revoked_web_article_urls'
-    own docstring) since the prior report was generated. Restoring a
-    revoked source here would silently resurrect exactly the bug
-    report-quality Phase R2D's own citation-revocation fix closed --
-    only a URL that's still currently allowed (approved and not
-    revoked) is restored; a revoked one is left dropped, same as the
-    model's own choice not to cite it."""
-    restored = list(cited_web_urls)
-    for article in _resolve_prior_web_citations_for_regeneration(existing_report, section_name):
-        if article.url in allowed_web_urls and article.url not in restored:
-            restored.append(article.url)
-    return restored
-
-
-def _force_include_allowed_web_articles(sections_out: dict, allowed_web_urls: set[str], web_by_url: dict[str, WebArticle]) -> None:
-    """report-quality Phase R2D web-citation-preservation fix: guarantees
-    every URL in allowed_web_urls appears in the final report's
-    References, even one the model has NEVER cited in any section, in
-    this regeneration or any prior one -- the gap _restore_dropped_web_
-    citations above cannot close on its own, since that function can
-    only restore a PRIOR citation, not manufacture a first one for a
-    web source that's brand new this call (exactly the reported bug:
-    a web source approved for the very first time, that the model
-    simply never mentions).
-
-    Mutates sections_out in place, appending any still-missing allowed
-    web article's WebArticle object to ONE section's cited_web_articles
-    list -- never touches that section's own `content` prose, so the
-    source is picked up by _build_references_and_renumber's own
-    existing "structurally cited but unmarked" trailing pass exactly
-    the same way a citation the model forgot to bracket already is, not
-    a new rendering mechanism. Section choice is deterministic, not
-    arbitrary: the section already citing the MOST web sources this
-    round (a real, if coarse, proxy for "the section already
-    synthesizing web evidence"), falling back to thematic_findings --
-    the single largest, most evidence-dense section by word budget, and
-    the one the legacy single "Findings" field historically absorbed
-    most citations into (see _LEGACY_FIELD_TO_ANALYTICAL_KEY) -- only
-    when NO section cited any web source at all this round. Gap
-    Analysis/Future Research Directions were considered and rejected as
-    the fallback: their own descriptions are specifically about
-    absence and future work, and an arbitrary just-approved web source
-    has no genuine semantic connection to either.
-    """
-    already_present = {
-        article.url
-        for name in ANALYTICAL_SECTION_NAMES
-        for article in sections_out[name].get("cited_web_articles", [])
-    }
-    missing_urls = [url for url in allowed_web_urls if url in web_by_url and url not in already_present]
-    if not missing_urls:
-        return
-
-    counts = {name: len(sections_out[name].get("cited_web_articles", [])) for name in ANALYTICAL_SECTION_NAMES}
-    max_count = max(counts.values())
-    target = next((name for name in ANALYTICAL_SECTION_NAMES if counts[name] == max_count), "thematic_findings") if max_count > 0 else "thematic_findings"
-
-    logger.info(
-        "_force_include_allowed_web_articles: force-including %d approved web source(s) into %r "
-        "(never cited by the model this regeneration): %s",
-        len(missing_urls), target, missing_urls,
-    )
-    for url in missing_urls:
-        sections_out[target].setdefault("cited_web_articles", []).append(web_by_url[url])
-
-
 def _regenerate_report_sections_with_sources(
     session: PaperPoolSession, web_articles: list[WebArticle], client: OpenAI | None, model: str, caller_name: str,
     report_template: str | None = None, allowed_web_urls: set[str] | None = None,
@@ -1315,28 +1243,35 @@ def _regenerate_report_sections_with_sources(
     already exist; stage must be "synthesize") -- unchanged, just moved
     here from regenerate_report_with_new_sources's own body.
 
-    allowed_web_urls (report-quality Phase R2D web-citation-preservation
-    fix): the set of web URLs strong enough to get PAPER-LIKE
-    preservation -- restored if the model drops a prior citation to one
-    (_restore_dropped_web_citations), and force-included into References
-    even if the model has never cited it at all (_force_include_allowed_
-    web_articles). Deliberately a SEPARATE set from `web_articles` (the
-    candidates the model is merely OFFERED) -- `web_articles` stays
-    whatever it always was for each caller (the full raw pool for
-    regenerate_report_with_new_sources, exactly approved_web_articles
-    for regenerate_report_with_approved_web_sources), so which sources
-    the model may cite is unchanged; allowed_web_urls only controls
-    which of those candidates are guaranteed to survive regardless of
-    whether the model actually cites them. None/omitted (the default)
-    means nothing gets this stronger treatment -- every existing/future
-    caller that doesn't explicitly opt in keeps today's "purely up to
-    the model" behavior. Both real callers pass this explicitly: see
-    their own docstrings for exactly what each treats as "allowed."
-    Already revoked-safe with zero extra filtering here -- a revoked
-    URL is excluded from `web_articles` (and therefore from web_by_url)
-    by the existing revocation filter below before either helper ever
-    runs, so it's structurally impossible to restore or force-include
-    one even if it's still sitting in allowed_web_urls itself.
+    allowed_web_urls (report-quality Phase R3.1b, replacing R2D/R3.1's
+    force-include/restore guarantee): the set of web URLs to flag to the
+    model, in the regeneration prompt, as user-approved via chat (see
+    _build_regeneration_system_prompt's own approved_web_paragraph).
+    This is now PURELY a prompt signal -- there is no deterministic
+    post-processing that adds or restores a web citation the model
+    doesn't itself put in a section's own cited_web_urls this round.
+    R2D/R3.1 originally guaranteed an approved source's presence
+    regardless of whether the model cited it, via _restore_dropped_web_
+    citations (metadata-only restoration of a prior citation) and
+    _force_include_allowed_web_articles (metadata-only injection of a
+    never-cited one) -- both were removed in R3.1b because a citation
+    with cited_web_articles metadata but no inline [N] marker in that
+    section's own content reads to a reader as a broken/decorative
+    reference (an orphan), exactly the reported bug. The CURRENT
+    round's own model output is now the sole source of truth for which
+    web sources a section cites: this function's own cited_web_urls
+    handling below just passes the model's own selection through
+    (filtered to non-revoked candidates, same as before). Deliberately
+    a SEPARATE set from `web_articles` (the candidates the model is
+    merely OFFERED) -- `web_articles` stays whatever it always was for
+    each caller (the full raw pool for regenerate_report_with_new_
+    sources, exactly approved_web_articles for regenerate_report_with_
+    approved_web_sources). None/omitted (the default) just means no
+    approved-sources paragraph is added to the prompt. Already revoked-
+    safe with zero extra filtering needed here -- a revoked URL is
+    excluded from `web_articles` (and therefore from web_by_url, and
+    therefore from both the prompt paragraph and anything the model
+    could possibly cite) by the existing revocation filter below.
 
     report_template (report-quality Phase R2C): None (the default) means
     PRESERVE session.report's own current template, resolved below via
@@ -1390,7 +1325,10 @@ def _regenerate_report_sections_with_sources(
     papers_by_id = {p.paper_id: p for p in selected_papers}
     web_by_url = {a.url: a for a in web_articles}
     schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, section_definitions)
-    system_prompt = _build_regeneration_system_prompt(existing_report, section_definitions, resolved_template)
+    system_prompt = _build_regeneration_system_prompt(
+        existing_report, section_definitions, resolved_template,
+        allowed_web_urls=allowed_web_urls, web_by_url=web_by_url,
+    )
 
     client = client or OpenAI()
     parsed = _generate_report_sections(
@@ -1407,13 +1345,14 @@ def _regenerate_report_sections_with_sources(
         cited_papers = [papers_by_id[pid] for pid in cited_paper_ids]
         section_out = {"content": section.content, "cited_papers": cited_papers}
         if web_by_url:
+            # report-quality Phase R3.1b: the model's own cited_web_urls
+            # this round is the sole source of truth -- no restoration,
+            # no force-inclusion. A url not in the model's own current
+            # output simply isn't cited this round, same as any other
+            # candidate it chose not to use.
             cited_web_urls = list(getattr(section, "cited_web_urls", []))
-            cited_web_urls = _restore_dropped_web_citations(existing_report, section_name, cited_web_urls, allowed_web_urls)
             section_out["cited_web_articles"] = [web_by_url[url] for url in cited_web_urls if url in web_by_url]
         sections_out[section_name] = section_out
-
-    if allowed_web_urls and web_by_url:
-        _force_include_allowed_web_articles(sections_out, allowed_web_urls, web_by_url)
 
     skipped = [p for pid, p in papers_by_id.items() if pid not in referenced_ids]
     if skipped:
@@ -1435,10 +1374,13 @@ def _regenerate_report_sections_with_sources(
 
     # report-quality Phase R1: renumbering/reference-building runs LAST,
     # after _restore_dropped_citations above has already finalized which
-    # papers/web articles each section cites -- a restored citation the
-    # model's own regenerated content never bracketed correctly falls
-    # into this pass's own "structurally cited but never marked" handling
-    # rather than being silently missing from References.
+    # papers each section cites -- a restored PAPER citation the model's
+    # own regenerated content never bracketed correctly falls into this
+    # pass's own "structurally cited but never marked" handling rather
+    # than being silently missing from References. Web citations have no
+    # such restoration step as of R3.1b (see _regenerate_report_
+    # sections_with_sources' own docstring) -- cited_web_articles above
+    # already reflects only what the model itself cited this round.
     result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
     result = _project_legacy_fields(result)
     result["sections"] = _sections_list(result)
@@ -1495,16 +1437,22 @@ def regenerate_report_with_new_sources(
     _regenerate_report_sections_with_sources's own docstring for the
     exact resolution rule.
 
-    report-quality Phase R2D web-citation-preservation fix:
-    allowed_web_urls is session.report_approved_web_article_urls, NOT
-    the full web_articles_added pool passed as candidates above -- the
-    model may still cite ANY web article ever discovered in chat, same
-    as always, but only a source that's been through the explicit
-    "Add to report" approval flow gets the stronger preservation/force-
-    include treatment. A merely-discovered-but-never-approved web
-    article that the model doesn't cite this round simply doesn't
-    appear, exactly as before this fix -- whole-pool regeneration must
-    never force every web_articles_added source into References.
+    report-quality Phase R3.1b (previously R2D/R3.1's web-citation-
+    preservation fix): allowed_web_urls is session.report_approved_web_
+    article_urls, NOT the full web_articles_added pool passed as
+    candidates above -- the model may still cite ANY web article ever
+    discovered in chat, same as always, but only a source that's been
+    through the explicit "Add to report" approval flow is named in the
+    regeneration prompt's approved-sources paragraph (see
+    _build_regeneration_system_prompt), encouraging the model to cite
+    it inline if relevant. There is no deterministic guarantee anymore
+    -- an approved source the model doesn't cite this round simply
+    doesn't appear, same as a merely-discovered-but-never-approved one
+    always has. This is a deliberate change from R2D/R3.1: their
+    force-include/restore guarantee produced a References entry with no
+    inline marker for a never-cited source, which read as a broken/
+    decorative reference to an actual reader -- R3.1b removed that
+    guarantee rather than keep producing it.
     """
     return _regenerate_report_sections_with_sources(
         session, session.web_articles_added, client, model, "regenerate_report_with_new_sources",
@@ -1566,15 +1514,17 @@ def regenerate_report_with_approved_web_sources(
     its own request schema at all -- chat-triggered regeneration is not
     a product moment for choosing a template.
 
-    report-quality Phase R2D web-citation-preservation fix:
-    allowed_web_urls is exactly {a.url for a in approved_web_articles}
-    -- every web article this call offers the model IS, by this
-    function's own contract, already approved, so the entire candidate
-    set gets the stronger preservation/force-include treatment. This is
-    what actually fixes the reported bug: a web source approved via
-    "Add to report" for the first time, that the model doesn't happen
-    to cite anywhere, now still shows up in References instead of
-    silently vanishing.
+    report-quality Phase R3.1b (previously R2D/R3.1's web-citation-
+    preservation fix): allowed_web_urls is exactly {a.url for a in
+    approved_web_articles} -- every web article this call offers the
+    model IS, by this function's own contract, already approved, so the
+    entire candidate set is named in the regeneration prompt's approved-
+    sources paragraph. As of R3.1b, an approved source the model doesn't
+    genuinely cite inline this round does NOT appear in References --
+    see _regenerate_report_sections_with_sources' own docstring for why
+    the earlier force-include guarantee was removed (it produced an
+    orphan reference: present in References, no inline marker anywhere
+    in the body, which reads as broken/decorative to a reader).
     """
     return _regenerate_report_sections_with_sources(
         session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",
