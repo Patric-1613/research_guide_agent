@@ -450,7 +450,10 @@ _TEMPLATE_DEPTH_GUIDANCE: dict[str, str] = {
         "result matters, and use simpler, more explicit transitions between ideas. Sections may run "
         "toward the upper end of their word budget (or slightly past it) where genuinely needed for "
         "clarity -- clarity takes priority over brevity here. Still ground and cite every claim exactly "
-        "as instructed above; explanatory depth is not a license to skip evidence."
+        "as instructed above; explanatory depth is not a license to skip evidence. Reminder: even when "
+        "naming a paper's real identifier in your explanatory prose (e.g. \"the paper 2308.06821v1 "
+        "shows...\"), the CITATION marker right after it must still be [Paper N] in the instructed "
+        "format -- never repeat that identifier itself as the bracketed marker."
     ),
     "analytical": "",
     "expert": (
@@ -497,7 +500,7 @@ Cite specific, evidence-bearing claims as they occur, not just once per paragrap
 
 If web articles are also provided below, you may additionally cite them (news, tooling, docs -- current/practical context, not peer-reviewed) via each section's cited_web_urls, but never in place of a paper citation, and never as your primary source of evidence for a section -- the selected papers are always the primary evidence base. Only cite a web article when it directly supports or extends a claim already grounded in the papers (e.g. a tool's current real-world adoption, a technique's practical deployment status, a recent development building on a paper's method) -- do not cite a web article merely because it is topically adjacent, and do not use one to introduce a new topic the paper set itself doesn't cover. If none of the given web articles are directly relevant to a section's content, cite none there -- an empty cited_web_urls for a section is expected and fine.
 
-Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself. When a single claim is directly supported by more than one source (e.g. comparing two papers' methods in the same sentence), mark each one with its own bracket back-to-back, e.g. [Paper 2][Paper 5] -- never combine multiple citations into one bracket like [Paper 2, Paper 5].
+Use inline bracket markers in each section's content to mark which source supports each claim: [Paper 1], [Paper 2], ... for papers, in the order you list them in that section's own cited_paper_ids; [Web 1], [Web 2], ... for web articles (if any were provided), in the order you list them in that section's own cited_web_urls. These are two separate numbering sequences, never merged into one, and independent PER SECTION -- start over at [Paper 1]/[Web 1] in each section, never carried over from a previous section. These are temporary, section-local markers only -- they are automatically converted into one shared, report-wide [1], [2], [3]... numbering afterward, so you do not need to (and should not try to) coordinate numbers across sections yourself. When a single claim is directly supported by more than one source (e.g. comparing two papers' methods in the same sentence), mark each one with its own bracket back-to-back, e.g. [Paper 2][Paper 5] -- never combine multiple citations into one bracket like [Paper 2, Paper 5]. Never cite a source using its paper_id, DOI, arXiv ID, Semantic Scholar ID, URL, or title inside the bracket -- always [Paper N] or [Web N] exactly as instructed above, even if you've just named that source's real identifier or title in your own prose right before the marker. The conversion into final numeric citations only recognizes this exact [Paper N]/[Web N] format; anything else in a bracket is not a citation the system can resolve.
 
 Word budgets given above are guidance, not a hard limit -- stay roughly within them, erring toward being concise and evidence-dense rather than padding to hit a count, especially if the given paper set is small. Avoid generic, textbook-style phrasing that could apply to any paper set on this general topic -- ground each claim in what THESE specific selected papers actually say, not a general summary of the field.
 """ + _TEMPLATE_DEPTH_GUIDANCE.get(template, "")
@@ -529,6 +532,82 @@ _SECTION_CITATION_MARKER_RE = re.compile(
 # whole matched bracket text, so it works identically whether that
 # bracket held one entry or several.
 _SECTION_CITATION_MARKER_ENTRY_RE = re.compile(r"(Paper|Web)\s+(\d+)")
+
+# report-quality Phase R2C citation-hardening fix: a deterministic
+# backstop for the model ignoring the instructed [Paper N]/[Web N]
+# format and citing a source by its own real identifier instead --
+# observed specifically in Foundational-template output, e.g.
+# "[2308.06821v1]" or "[abd1c342495432171beb7ca8fd9551ef13cbd0ff]"
+# (a paper's arXiv id / Semantic Scholar-style hash id) leaking straight
+# into the rendered report instead of resolving to a numbered citation.
+# Matches a single bracket whose content has no whitespace (a real
+# paper_id/DOI/URL is always one unbroken token; ordinary bracketed
+# prose almost always contains a space, which keeps this from
+# misfiring on some unrelated aside the model happens to bracket) and
+# that does NOT already look like a valid "Paper N"/"Web N" marker (the
+# negative lookahead below) -- that shape is left alone for
+# _SECTION_CITATION_MARKER_RE/_densify_section_markers to handle exactly
+# as before. See _resolve_raw_source_id_markers below for the actual
+# exact-match-against-known-sources resolution.
+_RAW_SOURCE_ID_MARKER_RE = re.compile(r"\[(?!\s*(?:Paper|Web)\s+\d+)([^\s\[\]]+)\]")
+
+
+def _resolve_raw_source_id_markers(
+    content: str, section_name: str, cited_papers: list[Paper], cited_web_articles: list[WebArticle],
+    assigner: _ReferenceAssigner, section_marked_keys: dict[str, set[tuple[str, str]]],
+) -> str:
+    """report-quality Phase R2C citation-hardening fix: resolves a raw-
+    identifier marker (see _RAW_SOURCE_ID_MARKER_RE) directly to the
+    SAME global reference number the source would get through the
+    normal [Paper N]/[Web N] path -- both go through the same shared
+    `assigner`, so a source cited once via its raw id and again via a
+    correct [Paper N] marker elsewhere in the report still collapses to
+    exactly one reference number, not two.
+
+    A bracket only ever resolves here if its trimmed content EXACTLY
+    matches one of THIS section's own cited_papers' paper_id or
+    cited_web_articles' url -- never a fuzzy/partial/global-pool match,
+    the same "no guessing" discipline _build_references_and_renumber's
+    own out-of-range handling already uses. A bare digit string (the
+    shape of an already-final "[N]" marker) is deliberately never
+    treated as a candidate id -- this app's real paper_ids/urls are
+    never plain digits, and it's cheap insurance against ever
+    misinterpreting an unrelated numeric bracket.
+
+    Runs BEFORE _densify_section_markers/the regular marker-resolve pass,
+    directly on the section's ORIGINAL, unmodified content -- resolving
+    straight to a final "[N]" string, which neither of those two
+    passes' own regexes matches, so it's left untouched by them
+    afterward. A raw id that matches nothing known is INVALID, same
+    "strip it, don't guess" policy as an out-of-range [Paper N] marker:
+    dropped entirely (never left as raw text in the final report body),
+    logged as a warning.
+    """
+    paper_by_id = {p.paper_id: p for p in cited_papers}
+    article_by_url = {a.url: a for a in cited_web_articles}
+
+    def _replace(match: re.Match[str]) -> str:
+        candidate = match.group(1)
+        if candidate.isdigit():
+            return match.group()
+        if candidate in paper_by_id:
+            paper = paper_by_id[candidate]
+            section_marked_keys[section_name].add(("paper", paper.paper_id))
+            number = assigner.get_or_assign("paper", paper.paper_id, paper.title, paper=paper)
+            return f"[{number}]"
+        if candidate in article_by_url:
+            article = article_by_url[candidate]
+            section_marked_keys[section_name].add(("web", article.url))
+            number = assigner.get_or_assign("web", article.url, article.title, article=article)
+            return f"[{number}]"
+        logger.warning(
+            "_resolve_raw_source_id_markers: dropping unrecognized bracketed marker %r in %r section "
+            "(matches no cited paper_id or web url there)", candidate, section_name,
+        )
+        return ""
+
+    return _RAW_SOURCE_ID_MARKER_RE.sub(_replace, content)
+
 
 # report-quality Phase R2B.1: an invalid/out-of-range marker resolves to
 # "" in _build_references_and_renumber's own _resolve (see that
@@ -687,7 +766,16 @@ def _build_references_and_renumber(sections_out: dict, section_names: tuple[str,
         section = sections_out[section_name]
         cited_papers = section["cited_papers"]
         cited_web_articles = section.get("cited_web_articles", [])
-        densified = _densify_section_markers(section["content"])
+        # report-quality Phase R2C citation-hardening fix: resolves any
+        # raw-identifier marker (see _resolve_raw_source_id_markers'
+        # own docstring) BEFORE densify/the regular [Paper N]/[Web N]
+        # pass -- straight to a final "[N]" string, which neither of
+        # those two passes' own regexes matches, so it passes through
+        # them unchanged afterward.
+        raw_id_resolved = _resolve_raw_source_id_markers(
+            section["content"], section_name, cited_papers, cited_web_articles, assigner, section_marked_keys,
+        )
+        densified = _densify_section_markers(raw_id_resolved)
 
         def _resolve(
             match: re.Match[str], section_name: str = section_name,

@@ -659,6 +659,151 @@ def test_build_references_and_renumber_grouped_marker_all_entries_invalid_leaves
     assert "Paper" not in result["findings"]["content"]
 
 
+# --- report-quality Phase R2C: raw-source-id citation-hardening fix ---
+# Root cause: the model sometimes ignores the instructed [Paper N]/
+# [Web N] marker format and cites a source using its own real
+# identifier instead (observed in Foundational-template output) -- e.g.
+# "[2308.06821v1]" (arXiv id) or "[abd1c342495432171beb7ca8fd9551ef13cbd0ff]"
+# (a Semantic-Scholar-style hash id), which the old parser had no way to
+# recognize at all, leaking raw, unresolved identifier text straight
+# into the rendered report.
+
+def test_build_references_and_renumber_converts_arxiv_style_raw_paper_id_marker():
+    p1 = _paper("2308.06821v1", "Paper One")
+    sections_out = _sections_out(
+        findings={"content": "Per [2308.06821v1], X is shown.", "cited_papers": [p1]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1], X is shown."
+    assert len(result["references"]) == 1
+    assert result["references"][0]["paper_id"] == "2308.06821v1"
+
+
+def test_build_references_and_renumber_converts_hash_style_raw_paper_id_marker():
+    p1 = _paper("abd1c342495432171beb7ca8fd9551ef13cbd0ff", "Paper One")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [abd1c342495432171beb7ca8fd9551ef13cbd0ff], X is shown.",
+            "cited_papers": [p1],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1], X is shown."
+    assert len(result["references"]) == 1
+
+
+def test_build_references_and_renumber_raw_paper_id_marker_matches_a_web_url_too():
+    """The same backstop, applied to a raw web article url exact-matched
+    against that section's own cited_web_articles -- the minimum-risk
+    extension the fix's own investigation covers, not just paper_ids."""
+    web = _web_article("https://example.com/survey", "A Survey")
+    sections_out = _sections_out(
+        findings={
+            "content": "Per [https://example.com/survey], X is shown.",
+            "cited_papers": [], "cited_web_articles": [web],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1], X is shown."
+    assert result["references"][0]["kind"] == "web"
+
+
+def test_build_references_and_renumber_raw_paper_id_and_paper_n_marker_for_same_source_keep_one_number():
+    p1, p2 = _paper("2308.06821v1", "Paper One"), _paper("2222", "Paper Two")
+    sections_out = _sections_out(
+        findings={
+            "content": "First [Paper 1] then also [2308.06821v1], and separately [Paper 2].",
+            "cited_papers": [p1, p2],
+        },
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "First [1] then also [1], and separately [2]."
+    assert len(result["references"]) == 2
+
+
+def test_build_references_and_renumber_unrecognized_raw_id_marker_does_not_leak_into_content():
+    p1 = _paper("2308.06821v1", "Paper One")
+    sections_out = _sections_out(
+        findings={"content": "Per [2308.06821v1] and [totally-unknown-id], X.", "cited_papers": [p1]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Per [1] and, X."
+    assert "totally-unknown-id" not in result["findings"]["content"]
+    assert len(result["references"]) == 1
+
+
+def test_build_references_and_renumber_raw_id_backstop_never_misreads_a_bare_digit_bracket():
+    """Safety guard: a bare digit string inside brackets (the shape of
+    an already-final [N] marker) is never treated as a raw-id candidate,
+    even if -- purely hypothetically -- a paper_id happened to be a
+    small integer string. Regular [Paper N] markers remain the only way
+    to cite by position; this backstop only ever fires on an exact,
+    non-numeric identifier match."""
+    p1 = _paper("1", "Paper One")
+    sections_out = _sections_out(
+        findings={"content": "See [1] here.", "cited_papers": []},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    # [1] is left completely untouched by the raw-id backstop (it's
+    # digit-only) -- and since it's not a valid [Paper N]/[Web N] marker
+    # either, the regular pass also leaves it alone (no cited_papers to
+    # even attempt a match against).
+    assert result["findings"]["content"] == "See [1] here."
+    assert result["references"] == []
+
+
+def test_build_references_and_renumber_existing_single_and_grouped_paper_n_markers_still_work():
+    """Non-regression: the raw-id backstop must not interfere with
+    ordinary [Paper N]/grouped [Paper N, Paper M] resolution at all."""
+    p1, p2 = _paper("p1", "Paper One"), _paper("p2", "Paper Two")
+    sections_out = _sections_out(
+        findings={"content": "Solo [Paper 1]. Grouped [Paper 1, Paper 2].", "cited_papers": [p1, p2]},
+    )
+
+    result = _build_references_and_renumber(sections_out)
+
+    assert result["findings"]["content"] == "Solo [1]. Grouped [1][2]."
+    assert len(result["references"]) == 2
+
+
+def test_generate_report_end_to_end_raw_paper_id_marker_never_leaks_for_any_template():
+    """Proves the wiring for all three templates, not just the isolated
+    post-processing function -- a mocked model response using a raw
+    paper_id marker (the actual observed Foundational bug) comes back
+    through the real generate_report() fully resolved regardless of
+    which template generated it."""
+    for template in _ALL_TEMPLATES:
+        p1 = _paper("2308.06821v1", "Paper One")
+        schema = _build_report_schema(["2308.06821v1"], None, REPORT_TEMPLATES[template])
+        section_cls = schema.model_fields["executive_summary"].annotation
+        parsed = _analytical_parsed(
+            schema,
+            thematic_findings=section_cls(
+                content="Per [2308.06821v1], strong results.", cited_paper_ids=["2308.06821v1"],
+            ),
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+        result = generate_report("some topic", [p1], client=mock_client, report_template=template)
+
+        assert result["thematic_findings"]["content"] == "Per [1], strong results."
+        assert "2308.06821v1" not in result["thematic_findings"]["content"]
+        assert len(result["references"]) == 1
+
+
 # --- report-quality Phase R2B.1: deterministic whitespace cleanup ---
 
 def test_cleanup_marker_stripped_whitespace_collapses_repeated_spaces():
