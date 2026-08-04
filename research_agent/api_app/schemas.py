@@ -136,6 +136,17 @@ class ChatTurn(BaseModel):
     # metadata -- only ever set on the assistant entry of a pair.
     used_web_search: bool = False
     cited_web_articles: list[CitedWebArticleOut] = Field(default_factory=list)
+    # report-quality Phase R3.2 Chunk 1: the paper-citation counterpart to
+    # cited_web_articles above, same per-answer-only/additive/defaulted
+    # convention -- a turn predating this field (or predating curation-
+    # chat-metadata Phase 1 entirely) simply has none, [] being the
+    # correct "nothing was ever recorded" default rather than a crash.
+    # Lightweight {paper_id, title} entries only, deliberately NOT full
+    # Paper objects -- session.selected_papers already holds the full
+    # data (url/doi/etc.) chat is scoped to for the whole session, so a
+    # paper_id is enough to resolve a real hyperlink/citation later
+    # without duplicating paper data onto every single chat turn.
+    cited_papers: list[CitedPaperOut] = Field(default_factory=list)
     # Always False in Phase 1 -- no code path sets this True yet (that's a
     # later phase's "Add to report" action).
     added_to_report: bool = False

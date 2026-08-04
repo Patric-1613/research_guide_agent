@@ -484,11 +484,17 @@ def testcapped_history_is_a_no_op_below_the_cap():
 
 def testcapped_history_strips_extra_metadata_keys():
     """curation-chat-metadata Phase 1: entries persisted with extra
-    keys (exchange_id/used_web_search/cited_web_articles/added_to_report)
-    must come back as plain {role, content} -- this is what's actually
-    handed to the model, so any extra key here would ride along into the
-    LLM-bound messages list (qa.py's _generate_node splices this return
-    value directly into `messages`)."""
+    keys (exchange_id/used_web_search/cited_web_articles/cited_papers/
+    added_to_report) must come back as plain {role, content} -- this is
+    what's actually handed to the model, so any extra key here would
+    ride along into the LLM-bound messages list (qa.py's _generate_node
+    splices this return value directly into `messages`).
+
+    report-quality Phase R3.2 Chunk 1: cited_papers (added alongside the
+    already-existing cited_web_articles) is stripped by the exact same
+    mechanism, with no code change needed -- capped_history was already
+    written to keep only {role, content} regardless of what extra keys
+    the input dicts carry."""
     history = [
         {
             "role": "user", "content": "what's new?", "exchange_id": "abc123",
@@ -497,6 +503,7 @@ def testcapped_history_strips_extra_metadata_keys():
             "role": "assistant", "content": "Per [Web 1], ...", "exchange_id": "abc123",
             "used_web_search": True,
             "cited_web_articles": [{"url": "https://x.com", "title": "X"}],
+            "cited_papers": [{"paper_id": "p1", "title": "Paper One"}],
             "added_to_report": False,
         },
     ]
@@ -518,6 +525,7 @@ def testcapped_history_does_not_mutate_the_original_list_or_dicts():
     original_assistant_turn = {
         "role": "assistant", "content": "Per [Web 1], ...", "exchange_id": "abc123",
         "used_web_search": True, "cited_web_articles": [{"url": "https://x.com", "title": "X"}],
+        "cited_papers": [{"paper_id": "p1", "title": "Paper One"}],
         "added_to_report": False,
     }
     history = [{"role": "user", "content": "what's new?", "exchange_id": "abc123"}, original_assistant_turn]
@@ -531,6 +539,7 @@ def testcapped_history_does_not_mutate_the_original_list_or_dicts():
     # (so a caller mutating the capped copy can never corrupt the original).
     assert capped[1] is not original_assistant_turn
     assert "used_web_search" in original_assistant_turn  # untouched by capping
+    assert "cited_papers" in original_assistant_turn  # untouched by capping
 
 
 def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():

@@ -269,12 +269,12 @@ def capped_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> l
     condense_question(capped_history(...)) call. A caller's PERSISTED
     history (session.history / PaperPoolSession.chat_history) may carry
     extra per-message metadata (exchange_id, used_web_search,
-    cited_web_articles, added_to_report, ...) that must never reach an
-    LLM prompt -- so this always returns brand-new dicts containing only
-    {role, content}, regardless of what extra keys the input dicts have.
-    Never mutates the input list or its dicts in place: the original,
-    persisted history keeps its full metadata untouched; only this
-    returned copy is stripped.
+    cited_web_articles, cited_papers, added_to_report, ...) that must
+    never reach an LLM prompt -- so this always returns brand-new dicts
+    containing only {role, content}, regardless of what extra keys the
+    input dicts have. Never mutates the input list or its dicts in
+    place: the original, persisted history keeps its full metadata
+    untouched; only this returned copy is stripped.
     """
     sliced = history[-2 * max_turns:]
     return [{"role": turn["role"], "content": turn["content"]} for turn in sliced]

@@ -1278,14 +1278,20 @@ def test_curation_chat_answers_and_persists_history_across_a_separate_get_reques
     # every new field comes back at its default, not a hardcoded/omitted
     # value. This is the exact "old chat_history entries still serialize
     # through ChatTurn/API" backward-compat case.
+    #
+    # report-quality Phase R3.2 Chunk 1: cited_papers is the newest such
+    # additive field -- also defaults to [] for this exact old-shape
+    # fixture, same as cited_web_articles already does.
     assert state_resp.json()["chat_history"] == [
         {
             "role": "user", "content": "what does paper 0 say?",
-            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "cited_papers": [],
+            "added_to_report": False,
         },
         {
             "role": "assistant", "content": "Per [Paper 1], X is true.",
-            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "added_to_report": False,
+            "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "cited_papers": [],
+            "added_to_report": False,
         },
     ]
 

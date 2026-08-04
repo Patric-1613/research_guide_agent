@@ -404,8 +404,8 @@ def _attach_exchange_metadata(session: PaperPoolSession, result: dict) -> None:
     """curation-chat-metadata Phase 1: stamps the exchange _chat_turn_impl
     just appended with a shared exchange_id and, on the assistant entry
     only, persisted per-answer metadata (used_web_search,
-    cited_web_articles, added_to_report) later phases will read and
-    (eventually) write.
+    cited_web_articles, cited_papers, added_to_report) later phases will
+    read and (eventually) write.
 
     Invariant this relies on: exactly ONE user entry and ONE assistant
     entry get appended per _chat_turn_impl call, in that order, ending up
@@ -415,6 +415,15 @@ def _attach_exchange_metadata(session: PaperPoolSession, result: dict) -> None:
     module's own docstrings/comments, which already rely on this same
     fact). Pre-Phase-1 entries earlier in chat_history are never touched
     -- only the pair this call just produced.
+
+    report-quality Phase R3.2 Chunk 1: cited_papers is stamped the same
+    way cited_web_articles already was -- result["cited_papers"] (real
+    Paper objects, already present in qa.ask()'s own result dict for
+    every code path, just never persisted before this) reduced down to
+    lightweight {paper_id, title} dicts, NOT full Paper objects --
+    session.selected_papers already holds the full data for the whole
+    session, so a paper_id is enough to resolve a real citation/hyperlink
+    later without duplicating paper data onto every chat turn.
     """
     if len(session.chat_history) < 2:
         return
@@ -425,6 +434,8 @@ def _attach_exchange_metadata(session: PaperPoolSession, result: dict) -> None:
     cited_web_articles = result.get("cited_web_articles") or []
     assistant_turn["used_web_search"] = bool(cited_web_articles)
     assistant_turn["cited_web_articles"] = [{"url": a.url, "title": a.title} for a in cited_web_articles]
+    cited_papers = result.get("cited_papers") or []
+    assistant_turn["cited_papers"] = [{"paper_id": p.paper_id, "title": p.title} for p in cited_papers]
     assistant_turn["added_to_report"] = False
 
 

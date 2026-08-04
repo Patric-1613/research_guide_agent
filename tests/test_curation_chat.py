@@ -958,6 +958,53 @@ def test_chat_turn_assistant_entry_marks_used_web_search_and_cites_when_web_sour
     assert assistant_turn["added_to_report"] is False  # Phase 1: never set True by any code path yet
 
 
+def test_chat_turn_assistant_entry_attaches_cited_papers_from_the_qa_ask_result():
+    """report-quality Phase R3.2 Chunk 1: the raw material (qa.ask()'s
+    own result["cited_papers"], real Paper objects) already existed at
+    this exact point -- it was just discarded before this fix. Stored as
+    lightweight {paper_id, title} dicts, NOT full Paper objects."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Fine [Paper 1].", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "what is RoCoFT?", client=mock_client)
+
+    assistant_turn = session.chat_history[-1]
+    assert assistant_turn["cited_papers"] == [{"paper_id": "p1", "title": "RoCoFT"}]
+
+
+def test_chat_turn_unanswerable_message_has_no_cited_papers():
+    """Mirrors _generate_node's own defensive "empty if not answerable"
+    enforcement -- an unanswerable turn's cited_papers must be [], not
+    whatever the model may have hallucinated onto an unused field."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=False, answer="I can't answer that from the selected papers.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "something unrelated?", client=mock_client)
+
+    assistant_turn = session.chat_history[-1]
+    assert assistant_turn["cited_papers"] == []
+
+
 def test_chat_turn_paper_only_answer_has_used_web_search_false_and_no_cited_web_articles():
     papers = [_paper("p1", "RoCoFT")]
     session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
