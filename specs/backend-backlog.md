@@ -405,6 +405,10 @@ invented:
   `70875fa` (frontend).
 
 ### R3.1: approved web citation enforcement across regeneration
+- **Superseded by R3.1b below** — this entry's force-include/restore
+  mechanism was removed because it produced its own bug (an orphan
+  References entry with no inline marker in the report body). Kept as
+  historical record; see R3.1b for current behavior.
 - **Goal**: a web source approved for the report via chat must actually
   survive report regeneration — not just papers, which already had this
   guarantee.
@@ -440,7 +444,46 @@ invented:
   `regenerate_report_with_new_sources`, `regenerate_report_with_
   approved_web_sources`).
 - **Priority**: n/a — done.
-- **Status**: Closed (2026-08-05). Commit `bc4fc86`.
+- **Status**: Closed (2026-08-05). Commit `bc4fc86`. Superseded by R3.1b.
+
+### R3.1b: no orphan References entries for approved web sources
+- **Goal**: a web reference should not appear in a report's References
+  list unless at least one inline `[N]` citation marker in the body
+  actually points to it — no orphan entries, ever.
+- **Why it matters**: reported live via a report screenshot — R3.1's
+  force-include mechanism guaranteed an approved web source's presence
+  in References even when the model never cited it, by appending it to
+  a section's `cited_web_articles` metadata without touching that
+  section's prose. The result: a numbered, linked References entry
+  with no `[N]` marker anywhere in the visible report body — reads as a
+  broken or decorative reference to an actual reader.
+- **Implementation**: `_force_include_allowed_web_articles`,
+  `_restore_dropped_web_citations`, and `_resolve_prior_web_citations_
+  for_regeneration` removed entirely from `research_agent/report.py` —
+  not narrowed, since any append to `cited_web_articles` without a
+  matching prose marker hits the same shared "structurally cited but
+  unmarked" trailing pass that produced the orphan. The current round's
+  own model output (`cited_web_urls`) is now the sole source of truth
+  for which web sources a section cites; a previously-cited source the
+  model drops this round simply disappears, rather than surviving as a
+  metadata-only orphan. `_build_regeneration_system_prompt` gained an
+  optional approved-sources paragraph (naming user-approved web sources
+  by title, instructing the model to cite one inline with `[Web N]`
+  only if directly relevant, omit otherwise) — a prompt nudge, not a
+  guarantee; it's now the only mechanism giving an approved source any
+  special treatment. Revoked-URL exclusion and paper citation
+  preservation are both unchanged. Two options were weighed (a bounded
+  one-round-orphan restoration vs. no restoration at all); Option B (no
+  restoration at all) was chosen — preservation across regeneration now
+  only holds as long as the model keeps citing a source on its own. See
+  `docs/architecture.md`'s "R3.1b — no orphan References entries for
+  approved web sources" section for the full design record.
+- **Location**: `research_agent/report.py`
+  (`_regenerate_report_sections_with_sources`, `_build_regeneration_
+  system_prompt`, `regenerate_report_with_new_sources`, `regenerate_
+  report_with_approved_web_sources`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commit `58ab01e`.
 
 ### R3.2: chat-side references with independent numbering
 - **Goal**: give curation chat its own resolved `[N]` citation numbering
@@ -518,6 +561,11 @@ invented:
   - Evaluator/refinement scores/feedback attached to a specific report
     version — R3 exists partly to make this safe to build later, not to
     build it now.
+  - A chat/web-retrieval evaluation and red-team suite — nothing in the
+    chat/report arc (R1–R3.2) has adversarial/eval-style coverage the
+    way `report.py`'s citation-grounding does (`tests/test_report_
+    grounding.py`) or the original pipeline's RAGAS harness does
+    (`docs/evaluation.md`); worth its own scoped pass before R4.
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-05). Commits `58e8c00` (Chunk 1),
   `6bb4c05` (Chunk 2), `e6941a4` (Chunk 3).

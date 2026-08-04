@@ -1904,7 +1904,14 @@ Postgres/multi-user phase changes the cost/query-pattern tradeoff.
 199 passed; frontend build clean (`tsc -b && vite build`). Commits
 `93e1a63` (backend versioning + API) and `70875fa` (frontend selector).
 
-### R3.1 — approved web citation enforcement across regeneration (2026-08-05) — complete
+### R3.1 — approved web citation enforcement across regeneration (2026-08-05) — superseded by R3.1b below
+
+**This section is preserved as historical record of what R3.1 originally
+shipped — its force-include/restore mechanism described below was
+REMOVED by R3.1b (next section) because it produced its own bug (an
+orphan References entry with no inline marker anywhere in the report
+body). Read this section for history; read R3.1b for the current
+behavior.**
 
 **Bug**: a web source added to the report via chat (an approved,
 `allowed_web_urls`-gated source — see R3.2 below and `session.report_
@@ -1966,6 +1973,75 @@ eligible.
 
 **Validation**: full backend suite → 517 passed. No schema, endpoint,
 or frontend changes. Commit `bc4fc86`.
+
+### R3.1b — no orphan References entries for approved web sources (2026-08-05) — complete
+
+**Bug R3.1 introduced**: R3.1's force-include/restore mechanism
+guaranteed an approved web source's presence in References regardless
+of whether the model ever cited it — but it did that by appending the
+`WebArticle` to a section's `cited_web_articles` *metadata* only, never
+touching that section's `content` prose. Reported live via a report
+screenshot: a web reference appeared in the rendered References list
+with no `[N]` marker anywhere in the visible body — present, numbered,
+linked, but not actually pointed to by any sentence a reader could
+find. From a reader's perspective this looks like a broken or
+decorative reference.
+
+**Root cause**: `_build_references_and_renumber`'s "structurally cited
+but unmarked" trailing pass (pre-dating R3.1, originally meant only for
+a source the model itself selected in `cited_paper_ids`/`cited_web_urls`
+this round but forgot to bracket in its own prose) can't distinguish
+that legitimate case from an entry injected by R3.1's own code after
+the model never selected it at all. Anything sitting in a section's
+`cited_web_articles` with no matching marker in that section's content
+lands in this pass and gets a References entry unconditionally.
+
+**Product rule adopted**: a web reference should not appear in
+References unless at least one inline `[N]` citation marker in the
+report body actually points to it. No exceptions, no bounded orphan
+window — the current round's own model output (`cited_web_urls`) is
+the sole source of truth for which web sources a section cites.
+
+**Fix — `research_agent/report.py`, backend-only**:
+- **Removed entirely** (not narrowed — no narrower version avoids the
+  orphan, since any append to `cited_web_articles` hits the same
+  shared trailing pass): `_force_include_allowed_web_articles`,
+  `_restore_dropped_web_citations`, and `_resolve_prior_web_citations_
+  for_regeneration` (only used by the restore function, left dead
+  otherwise).
+- `_regenerate_report_sections_with_sources`'s per-section web-citation
+  handling now just filters the model's own `cited_web_urls` for THIS
+  round against `web_by_url` — no restoration, no force-inclusion. A
+  previously-marked web citation the model drops this round now
+  disappears entirely rather than surviving as a metadata-only orphan.
+- `_build_regeneration_system_prompt` gained optional `allowed_web_
+  urls`/`web_by_url` parameters: when approved sources are present, it
+  appends a paragraph naming them by title, telling the model they were
+  specifically approved by the user via chat, instructing it to
+  integrate one only where directly relevant and cite it inline with
+  `[Web N]` if used, and to omit it entirely rather than force it if
+  not relevant — explicit that nothing else adds it on the model's
+  behalf. This is now the ONLY mechanism giving an approved source
+  special treatment; it's a prompt nudge, not a guarantee.
+- Revocation behavior is unchanged: a revoked URL is still excluded
+  from `web_articles` (and therefore from `web_by_url`, therefore from
+  both the prompt paragraph and anything the model could possibly
+  cite) by the existing filter at the top of `_regenerate_report_
+  sections_with_sources` — revoked still always wins.
+- Paper citation preservation (`_restore_dropped_citations`) is
+  completely untouched — this fix is web-only.
+
+**Two options were weighed before implementing** (a "keep restoring,
+accept a bounded one-round orphan" Option A vs. this "no orphans ever,
+even at the cost of weaker preservation" Option B) — Option B was
+explicitly chosen: preservation across regeneration now only holds for
+as long as the model keeps citing a source on its own; there is no
+deterministic backstop anymore for a source the model has genuinely
+stopped citing.
+
+**Validation**: `tests/test_report.py` → 89 passed; full backend suite
+→ 533 passed. No schema, endpoint, or frontend changes. Commit
+`58ab01e`.
 
 ### R3.2 — chat-side references with independent numbering (2026-08-05) — complete
 
