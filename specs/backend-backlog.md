@@ -89,6 +89,47 @@ review carries forward as open.)
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-03). Commit `f826ad6`.
 
+### Foundational report leaked raw paper IDs as citations
+- **Reported**: 2026-08-04, via live report screenshots showing raw
+  identifiers like `[2308.06821v1]` and
+  `[abd1c342495432171beb7ca8fd9551ef13cbd0ff]` in a Foundational-
+  template report's rendered body instead of numbered citations.
+- **Symptom**: the model sometimes ignored the instructed `[Paper N]`/
+  `[Web N]` marker format entirely and cited a source using its own real
+  identifier (arXiv id, Semantic Scholar-style hash id) instead —
+  observed specifically in Foundational-template output. The existing
+  citation-marker parser only recognized the exact `Paper N`/`Web N`
+  shape, so a raw-identifier bracket was structurally invisible to it:
+  never converted, never stripped, just leaked through as raw,
+  unresolved text.
+- **Root cause**: `_SECTION_CITATION_MARKER_RE` (and the whole
+  downstream renumbering pipeline) had no way to recognize a bracket
+  containing anything other than the literal `Paper N`/`Web N` shape.
+- **Fix**: two-part. (1) Prompt reinforcement — the shared marker-
+  instruction paragraph now explicitly forbids citing via paper_id/DOI/
+  arXiv id/Semantic Scholar id/URL/title inside a bracket, and the
+  Foundational template's own depth-guidance got an extra, template-
+  specific reminder, since that's where the bug was observed. (2) A new
+  deterministic backstop, `_resolve_raw_source_id_markers`, run before
+  densify/the regular marker-resolve pass: a bracket with no internal
+  whitespace, not already a valid `Paper N`/`Web N` marker, is resolved
+  to the correct global reference number ONLY on an exact match against
+  that section's own cited paper_ids/web urls, through the same shared
+  `_ReferenceAssigner` the regular pipeline uses (so a raw-id citation
+  and a correct-marker citation for the same source collapse to one
+  number). An unrecognized raw id is stripped, not guessed at, same
+  policy as an out-of-range `[Paper N]` marker. A bare digit string is
+  never treated as a raw-id candidate, guarding against ever
+  misinterpreting an already-final `[N]` marker. See
+  `docs/architecture.md`'s "Raw source-id citation hardening fix"
+  section for the full design record.
+- **Location**: `research_agent/report.py`
+  (`_build_report_system_prompt`, `_TEMPLATE_DEPTH_GUIDANCE`,
+  `_RAW_SOURCE_ID_MARKER_RE`, `_resolve_raw_source_id_markers`,
+  `_build_references_and_renumber`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-04). Commit `0189c2f`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — bug 1]

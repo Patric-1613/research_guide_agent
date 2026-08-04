@@ -1710,6 +1710,79 @@ introduced at the page level.
 `1020a02` (backend template support + persistence/API) and `68ea849`
 (frontend selector).
 
+### Raw source-id citation hardening fix (2026-08-04) — complete
+
+Follow-up fix closing a gap the grouped-marker fix above didn't cover.
+Reported symptom: a Foundational-template report showed raw, unresolved
+identifiers leaking straight into the rendered body instead of numbered
+citations — e.g. `[2308.06821v1]` (an arXiv id) or
+`[abd1c342495432171beb7ca8fd9551ef13cbd0ff]` (a Semantic-Scholar-style
+hash id).
+
+**Root cause**: the model sometimes ignores the instructed `[Paper N]`/
+`[Web N]` marker format entirely and cites a source using its own real
+identifier instead — observed specifically in Foundational-template
+output, plausibly because that template's explanatory depth-guidance
+(defining concepts, naming sources plainly) pulls the model toward
+naming a source's "real" id rather than the abstract positional marker.
+The existing parser only recognized the exact `Paper N`/`Web N` shape,
+so a raw-identifier bracket was structurally invisible to it — never
+converted, never stripped, just passed straight through untouched.
+
+**The citation pipeline now recognizes three distinct forms of
+model-output marker**, in this order of handling:
+1. **Correct markers** — `[Paper N]` / `[Web N]`, the instructed
+   format, resolved as always.
+2. **Grouped markers** — `[Paper 2][Paper 5]` written correctly as
+   adjacent brackets (R2B.1's own prompt steering), or `[Paper 2,
+   Paper 5]` bundled into one bracket (the earlier grouped-marker
+   parser fix, still doing exactly what it always did).
+3. **Raw source-id markers** (new) — a bracket containing a source's
+   real `paper_id`, DOI, arXiv id, Semantic Scholar-style hash id, or an
+   exact web article URL, in place of a `[Paper N]`/`[Web N]` marker.
+
+**Raw source-id resolution behavior** (`_resolve_raw_source_id_markers`,
+run before densify/the regular marker-resolve pass, on the section's
+original content):
+- **Exact match only**, and only against sources THAT SECTION actually
+  cites — its own `cited_papers`' `paper_id` or `cited_web_articles`'
+  `url` — never a fuzzy match, never a lookup against the whole
+  selected-paper pool.
+- Resolved through the **same shared `_ReferenceAssigner`** the regular
+  `[Paper N]`/`[Web N]` pipeline uses, so a source cited once via its
+  raw id and again via a correct marker elsewhere in the report still
+  collapses to exactly **one** global reference number — "the same
+  source keeps the same number" holds regardless of which marker form
+  the model used to cite it.
+- An unrecognized raw id (matches no known paper_id/url in that
+  section) is **stripped, not guessed at** — the same "strip it, don't
+  guess" discipline an out-of-range `[Paper N]` marker already used.
+- A **bare digit string** in brackets (e.g. `[1]`, the shape of an
+  already-final marker) is deliberately **never** treated as a raw-id
+  candidate — this app's real paper_ids/urls are never plain digits, and
+  the guard is cheap insurance against ever misinterpreting an unrelated
+  numeric bracket.
+- The candidate-detection regex additionally requires the bracket
+  content to contain **no internal whitespace** — a real identifier/URL
+  is always one unbroken token, while ordinary bracketed English prose
+  almost always contains a space, which keeps the backstop from
+  misfiring on some unrelated aside the model happens to bracket.
+
+**Prompt reinforcement** (not a substitute for the backstop above, but
+the first line of defense): the shared marker-instruction paragraph in
+`_build_report_system_prompt` now explicitly tells the model never to
+cite using a paper_id, DOI, arXiv id, Semantic Scholar id, URL, or title
+inside a bracket — always `[Paper N]`/`[Web N]`, since that's the only
+format the conversion step recognizes. The Foundational template's own
+`_TEMPLATE_DEPTH_GUIDANCE` entry got an extra, template-specific
+reminder, since that's where the bug was actually observed: naming a
+source's real identifier in explanatory prose doesn't change what the
+*citation marker* right after it must look like.
+
+**Validation**: `tests/test_report.py` → 70 passed; full backend suite
+→ 489 passed. No schema, endpoint, or frontend changes. Commit
+`0189c2f`.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
