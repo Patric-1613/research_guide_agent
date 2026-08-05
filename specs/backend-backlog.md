@@ -570,6 +570,83 @@ invented:
 - **Status**: Closed (2026-08-05). Commits `58e8c00` (Chunk 1),
   `6bb4c05` (Chunk 2), `e6941a4` (Chunk 3).
 
+### R4.1: optional, bounded report refinement loop
+- **Goal**: let a generated/regenerated report optionally go through a
+  bounded draft → evaluate → revise (at most once) → finalize pass
+  before being shown, without opening the door to an unbounded
+  agentic loop.
+- **Why it matters**: R1–R3.2 established grounding, citation
+  correctness, versioning, and reference hygiene, but nothing ever
+  judged a report's actual synthesis quality (paper-by-paper summary
+  vs. real synthesis, Gap Analysis vs. Future Research Directions
+  overlap, template appropriateness) or gave it a chance to improve
+  before being finalized.
+- **Implementation split across two commits**:
+  - **Backend (`033d176`)**: implemented as plain, bounded functions in
+    `research_agent/report.py` — deliberately NOT a LangGraph
+    `StateGraph`, since this flow has exactly one conditional fork and
+    no cycle (a revision, if it happens, is never re-evaluated), runs
+    entirely inside one synchronous request, and has no human-interrupt
+    point. `ReportEvaluation` (report.py-internal structured evaluator
+    output), `_deterministic_report_checks` (hard gates: raw marker
+    leaks, missing/empty sections, orphan references, malformed
+    numbering; `skipped_papers` is warning-only, never a hard gate),
+    `evaluate_report` (combines both layers), `revise_report` (reuses
+    the exact same schema/citation/reference pipeline generation and
+    regeneration already use — no new source discovery, same
+    paper/web candidate set, same R3.1b web-citation product rule),
+    `refine_report_if_requested` (the one orchestration point,
+    `refinement_mode="off"` is a pure passthrough with zero extra LLM
+    calls). Wired into `POST /curation/{id}/report` and `/report/
+    regenerate` only — NOT chat's add-to-report or auto-report-update
+    paths. Minimal `report.refinement` metadata
+    (`enabled`/`rounds`/`initial_score`/`final_score`) persisted on the
+    report body; full evaluator detail intentionally not persisted.
+    `generation_reason` unchanged — no `"refined"` value added,
+    refinement stays orthogonal metadata.
+  - **Frontend (`8fc7cb4`)**: a compact "Refine once" checkbox in
+    `ReportModePanel` (off by default, present in both the Generate and
+    Regenerate views via shared lifted state), threaded through
+    `useCurationSession`/`curationApi` as an optional `refinementMode`
+    alongside the existing `reportTemplate` param — the API client only
+    sends `refinement_mode` in the request body when it's actually
+    `"single"`, keeping every existing caller's payload unchanged. A
+    small score-only badge ("Refined once · score N" / "Evaluated ·
+    score N") renders when a report carries refinement metadata — no
+    evaluator-details UI.
+  - See `docs/architecture.md`'s "R4.1 — optional, bounded report
+    refinement loop" section for the full design record.
+- **Location**: `research_agent/report.py`, `research_agent/api.py`,
+  `research_agent/api_app/schemas.py`, `research_agent/api_app/
+  serializers.py`, `research_agent/services/curation_report_service.py`,
+  `research_agent/api_app/routers/curation_reports.py`,
+  `frontend/src/types/index.ts`, `frontend/src/lib/api/client.ts`,
+  `frontend/src/hooks/useCurationSession.ts`, `frontend/src/pages/
+  CurationWorkspacePage.tsx`, `frontend/src/components/ReportMode/
+  ReportModePanel.tsx`.
+- **Deferred follow-ups, not done in this phase**:
+  - R4.2 — persist/display full evaluator detail (issues,
+    revision_instructions, section_scores) if R4.1 proves useful in
+    practice.
+  - R4.3 — configurable bounded refinement depth (off / 1 / 2
+    revisions, never unlimited).
+  - R4.4 — optional human-in-the-loop refinement using a LangGraph
+    `interrupt()`, only if justified once a concrete need exists.
+  - R4.5 — deeper, per-template evaluator rubric calibration (stricter
+    density expectations for Expert, stronger completeness expectations
+    for Foundational) — R4.1 already passes `report_template` into the
+    evaluator prompt, so this is calibration, not a new capability.
+  - A formal report evaluation harness/metrics — still needs its own
+    scoped design pass (dataset, gold references, metrics), same
+    caution this project already gave the original pipeline's RAGAS
+    harness.
+  - Chat/web retrieval evaluation and red-team guardrails — stays a
+    separate, already-tracked backlog item (see R3.2's own deferred
+    follow-ups above), unrelated to report refinement.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commits `033d176` (backend),
+  `8fc7cb4` (frontend).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]

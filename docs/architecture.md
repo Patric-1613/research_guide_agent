@@ -2155,6 +2155,129 @@ the reloaded `chat_references` is already correct.
 3). Commits `58e8c00` (Chunk 1), `6bb4c05` (Chunk 2), `e6941a4`
 (Chunk 3).
 
+### R4.1 — optional, bounded report refinement loop (2026-08-05) — complete
+
+**Why this is agentic, and why LangGraph wasn't used for it.** R4.1
+adds a real draft → evaluate → revise (at most once) → finalize
+pipeline — a model-judged quality gate that can decide to rewrite the
+report before it's shown, not just a fixed generation call. That
+judgment is what makes it agentic. It's implemented as plain, bounded
+Python functions, not a LangGraph `StateGraph`, for reasons specific to
+this flow's actual shape: there is no loop beyond the single optional
+revision (a revision, if it happens, is never re-evaluated — see
+"Revision behavior" below), no human interrupt point, and the entire
+pipeline runs synchronously inside one HTTP request. LangGraph earns
+its keep elsewhere in this codebase specifically for cross-request
+checkpointing (`curation_loop.py`'s pick loop) or `interrupt()`-based
+pausing for a real human response — neither applies here. A plain
+function chain is simply the smaller, clearer implementation for a
+flow with exactly one conditional fork and zero cycles. LangGraph is
+explicitly reserved for R4.3 (if a real multi-round loop lands) or R4.4
+(if human-in-the-loop review becomes concrete) — converting this
+specific shape to a graph at that point is a small, well-contained
+follow-up, mirroring how `qa.py` itself stayed plain functions until
+its own checkpointing/human-in-the-loop need became real, not before.
+
+**`refinement_mode`**: `"off" | "single"`, optional on both explicit
+report-generation requests. Omitted/`"off"` (the default) means zero
+extra LLM calls and byte-identical behavior to before this phase
+existed — `refine_report_if_requested` returns its input completely
+unchanged, not even a `refinement` key added. `"single"` means
+evaluate once, then revise at most once if the evaluator says so, then
+stop — never a second evaluation, never a second revision, regardless
+of how the revision itself turned out.
+
+**Where it applies**: `POST /curation/{id}/report` and `POST
+/curation/{id}/report/regenerate` only — the two explicit,
+user-initiated report actions. Deliberately **not** wired into chat's
+add-to-report regeneration or chat's own accept-the-report-update-offer
+flow; those stay exactly as they were before R4.1, with no
+`refinement_mode` field on either request path at all. Refinement
+adding LLM round trips to an already-inline chat response was judged
+out of scope for this phase, not an oversight.
+
+**Evaluator**: `ReportEvaluation` (report.py-internal, not an API
+schema) — `overall_score`, `needs_revision`, `issues: list[str]`,
+`revision_instructions`, `section_scores`. `evaluate_report` combines
+two layers:
+- **Deterministic hard gates** (pure Python, no LLM call, always force
+  `needs_revision=True` regardless of what the LLM itself concluded):
+  unresolved/raw citation marker leaks (a bracket containing letters —
+  never a properly-resolved final `[N]` marker), missing or empty
+  required sections, orphan references (a References entry no
+  section's `reference_numbers` points to), and malformed reference
+  numbering (not a clean `1..N` sequence). In normal operation these
+  mostly act as regression tripwires, not expected failure modes — raw
+  grounding is already structurally guaranteed by the dynamic `Literal`
+  schema, and orphan web references are already prevented by
+  construction since R3.1b; these checks exist to catch a *future*
+  regression of either guarantee.
+- **`skipped_papers` is a warning, not a hard gate** — included in
+  `issues` and passed to the LLM evaluator as context, but never forces
+  revision on its own. A section legitimately citing few or no papers
+  is expected, documented behavior, not automatically a defect.
+- **LLM judgment** (`_evaluate_report_llm`, same `REPORT_MODEL` as
+  generation — no new model-selection decision for this phase): judges
+  synthesis quality, citation coverage, source grounding, section
+  completeness, the Gap Analysis vs. Future Research Directions
+  distinction, template appropriateness (`report_template` is passed
+  into the evaluator prompt from day one), web-source relevance, and
+  readability — the genuinely subjective dimensions a regex can't
+  assess.
+
+**Revision behavior** (`revise_report`): at most one round, ever, for a
+given `refine_report_if_requested` call. No new source discovery — the
+schema built for the revision is constrained to the exact same
+paper/web candidate set the draft was generated from, via the same
+dynamic-`Literal` grounding mechanism every other generation path
+already relies on, so a revision is structurally unable to cite outside
+what the draft itself could cite. Paper citation preservation reuses
+`_restore_dropped_citations` exactly as regeneration does, with the
+draft playing the same "existing report" role a regeneration's own
+prior report plays. Web citations follow R3.1b's product rule
+unchanged: the revision's own `cited_web_urls` is the sole source of
+truth, no restoration of a dropped web citation, so a revision can
+never reintroduce an orphan. The final output runs through the exact
+same `build_references_and_renumber` → `_project_legacy_fields` →
+`_sections_list` post-processing chain every other generation path
+uses — nothing about citation/reference handling is reimplemented, and
+the result is an ordinary report dict, indistinguishable in shape from
+a freshly generated one. It's stored as a normal R3 report version via
+the existing, unmodified `append_report_version` — `generation_reason`
+keeps its existing vocabulary (`initial`/`regenerate`/etc.); no
+`"refined"` value was added, since refinement is orthogonal metadata on
+the report body, not a new reason a version was created.
+
+**Metadata**: `report["refinement"]` exists only when refinement
+actually ran — `{"enabled": true, "rounds": 0 | 1, "initial_score":
+int, "final_score": int | None}`. `final_score` is `None` whenever a
+revision happened (R4.1 deliberately never re-evaluates the revision,
+so there's no real score to report — inventing one would be worse than
+admitting it's unknown) and equals `initial_score` when no revision was
+needed. Full evaluator detail (`issues`, `revision_instructions`,
+`section_scores`) is intentionally **not** persisted or exposed in this
+phase — `ReportRefinementOut` (both the backend Pydantic model and its
+frontend mirror) is deliberately much smaller than the internal
+`ReportEvaluation`. A richer surface is explicit future work (R4.2),
+not an oversight.
+
+**Frontend**: a compact "Refine once" checkbox in `ReportModePanel`,
+next to the template selector, present in both the pre-report Generate
+view and the post-report Regenerate header (same shared, lifted local
+state pattern the template selector itself already uses across both
+views) — off by default, disabled while a report action is in
+progress. When a report carries `refinement` metadata, a small
+score-only badge renders next to the template badge: `"Refined once ·
+score N"` when a revision actually happened, `"Evaluated · score N"`
+when the draft passed evaluation as-is. No evaluator-details UI at
+all — issues/revision-instructions are never rendered, matching what
+the API does (and doesn't) expose.
+
+**Validation**: full backend suite → 549 passed; frontend `npm test` →
+224 passed, build clean (`tsc -b && vite build`). Commits `033d176`
+(backend: refinement loop + API wiring) and `8fc7cb4` (frontend:
+refinement toggle).
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
