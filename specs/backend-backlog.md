@@ -657,9 +657,9 @@ invented:
   CurationWorkspacePage.tsx`, `frontend/src/components/ReportMode/
   ReportModePanel.tsx`.
 - **Deferred follow-ups, not done in this phase**:
-  - R4.2 — persist/display full evaluator detail (issues,
+  - ~~R4.2 — persist/display full evaluator detail (issues,
     revision_instructions, section_scores) if R4.1 proves useful in
-    practice.
+    practice.~~ **Done** — see the R4.2 entry below.
   - R4.3 — configurable bounded refinement depth (off / 1 / 2
     revisions, never unlimited).
   - R4.4 — optional human-in-the-loop refinement using a LangGraph
@@ -678,6 +678,49 @@ invented:
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-05). Commits `033d176` (backend),
   `8fc7cb4` (frontend).
+
+### R4.2: persist and display evaluator details for refined reports
+- **Goal**: let a user see WHY a refined report was revised (or wasn't)
+  — the evaluator's actual issues and per-section scores — without
+  turning the report view into a noisy dashboard.
+- **Why it matters**: R4.1 shipped with a compact score-only badge and
+  deliberately discarded the evaluator's real findings
+  (`issues`/`revision_instructions`/`section_scores`) even though they
+  were already computed by the one evaluation call every refined report
+  goes through — a real, if minor, loss of useful information for zero
+  cost savings (the data existed, it just wasn't kept).
+- **Implementation**: `refine_report_if_requested` (`research_agent/
+  report.py`) now stamps the full `evaluation` dict's `issues`/
+  `revision_instructions`/`section_scores` onto `report["refinement"]`
+  alongside R4.1's original 4 fields — no new LLM call, the evaluation
+  already ran. `ReportRefinementOut` (`api_app/schemas.py`) gained the
+  same three fields with safe defaults, so an R4.1-only refinement dict
+  (persisted before this phase) still constructs cleanly via Pydantic's
+  own defaults — confirmed no changes were needed to `curation_
+  session.py`'s serialize/deserialize (the opaque whole-dict pass-
+  through from the R4.1 persistence bug fix already covers new keys)
+  or to `api_app/serializers.py`'s `_report_to_out`, both proven by
+  test rather than assumed. Frontend: the existing compact badge is
+  unchanged; a new collapsed-by-default "Evaluation details"
+  disclosure in `ReportModePanel` appears only when there's real
+  content (non-empty issues or section_scores), explicitly states
+  findings describe the draft before revision (not necessarily the
+  current report — R4.1/R4.2 never re-evaluate after a revision), caps
+  visible issues at 5 with a "+N more" line, tolerates a partial
+  section_scores dict, and never renders raw `revision_instructions`.
+  See `docs/architecture.md`'s "R4.2 — persist and display evaluator
+  details for refined reports" section for the full design record.
+- **Location**: `research_agent/report.py`
+  (`refine_report_if_requested`), `research_agent/api_app/schemas.py`
+  (`ReportRefinementOut`), `frontend/src/types/index.ts`, `frontend/
+  src/components/ReportMode/ReportModePanel.tsx`.
+- **Deferred follow-ups, not done in this phase**: R4.3 (configurable
+  depth), R4.4 (human-in-the-loop), R4.5 (deeper template calibration),
+  a formal eval harness, and chat/web retrieval red-team all remain
+  exactly as scoped in the R4.1 entry above — none of them are
+  prerequisites for or blocked by R4.2.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-06). Commit `1918487`.
 
 Placeholders below, ready for real entries:
 

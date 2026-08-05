@@ -2300,6 +2300,74 @@ fabricated `{"enabled": false, ...}` placeholder. **Validation**:
 `tests/test_curation_session.py` → 45 passed; full backend suite → 552
 passed. Commit `f6ae9f2`.
 
+### R4.2 — persist and display evaluator details for refined reports (2026-08-06) — complete
+
+**No new LLM calls.** R4.2 persists and displays evaluator detail that
+R4.1's own single evaluation call already computed and immediately
+discarded — `refine_report_if_requested`'s local `evaluation` dict
+already carried `issues`/`revision_instructions`/`section_scores`
+before this phase, just never made it into the stamped `refinement`
+metadata. Nothing about when/how often the evaluator runs changed.
+
+**`report["refinement"]`'s full shape**, as stamped by
+`refine_report_if_requested`:
+
+```python
+{
+    "enabled": bool, "rounds": 0 | 1,
+    "initial_score": int, "final_score": int | None,
+    "issues": list[str], "revision_instructions": str,
+    "section_scores": dict[str, int] | None,
+}
+```
+
+**The same semantic R4.1 already established, now load-bearing for
+more fields**: `issues`/`revision_instructions`/`section_scores`
+describe the **draft** the one evaluation ran against, not necessarily
+the finalized (possibly revised) report a reader is looking at — R4.1/
+R4.2 never re-evaluate after a revision (see R4.1's own "no loop"
+design above). If a revision happened, these describe what prompted
+the fix, not what's still true of the current content. This is
+documented explicitly in both `refine_report_if_requested`'s and
+`ReportRefinementOut`'s own docstrings, and reflected directly in the
+frontend copy (below) — not left implicit.
+
+**Persistence required zero changes outside `report.py`/`schemas.py`.**
+The metadata still lives inside `report["refinement"]`, still rides
+inside `report_versions[N].report` — no new field, no schema change to
+`ReportVersion` itself. `curation_session.py`'s `_serialize_report`/
+`_deserialize_report` needed **no changes at all**: the opaque,
+whole-dict pass-through the R4.1 persistence bug fix introduced
+(`serialized["refinement"] = report["refinement"]`, not a field-by-
+field enumeration) already covers arbitrary new keys inside that dict
+— confirmed by a round-trip test using the full R4.2 shape, not
+assumed. `ReportRefinementOut(**report["refinement"])` in
+`api_app/serializers.py`'s `_report_to_out` also needed no change — a
+report carrying only R4.1-era metadata (persisted before R4.2 shipped,
+missing the three new keys entirely) still constructs cleanly via
+Pydantic's own field defaults (`issues=[]`, `revision_instructions=""`,
+`section_scores=None`). No migration exists or is needed.
+
+**Frontend**: the existing compact badge (`"Refined once · score N"` /
+`"Evaluated · score N"`) is completely unchanged. A new, collapsed-by-
+default "Evaluation details" disclosure appears near the report header
+— but only when there's real content to reveal (`issues.length > 0` or
+`section_scores` present); a refined report the evaluator found
+nothing to say about gets no toggle at all. Expanded, it shows: an
+explicit "Evaluator findings from the draft before revision." line,
+initial/final score (final rendered as "not re-evaluated" when null
+after a revision, never left blank), whether a revision occurred, the
+first 5 issues with a "+N more" line for the rest, and section scores
+for whichever keys are present (tolerates a partial dict — the
+evaluator isn't guaranteed to score every section). `revision_
+instructions` is **never** rendered — it's text written for the model
+mid-pipeline, not prose meant for a human reader.
+
+**Validation**: `tests/test_report.py` + `tests/test_curation_session.py`
++ `tests/test_curation_api.py` + `tests/test_api.py` → 266 passed; full
+backend suite → 555 passed; frontend `npm test` → 233 passed, build
+clean (`tsc -b && vite build`). Commit `1918487`.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
