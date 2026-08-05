@@ -56,6 +56,20 @@ REPORT_MODEL = "gpt-4.1"
 ReportTemplate = Literal["foundational", "analytical", "expert"]
 DEFAULT_REPORT_TEMPLATE: ReportTemplate = "analytical"
 
+# report-quality Phase R4.1: whether/how the optional draft -> evaluate
+# -> revise -> finalize refinement loop runs. Same plain-Literal-type
+# convention as ReportTemplate above. "off" (the default) means every
+# existing caller that doesn't opt in gets byte-identical behavior --
+# refine_report_if_requested below returns its input completely
+# untouched, zero extra LLM calls. "single" means at most ONE revision
+# round -- see refine_report_if_requested's own docstring for the exact
+# bounded flow. Deliberately a 2-value Literal, not a bool: R4.3's own
+# planned configurable-depth values (e.g. a future "double") are
+# additive to this vocabulary, not a breaking change to it, the same
+# way ReportTemplate's own 3-value vocabulary was chosen over a bool.
+RefinementMode = Literal["off", "single"]
+DEFAULT_REFINEMENT_MODE: RefinementMode = "off"
+
 FINDINGS_DESCRIPTION = "Synthesized findings and key contributions across the selected papers, grounded strictly in their abstracts."
 LIMITATIONS_DESCRIPTION = "Limitations or shortcomings noted across the selected papers, and/or gaps or disagreements between them. State explicitly if none are apparent -- don't invent one."
 FUTURE_SCOPE_DESCRIPTION = "Future research directions plausibly implied by the selected papers -- may be more speculative than the other two sections, but must still stay grounded in what the papers actually cover, not outside knowledge."
@@ -1530,6 +1544,398 @@ def regenerate_report_with_approved_web_sources(
         session, approved_web_articles, client, model, "regenerate_report_with_approved_web_sources",
         report_template=report_template, allowed_web_urls={a.url for a in approved_web_articles},
     )
+
+
+# --- report-quality Phase R4.1: optional, bounded draft -> evaluate ->
+# revise -> finalize refinement loop ---
+#
+# Implemented as plain, bounded functions -- NOT a LangGraph StateGraph.
+# This flow has exactly one conditional fork (revise or don't) and no
+# cycle: a revision, if it happens, is never re-evaluated, so there is
+# nothing here that loops. LangGraph earns its keep elsewhere in this
+# codebase specifically for checkpointing across multiple separate HTTP
+# requests (curation_loop.py's pick loop) or interrupt()-based pausing
+# for a real human response (planned, not yet built, for a future R4.4)
+# -- neither applies to a flow that runs entirely, synchronously, inside
+# one request. A bounded multi-round loop (R4.3) is still just a plain
+# `for` loop when it lands; a StateGraph conversion is reserved for
+# R4.4, if/when interrupt() is actually needed, mirroring how qa.py
+# itself stayed plain functions until its own checkpointing/human-in-
+# the-loop need became concrete, not before.
+#
+# Reuses every citation/reference/grounding helper generate_report and
+# _regenerate_report_sections_with_sources already established --
+# _build_report_schema (the dynamic Literal that makes citing outside
+# the offered paper/web set structurally impossible, not just
+# discouraged), _generate_report_sections, _restore_dropped_citations
+# (paper preservation), and the full build_references_and_renumber ->
+# _project_legacy_fields -> _sections_list post-processing chain.
+# Nothing about citation/reference handling is reimplemented here.
+
+_UNRESOLVED_MARKER_RE = re.compile(r"\[[^\[\]]*[A-Za-z][^\[\]]*\]")
+
+
+class ReportEvaluation(BaseModel):
+    """report-quality Phase R4.1: the evaluator's structured output.
+    report.py-internal -- not an API schema (api_app/schemas.py has its
+    own, much smaller ReportRefinementOut for what actually gets
+    exposed; see evaluate_report's own docstring for why the two stay
+    separate)."""
+
+    overall_score: int = Field(
+        description="Overall quality score from 0 (unusable) to 100 (excellent), judging synthesis "
+        "quality, grounding, and appropriateness for the given template."
+    )
+    needs_revision: bool = Field(description="Whether this report should be revised before being finalized.")
+    issues: list[str] = Field(
+        default_factory=list,
+        description="Specific, concrete issues found -- one per item, not a single vague paragraph.",
+    )
+    revision_instructions: str = Field(
+        default="",
+        description="Concrete, actionable instructions for how to fix the issues above. Empty string if "
+        "needs_revision is false.",
+    )
+    section_scores: dict[str, int] | None = Field(
+        default=None, description="Optional per-section quality score (0-100), keyed by section key.",
+    )
+
+
+_EVALUATOR_SYSTEM_PROMPT = """You are evaluating a literature review report for quality, before it is finalized and shown to a user. You will be given the report's topic, its reader-depth template (foundational/analytical/expert), the selected papers and web sources it was grounded in, and the report's own rendered sections.
+
+Judge the report against these dimensions:
+- Citation coverage: are claims actually backed by inline citations, not asserted bare?
+- Source grounding: do claims genuinely reflect what the cited papers/web sources say, not outside knowledge?
+- Section completeness: does each section actually deliver what its own description promises?
+- Synthesis vs. paper-by-paper summary: does the report synthesize across sources by theme, or just summarize one paper at a time?
+- Gap Analysis vs. Future Research Directions: are these two sections meaningfully distinct, not overlapping restatements of each other?
+- Template appropriateness: does the depth/tone match the stated template (foundational = accessible/explanatory, expert = dense/assumes familiarity)?
+- Web-source relevance: are cited web sources genuinely relevant to the specific claim they're attached to, not merely topically adjacent?
+- Readability: is the prose clear and well-organized?
+
+You will also be given a list of issues already found by a separate, deterministic check (structural problems like missing sections or broken citation markers) -- these are already known and do not need to be re-discovered, but should inform your own overall_score and needs_revision judgment.
+
+Be specific in `issues` -- name the section and the actual problem, not vague generalities like "could be better." If the report is genuinely solid, say so and set needs_revision to false; do not manufacture issues to seem thorough.
+"""
+
+
+def _deterministic_report_checks(report: dict, report_template: str) -> tuple[list[str], list[str]]:
+    """report-quality Phase R4.1: structural checks the evaluator's LLM
+    judgment doesn't get a vote on -- objectively checkable, pure
+    Python, no LLM call. Returns (hard_issues, warning_issues).
+
+    hard_issues ALWAYS force needs_revision=True in evaluate_report --
+    "do not rely only on vague LLM critique" for anything objectively
+    checkable. warning_issues are informational only: fed to the LLM
+    evaluator as context and included in the final issues list, but
+    never force revision on their own (skipped_papers specifically --
+    see below -- is expected, documented behavior in plenty of cases,
+    not automatically a defect).
+
+    In normal operation these mostly act as regression tripwires, not
+    expected failure modes: raw grounding is already structurally
+    guaranteed by _build_report_schema's dynamic Literal, and orphan
+    web references are already prevented by construction as of R3.1b
+    (see that section's own docstring) -- these checks exist to catch
+    a FUTURE regression of either guarantee, not because either is
+    expected to fail today.
+    """
+    section_definitions = REPORT_TEMPLATES[report_template]
+    hard_issues: list[str] = []
+
+    missing = [d["key"] for d in section_definitions if not report.get(d["key"], {}).get("content", "").strip()]
+    if missing:
+        hard_issues.append(f"Missing or empty required section(s): {missing}")
+
+    leaked: set[str] = set()
+    for d in section_definitions:
+        content = report.get(d["key"], {}).get("content", "")
+        leaked.update(_UNRESOLVED_MARKER_RE.findall(content))
+    if leaked:
+        hard_issues.append(f"Unresolved/raw citation marker(s) leaked into report body: {sorted(leaked)}")
+
+    references = report.get("references", [])
+    referenced_numbers = {n for d in section_definitions for n in report.get(d["key"], {}).get("reference_numbers", [])}
+    orphans = [r["number"] for r in references if r["number"] not in referenced_numbers]
+    if orphans:
+        hard_issues.append(f"Orphan reference(s) in References with no citing section: {orphans}")
+
+    numbers = sorted(r["number"] for r in references)
+    if numbers and numbers != list(range(1, len(numbers) + 1)):
+        hard_issues.append(f"Reference numbering is not a clean 1..{len(numbers)} sequence: {numbers}")
+
+    warning_issues: list[str] = []
+    skipped_papers = report.get("skipped_papers", [])
+    if skipped_papers:
+        warning_issues.append(
+            f"{len(skipped_papers)} selected paper(s) never cited in any section: "
+            f"{[p.title for p in skipped_papers]}"
+        )
+
+    return hard_issues, warning_issues
+
+
+def _build_evaluation_prompt(
+    report: dict, topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
+    report_template: str, known_issues: list[str],
+) -> str:
+    section_definitions = REPORT_TEMPLATES[report_template]
+    sections_text = "\n\n".join(
+        f"[{d['key']}] {d['title']}\n{report.get(d['key'], {}).get('content', '')}"
+        for d in section_definitions
+    )
+    paper_listing = "\n\n".join(
+        f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
+        for p in selected_papers
+    )
+    web_listing = "\n\n".join(
+        f"url: {a.url}\ntitle: {a.title}\nsnippet: {a.snippet or '(no snippet available)'}"
+        for a in web_articles
+    ) or "(none)"
+    known_issues_text = "\n".join(f"- {issue}" for issue in known_issues) or "(none)"
+
+    return f"""Topic: {topic}
+Template: {report_template}
+
+Selected papers:
+
+{paper_listing}
+
+Web sources:
+
+{web_listing}
+
+Report sections:
+
+{sections_text}
+
+Issues already found by deterministic checks:
+{known_issues_text}
+"""
+
+
+def _evaluate_report_llm(
+    report: dict, topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
+    report_template: str, known_issues: list[str], client: OpenAI, model: str = REPORT_MODEL,
+) -> ReportEvaluation:
+    messages = [
+        {"role": "system", "content": _EVALUATOR_SYSTEM_PROMPT},
+        {"role": "user", "content": _build_evaluation_prompt(
+            report, topic, selected_papers, web_articles, report_template, known_issues,
+        )},
+    ]
+
+    langfuse = get_client()
+    langfuse.update_current_generation(input=messages, model=model)
+
+    response = client.chat.completions.parse(model=model, messages=messages, response_format=ReportEvaluation)
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused")
+        raise RuntimeError(f"Model refused to evaluate the report: {response.choices[0].message.refusal}")
+    langfuse.update_current_generation(output=parsed.model_dump())
+    return parsed
+
+
+@observe(name="evaluate_report", capture_input=False, capture_output=False)
+def evaluate_report(
+    report: dict, topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
+    report_template: str, client: OpenAI, model: str = REPORT_MODEL,
+) -> dict:
+    """report-quality Phase R4.1: combines deterministic structural
+    checks (hard gates) with an LLM judgment call (synthesis quality,
+    grounding, template fit, readability -- genuinely subjective
+    dimensions a regex can't assess). Returns a plain dict shaped like
+    ReportEvaluation, not the pydantic model itself -- matches this
+    module's own established "unpack to a plain dict past the raw
+    OpenAI parse step" convention (see generate_report's own handling
+    of its parsed response).
+
+    Deterministic hard_issues are ALWAYS appended to `issues` and
+    ALWAYS force needs_revision=True, regardless of what the LLM
+    itself concluded -- objectively checkable structural problems are
+    not up for the model's opinion. warning_issues (currently just
+    skipped_papers) are appended to `issues` and passed to the LLM as
+    context, but never force revision by themselves -- a section
+    legitimately citing few/no papers is expected, documented behavior,
+    not automatically a defect.
+    """
+    hard_issues, warning_issues = _deterministic_report_checks(report, report_template)
+    known_issues = hard_issues + warning_issues
+    evaluation = _evaluate_report_llm(
+        report, topic, selected_papers, web_articles, report_template, known_issues, client, model,
+    )
+    result = evaluation.model_dump()
+    result["issues"] = known_issues + result["issues"]
+    if hard_issues:
+        result["needs_revision"] = True
+    return result
+
+
+def _build_revision_system_prompt(
+    draft: dict, evaluation: dict, section_definitions: list[dict], template: str = DEFAULT_REPORT_TEMPLATE,
+) -> str:
+    per_section_citations = "\n".join(
+        f"- {d['key']}: {[p.paper_id for p in draft[d['key']]['cited_papers']]}"
+        for d in section_definitions
+    )
+    draft_sections = "\n\n".join(
+        f"[{d['key']}]\n{draft[d['key']]['content']}"
+        for d in section_definitions
+    )
+    issues_text = "\n".join(f"- {issue}" for issue in evaluation["issues"]) or "(none)"
+
+    return _build_report_system_prompt(section_definitions, template) + f"""
+This is a REVISION of an existing draft, produced over the EXACT SAME selected papers and web sources offered below -- do not introduce new sources, and you structurally cannot cite anything outside what's offered. You MUST preserve every paper_id already cited in a section below: never drop an existing paper citation from a section just because you're revising it.
+
+Previously cited paper_ids per section:
+{per_section_citations}
+
+The current draft, section by section:
+{draft_sections}
+
+An evaluator reviewed this draft and found the following issues:
+{issues_text}
+
+Revision instructions: {evaluation["revision_instructions"] or "(none given -- use your own judgment to address the issues above)"}
+
+Rewrite the sections to address these issues while preserving what already works. Follow the exact same citation marker conventions described above.
+"""
+
+
+@observe(name="revise_report", capture_input=False, capture_output=False)
+def revise_report(
+    topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
+    draft: dict, evaluation: dict, client: OpenAI, model: str = REPORT_MODEL,
+    report_template: str = DEFAULT_REPORT_TEMPLATE,
+) -> dict:
+    """report-quality Phase R4.1: revises `draft` -- a report dict of
+    the exact same shape generate_report/_regenerate_report_sections_
+    with_sources produce -- over the EXACT SAME selected_papers/
+    web_articles the draft was built from. Deliberately no new source
+    discovery: the schema built below is constrained to precisely this
+    paper/web set, the same dynamic-Literal grounding guarantee every
+    other generation path already relies on, so a revision structurally
+    cannot cite outside what the draft itself could cite.
+
+    Paper citation preservation reuses _restore_dropped_citations
+    exactly as regeneration does, with `draft` playing the same
+    "existing_report" role a regeneration's own prior report plays --
+    a paper cited in the draft stays cited in the revision even if the
+    model's own revised output drops it.
+
+    report-quality Phase R3.1b: web citations follow the identical
+    product rule regeneration already established -- THIS round's own
+    cited_web_urls is the sole source of truth, no restoration of a web
+    citation the revision happens to drop, so a revision can never
+    reintroduce an orphan References entry (nor can it force one in --
+    there is no force-include mechanism here, same as regeneration
+    since R3.1b).
+
+    Runs through the exact same build_references_and_renumber ->
+    _project_legacy_fields -> _sections_list post-processing chain as
+    every other generation path -- the output is an ordinary report
+    dict, not a distinct "revision" shape; a caller (or a later
+    evaluate_report call) can't tell a revised report apart from a
+    freshly generated one just by its structure.
+    """
+    section_definitions = REPORT_TEMPLATES[report_template]
+    papers_by_id = {p.paper_id: p for p in selected_papers}
+    web_by_url = {a.url: a for a in web_articles}
+    schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, section_definitions)
+    system_prompt = _build_revision_system_prompt(draft, evaluation, section_definitions, report_template)
+
+    parsed = _generate_report_sections(
+        topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt,
+    )
+
+    referenced_ids: set[str] = set()
+    sections_out = {}
+    for section_name in ANALYTICAL_SECTION_NAMES:
+        section = getattr(parsed, section_name)
+        cited_paper_ids = _restore_dropped_citations(draft, section_name, list(section.cited_paper_ids))
+        referenced_ids.update(cited_paper_ids)
+        cited_papers = [papers_by_id[pid] for pid in cited_paper_ids if pid in papers_by_id]
+        section_out = {"content": section.content, "cited_papers": cited_papers}
+        if web_by_url:
+            cited_web_urls = list(getattr(section, "cited_web_urls", []))
+            section_out["cited_web_articles"] = [web_by_url[url] for url in cited_web_urls if url in web_by_url]
+        sections_out[section_name] = section_out
+
+    skipped = [p for pid, p in papers_by_id.items() if pid not in referenced_ids]
+    if skipped:
+        logger.warning(
+            "revise_report: %d selected paper(s) never cited in any section: %s",
+            len(skipped), [p.title for p in skipped],
+        )
+
+    result = _build_references_and_renumber({**sections_out, "skipped_papers": skipped}, ANALYTICAL_SECTION_NAMES)
+    result = _project_legacy_fields(result)
+    result["sections"] = _sections_list(result)
+    result["report_template"] = report_template
+    return result
+
+
+def refine_report_if_requested(
+    draft: dict, topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
+    report_template: str, refinement_mode: str | None, client: OpenAI, model: str = REPORT_MODEL,
+) -> dict:
+    """report-quality Phase R4.1: the one orchestration point every
+    report-generating call site that wants refinement goes through --
+    mirrors append_report_version's own "one shared point" role for
+    versioning below. Callers pass `draft` (whatever generate_report_
+    for_session/regenerate_report_with_new_sources already produced)
+    and the exact same selected_papers/web_articles/report_template
+    that draft was built from.
+
+    refinement_mode=None/"off" (DEFAULT_REFINEMENT_MODE) is a pure
+    passthrough: `draft` is returned completely UNCHANGED -- not even
+    a "refinement" key added -- with zero extra LLM calls. This is what
+    keeps every existing caller's behavior byte-identical.
+
+    refinement_mode="single": draft -> evaluate -> (revise once, if
+    evaluate_report says needs_revision) -> finalize. Bounded by
+    construction, not by a counter that could be miscounted: there is
+    exactly one call to revise_report in this function's entire body,
+    reached from exactly one branch, with no loop back to evaluate_
+    report afterward -- an evaluator that would still flag issues after
+    the one revision is never consulted again, the revision is
+    finalized regardless. See this section's own module-level comment
+    for why this is implemented as plain functions, not a LangGraph
+    StateGraph.
+
+    Stamps a minimal `refinement` dict onto the returned report:
+    {"enabled": True, "rounds": 0 or 1, "initial_score": int,
+    "final_score": int | None}. `final_score` is None whenever a
+    revision happened -- R4.1 deliberately does not re-evaluate the
+    revision, so there is no real score to report for it; inventing one
+    would be worse than admitting it's unknown. `final_score` equals
+    `initial_score` when no revision was needed (the draft IS the
+    final report). Full evaluator detail (issues/revision_instructions)
+    is intentionally NOT persisted here -- see api_app/schemas.py's
+    ReportRefinementOut for exactly what does get exposed.
+    """
+    if refinement_mode != "single":
+        return draft
+
+    evaluation = evaluate_report(draft, topic, selected_papers, web_articles, report_template, client, model)
+    initial_score = evaluation["overall_score"]
+
+    if not evaluation["needs_revision"]:
+        final = draft
+        rounds = 0
+        final_score = initial_score
+    else:
+        final = revise_report(
+            topic, selected_papers, web_articles, draft, evaluation, client, model, report_template,
+        )
+        rounds = 1
+        final_score = None
+
+    final["refinement"] = {
+        "enabled": True, "rounds": rounds, "initial_score": initial_score, "final_score": final_score,
+    }
+    return final
 
 
 # --- report-quality Phase R3: report versioning ---

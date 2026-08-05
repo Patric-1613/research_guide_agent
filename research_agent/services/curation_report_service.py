@@ -7,7 +7,9 @@ from research_agent.curation_session import load_curation_session, save_curation
 from research_agent.services.errors import ServiceError
 
 
-def get_or_create_report(session_id: str, cp, report_template: str | None = None) -> ReportOut:
+def get_or_create_report(
+    session_id: str, cp, report_template: str | None = None, refinement_mode: str | None = None,
+) -> ReportOut:
     """Generate-or-get, same cache-then-generate convention /summarize
     already uses for its own report-like artifact — a second call for the
     same session_id doesn't re-bill the LLM.
@@ -26,6 +28,15 @@ def get_or_create_report(session_id: str, cp, report_template: str | None = None
     assigned to session.report directly -- append_report_version keeps
     session.report mirrored to the new version as a side effect, so
     every line below this one is otherwise unchanged from before R3.
+
+    report-quality Phase R4.1: refinement_mode follows the exact same
+    "only matters on the fresh-generation branch" rule report_template
+    already established just above -- a cache hit returns the existing
+    report as-is regardless of what refinement_mode this call requested.
+    web_articles is always [] here: generate_report_for_session (unlike
+    regenerate) never offers web sources to the model at all, so a
+    refinement pass over the initial report has nothing web-side to
+    re-evaluate against.
     """
     session = load_curation_session(session_id, cp)
     if session is None:
@@ -37,6 +48,11 @@ def get_or_create_report(session_id: str, cp, report_template: str | None = None
             )
         except ValueError as exc:
             raise ServiceError(400, str(exc)) from exc
+        report = api.refine_report_if_requested(
+            report, session.topic, session.selected_papers, [],
+            report.get("report_template", "analytical"),
+            refinement_mode=refinement_mode, client=api._state["client"],
+        )
         api.append_report_version(session, report, api.GENERATION_REASON_INITIAL)
         # curation-refinement-and-auto-offer Phase 6f-3: keeps the
         # auto-offer's staleness check accurate even when a report is
@@ -47,7 +63,9 @@ def get_or_create_report(session_id: str, cp, report_template: str | None = None
     return _report_to_out(session.report, api.get_active_report_version(session))
 
 
-def regenerate_report(session_id: str, cp, report_template: str | None = None) -> ReportOut:
+def regenerate_report(
+    session_id: str, cp, report_template: str | None = None, refinement_mode: str | None = None,
+) -> ReportOut:
     """report-quality Phase R2C: report_template=None (the default)
     preserves the existing report's own current template; an explicit
     value switches it -- see report.py's regenerate_report_with_new_
@@ -62,6 +80,18 @@ def regenerate_report(session_id: str, cp, report_template: str | None = None) -
     REGENERATE) rather than overwriting the source version -- the prior
     active version stays exactly as it was, in report_versions, purely
     historical from this point on.
+
+    report-quality Phase R4.1: refinement_mode="single" runs the
+    draft -> evaluate -> revise -> finalize pass over the SAME web
+    candidate set the draft was actually generated against -- session.
+    web_articles_added minus anything currently revoked, mirroring the
+    exact filter _regenerate_report_sections_with_sources itself
+    already applies before the model ever sees a candidate. Passing
+    the unfiltered pool here would let a revision re-cite a revoked
+    source, reopening the bug R3.1's own revocation guarantee closed.
+    This endpoint is whole-pool regeneration only -- chat-triggered
+    regeneration (add-to-report, auto-update) never reaches this
+    function, so refinement never applies there in R4.1.
     """
     session = load_curation_session(session_id, cp)
     if session is None:
@@ -72,6 +102,12 @@ def regenerate_report(session_id: str, cp, report_template: str | None = None) -
         )
     except ValueError as exc:
         raise ServiceError(400, str(exc)) from exc
+    web_articles = [a for a in session.web_articles_added if a.url not in session.revoked_web_article_urls]
+    report = api.refine_report_if_requested(
+        report, session.topic, session.selected_papers, web_articles,
+        report.get("report_template", "analytical"),
+        refinement_mode=refinement_mode, client=api._state["client"],
+    )
     api.append_report_version(session, report, api.GENERATION_REASON_REGENERATE)
     session.report_covered_web_article_count = len(session.web_articles_added)
     save_curation_session(session, session_id, cp)

@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from research_agent.citations import CitationStyle
-from research_agent.report import ReportTemplate
+from research_agent.report import RefinementMode, ReportTemplate
 
 
 class SearchRequest(BaseModel):
@@ -280,6 +280,20 @@ class ReportSection(BaseModel):
     reference_numbers: list[int] = Field(default_factory=list)
 
 
+class ReportRefinementOut(BaseModel):
+    """report-quality Phase R4.1: the ONLY refinement detail exposed via
+    the API -- deliberately much smaller than report.py's own internal
+    ReportEvaluation. Full evaluator output (issues/revision_
+    instructions/section_scores) is intentionally not persisted or
+    exposed in R4.1; a richer surface is explicit future work (R4.2),
+    not an oversight here."""
+
+    enabled: bool
+    rounds: int
+    initial_score: int | None = None
+    final_score: int | None = None
+
+
 class ReportOut(BaseModel):
     # Legacy fields -- kept as compatibility fields, not the primary
     # report body once dynamic sections (below) are actually generated
@@ -326,6 +340,12 @@ class ReportOut(BaseModel):
     version_number: int | None = None
     created_at: str | None = None
     generation_reason: str | None = None
+    # report-quality Phase R4.1: minimal refinement metadata -- None
+    # whenever refinement was never requested for this report (the
+    # overwhelming common case), never a partially-filled dict. See
+    # ReportRefinementOut's own docstring for exactly what this
+    # deliberately does NOT expose.
+    refinement: ReportRefinementOut | None = None
 
 
 class ReportVersionSummary(BaseModel):
@@ -353,6 +373,12 @@ class CurationGenerateReportRequest(BaseModel):
     # get_or_create_report for the exact resolution. Every existing
     # client that POSTs {} or no body at all keeps working unchanged.
     report_template: ReportTemplate | None = None
+    # report-quality Phase R4.1: None/omitted means "off" -- byte-
+    # identical behavior to before this field existed, zero extra LLM
+    # calls. Only matters on the fresh-generation branch, same
+    # "ignored on a cache hit" precedent report_template above already
+    # established -- see get_or_create_report's own docstring.
+    refinement_mode: RefinementMode | None = None
 
 
 class CurationRegenerateReportRequest(BaseModel):
@@ -362,6 +388,10 @@ class CurationRegenerateReportRequest(BaseModel):
     # _regenerate_report_sections_with_sources for the exact resolution
     # rule (the same one this field's absence maps onto).
     report_template: ReportTemplate | None = None
+    # report-quality Phase R4.1: None/omitted means "off" -- byte-
+    # identical behavior to before this field existed, zero extra LLM
+    # calls.
+    refinement_mode: RefinementMode | None = None
 
 
 class TurnHistoryEntryOut(BaseModel):

@@ -33,11 +33,15 @@ from research_agent.report import (
     build_references_and_renumber,
     derive_legacy_references,
     derive_sections_from_legacy_report,
+    ReportEvaluation,
+    evaluate_report,
     generate_report,
     generate_report_for_session,
     get_active_report_version,
+    refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
+    revise_report,
 )
 from research_agent.schema import Paper, WebArticle
 
@@ -1922,6 +1926,306 @@ def test_regenerate_builds_from_the_active_version_not_always_latest():
     # built from the ACTIVE (v1) version, not the latest (v2) one, which
     # would have restored p2 instead.
     assert [p.paper_id for p in result["thematic_findings"]["cited_papers"]] == ["1111"]
+
+
+# --- report-quality Phase R4.1: optional, bounded refinement loop ---
+
+def _clean_analytical_draft(papers: list, template: str = "analytical") -> dict:
+    """Hand-builds a report dict in exactly the shape generate_report's
+    own pipeline produces (raw section-local [Paper N] markers in, real
+    resolved [N] markers + references out via _build_references_and_
+    renumber -- same convention this file's own R3.2 tests already use
+    for _sections_out/_build_references_and_renumber directly) -- and
+    passes every _deterministic_report_checks hard gate on its own:
+    every REPORT_TEMPLATES section has non-empty content, the first
+    paper is genuinely cited with a resolved marker, references/
+    reference_numbers are internally consistent. The "nothing
+    structurally wrong with this draft" baseline several R4.1 tests
+    below build on."""
+    section_defs = REPORT_TEMPLATES[template]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings" and papers:
+            sections_out[key] = {"content": "A finding [Paper 1].", "cited_papers": [papers[0]]}
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    result = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    result["report_template"] = template
+    return result
+
+
+def _evaluation(
+    overall_score: int = 90, needs_revision: bool = False, issues: list[str] | None = None,
+    revision_instructions: str = "", section_scores: dict[str, int] | None = None,
+) -> ReportEvaluation:
+    return ReportEvaluation(
+        overall_score=overall_score, needs_revision=needs_revision, issues=issues or [],
+        revision_instructions=revision_instructions, section_scores=section_scores,
+    )
+
+
+def test_refine_report_if_requested_off_or_omitted_is_a_pure_passthrough_with_zero_extra_calls():
+    """Required test 1: refinement_mode omitted/off -> existing
+    behavior, zero evaluator/revision calls, no refinement metadata at
+    all (not even {"enabled": False, ...}) -- the strongest possible
+    reading of "identical to current behavior"."""
+    draft = _clean_analytical_draft([_paper("1111", "Paper One")])
+    mock_client = MagicMock()
+
+    result_off = refine_report_if_requested(draft, "topic", [], [], "analytical", "off", mock_client)
+    result_none = refine_report_if_requested(draft, "topic", [], [], "analytical", None, mock_client)
+
+    assert result_off is draft
+    assert result_none is draft
+    assert "refinement" not in result_off
+    mock_client.chat.completions.parse.assert_not_called()
+
+
+def test_refine_single_mode_no_revision_needed_finalizes_draft():
+    """Required test 2: evaluator says no revision needed -> draft
+    becomes final, rounds 0, no revision call (exactly one LLM call
+    total -- the evaluation)."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=88, needs_revision=False),
+    )
+
+    result = refine_report_if_requested(draft, "topic", [p1], [], "analytical", "single", mock_client)
+
+    assert mock_client.chat.completions.parse.call_count == 1
+    assert result is draft
+    assert result["refinement"] == {"enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88}
+
+
+def test_refine_single_mode_revision_needed_revises_exactly_once_and_stops():
+    """Required tests 3 + 4: evaluator says revision needed -> exactly
+    one revision occurs (rounds=1); nothing re-evaluates the revision
+    afterward -- call_count stays at 2 (evaluate + revise), never a
+    3rd call, proving there is no loop back to evaluate_report even
+    though the revised report was never itself judged."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    revised_parsed = _analytical_parsed(
+        schema,
+        thematic_findings=section_cls(content="A better finding [Paper 1].", cited_paper_ids=["1111"]),
+    )
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parsed_response(_evaluation(
+            overall_score=40, needs_revision=True, issues=["too shallow"], revision_instructions="add more depth",
+        )),
+        _mock_parsed_response(revised_parsed),
+    ]
+
+    result = refine_report_if_requested(draft, "topic", [p1], [], "analytical", "single", mock_client)
+
+    assert mock_client.chat.completions.parse.call_count == 2
+    assert result["refinement"] == {"enabled": True, "rounds": 1, "initial_score": 40, "final_score": None}
+    assert result["thematic_findings"]["content"] == "A better finding [1]."
+    assert len(result["references"]) == 1
+
+
+def test_evaluate_report_deterministic_hard_gate_forces_revision_even_if_llm_says_no():
+    """Required test 5: a deterministic hard gate (here: a required
+    section left empty) forces needs_revision=True even though the
+    mocked LLM evaluator itself says no revision is needed."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    draft = {**draft, "gap_analysis": {**draft["gap_analysis"], "content": ""}}
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=95, needs_revision=False),
+    )
+
+    result = evaluate_report(draft, "topic", [p1], [], "analytical", mock_client)
+
+    assert result["needs_revision"] is True
+    assert any("Missing or empty required section" in issue for issue in result["issues"])
+
+
+def test_evaluate_report_unresolved_marker_leak_is_a_hard_gate():
+    """_deterministic_report_checks' raw-marker-leak regression
+    tripwire: a bracket containing letters (never a properly-resolved
+    final [N] marker) forces revision regardless of the LLM's verdict."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    draft = {**draft, "gap_analysis": {**draft["gap_analysis"], "content": "See [Paper 3] for details."}}
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=95, needs_revision=False),
+    )
+
+    result = evaluate_report(draft, "topic", [p1], [], "analytical", mock_client)
+
+    assert result["needs_revision"] is True
+    assert any("Unresolved/raw citation marker" in issue for issue in result["issues"])
+
+
+def test_evaluate_report_orphan_reference_is_a_hard_gate():
+    """_deterministic_report_checks' orphan-reference regression
+    tripwire (redundant with R3.1b's own structural guarantee in
+    normal operation, but cheap insurance against a future regression
+    of it): a References entry no section's reference_numbers points
+    to forces revision regardless of the LLM's verdict."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    orphan_ref = {
+        "number": 99, "kind": "web", "paper_id": None, "url": "https://orphan.com",
+        "title": "Orphan", "formatted": "x", "link_url": "https://orphan.com",
+    }
+    draft = {**draft, "references": [*draft["references"], orphan_ref]}
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=95, needs_revision=False),
+    )
+
+    result = evaluate_report(draft, "topic", [p1], [], "analytical", mock_client)
+
+    assert result["needs_revision"] is True
+    assert any("Orphan reference" in issue for issue in result["issues"])
+
+
+def test_evaluate_report_skipped_papers_warning_alone_does_not_force_revision():
+    """Required test 6: skipped_papers is included as an issue (context
+    for both the evaluator and a human reading the final metadata) but
+    must NOT by itself force needs_revision when the LLM says the
+    report is otherwise fine."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    draft = _clean_analytical_draft([p1])
+    draft = {**draft, "skipped_papers": [p2]}
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=85, needs_revision=False),
+    )
+
+    result = evaluate_report(draft, "topic", [p1, p2], [], "analytical", mock_client)
+
+    assert result["needs_revision"] is False
+    assert any("never cited in any section" in issue for issue in result["issues"])
+
+
+def test_revise_report_produces_a_normal_full_report_dict():
+    """Required test 7: the revised report is a normal report dict --
+    real resolved citation markers, populated References, the full
+    sections/legacy-field projection every other generation path
+    produces -- not a distinct "revision" shape."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    evaluation = _evaluation(
+        overall_score=50, needs_revision=True, issues=["shallow"], revision_instructions="deepen it",
+    ).model_dump()
+
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    parsed = _analytical_parsed(
+        schema, thematic_findings=section_cls(content="Deeper finding [Paper 1].", cited_paper_ids=["1111"]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = revise_report("topic", [p1], [], draft, evaluation, mock_client, report_template="analytical")
+
+    assert result["thematic_findings"]["content"] == "Deeper finding [1]."
+    assert len(result["references"]) == 1
+    assert result["report_template"] == "analytical"
+    assert len(result["sections"]) == len(REPORT_SECTION_DEFINITIONS)
+    assert result["findings"] == result["thematic_findings"]  # legacy projection still works
+
+
+def test_revise_report_preserves_a_paper_citation_the_revision_drops():
+    """revise_report reuses _restore_dropped_citations exactly like
+    regeneration does -- a paper the draft cited stays cited even if
+    the revision's own output drops it."""
+    p1, p2 = _paper("1111", "Paper One"), _paper("2222", "Paper Two")
+    draft = _clean_analytical_draft([p1, p2])
+    draft["thematic_findings"]["cited_papers"] = [p1, p2]
+    evaluation = _evaluation(overall_score=50, needs_revision=True, revision_instructions="tighten it").model_dump()
+
+    schema = _build_report_schema(["1111", "2222"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    # The revision's own output drops paper 2222 entirely.
+    parsed = _analytical_parsed(
+        schema, thematic_findings=section_cls(content="Tighter finding.", cited_paper_ids=["1111"]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = revise_report("topic", [p1, p2], [], draft, evaluation, mock_client, report_template="analytical")
+
+    assert {p.paper_id for p in result["thematic_findings"]["cited_papers"]} == {"1111", "2222"}
+
+
+def test_revise_report_never_restores_or_force_includes_a_dropped_web_citation():
+    """R3.1b's product rule carries over into revision unchanged: the
+    revision's own cited_web_urls is the sole source of truth for web
+    citations -- a web source the draft cited but the revision drops
+    simply disappears, never becomes a metadata-only orphan."""
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://was-cited.com", "Was Cited")
+    draft = _clean_analytical_draft([p1])
+    draft["thematic_findings"]["cited_web_articles"] = [web]
+    evaluation = _evaluation(overall_score=50, needs_revision=True, revision_instructions="tighten it").model_dump()
+
+    schema = _build_report_schema(["1111"], ["https://was-cited.com"], REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    # The revision's own output cites no web source at all.
+    parsed = _analytical_parsed(
+        schema, web_urls_used=True,
+        thematic_findings=section_cls(content="Tighter finding [Paper 1].", cited_paper_ids=["1111"], cited_web_urls=[]),
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(parsed)
+
+    result = revise_report("topic", [p1], [web], draft, evaluation, mock_client, report_template="analytical")
+
+    assert result["thematic_findings"]["cited_web_articles"] == []
+    assert all(r["kind"] != "web" for r in result["references"])
+
+
+def test_refine_report_if_requested_preserves_report_template_in_both_branches():
+    """Required test 8: report_template survives refinement -- checked
+    here on the no-revision branch with a non-default template
+    (expert), since that's the cheapest path to prove nothing along the
+    way silently resets it to the default."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1], template="expert")
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=70, needs_revision=False),
+    )
+
+    result = refine_report_if_requested(draft, "topic", [p1], [], "expert", "single", mock_client)
+
+    assert result["report_template"] == "expert"
+
+
+def test_refine_report_if_requested_output_appends_as_a_normal_report_version():
+    """Required test 9: the refined report becomes a normal R3 report
+    version via the existing, unmodified append_report_version --
+    generation_reason keeps its existing vocabulary (no "refined"
+    value was added; refinement is orthogonal metadata on the report
+    body, not a new reason)."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    session = PaperPoolSession(topic="q", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=77, needs_revision=False),
+    )
+
+    refined = refine_report_if_requested(draft, session.topic, [p1], [], "analytical", "single", mock_client)
+    version = append_report_version(session, refined, GENERATION_REASON_INITIAL)
+
+    assert version["generation_reason"] == "initial"
+    assert version["report"]["refinement"]["enabled"] is True
+    assert session.report_versions[0] is version
+    assert session.report["refinement"]["initial_score"] == 77
 
 
 if __name__ == "__main__":

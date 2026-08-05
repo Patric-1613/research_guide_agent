@@ -1072,6 +1072,113 @@ def test_curation_report_regenerate_explicit_template_switches():
     assert mock_regen.call_args.kwargs["report_template"] == "expert"
 
 
+# --- report-quality Phase R4.1: optional, bounded refinement loop ---
+
+def test_curation_report_generate_omitted_refinement_mode_does_not_refine():
+    """Required test 12 (compatibility): an existing client posting {}
+    (or omitting refinement_mode entirely) sees no refinement -- proven
+    at the real API boundary, without mocking refine_report_if_
+    requested away, since its own None/"off" branch never touches the
+    OpenAI client at all (see report.py's own docstring)."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report) as mock_gen:
+            resp = client.post(f"/curation/{session_id}/report", json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["refinement"] is None
+    assert mock_gen.call_args.kwargs["report_template"] == "analytical"
+
+
+def test_curation_report_generate_with_refinement_mode_single_calls_refine_report_if_requested():
+    """Required test 10 (generate side): POST /curation/{id}/report
+    accepts refinement_mode and threads it into refine_report_if_
+    requested; the refined report (not the raw draft) is what the
+    endpoint returns."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        refined_report = {
+            **fake_report, "findings": {"content": "refined", "cited_papers": []},
+            "refinement": {"enabled": True, "rounds": 0, "initial_score": 90, "final_score": 90},
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            with patch.object(api, "refine_report_if_requested", return_value=refined_report) as mock_refine:
+                resp = client.post(f"/curation/{session_id}/report", json={"refinement_mode": "single"})
+
+    assert resp.status_code == 200
+    assert mock_refine.call_args.kwargs["refinement_mode"] == "single"
+    assert resp.json()["findings"]["content"] == "refined"
+    assert resp.json()["refinement"] == {"enabled": True, "rounds": 0, "initial_score": 90, "final_score": 90}
+
+
+def test_curation_report_regenerate_with_refinement_mode_single_calls_refine_report_if_requested():
+    """Required test 10 (regenerate side): POST /curation/{id}/report/
+    regenerate accepts refinement_mode the same way."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+
+        second_report = {**first_report, "findings": {"content": "v2", "cited_papers": []}}
+        refined_report = {
+            **second_report, "findings": {"content": "v2 refined", "cited_papers": []},
+            "refinement": {"enabled": True, "rounds": 1, "initial_score": 40, "final_score": None},
+        }
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            with patch.object(api, "refine_report_if_requested", return_value=refined_report) as mock_refine:
+                resp = client.post(f"/curation/{session_id}/report/regenerate", json={"refinement_mode": "single"})
+
+    assert resp.status_code == 200
+    assert mock_refine.call_args.kwargs["refinement_mode"] == "single"
+    assert resp.json()["findings"]["content"] == "v2 refined"
+    assert resp.json()["refinement"]["rounds"] == 1
+
+
+def test_curation_chat_add_to_report_never_refines_even_if_refinement_mode_is_posted():
+    """Required test 11: chat-triggered regeneration (add-to-report)
+    never refines -- R4.1 only wires into the two explicit generate/
+    regenerate endpoints. This endpoint's own request schema has no
+    refinement_mode field at all; posting one anyway is silently
+    ignored (same as any other unknown JSON key), proven here by
+    confirming refine_report_if_requested is never called and the
+    response's own refinement field stays None."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_web_source("ex-1", "https://a.com")):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources", return_value=_report_stub_out("v2")):
+            with patch.object(api, "refine_report_if_requested") as mock_refine:
+                resp = client.post(
+                    f"/curation/{session_id}/chat/exchanges/add-to-report",
+                    json={"exchange_ids": ["ex-1"], "refinement_mode": "single"},
+                )
+
+    assert resp.status_code == 200
+    mock_refine.assert_not_called()
+    assert resp.json()["report"]["refinement"] is None
+
+
 # --- report-quality Phase R3: report versioning ---
 
 def test_curation_report_generate_creates_version_1_with_initial_reason():

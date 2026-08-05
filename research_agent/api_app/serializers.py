@@ -18,6 +18,7 @@ from research_agent.api_app.schemas import (
     PaperOut,
     ReferenceEntry,
     ReportOut,
+    ReportRefinementOut,
     ReportSection,
     ReportSectionOut,
     ReportVersionSummary,
@@ -166,6 +167,13 @@ def _report_to_out(report: dict, version: dict | None = None) -> ReportOut:
         version_number=version["version_number"] if version else None,
         created_at=version.get("created_at") if version else None,
         generation_reason=version["generation_reason"] if version else None,
+        # report-quality Phase R4.1: refinement metadata lives on the
+        # report BODY itself (report.refine_report_if_requested stamps
+        # it there), not the version envelope -- None whenever
+        # refinement was never requested for this report, same
+        # "absence is the signal" convention every other optional field
+        # here already uses.
+        refinement=ReportRefinementOut(**report["refinement"]) if report.get("refinement") else None,
     )
 
 

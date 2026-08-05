@@ -64,6 +64,7 @@ from research_agent.report import (
     append_report_version,
     generate_report_for_session,
     get_active_report_version,
+    refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
 )

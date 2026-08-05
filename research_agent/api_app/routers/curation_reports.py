@@ -16,7 +16,9 @@ def curation_report(
 ) -> ReportOut:
     with _upstream_error_guard("curation_report"):
         try:
-            return get_or_create_report(session_id, cp, report_template=req.report_template)
+            return get_or_create_report(
+                session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
+            )
         except ServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -28,7 +30,9 @@ def curation_report_regenerate(
 ) -> ReportOut:
     with _upstream_error_guard("curation_report_regenerate"):
         try:
-            return regenerate_report(session_id, cp, report_template=req.report_template)
+            return regenerate_report(
+                session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
+            )
         except ServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
