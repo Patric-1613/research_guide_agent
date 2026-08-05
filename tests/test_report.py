@@ -10,11 +10,15 @@ property this whole phase exists to prove.
 
 from __future__ import annotations
 
+import io
 import os
 import sys
+import zipfile
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from docx import Document as DocxDocument
 
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
@@ -23,6 +27,9 @@ from research_agent.report import (
     GENERATION_REASON_REGENERATE,
     REPORT_SECTION_DEFINITIONS,
     REPORT_TEMPLATES,
+    ExportReference,
+    ExportSection,
+    ReportExportDocument,
     _build_references_and_renumber,
     _build_regeneration_system_prompt,
     _build_report_schema,
@@ -31,6 +38,7 @@ from research_agent.report import (
     activate_report_version,
     append_report_version,
     build_references_and_renumber,
+    build_report_export_document,
     derive_legacy_references,
     derive_sections_from_legacy_report,
     ReportEvaluation,
@@ -41,6 +49,7 @@ from research_agent.report import (
     refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
+    render_report_docx,
     render_report_markdown,
     report_export_filename,
     revise_report,
@@ -2479,6 +2488,243 @@ def test_render_report_markdown_uses_legacy_section_derivation_for_an_old_report
     assert "## Future Scope" in result
     assert "Old findings prose." in result
     assert "Uthor, A. (2024). Paper One." in result
+
+
+# --- report-quality Phase R5C.1: shared export document model ---
+
+def test_build_report_export_document_meta_shape_and_order():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="transformer architectures", display_title="Transformer Architectures", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft, version_number=2, generation_reason="regenerate", created_at="2026-08-07T00:00:00+00:00")
+
+    doc = build_report_export_document(session, version)
+
+    assert doc.title == "Transformer Architectures"
+    assert doc.meta == [
+        ("Topic", "transformer architectures"),
+        ("Template", "Analytical"),
+        ("Version", "2 (regenerate)"),
+        ("Generated", "2026-08-07T00:00:00+00:00"),
+    ]
+
+
+def test_build_report_export_document_omits_generated_meta_when_created_at_is_none():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft, created_at=None)
+
+    doc = build_report_export_document(session, version)
+
+    assert [label for label, _ in doc.meta] == ["Topic", "Template", "Version"]
+
+
+def test_build_report_export_document_sections_in_order():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    doc = build_report_export_document(session, version)
+
+    assert [s.title for s in doc.sections] == [d["title"] for d in REPORT_SECTION_DEFINITIONS]
+
+
+def test_build_report_export_document_splits_paragraphs_on_the_literal_blank_line_separator():
+    """The split is a true inverse of "\\n\\n".join(...) for ANY string
+    -- proven directly here rather than just trusted, since render_
+    report_markdown's own byte-identical-output guarantee depends on it."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    for section in draft["sections"]:
+        if section["key"] == "thematic_findings":
+            section["content"] = "First paragraph [1].\n\nSecond paragraph.\n\nThird paragraph with a blank line.\n\n\nStill part of the split."
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    doc = build_report_export_document(session, version)
+
+    findings = next(s for s in doc.sections if s.title == "Thematic Findings")
+    assert findings.paragraphs == [
+        "First paragraph [1].", "Second paragraph.", "Third paragraph with a blank line.", "\nStill part of the split.",
+    ]
+    assert "\n\n".join(findings.paragraphs) == "First paragraph [1].\n\nSecond paragraph.\n\nThird paragraph with a blank line.\n\n\nStill part of the split."
+
+
+def test_build_report_export_document_references():
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://example.com/a", "Example Article")
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A finding [Paper 1] and a web claim [Web 1].",
+                "cited_papers": [p1], "cited_web_articles": [web],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(report)
+
+    doc = build_report_export_document(session, version)
+
+    assert doc.references == [
+        ExportReference(number=ref["number"], formatted=ref["formatted"], link_url=ref.get("link_url"))
+        for ref in report["references"]
+    ]
+
+
+def test_build_report_export_document_uses_legacy_section_derivation_for_an_old_report():
+    """Same fallback proof as render_report_markdown's own legacy test,
+    but against build_report_export_document directly -- the fallback
+    now lives in exactly one place, so this is the real test of it."""
+    p1 = _paper("1111", "Paper One")
+    old_report = {
+        "findings": {"content": "Old findings prose.", "cited_papers": [p1], "reference_numbers": [1]},
+        "limitations": {"content": "Old limitations prose.", "cited_papers": [], "reference_numbers": []},
+        "future_scope": {"content": "Old future prose.", "cited_papers": [], "reference_numbers": []},
+        "skipped_papers": [],
+        "references": [{
+            "number": 1, "kind": "paper", "paper_id": "1111", "title": "Paper One",
+            "formatted": "Uthor, A. (2024). Paper One.", "link_url": None,
+        }],
+    }
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(old_report)
+
+    doc = build_report_export_document(session, version)
+
+    assert [s.title for s in doc.sections] == ["Findings", "Limitations", "Future Scope"]
+    assert doc.sections[0].paragraphs == ["Old findings prose."]
+    assert doc.references == [ExportReference(number=1, formatted="Uthor, A. (2024). Paper One.", link_url=None)]
+
+
+# --- report-quality Phase R5C.1: DOCX export of a report version ---
+
+def test_render_report_docx_returns_bytes_that_are_a_valid_zip_and_open_with_python_docx():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+
+    assert isinstance(content, bytes)
+    assert zipfile.is_zipfile(io.BytesIO(content))
+    DocxDocument(io.BytesIO(content))  # raises if python-docx itself can't open it
+
+
+def test_render_report_docx_includes_title_metadata_section_headings_and_body_text():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="transformer architectures", display_title="Transformer Architectures", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft, version_number=2, generation_reason="regenerate")
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+    paragraph_texts = [p.text for p in doc.paragraphs]
+
+    assert doc.paragraphs[0].text == "Transformer Architectures"
+    assert doc.paragraphs[0].style.name == "Title"
+    assert "Topic: transformer architectures" in paragraph_texts
+    assert "Template: Analytical" in paragraph_texts
+    assert "Version: 2 (regenerate)" in paragraph_texts
+    heading_texts = [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert heading_texts[: len(REPORT_SECTION_DEFINITIONS)] == [d["title"] for d in REPORT_SECTION_DEFINITIONS]
+
+
+def test_render_report_docx_references_include_hyperlink_relationship_when_link_url_present():
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://example.com/a", "Example Article")
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A finding [Paper 1] and a web claim [Web 1].",
+                "cited_papers": [p1], "cited_web_articles": [web],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(report)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+
+    paragraph_texts = [p.text for p in doc.paragraphs]
+    assert "References" in [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    for ref in report["references"]:
+        assert any(ref["formatted"] in text for text in paragraph_texts)
+        if ref.get("link_url"):
+            hyperlink_targets = [
+                rel.target_ref for rel in doc.part.rels.values()
+                if rel.reltype == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+            ]
+            assert ref["link_url"] in hyperlink_targets
+
+
+def test_render_report_docx_page_break_appears_immediately_before_references():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+
+    references_index = next(i for i, p in enumerate(doc.paragraphs) if p.text == "References" and p.style.name == "Heading 1")
+    assert "w:br" in doc.paragraphs[references_index - 1]._p.xml
+
+
+def test_render_report_docx_omits_references_and_page_break_when_there_are_none():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([])  # no papers cited anywhere -> no references
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+
+    assert "References" not in [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert not any("w:br" in p._p.xml for p in doc.paragraphs)
+
+
+def test_render_report_docx_excludes_refinement_metadata_even_when_present():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    draft["refinement"] = {
+        "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+        "issues": ["too shallow", "missing comparison"], "revision_instructions": "add more depth",
+        "section_scores": {"thematic_findings": 35},
+    }
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+
+    for forbidden in ("too shallow", "missing comparison", "add more depth", "initial_score", "refinement"):
+        assert forbidden not in full_text
 
 
 def test_report_export_filename_is_sanitized_and_includes_version_number():

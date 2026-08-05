@@ -23,12 +23,18 @@ calls the plain function _generate_answer internally.
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
@@ -2076,7 +2082,7 @@ def activate_report_version(session: PaperPoolSession, version_id: str) -> dict 
     return None
 
 
-# --- report-quality Phase R5A: Markdown export of a report version ---
+# --- report-quality Phase R5A/R5C.1: document export of a report version ---
 #
 # Deterministic, backend-rendered, no LLM call -- walks a version's own
 # already-finalized sections/references exactly as stored, never
@@ -2093,30 +2099,66 @@ def activate_report_version(session: PaperPoolSession, version_id: str) -> dict 
 _EXPORT_FILENAME_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9]+")
 
 
-def render_report_markdown(session: PaperPoolSession, version: dict) -> str:
-    """report-quality Phase R5A: renders ONE report version (typically
-    the active one -- see services/curation_report_service.py's
-    export_active_report, the one real caller) as a Markdown document.
+@dataclass
+class ExportSection:
+    title: str
+    # report-quality Phase R5C.1: split on the literal "\n\n" paragraph
+    # separator, not a regex -- `"\n\n".join(content.split("\n\n"))` is
+    # an EXACT inverse of the split for any string, so render_report_
+    # markdown's own reconstruction below is guaranteed byte-identical
+    # to the pre-R5C.1 implementation that just dumped `content` as-is,
+    # regardless of how many blank lines a given report's prose happens
+    # to contain. DOCX/PDF renderers get one paragraph per list entry
+    # instead, which is the whole point of splitting at the model layer
+    # rather than leaving it to each renderer to reinvent.
+    paragraphs: list[str]
 
-    Reuses the exact same "derive at read time" fallback convention
-    api_app/serializers.py's _report_to_out already established for an
-    old report with no `sections`/`references` key of its own yet --
-    calls derive_sections_from_legacy_report/derive_legacy_references
-    directly rather than reimplementing that fallback a third time.
-    Every section's `content` is used exactly as stored -- it already
-    carries its final, resolved [N] markers (see _build_references_
-    and_renumber, which runs once at generation/revision time, never
-    again after) -- and every reference's `formatted` string is already
-    a complete citation (format_apa_citation/format_web_citation, also
-    computed once at generation time) -- this function only WALKS that
-    already-finalized data into Markdown lines; it never recomputes,
-    re-numbers, or re-resolves any of it.
 
-    References section is omitted entirely (not rendered with a
-    "no references" placeholder) when the report has none -- the same
-    choice the frontend's own ReferencesList already makes for the
-    in-app view, kept consistent here rather than diverging for the
-    exported document specifically.
+@dataclass
+class ExportReference:
+    number: int
+    formatted: str
+    link_url: str | None = None
+
+
+@dataclass
+class ReportExportDocument:
+    """report-quality Phase R5C.1: the one logical document model every
+    export renderer (Markdown today; DOCX as of this phase; PDF in a
+    later phase) walks -- built once by build_report_export_document
+    below, which is the ONLY place the legacy sections/references
+    fallback, the title fallback, and the "created_at is optional" rule
+    are decided. A renderer never re-derives any of that; it only knows
+    how to lay out a ReportExportDocument in its own output format."""
+
+    title: str
+    # Ordered (label, value) pairs, not a dict -- display order matters
+    # (Topic, Template, Version, then optional Generated) and a list of
+    # tuples keeps that order explicit rather than relying on dict
+    # insertion order being preserved correctly by every future caller.
+    meta: list[tuple[str, str]]
+    sections: list[ExportSection]
+    references: list[ExportReference]
+
+
+def build_report_export_document(session: PaperPoolSession, version: dict) -> ReportExportDocument:
+    """report-quality Phase R5C.1: the single place that turns a stored
+    report version into the document shape every export renderer
+    consumes. Reuses the exact same "derive at read time" fallback
+    convention api_app/serializers.py's _report_to_out already
+    established for an old report with no `sections`/`references` key
+    of its own yet -- calls derive_sections_from_legacy_report/
+    derive_legacy_references directly rather than reimplementing that
+    fallback a third time (now a SECOND time total, since this is the
+    only remaining call site). Every section's `content` is used
+    exactly as stored -- it already carries its final, resolved [N]
+    markers (see _build_references_and_renumber, which runs once at
+    generation/revision time, never again after) -- and every
+    reference's `formatted` string is already a complete citation
+    (format_apa_citation/format_web_citation, also computed once at
+    generation time) -- this function only WALKS that already-finalized
+    data into the document model; it never recomputes, re-numbers, or
+    re-resolves any of it.
     """
     report = version["report"]
     if "references" not in report:
@@ -2125,30 +2167,145 @@ def render_report_markdown(session: PaperPoolSession, version: dict) -> str:
         report = {**report, "sections": derive_sections_from_legacy_report(report)}
 
     title = session.display_title or session.topic
-    lines = [f"# {title}", ""]
-    lines.append(f"**Topic:** {session.topic}  ")
-    lines.append(f"**Template:** {report.get('report_template', DEFAULT_REPORT_TEMPLATE).capitalize()}  ")
-    lines.append(f"**Version:** {version['version_number']} ({version['generation_reason']})  ")
+    meta: list[tuple[str, str]] = [
+        ("Topic", session.topic),
+        ("Template", report.get("report_template", DEFAULT_REPORT_TEMPLATE).capitalize()),
+        ("Version", f"{version['version_number']} ({version['generation_reason']})"),
+    ]
     if version.get("created_at"):
-        lines.append(f"**Generated:** {version['created_at']}  ")
+        meta.append(("Generated", version["created_at"]))
+
+    sections = [
+        ExportSection(title=section["title"], paragraphs=section["content"].split("\n\n"))
+        for section in report["sections"]
+    ]
+    references = [
+        ExportReference(number=ref["number"], formatted=ref["formatted"], link_url=ref.get("link_url"))
+        for ref in report.get("references", [])
+    ]
+    return ReportExportDocument(title=title, meta=meta, sections=sections, references=references)
+
+
+def render_report_markdown(session: PaperPoolSession, version: dict) -> str:
+    """report-quality Phase R5A, refactored in R5C.1 to consume the
+    shared ReportExportDocument (built by build_report_export_document
+    above) instead of walking session.report directly -- output is
+    byte-identical to the pre-R5C.1 implementation (proven by the
+    original R5A tests passing unchanged), since `"\\n\\n".join(section
+    .paragraphs)` is an exact inverse of the `content.split("\\n\\n")`
+    the document model used to build those paragraphs in the first
+    place.
+
+    References section is omitted entirely (not rendered with a
+    "no references" placeholder) when the report has none -- the same
+    choice the frontend's own ReferencesList already makes for the
+    in-app view, kept consistent here rather than diverging for the
+    exported document specifically.
+    """
+    doc = build_report_export_document(session, version)
+
+    lines = [f"# {doc.title}", ""]
+    for label, value in doc.meta:
+        lines.append(f"**{label}:** {value}  ")
     lines.append("")
 
-    for section in report["sections"]:
-        lines.append(f"## {section['title']}")
+    for section in doc.sections:
+        lines.append(f"## {section.title}")
         lines.append("")
-        lines.append(section["content"])
+        lines.append("\n\n".join(section.paragraphs))
         lines.append("")
 
-    references = report.get("references", [])
-    if references:
+    if doc.references:
         lines.append("## References")
         lines.append("")
-        for ref in references:
-            citation = f"[{ref['formatted']}]({ref['link_url']})" if ref.get("link_url") else ref["formatted"]
-            lines.append(f"{ref['number']}. {citation}")
+        for ref in doc.references:
+            citation = f"[{ref.formatted}]({ref.link_url})" if ref.link_url else ref.formatted
+            lines.append(f"{ref.number}. {citation}")
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _add_docx_hyperlink(paragraph, url: str, text: str) -> None:
+    """python-docx has no first-class add_hyperlink() -- this is the
+    documented low-level workaround (build the w:hyperlink XML element
+    by hand and register the URL as an external relationship on the
+    paragraph's own part) every python-docx hyperlink recipe uses.
+    Styled as a conventional blue/underlined link so it reads as a real
+    hyperlink rather than plain text in the rendered document."""
+    part = paragraph.part
+    r_id = part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    run = OxmlElement("w:r")
+    run_properties = OxmlElement("w:rPr")
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    run_properties.append(underline)
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    run_properties.append(color)
+
+    run.append(run_properties)
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run.append(text_element)
+    hyperlink.append(run)
+
+    paragraph._p.append(hyperlink)  # noqa: SLF001 -- documented workaround, no public API exists
+
+
+def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
+    """report-quality Phase R5C.1: renders the same ReportExportDocument
+    render_report_markdown consumes as a DOCX file, returned as raw
+    bytes (the router wraps them in an HTTP Response; this function
+    stays format-only, same "no HTTP knowledge" scope every other
+    render_* function here already keeps).
+
+    Layout: title (Heading 0) -> metadata lines (plain italic
+    paragraphs, not a table -- a handful of label/value lines don't
+    need one) -> one Heading 1 + one paragraph per non-empty content
+    paragraph for each section, in order -> a page break, then a
+    References heading and numbered entries (only when references
+    exist -- same "omit entirely, don't render a placeholder" choice
+    render_report_markdown already makes) with a real hyperlink
+    wherever `link_url` is present, plain text otherwise. Deliberately
+    no cover page, no custom fonts, no branding -- a clean, minimal
+    document template, not a styled artifact.
+    """
+    doc = build_report_export_document(session, version)
+    document = Document()
+
+    document.add_heading(doc.title, level=0)
+    for label, value in doc.meta:
+        meta_paragraph = document.add_paragraph()
+        meta_run = meta_paragraph.add_run(f"{label}: {value}")
+        meta_run.italic = True
+
+    for section in doc.sections:
+        document.add_heading(section.title, level=1)
+        for paragraph_text in section.paragraphs:
+            if paragraph_text:
+                document.add_paragraph(paragraph_text)
+
+    if doc.references:
+        document.add_page_break()
+        document.add_heading("References", level=1)
+        for ref in doc.references:
+            ref_paragraph = document.add_paragraph()
+            ref_paragraph.add_run(f"{ref.number}. ")
+            if ref.link_url:
+                _add_docx_hyperlink(ref_paragraph, ref.link_url, ref.formatted)
+            else:
+                ref_paragraph.add_run(ref.formatted)
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
 
 
 def report_export_filename(session: PaperPoolSession, version: dict, extension: str) -> str:

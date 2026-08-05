@@ -27,15 +27,18 @@ mocked-vs-real trade-off in test_api.py:
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tempfile
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from docx import Document as DocxDocument
 from fastapi.testclient import TestClient
 
 import research_agent.api as api
@@ -1467,11 +1470,91 @@ def test_curation_report_export_unsupported_format_checked_before_session_lookup
     """An unsupported format 400s even for a session_id that doesn't
     exist at all -- format validation is a pure request-shape check,
     resolved before any session lookup (see export_active_report's own
-    docstring for why)."""
+    docstring for why). "pdf" (not yet implemented as of R5C.1 -- see
+    "docx" becoming a supported value in the sibling test above) is used
+    here rather than a plain typo so this test also documents that PDF
+    genuinely isn't wired up yet."""
+    with _client() as client:
+        resp = client.get("/curation/does-not-exist/report/export", params={"format": "pdf"})
+
+    assert resp.status_code == 400
+
+
+# --- report-quality Phase R5C.1: GET /curation/{id}/report/export?format=docx ---
+
+def test_curation_report_export_docx_returns_valid_document_for_the_active_version():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "Per [1].", "cited_papers": [_paper(pick_ids[0], "Paper Zero")]},
+            "limitations": {"content": "L", "cited_papers": []},
+            "future_scope": {"content": "S", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "docx"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert 'attachment; filename="' in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].strip().endswith('.docx"')
+    assert zipfile.is_zipfile(io.BytesIO(resp.content))
+
+    doc = DocxDocument(io.BytesIO(resp.content))
+    paragraph_texts = [p.text for p in doc.paragraphs]
+    assert any("Per [1]." in text for text in paragraph_texts)
+    assert "Findings" in [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert any("Version: 1 (initial)" in text for text in paragraph_texts)
+    assert any("Paper Zero" in text for text in paragraph_texts)
+
+
+def test_curation_report_export_docx_reflects_active_not_latest_version():
+    """Same proof as the markdown equivalent above, for format=docx --
+    export_active_report's active-vs-latest resolution is shared across
+    every format, but this exercises it at the HTTP boundary for docx
+    specifically rather than assuming the markdown test's coverage
+    transfers."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1 content", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+        v1_id = client.get(f"/curation/{session_id}").json()["report_versions"][0]["version_id"]
+
+        second_report = {**first_report, "findings": {"content": "v2 content", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            client.post(f"/curation/{session_id}/report/regenerate")
+
+        client.post(f"/curation/{session_id}/reports/{v1_id}/activate")
+
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "docx"})
+
+    doc = DocxDocument(io.BytesIO(resp.content))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "v1 content" in full_text
+    assert "v2 content" not in full_text
+
+
+def test_curation_report_export_docx_unknown_session_id_returns_404():
     with _client() as client:
         resp = client.get("/curation/does-not-exist/report/export", params={"format": "docx"})
 
-    assert resp.status_code == 400
+    assert resp.status_code == 404
+
+
+def test_curation_report_export_docx_no_report_yet_returns_404():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "docx"})
+
+    assert resp.status_code == 404
 
 
 # --- /curation/{id}/chat ---

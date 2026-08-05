@@ -114,24 +114,29 @@ def regenerate_report(
     return _report_to_out(session.report, api.get_active_report_version(session))
 
 
-def export_active_report(session_id: str, cp, format: str) -> tuple[str, str]:
-    """report-quality Phase R5A: exports session.report -- always the
-    ACTIVE version's own body (append_report_version/activate_report_
-    version keep session.report/get_active_report_version in lockstep,
-    the same invariant every other report read in this module already
-    relies on) -- as a rendered document. Returns (content, filename)
-    so the router builds the actual HTTP response/headers; this
-    function stays HTTP-unaware, same "session load + errors only"
-    scope as get_or_create_report/regenerate_report above.
+_EXPORT_FORMATS = ("markdown", "docx")
+
+
+def export_active_report(session_id: str, cp, format: str) -> tuple[str | bytes, str]:
+    """report-quality Phase R5A/R5C.1: exports session.report -- always
+    the ACTIVE version's own body (append_report_version/activate_
+    report_version keep session.report/get_active_report_version in
+    lockstep, the same invariant every other report read in this module
+    already relies on) -- as a rendered document. Returns (content,
+    filename); content is `str` for markdown, `bytes` for docx -- the
+    router picks the right Response type/media_type based on the same
+    `format` it already received, so this function stays HTTP-unaware,
+    same "session load + errors only" scope as get_or_create_report/
+    regenerate_report above.
 
     format validation happens FIRST, before any session lookup -- an
     unsupported format is a pure request-shape problem, independent of
     whether session_id resolves to anything, so it's cheaper and more
     correct to reject it before touching the checkpointer at all.
-    "markdown" is the only supported value in R5A; PDF/DOCX are a later
-    phase, not a TODO left half-wired here.
+    "markdown"/"docx" are the only supported values as of R5C.1; PDF is
+    a later phase, not a TODO left half-wired here.
     """
-    if format != "markdown":
+    if format not in _EXPORT_FORMATS:
         raise ServiceError(400, f"unsupported export format: {format!r}")
     session = load_curation_session(session_id, cp)
     if session is None:
@@ -139,8 +144,12 @@ def export_active_report(session_id: str, cp, format: str) -> tuple[str, str]:
     if session.report is None:
         raise ServiceError(404, "session has no report yet")
     version = api.get_active_report_version(session)
-    content = api.render_report_markdown(session, version)
-    filename = api.report_export_filename(session, version, "md")
+    if format == "docx":
+        content: str | bytes = api.render_report_docx(session, version)
+        filename = api.report_export_filename(session, version, "docx")
+    else:
+        content = api.render_report_markdown(session, version)
+        filename = api.report_export_filename(session, version, "md")
     return content, filename
 
 

@@ -62,11 +62,13 @@ from research_agent.report import (
     GENERATION_REASON_REGENERATE,
     activate_report_version,
     append_report_version,
+    build_report_export_document,
     generate_report_for_session,
     get_active_report_version,
     refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
+    render_report_docx,
     render_report_markdown,
     report_export_filename,
 )
