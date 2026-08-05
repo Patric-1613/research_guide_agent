@@ -15,6 +15,7 @@ import type {
   CurationStartRequest,
   CurationStateResponse,
   CurationTurnResponse,
+  RefinementMode,
   ReportOut,
   ReportTemplate,
 } from '../../types'
@@ -65,11 +66,22 @@ export const curationApi = {
   // omitted sends the exact same {} body every existing caller/test
   // already relies on (generate defaults to analytical server-side,
   // regenerate preserves the existing report's template server-side).
-  generateReport: (sessionId: string, reportTemplate?: ReportTemplate): Promise<ReportOut> =>
-    postJson(`/curation/${sessionId}/report`, reportTemplate ? { report_template: reportTemplate } : {}),
+  //
+  // report-quality Phase R4.1: refinementMode follows the identical
+  // "omitted/off means no key in the body at all" convention -- only
+  // "single" is ever sent explicitly, keeping the payload minimal and
+  // every existing caller/test (which never passes it) byte-identical.
+  generateReport: (sessionId: string, reportTemplate?: ReportTemplate, refinementMode?: RefinementMode): Promise<ReportOut> =>
+    postJson(`/curation/${sessionId}/report`, {
+      ...(reportTemplate ? { report_template: reportTemplate } : {}),
+      ...(refinementMode && refinementMode !== 'off' ? { refinement_mode: refinementMode } : {}),
+    }),
 
-  regenerateReport: (sessionId: string, reportTemplate?: ReportTemplate): Promise<ReportOut> =>
-    postJson(`/curation/${sessionId}/report/regenerate`, reportTemplate ? { report_template: reportTemplate } : {}),
+  regenerateReport: (sessionId: string, reportTemplate?: ReportTemplate, refinementMode?: RefinementMode): Promise<ReportOut> =>
+    postJson(`/curation/${sessionId}/report/regenerate`, {
+      ...(reportTemplate ? { report_template: reportTemplate } : {}),
+      ...(refinementMode && refinementMode !== 'off' ? { refinement_mode: refinementMode } : {}),
+    }),
 
   // report-quality Phase R3: version_id is a path parameter (matches the
   // backend router), no body -- same {} POST-with-no-payload convention

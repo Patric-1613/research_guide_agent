@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { ReportOut, ReportSection, ReportTemplate, ReportVersionSummary, CurationStateResponse } from '../../types'
+import type {
+  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportTemplate, ReportVersionSummary,
+  CurationStateResponse,
+} from '../../types'
 import { renderContentWithMarkers } from '../../lib/citationMarkers'
 import { ReferencesList } from '../shared/ReferencesList'
 
@@ -9,8 +12,11 @@ interface ReportModePanelProps {
   // report-quality Phase R2C: both now receive the panel's own currently
   // SELECTED template (never omitted from this panel's own call sites --
   // the selector always has a concrete value, defaulted to "analytical").
-  onGenerateReport: (reportTemplate: ReportTemplate) => void
-  onRegenerateReport: (reportTemplate: ReportTemplate) => void
+  // report-quality Phase R4.1: both also receive the panel's own
+  // currently selected refinement mode -- same "never omitted, always
+  // concrete" convention, defaulted to "off".
+  onGenerateReport: (reportTemplate: ReportTemplate, refinementMode: RefinementMode) => void
+  onRegenerateReport: (reportTemplate: ReportTemplate, refinementMode: RefinementMode) => void
   // report-quality Phase R3: switches the active report version.
   onActivateReportVersion: (versionId: string) => void
 }
@@ -56,15 +62,24 @@ export function ReportModePanel({
     setSelectedTemplate(state.report?.report_template ?? 'analytical')
   }, [state.report?.report_template])
 
+  // report-quality Phase R4.1: local, session-local toggle -- resets
+  // to off on a fresh mount (same as never persisting across reviews),
+  // never synced FROM the report the way selectedTemplate is (a report's
+  // own past refinement history says nothing about what the user wants
+  // the NEXT generate/regenerate to do).
+  const [refineOnce, setRefineOnce] = useState(false)
+  const refinementMode: RefinementMode = refineOnce ? 'single' : 'off'
+
   if (!state.report) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
         <p className="text-sm text-text-secondary">No report yet for this review.</p>
         <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
+        <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
         <button
           type="button"
           data-testid="generate-report"
-          onClick={() => onGenerateReport(selectedTemplate)}
+          onClick={() => onGenerateReport(selectedTemplate, refinementMode)}
           disabled={disabled}
           className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
         >
@@ -83,6 +98,7 @@ export function ReportModePanel({
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-text">Literature review report</h2>
           <TemplateBadge template={state.report.report_template ?? 'analytical'} />
+          {state.report.refinement && <RefinementBadge refinement={state.report.refinement} />}
         </div>
         <div className="flex items-center gap-2">
           <VersionSelector
@@ -92,10 +108,11 @@ export function ReportModePanel({
             disabled={disabled}
           />
           <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
+          <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
           <button
             type="button"
             data-testid="regenerate-report"
-            onClick={() => onRegenerateReport(selectedTemplate)}
+            onClick={() => onRegenerateReport(selectedTemplate, refinementMode)}
             disabled={disabled}
             className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
           >
@@ -211,6 +228,55 @@ function TemplateBadge({ template }: { template: ReportTemplate }) {
       className="rounded-full border border-border px-2 py-0.5 text-[11px] text-text-secondary"
     >
       {TEMPLATE_LABELS[template]}
+    </span>
+  )
+}
+
+// report-quality Phase R4.1: a single checkbox, no long explanatory
+// text -- opting in to the bounded draft -> evaluate -> revise ->
+// finalize loop for the NEXT Generate/Regenerate click. Off by
+// default. Shared between the empty (Generate) and main (Regenerate)
+// views via the same lifted refineOnce state, same pattern
+// TemplateSelector already uses across both.
+function RefineOnceToggle({
+  checked, onChange, disabled,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  disabled: boolean
+}) {
+  return (
+    <label className="flex shrink-0 items-center gap-1.5 text-xs text-text-secondary">
+      <input
+        type="checkbox"
+        data-testid="refine-once-toggle"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+        className="h-3.5 w-3.5 rounded border-border disabled:opacity-40"
+      />
+      Refine once
+    </label>
+  )
+}
+
+// report-quality Phase R4.1: compact, score-only summary of whatever
+// refinement ran for THIS report -- deliberately never renders
+// issues/revision_instructions (not exposed by the API at all; see
+// ReportRefinementOut's own docstring). "Refined once" when a revision
+// actually happened (rounds===1); "Evaluated" when the draft passed
+// evaluation as-is (rounds===0) -- both cases mean refinement.enabled
+// is true, so this is only ever rendered when there's something real
+// to report.
+function RefinementBadge({ refinement }: { refinement: ReportRefinementOut }) {
+  const label = refinement.rounds > 0 ? 'Refined once' : 'Evaluated'
+  const score = refinement.final_score ?? refinement.initial_score
+  return (
+    <span
+      data-testid="report-refinement-badge"
+      className="rounded-full border border-border px-2 py-0.5 text-[11px] text-text-secondary"
+    >
+      {label}{score !== null ? ` · score ${score}` : ''}
     </span>
   )
 }

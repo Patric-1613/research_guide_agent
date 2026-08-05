@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { curationApi } from '../lib/api/client'
 import { ApiError } from '../types'
-import type { CurationStateResponse, ReportTemplate } from '../types'
+import type { CurationStateResponse, RefinementMode, ReportTemplate } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
 // deliberately client-only, accumulated as turns happen during THIS page
@@ -136,8 +136,11 @@ interface UseCurationSessionResult {
   // omitted preserves exactly the prior behavior (generate defaults to
   // analytical server-side, regenerate preserves the existing report's
   // template server-side).
-  generateReport: (reportTemplate?: ReportTemplate) => Promise<CurationStateResponse | undefined>
-  regenerateReport: (reportTemplate?: ReportTemplate) => Promise<CurationStateResponse | undefined>
+  // report-quality Phase R4.1: refinementMode is optional the same way
+  // -- omitted/"off" preserves exactly the prior (no refinement)
+  // behavior.
+  generateReport: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<CurationStateResponse | undefined>
+  regenerateReport: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<CurationStateResponse | undefined>
   // report-quality Phase R3: switches which report version is active --
   // same return convention as generate/regenerateReport above.
   activateReportVersion: (versionId: string) => Promise<CurationStateResponse | undefined>
@@ -279,10 +282,10 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   const generateReport = useCallback(
-    (reportTemplate?: ReportTemplate) =>
+    (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) =>
       runAction(async () => {
         if (!sessionId) return undefined
-        await curationApi.generateReport(sessionId, reportTemplate)
+        await curationApi.generateReport(sessionId, reportTemplate, refinementMode)
         // chat-ux-polish Phase A: a fresh generation resolves whatever
         // prompted the stale warning (if anything did) -- this is a real
         // report-changing action succeeding, the explicit clear condition
@@ -294,10 +297,10 @@ export function useCurationSession(): UseCurationSessionResult {
   )
 
   const regenerateReport = useCallback(
-    (reportTemplate?: ReportTemplate) =>
+    (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) =>
       runAction(async () => {
         if (!sessionId) return undefined
-        await curationApi.regenerateReport(sessionId, reportTemplate)
+        await curationApi.regenerateReport(sessionId, reportTemplate, refinementMode)
         setReportPossiblyStale(false)
         return loadState(sessionId)
       }),

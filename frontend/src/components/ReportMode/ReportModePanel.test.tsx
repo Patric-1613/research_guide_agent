@@ -330,7 +330,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     await user.click(screen.getByTestId('report-template-option-foundational'))
     await user.click(screen.getByTestId('generate-report'))
 
-    expect(onGenerateReport).toHaveBeenCalledWith('foundational')
+    expect(onGenerateReport).toHaveBeenCalledWith('foundational', 'off')
   })
 
   it('selecting Expert and clicking Regenerate calls onRegenerateReport("expert")', async () => {
@@ -342,7 +342,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     await user.click(screen.getByTestId('report-template-option-expert'))
     await user.click(screen.getByTestId('regenerate-report'))
 
-    expect(onRegenerateReport).toHaveBeenCalledWith('expert')
+    expect(onRegenerateReport).toHaveBeenCalledWith('expert', 'off')
   })
 
   it('shows a template badge for an existing report', () => {
@@ -478,7 +478,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     await user.click(screen.getByTestId('report-template-option-expert'))
     await user.click(screen.getByTestId('regenerate-report'))
 
-    expect(onRegenerateReport).toHaveBeenCalledWith('expert')
+    expect(onRegenerateReport).toHaveBeenCalledWith('expert', 'off')
   })
 
   it('is disabled while a report action is in progress, same as the other report controls', () => {
@@ -488,5 +488,112 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.getByTestId('report-version-selector')).toBeDisabled()
+  })
+})
+
+describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () => {
+  function reportStub(overrides: Record<string, unknown> = {}) {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+      ...overrides,
+    }
+  }
+
+  it('renders the "Refine once" toggle before a report exists', () => {
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
+    expect(screen.getByText('Refine once')).toBeInTheDocument()
+  })
+
+  it('renders the "Refine once" toggle once a report exists', () => {
+    const state = baseState({ report: reportStub() })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
+  })
+
+  it('the toggle defaults to off (unchecked)', () => {
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('refine-once-toggle')).not.toBeChecked()
+  })
+
+  it('clicking Generate with the toggle off calls onGenerateReport with "off"', async () => {
+    const user = userEvent.setup()
+    const onGenerateReport = vi.fn()
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('generate-report'))
+
+    expect(onGenerateReport).toHaveBeenCalledWith('analytical', 'off')
+  })
+
+  it('checking the toggle then clicking Generate calls onGenerateReport(template, "single")', async () => {
+    const user = userEvent.setup()
+    const onGenerateReport = vi.fn()
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('refine-once-toggle'))
+    await user.click(screen.getByTestId('generate-report'))
+
+    expect(onGenerateReport).toHaveBeenCalledWith('analytical', 'single')
+  })
+
+  it('checking the toggle then clicking Regenerate calls onRegenerateReport(template, "single")', async () => {
+    const user = userEvent.setup()
+    const onRegenerateReport = vi.fn()
+    const state = baseState({ report: reportStub() })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('refine-once-toggle'))
+    await user.click(screen.getByTestId('regenerate-report'))
+
+    expect(onRegenerateReport).toHaveBeenCalledWith('analytical', 'single')
+  })
+
+  it('the toggle is disabled while a report action is in progress', () => {
+    const state = baseState({ report: reportStub() })
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('refine-once-toggle')).toBeDisabled()
+  })
+
+  it('renders a compact refinement badge when a revision happened', () => {
+    const state = baseState({
+      report: reportStub({ refinement: { enabled: true, rounds: 1, initial_score: 40, final_score: null } }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Refined once · score 40')
+  })
+
+  it('renders a compact refinement badge when the draft was only evaluated (no revision)', () => {
+    const state = baseState({
+      report: reportStub({ refinement: { enabled: true, rounds: 0, initial_score: 88, final_score: 88 } }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Evaluated · score 88')
+  })
+
+  it('does not render a refinement badge when the report has no refinement metadata', () => {
+    const state = baseState({ report: reportStub() })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.queryByTestId('report-refinement-badge')).not.toBeInTheDocument()
+  })
+
+  it('never renders full issues or revision instructions -- only the compact badge', () => {
+    const state = baseState({
+      report: reportStub({ refinement: { enabled: true, rounds: 1, initial_score: 40, final_score: null } }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.queryByText(/revision instructions/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/issues/i)).not.toBeInTheDocument()
   })
 })

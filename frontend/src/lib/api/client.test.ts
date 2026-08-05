@@ -124,6 +124,79 @@ describe('curationApi', () => {
     )
   })
 
+  // report-quality Phase R4.1
+  it('generateReport() posts { refinement_mode: "single" } when refinementMode is "single"', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.generateReport('s1', undefined, 'single')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ refinement_mode: 'single' }) }),
+    )
+  })
+
+  it('generateReport() posts both report_template and refinement_mode when both are given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.generateReport('s1', 'expert', 'single')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report',
+      expect.objectContaining({
+        method: 'POST', body: JSON.stringify({ report_template: 'expert', refinement_mode: 'single' }),
+      }),
+    )
+  })
+
+  it('generateReport() posts {} when refinementMode is "off" -- same minimal payload as omitted', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.generateReport('s1', undefined, 'off')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
+  it('regenerateReport() posts { refinement_mode: "single" } when refinementMode is "single"', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.regenerateReport('s1', undefined, 'single')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report/regenerate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ refinement_mode: 'single' }) }),
+    )
+  })
+
+  it('regenerateReport() posts {} when refinementMode is omitted -- existing behavior unchanged', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      findings: { content: '', cited_papers: [] }, limitations: { content: '', cited_papers: [] },
+      future_scope: { content: '', cited_papers: [] }, skipped_paper_ids: [],
+    })
+
+    await curationApi.regenerateReport('s1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/s1/report/regenerate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    )
+  })
+
   // report-quality Phase R3
   it('activateReportVersion() posts {} to the version-scoped activate path', async () => {
     const fetchMock = mockFetchOnce(200, {

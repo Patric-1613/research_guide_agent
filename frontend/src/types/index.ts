@@ -118,6 +118,23 @@ export interface ReportSection {
 // the backend's own report.py ReportTemplate Literal field-for-field.
 export type ReportTemplate = 'foundational' | 'analytical' | 'expert'
 
+// report-quality Phase R4.1: whether/how the optional draft -> evaluate
+// -> revise -> finalize refinement loop ran for a report. Same plain
+// string-union convention as ReportTemplate above, mirrors the
+// backend's own report.py RefinementMode Literal field-for-field.
+export type RefinementMode = 'off' | 'single'
+
+// report-quality Phase R4.1: the minimal refinement metadata a report
+// carries when refinement was requested for it -- deliberately small
+// (no issues/revision_instructions), matching the backend's own
+// ReportRefinementOut.
+export interface ReportRefinementOut {
+  enabled: boolean
+  rounds: number
+  initial_score: number | null
+  final_score: number | null
+}
+
 export interface ReportOut {
   // Legacy fields -- kept as compatibility fields, not the primary
   // report body once dynamic sections (below) are generated
@@ -151,6 +168,9 @@ export interface ReportOut {
   version_number?: number | null
   created_at?: string | null
   generation_reason?: string | null
+  // report-quality Phase R4.1: absent/null whenever refinement was
+  // never requested for this report (the overwhelming common case).
+  refinement?: ReportRefinementOut | null
 }
 
 // report-quality Phase R3: one lightweight entry in CurationStateResponse
@@ -173,10 +193,15 @@ export interface ReportVersionSummary {
 // CurationGenerateReportRequest/CurationRegenerateReportRequest.
 export interface CurationGenerateReportRequest {
   report_template?: ReportTemplate
+  // report-quality Phase R4.1: omitted/off means no refinement -- same
+  // "absence preserves prior behavior" convention as report_template
+  // above.
+  refinement_mode?: RefinementMode
 }
 
 export interface CurationRegenerateReportRequest {
   report_template?: ReportTemplate
+  refinement_mode?: RefinementMode
 }
 
 export interface TurnHistoryEntryOut {
