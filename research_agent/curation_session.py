@@ -135,6 +135,19 @@ def _serialize_report(report: dict | None) -> dict | None:
     # to "analytical" at read time rather than assuming one here.
     if "report_template" in report:
         serialized["report_template"] = report["report_template"]
+    # report-quality Phase R4.1: refinement is a plain dict of JSON-
+    # native types (bool/int/int|None, no Paper/WebArticle objects) --
+    # opaque pass-through, same presence-checked convention as
+    # references/sections/report_template above. Absent for any report
+    # refinement was never requested for. Bug found live: without this,
+    # refinement was silently dropped on the very first save/load round
+    # trip through the checkpointer -- present in the immediate POST
+    # response (built from the in-memory report dict), gone from every
+    # subsequent GET /curation/{id} (which reads the persisted,
+    # round-tripped copy) -- exactly the same class of gap R2C's own
+    # section-key round-trip bug was.
+    if "refinement" in report:
+        serialized["refinement"] = report["refinement"]
     return serialized
 
 
@@ -157,6 +170,8 @@ def _deserialize_report(d: dict | None) -> dict | None:
         deserialized["sections"] = d["sections"]
     if "report_template" in d:
         deserialized["report_template"] = d["report_template"]
+    if "refinement" in d:
+        deserialized["refinement"] = d["refinement"]
     return deserialized
 
 

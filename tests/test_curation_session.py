@@ -320,6 +320,103 @@ def test_report_template_survives_serialize_deserialize():
         assert loaded.report["report_template"] == "expert"
 
 
+def test_report_refinement_metadata_survives_serialize_deserialize():
+    """report-quality Phase R4.1 bug fix: refinement was silently
+    dropped on the very first save/load round trip -- _serialize_report/
+    _deserialize_report built their output from an explicit, hardcoded
+    key list that never accounted for the new top-level "refinement"
+    key, so it was present in the immediate POST response (built from
+    the in-memory report dict) but gone from every subsequent GET
+    /curation/{id} (which reads the persisted, round-tripped copy) --
+    the same class of gap R2C's own section-key round-trip bug was."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        report = {
+            "findings": {"content": "F", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [],
+            "report_template": "analytical",
+            "refinement": {"enabled": True, "rounds": 1, "initial_score": 40, "final_score": None},
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-refinement", cp)
+            loaded = load_curation_session("session-report-refinement", cp)
+
+        assert loaded is not None
+        assert loaded.report is not None
+        assert loaded.report["refinement"] == {
+            "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+        }
+
+
+def test_report_without_refinement_still_loads_cleanly():
+    """A report refinement was never requested for (no "refinement" key
+    at all -- the overwhelming common case, including every report
+    generated before R4.1) round-trips with no "refinement" key added,
+    not a fabricated {"enabled": False, ...} placeholder."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        report = {
+            "findings": {"content": "F", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-no-refinement", cp)
+            loaded = load_curation_session("session-report-no-refinement", cp)
+
+        assert loaded is not None
+        assert "refinement" not in loaded.report
+
+
+def test_report_version_body_preserves_refinement_metadata():
+    """report-quality Phase R4.1: _serialize_report_version/
+    _deserialize_report_version reuse _serialize_report/_deserialize_
+    report unchanged, so a specific version's own refinement metadata
+    (not just session.report's) survives the same round trip -- proven
+    here directly against report_versions[0], not just session.report."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        cited_paper = _paper("p0")
+        report = {
+            "findings": {"content": "F", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "limitations": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
+            "skipped_papers": [],
+            "report_template": "analytical",
+            "refinement": {"enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88},
+        }
+        version = {
+            "version_id": "v1", "version_number": 1, "created_at": "2026-08-06T00:00:00+00:00",
+            "report_template": "analytical", "generation_reason": "initial", "report": report,
+        }
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper],
+            report=report, report_versions=[version], active_report_version_id="v1",
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-report-version-refinement", cp)
+            loaded = load_curation_session("session-report-version-refinement", cp)
+
+        assert loaded is not None
+        assert loaded.report_versions[0]["report"]["refinement"] == {
+            "enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88,
+        }
+
+
 def test_report_all_eight_analytical_sections_survive_serialize_deserialize_with_cited_papers_and_web_articles():
     """report-quality Phase R2C serialization fix: previously only the 3
     legacy keys (findings/limitations/future_scope) got their full
