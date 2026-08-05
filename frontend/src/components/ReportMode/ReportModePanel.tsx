@@ -5,6 +5,7 @@ import type {
 } from '../../types'
 import { renderContentWithMarkers } from '../../lib/citationMarkers'
 import { ReferencesList } from '../shared/ReferencesList'
+import { ProgressBar } from '../shared/ProgressBar'
 
 interface ReportModePanelProps {
   state: CurationStateResponse
@@ -121,7 +122,7 @@ export function ReportModePanel({
         </div>
       </div>
       {state.report.refinement && hasEvaluationDetails(state.report.refinement) && (
-        <EvaluationDetails refinement={state.report.refinement} />
+        <EvaluationDetails refinement={state.report.refinement} sections={sections} />
       )}
       {sections.length > 1 && <SectionNav sections={sections} />}
       {sections.map((section) => (
@@ -306,11 +307,74 @@ const MAX_VISIBLE_ISSUES = 5
 // still true of the (possibly revised) report currently on screen --
 // see refine_report_if_requested's own docstring for why that's the
 // case structurally, not just a UI copy choice.
-function EvaluationDetails({ refinement }: { refinement: ReportRefinementOut }) {
+// report-quality Phase R4.2 polish: three distinct, deliberately non-
+// symmetric shapes -- rendering "Initial score N · Final score N" for
+// the no-revision case reads like a before/after comparison that never
+// happened, which is exactly the confusion this fixes. rounds===0
+// means the draft WAS the final report (nothing to compare); rounds>0
+// with a null final_score means a revision happened but was never
+// re-scored (still nothing to compare, just for a different reason);
+// only rounds>0 with a real final_score is an actual N -> M
+// transition.
+function ScoreSummary({ refinement }: { refinement: ReportRefinementOut }) {
+  const score = refinement.initial_score ?? '—'
+  if (refinement.rounds === 0) {
+    return (
+      <div data-testid="evaluation-details-score-summary" className="flex flex-col gap-0.5">
+        <p className="text-sm font-semibold text-text">Score {score}</p>
+        <p>No revision needed</p>
+      </div>
+    )
+  }
+  if (refinement.final_score === null) {
+    return (
+      <div data-testid="evaluation-details-score-summary" className="flex flex-col gap-0.5">
+        <p className="text-sm font-semibold text-text">Initial score {score}</p>
+        <p>Revised once</p>
+        <p>Final score not re-evaluated</p>
+      </div>
+    )
+  }
+  return (
+    <div data-testid="evaluation-details-score-summary" className="flex flex-col gap-0.5">
+      <p className="text-sm font-semibold text-text">
+        Score {score} → {refinement.final_score}
+      </p>
+      <p>Revised once</p>
+    </div>
+  )
+}
+
+// report-quality Phase R4.2 polish: reuses the existing shared
+// ProgressBar (components/shared/ProgressBar.tsx) rather than
+// introducing a chart library or a second bar implementation --
+// ProgressBar already clamps/rounds defensively, so a section score
+// outside 0-100 (shouldn't happen given the evaluator's own schema,
+// but not assumed) can't overflow the bar.
+function SectionScoreRow({ sectionKey, label, score }: { sectionKey: string; label: string; score: number }) {
+  return (
+    <div data-testid={`evaluation-details-section-score-${sectionKey}`} className="flex items-center gap-2">
+      <span className="w-28 shrink-0 truncate text-text-secondary" title={label}>
+        {label}
+      </span>
+      <div className="flex-1">
+        <ProgressBar value={score} max={100} />
+      </div>
+      <span className="w-6 shrink-0 text-right tabular-nums text-text-secondary">{score}</span>
+    </div>
+  )
+}
+
+function EvaluationDetails({ refinement, sections }: { refinement: ReportRefinementOut; sections: ReportSection[] }) {
   const [open, setOpen] = useState(false)
   const visibleIssues = refinement.issues.slice(0, MAX_VISIBLE_ISSUES)
   const hiddenIssueCount = refinement.issues.length - visibleIssues.length
   const sectionScoreEntries = refinement.section_scores ? Object.entries(refinement.section_scores) : []
+  // Prefer the report's own current section titles when the evaluator's
+  // section_scores key matches a real section key -- falls back to the
+  // raw key itself (still readable) for anything that doesn't match,
+  // rather than hiding an otherwise-valid score.
+  const sectionTitleByKey = Object.fromEntries(sections.map((s) => [s.key, s.title]))
 
   return (
     <div className="rounded-lg border border-border bg-card p-3 text-xs">
@@ -325,27 +389,39 @@ function EvaluationDetails({ refinement }: { refinement: ReportRefinementOut }) 
         <span aria-hidden="true">{open ? '−' : '+'}</span>
       </button>
       {open && (
-        <div data-testid="evaluation-details-panel" className="mt-2 flex flex-col gap-2 text-text-secondary">
-          <p className="italic">Evaluator findings from the draft before revision.</p>
-          <p>
-            Initial score: {refinement.initial_score ?? '—'} · Final score:{' '}
-            {refinement.final_score !== null ? refinement.final_score : 'not re-evaluated'} ·{' '}
-            {refinement.rounds > 0 ? 'Revised once' : 'No revision needed'}
+        <div data-testid="evaluation-details-panel" className="mt-3 flex flex-col gap-3 text-text-secondary">
+          <p className="italic">
+            Evaluator findings describe the draft before revision, not necessarily the final report.
           </p>
+          <ScoreSummary refinement={refinement} />
           {visibleIssues.length > 0 && (
-            <ul data-testid="evaluation-details-issues" className="list-disc pl-4">
-              {visibleIssues.map((issue, i) => (
-                <li key={i}>{issue}</li>
-              ))}
-              {hiddenIssueCount > 0 && (
-                <li data-testid="evaluation-details-more-issues">+{hiddenIssueCount} more</li>
-              )}
-            </ul>
+            <div>
+              <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                Draft issues
+              </h4>
+              <ul data-testid="evaluation-details-issues" className="list-disc space-y-0.5 pl-4">
+                {visibleIssues.map((issue, i) => (
+                  <li key={i}>{issue}</li>
+                ))}
+                {hiddenIssueCount > 0 && (
+                  <li data-testid="evaluation-details-more-issues" className="text-text-muted">
+                    +{hiddenIssueCount} more
+                  </li>
+                )}
+              </ul>
+            </div>
           )}
           {sectionScoreEntries.length > 0 && (
-            <p data-testid="evaluation-details-section-scores">
-              {sectionScoreEntries.map(([key, score]) => `${key}: ${score}`).join(' · ')}
-            </p>
+            <div data-testid="evaluation-details-section-scores">
+              <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                Section scores
+              </h4>
+              <div className="flex flex-col gap-1">
+                {sectionScoreEntries.map(([key, score]) => (
+                  <SectionScoreRow key={key} sectionKey={key} label={sectionTitleByKey[key] ?? key} score={score} />
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}
