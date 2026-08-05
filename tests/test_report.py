@@ -41,7 +41,11 @@ from research_agent.report import (
     refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
+    render_report_markdown,
+    report_export_filename,
     revise_report,
+    _project_legacy_fields,
+    _sections_list,
 )
 from research_agent.schema import Paper, WebArticle
 
@@ -2266,6 +2270,233 @@ def test_refine_report_if_requested_output_appends_as_a_normal_report_version():
     assert version["report"]["refinement"]["enabled"] is True
     assert session.report_versions[0] is version
     assert session.report["refinement"]["initial_score"] == 77
+
+
+# --- report-quality Phase R5A: Markdown export of a report version ---
+
+def _full_export_draft(papers: list, template: str = "analytical") -> dict:
+    """_clean_analytical_draft (above) deliberately stops short of
+    _project_legacy_fields/_sections_list -- fine for the R4.1/R4.2
+    tests that only ever needed reference_numbers/content/references,
+    but render_report_markdown reads report["sections"], which a REAL
+    generate_report() call always stamps (see its own tail:
+    result["sections"] = _sections_list(result)). This wrapper produces
+    the exact same complete shape a real report has, so these export
+    tests exercise the "sections already present" path, not the
+    legacy-derivation fallback (that fallback has its own dedicated
+    test below, against a genuinely old-shape report)."""
+    draft = _clean_analytical_draft(papers, template)
+    draft = _project_legacy_fields(draft)
+    draft["sections"] = _sections_list(draft)
+    return draft
+
+
+def _export_version(report: dict, version_number: int = 1, generation_reason: str = "initial", created_at=None) -> dict:
+    return {
+        "version_id": "v1", "version_number": version_number, "created_at": created_at,
+        "report_template": report.get("report_template", "analytical"),
+        "generation_reason": generation_reason, "report": report,
+    }
+
+
+def test_render_report_markdown_includes_title_topic_template_and_version_metadata():
+    """Required test 1."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="transformer architectures", display_title="Transformer Architectures", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft, version_number=2, generation_reason="regenerate", created_at="2026-08-07T00:00:00+00:00")
+
+    result = render_report_markdown(session, version)
+
+    assert result.startswith("# Transformer Architectures")
+    assert "**Topic:** transformer architectures" in result
+    assert "**Template:** Analytical" in result
+    assert "**Version:** 2 (regenerate)" in result
+    assert "**Generated:** 2026-08-07T00:00:00+00:00" in result
+
+
+def test_render_report_markdown_falls_back_to_topic_when_display_title_is_empty():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="transformer architectures", display_title="", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft)
+
+    result = render_report_markdown(session, version)
+
+    assert result.startswith("# transformer architectures")
+
+
+def test_render_report_markdown_omits_generated_line_when_created_at_is_none():
+    """An old session's implicitly-derived version 1 has created_at=None
+    -- the "Generated:" line must not appear at all rather than showing
+    a literal "None"."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft, created_at=None)
+
+    result = render_report_markdown(session, version)
+
+    assert "**Generated:**" not in result
+
+
+def test_render_report_markdown_includes_all_sections_in_order():
+    """Required test 2."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    result = render_report_markdown(session, version)
+
+    headings = [f"## {d['title']}" for d in REPORT_SECTION_DEFINITIONS]
+    positions = [result.index(h) for h in headings]
+    assert positions == sorted(positions)  # every heading present, in the same order as REPORT_SECTION_DEFINITIONS
+
+
+def test_render_report_markdown_preserves_already_resolved_markers_without_reprocessing():
+    """Required test 3: the stored content's [N] marker is used exactly
+    as-is -- no re-run of the citation/reference pipeline. Proven by
+    mutating the section's OWN reference_numbers/content to something
+    build_references_and_renumber would never itself produce, and
+    confirming the export reflects that raw stored value unchanged."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    # render_report_markdown reads report["sections"] -- the already-
+    # materialized list _sections_list built -- not the per-key section
+    # dicts directly, so the mutation has to target that same list to
+    # reflect what a real persisted report would actually have stored.
+    for section in draft["sections"]:
+        if section["key"] == "thematic_findings":
+            section["content"] = "An oddly-formatted marker [1] and a second claim [1]."
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    result = render_report_markdown(session, version)
+
+    assert "An oddly-formatted marker [1] and a second claim [1]." in result
+
+
+def test_render_report_markdown_includes_references_with_formatted_citation_and_link():
+    """Required test 4. Builds sections_out directly with raw [Paper 1]/
+    [Web 1] markers, the same reliable construction this file's own
+    _build_references_and_renumber tests already use -- NOT by
+    re-feeding an already-processed _clean_analytical_draft output
+    (whose content already carries global [N] markers, not the
+    section-local [Paper N]/[Web N] shape build_references_and_renumber
+    actually resolves) back through the pipeline a second time."""
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://example.com/a", "Example Article")
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A finding [Paper 1] and a web claim [Web 1].",
+                "cited_papers": [p1], "cited_web_articles": [web],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(report)
+
+    result = render_report_markdown(session, version)
+
+    assert "## References" in result
+    for ref in report["references"]:
+        if ref["link_url"]:
+            assert f"[{ref['formatted']}]({ref['link_url']})" in result
+        else:
+            assert ref["formatted"] in result
+
+
+def test_render_report_markdown_omits_references_heading_when_there_are_none():
+    """Explicit choice (per the task's own "choose one and test it"):
+    no References at all -> the heading is omitted entirely, matching
+    the frontend's own ReferencesList behavior for the in-app view."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([])  # no papers cited anywhere -> no references
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    result = render_report_markdown(session, version)
+
+    assert "## References" not in result
+
+
+def test_render_report_markdown_excludes_refinement_metadata_even_when_present():
+    """Required test 5."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    draft["refinement"] = {
+        "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+        "issues": ["too shallow", "missing comparison"], "revision_instructions": "add more depth",
+        "section_scores": {"thematic_findings": 35},
+    }
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    result = render_report_markdown(session, version)
+
+    for forbidden in ("too shallow", "missing comparison", "add more depth", "initial_score", "refinement", "40"):
+        assert forbidden not in result
+
+
+def test_render_report_markdown_uses_legacy_section_derivation_for_an_old_report():
+    """An old, pre-R2A report has no "sections" key of its own -- reuses
+    derive_sections_from_legacy_report, the exact same fallback api_app/
+    serializers.py's _report_to_out already relies on, not a
+    reimplementation."""
+    p1 = _paper("1111", "Paper One")
+    old_report = {
+        "findings": {"content": "Old findings prose.", "cited_papers": [p1], "reference_numbers": [1]},
+        "limitations": {"content": "Old limitations prose.", "cited_papers": [], "reference_numbers": []},
+        "future_scope": {"content": "Old future prose.", "cited_papers": [], "reference_numbers": []},
+        "skipped_papers": [],
+        "references": [{
+            "number": 1, "kind": "paper", "paper_id": "1111", "title": "Paper One",
+            "formatted": "Uthor, A. (2024). Paper One.", "link_url": None,
+        }],
+    }
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(old_report)
+
+    result = render_report_markdown(session, version)
+
+    assert "## Findings" in result
+    assert "## Limitations" in result
+    assert "## Future Scope" in result
+    assert "Old findings prose." in result
+    assert "Uthor, A. (2024). Paper One." in result
+
+
+def test_report_export_filename_is_sanitized_and_includes_version_number():
+    session = PaperPoolSession(topic="t", display_title="Transformer Architectures: A Review!", stage="synthesize")
+    version = _export_version(_clean_analytical_draft([]), version_number=3)
+
+    filename = report_export_filename(session, version, "md")
+
+    assert filename == "transformer-architectures-a-review-v3.md"
+
+
+def test_report_export_filename_falls_back_to_topic_when_display_title_empty():
+    session = PaperPoolSession(topic="Transformers!!", display_title="", stage="synthesize")
+    version = _export_version(_clean_analytical_draft([]), version_number=1)
+
+    filename = report_export_filename(session, version, "md")
+
+    assert filename == "transformers-v1.md"
 
 
 if __name__ == "__main__":

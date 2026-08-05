@@ -67,6 +67,8 @@ from research_agent.report import (
     refine_report_if_requested,
     regenerate_report_with_approved_web_sources,
     regenerate_report_with_new_sources,
+    render_report_markdown,
+    report_export_filename,
 )
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search
 from research_agent.summarize import generate_summary, generate_web_summary

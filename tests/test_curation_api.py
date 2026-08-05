@@ -1353,6 +1353,127 @@ def test_curation_chat_add_to_report_appends_version_with_chat_add_to_report_rea
     assert versions[1]["is_active"] is True
 
 
+# --- report-quality Phase R5A: GET /curation/{id}/report/export ---
+
+def test_curation_report_export_returns_markdown_for_the_active_version():
+    """Required tests 10: content type and body shape at the real HTTP
+    boundary -- render_report_markdown/report_export_filename
+    themselves are unit-tested directly in test_report.py; this proves
+    the endpoint actually wires them up correctly."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "Per [1].", "cited_papers": [_paper(pick_ids[0], "Paper Zero")]},
+            "limitations": {"content": "L", "cited_papers": []},
+            "future_scope": {"content": "S", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.get(f"/curation/{session_id}/report/export")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/markdown")
+    assert 'attachment; filename="' in resp.headers["content-disposition"]
+    assert "Per [1]." in resp.text
+    assert "## Findings" in resp.text
+    assert "**Version:** 1 (initial)" in resp.text
+    assert "## References" in resp.text
+    assert "Paper Zero" in resp.text
+
+
+def test_curation_report_export_explicit_format_markdown_matches_the_default():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        default_resp = client.get(f"/curation/{session_id}/report/export")
+        explicit_resp = client.get(f"/curation/{session_id}/report/export", params={"format": "markdown"})
+
+    assert default_resp.text == explicit_resp.text
+
+
+def test_curation_report_export_reflects_active_not_latest_version():
+    """Required test 6: activate an older version, then export -- the
+    exported content must be the ACTIVE (v1) version's, not the latest
+    (v2) one, mirroring test_curation_report_regenerate_builds_from_
+    the_active_not_latest_version's own proof for regeneration."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1 content", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+        v1_id = client.get(f"/curation/{session_id}").json()["report_versions"][0]["version_id"]
+
+        second_report = {**first_report, "findings": {"content": "v2 content", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            client.post(f"/curation/{session_id}/report/regenerate")
+
+        client.post(f"/curation/{session_id}/reports/{v1_id}/activate")
+
+        resp = client.get(f"/curation/{session_id}/report/export")
+
+    assert "v1 content" in resp.text
+    assert "v2 content" not in resp.text
+    assert "**Version:** 1 (initial)" in resp.text
+
+
+def test_curation_report_export_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.get("/curation/does-not-exist/report/export")
+
+    assert resp.status_code == 404
+
+
+def test_curation_report_export_no_report_yet_returns_404():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.get(f"/curation/{session_id}/report/export")
+
+    assert resp.status_code == 404
+
+
+def test_curation_report_export_unsupported_format_returns_400():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
+
+    assert resp.status_code == 400
+
+
+def test_curation_report_export_unsupported_format_checked_before_session_lookup():
+    """An unsupported format 400s even for a session_id that doesn't
+    exist at all -- format validation is a pure request-shape check,
+    resolved before any session lookup (see export_active_report's own
+    docstring for why)."""
+    with _client() as client:
+        resp = client.get("/curation/does-not-exist/report/export", params={"format": "docx"})
+
+    assert resp.status_code == 400
+
+
 # --- /curation/{id}/chat ---
 
 def test_curation_chat_answers_and_persists_history_across_a_separate_get_request():

@@ -2074,3 +2074,90 @@ def activate_report_version(session: PaperPoolSession, version_id: str) -> dict 
             session.report = version["report"]
             return version
     return None
+
+
+# --- report-quality Phase R5A: Markdown export of a report version ---
+#
+# Deterministic, backend-rendered, no LLM call -- walks a version's own
+# already-finalized sections/references exactly as stored, never
+# recomputes citations/references/markers. Deliberately excludes
+# report["refinement"] (evaluator/refinement detail is internal QA
+# information about HOW the report was produced, not part of the
+# report's own content -- see R4.2's own "don't turn it into a
+# dashboard" precedent, applied here to the exported artifact instead
+# of the in-app panel) and chat_history/chat_references entirely (a
+# report is a well-defined, versioned artifact; chat is a separate,
+# unversioned scratchpad -- exporting "the report" must not silently
+# also export "the chat").
+
+_EXPORT_FILENAME_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9]+")
+
+
+def render_report_markdown(session: PaperPoolSession, version: dict) -> str:
+    """report-quality Phase R5A: renders ONE report version (typically
+    the active one -- see services/curation_report_service.py's
+    export_active_report, the one real caller) as a Markdown document.
+
+    Reuses the exact same "derive at read time" fallback convention
+    api_app/serializers.py's _report_to_out already established for an
+    old report with no `sections`/`references` key of its own yet --
+    calls derive_sections_from_legacy_report/derive_legacy_references
+    directly rather than reimplementing that fallback a third time.
+    Every section's `content` is used exactly as stored -- it already
+    carries its final, resolved [N] markers (see _build_references_
+    and_renumber, which runs once at generation/revision time, never
+    again after) -- and every reference's `formatted` string is already
+    a complete citation (format_apa_citation/format_web_citation, also
+    computed once at generation time) -- this function only WALKS that
+    already-finalized data into Markdown lines; it never recomputes,
+    re-numbers, or re-resolves any of it.
+
+    References section is omitted entirely (not rendered with a
+    "no references" placeholder) when the report has none -- the same
+    choice the frontend's own ReferencesList already makes for the
+    in-app view, kept consistent here rather than diverging for the
+    exported document specifically.
+    """
+    report = version["report"]
+    if "references" not in report:
+        report = derive_legacy_references(report)
+    if "sections" not in report:
+        report = {**report, "sections": derive_sections_from_legacy_report(report)}
+
+    title = session.display_title or session.topic
+    lines = [f"# {title}", ""]
+    lines.append(f"**Topic:** {session.topic}  ")
+    lines.append(f"**Template:** {report.get('report_template', DEFAULT_REPORT_TEMPLATE).capitalize()}  ")
+    lines.append(f"**Version:** {version['version_number']} ({version['generation_reason']})  ")
+    if version.get("created_at"):
+        lines.append(f"**Generated:** {version['created_at']}  ")
+    lines.append("")
+
+    for section in report["sections"]:
+        lines.append(f"## {section['title']}")
+        lines.append("")
+        lines.append(section["content"])
+        lines.append("")
+
+    references = report.get("references", [])
+    if references:
+        lines.append("## References")
+        lines.append("")
+        for ref in references:
+            citation = f"[{ref['formatted']}]({ref['link_url']})" if ref.get("link_url") else ref["formatted"]
+            lines.append(f"{ref['number']}. {citation}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def report_export_filename(session: PaperPoolSession, version: dict, extension: str) -> str:
+    """report-quality Phase R5A: a safe, deterministic Content-
+    Disposition filename -- sanitized display title (or topic, same
+    fallback render_report_markdown's own title line already uses) plus
+    version number, so re-exporting the same version always produces
+    the identical filename, and a title containing spaces/punctuation/
+    unicode can never produce an unsafe or malformed header value."""
+    base = session.display_title or session.topic or "report"
+    slug = _EXPORT_FILENAME_SANITIZE_RE.sub("-", base).strip("-").lower() or "report"
+    return f"{slug}-v{version['version_number']}.{extension}"
