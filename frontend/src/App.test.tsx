@@ -10,6 +10,11 @@ vi.mock('./hooks/useCurationSession')
 vi.mock('./lib/api/client', () => ({
   curationApi: {
     listReviews: vi.fn().mockResolvedValue([]),
+    // report-quality Phase R5B: CurationWorkspacePage calls this
+    // unconditionally on every render (not just when a report exists),
+    // so the mock needs it even though these App-level tests never
+    // assert on export behavior themselves.
+    getReportExportUrl: vi.fn().mockReturnValue('http://test.local/curation/s1/report/export?format=markdown'),
   },
 }))
 

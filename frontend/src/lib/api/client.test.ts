@@ -212,6 +212,28 @@ describe('curationApi', () => {
     )
   })
 
+  // report-quality Phase R5B
+  it('getReportExportUrl() builds the markdown export URL for the given session', () => {
+    const url = curationApi.getReportExportUrl('s1', 'markdown')
+
+    expect(url).toBe('http://test-api.local/curation/s1/report/export?format=markdown')
+  })
+
+  it('getReportExportUrl() defaults to format=markdown when omitted', () => {
+    const url = curationApi.getReportExportUrl('s1')
+
+    expect(url).toBe('http://test-api.local/curation/s1/report/export?format=markdown')
+  })
+
+  it('getReportExportUrl() never calls fetch -- it is a plain URL string for a browser download link', () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    curationApi.getReportExportUrl('s1', 'markdown')
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('deleteReview() issues a DELETE to the session-scoped path', async () => {
     const fetchMock = mockFetchOnce(200, { session_id: 's1', deleted: true })
 

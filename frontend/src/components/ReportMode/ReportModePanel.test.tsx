@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ReportModePanel } from './ReportModePanel'
@@ -20,7 +20,7 @@ describe('ReportModePanel', () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
     render(
-      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />,
+      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />,
     )
 
     expect(screen.getByText('No report yet for this review.')).toBeInTheDocument()
@@ -40,7 +40,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByText('Finding A.')).toBeInTheDocument()
     expect(screen.getByText('Limitation A.')).toBeInTheDocument()
@@ -60,7 +60,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     // The bare pill text (just a title, no citation/link) must not appear
     // on its own anymore -- only inside the References section's full
@@ -87,7 +87,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     const references = screen.getByTestId('report-references')
     expect(references).toBeInTheDocument()
@@ -132,7 +132,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByText('Uthor, A. (n.d.). Paper One.')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Uthor, A. (n.d.). Paper One.' })).not.toBeInTheDocument()
@@ -151,7 +151,7 @@ describe('ReportModePanel', () => {
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />),
     ).not.toThrow()
 
     expect(screen.getByText('Old prose, no markers.')).toBeInTheDocument()
@@ -169,7 +169,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: [],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('regenerate-report'))
     expect(onRegenerateReport).toHaveBeenCalledTimes(1)
@@ -184,7 +184,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: ['p9'],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByText(/1 selected paper skipped from synthesis/)).toBeInTheDocument()
   })
@@ -206,7 +206,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
     expect(headings).toEqual(['Executive Summary', 'Thematic Findings', 'Gap Analysis', 'Conclusion'])
@@ -232,7 +232,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     const nav = screen.getByTestId('report-section-nav')
     expect(nav).toBeInTheDocument()
@@ -255,7 +255,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#ref-1')
     expect(screen.getByTestId('report-references')).toBeInTheDocument()
@@ -276,7 +276,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />),
     ).not.toThrow()
 
     expect(screen.getByText('Old findings prose.')).toBeInTheDocument()
@@ -301,7 +301,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   }
 
   it('renders all three template options', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-template-option-foundational')).toBeInTheDocument()
     expect(screen.getByTestId('report-template-option-analytical')).toBeInTheDocument()
@@ -309,7 +309,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   })
 
   it('defaults the selector to Analytical when there is no report yet', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('report-template-option-foundational')).toHaveAttribute('aria-checked', 'false')
@@ -317,7 +317,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('initializes the selector from an existing report_template', () => {
     const state = baseState({ report: reportWithTemplate('expert') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
   })
@@ -325,7 +325,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   it('selecting Foundational and clicking Generate calls onGenerateReport("foundational")', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('report-template-option-foundational'))
     await user.click(screen.getByTestId('generate-report'))
@@ -337,7 +337,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const user = userEvent.setup()
     const onRegenerateReport = vi.fn()
     const state = baseState({ report: reportWithTemplate('analytical') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('report-template-option-expert'))
     await user.click(screen.getByTestId('regenerate-report'))
@@ -347,14 +347,14 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('shows a template badge for an existing report', () => {
     const state = baseState({ report: reportWithTemplate('foundational') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Foundational')
   })
 
   it('defaults the badge and selector to Analytical for an old report with no report_template field', () => {
     const state = baseState({ report: reportWithTemplate() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Analytical')
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -364,7 +364,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const { rerender } = render(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('analytical') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown"
       />,
     )
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -372,7 +372,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     rerender(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('expert') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown"
       />,
     )
 
@@ -406,7 +406,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
 
   it('hides the version selector when report_versions is empty (old-report fixture, no version metadata)', () => {
     const state = baseState({ report: reportStub(), report_versions: [], active_report_version_id: null })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.queryByTestId('report-version-selector')).not.toBeInTheDocument()
     // Rest of the panel still renders safely without version metadata.
@@ -417,7 +417,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
     expect(select.options).toHaveLength(3)
@@ -427,7 +427,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v2',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
     expect(select.value).toBe('v2')
@@ -437,7 +437,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByText('Version 1 — Analytical — Initial')).toBeInTheDocument()
     expect(screen.getByText('Version 2 — Expert — Regenerate')).toBeInTheDocument()
@@ -453,7 +453,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     render(
       <ReportModePanel
         state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
-        onActivateReportVersion={onActivateReportVersion}
+        onActivateReportVersion={onActivateReportVersion} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown"
       />,
     )
 
@@ -471,7 +471,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     render(
       <ReportModePanel
         state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport}
-        onActivateReportVersion={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown"
       />,
     )
 
@@ -485,7 +485,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-version-selector')).toBeDisabled()
   })
@@ -503,7 +503,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   }
 
   it('renders the "Refine once" toggle before a report exists', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
     expect(screen.getByText('Refine once')).toBeInTheDocument()
@@ -511,13 +511,13 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('renders the "Refine once" toggle once a report exists', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
   })
 
   it('the toggle defaults to off (unchecked)', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('refine-once-toggle')).not.toBeChecked()
   })
@@ -525,7 +525,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   it('clicking Generate with the toggle off calls onGenerateReport with "off"', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('generate-report'))
 
@@ -535,7 +535,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   it('checking the toggle then clicking Generate calls onGenerateReport(template, "single")', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('refine-once-toggle'))
     await user.click(screen.getByTestId('generate-report'))
@@ -547,7 +547,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
     const user = userEvent.setup()
     const onRegenerateReport = vi.fn()
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('refine-once-toggle'))
     await user.click(screen.getByTestId('regenerate-report'))
@@ -557,7 +557,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('the toggle is disabled while a report action is in progress', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeDisabled()
   })
@@ -571,7 +571,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Refined once · score 40')
   })
@@ -585,14 +585,14 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Evaluated · score 88')
   })
 
   it('does not render a refinement badge when the report has no refinement metadata', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.queryByTestId('report-refinement-badge')).not.toBeInTheDocument()
   })
@@ -606,7 +606,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.queryByText(/revision instructions/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/issues/i)).not.toBeInTheDocument()
@@ -626,7 +626,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
 
   it('renders no disclosure toggle when the report has no refinement metadata', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
   })
@@ -640,7 +640,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
   })
@@ -655,7 +655,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     expect(screen.getByTestId('evaluation-details-toggle')).toHaveTextContent('Evaluation details')
     expect(screen.queryByTestId('evaluation-details-panel')).not.toBeInTheDocument()
@@ -671,7 +671,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -691,7 +691,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -712,7 +712,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -732,7 +732,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -752,7 +752,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -778,7 +778,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -808,7 +808,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -829,10 +829,112 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportMarkdownUrl="http://test.local/curation/s1/report/export?format=markdown" />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
     expect(screen.queryByText(/REWRITE THE INTRODUCTION/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportModePanel -- report-quality Phase R5B: Export Markdown link', () => {
+  function reportStub() {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+    }
+  }
+
+  const EXPORT_URL = 'http://test.local/curation/s1/report/export?format=markdown'
+
+  it('does not render the Export link when there is no report yet', () => {
+    render(
+      <ReportModePanel
+        state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    expect(screen.queryByTestId('export-markdown')).not.toBeInTheDocument()
+  })
+
+  it('renders the Export link once a report exists', () => {
+    const state = baseState({ report: reportStub() })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    expect(screen.getByTestId('export-markdown')).toHaveTextContent('Export Markdown')
+  })
+
+  it('the Export link points to the exportMarkdownUrl prop it was given', () => {
+    const state = baseState({ report: reportStub() })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    expect(screen.getByTestId('export-markdown')).toHaveAttribute('href', EXPORT_URL)
+  })
+
+  it('the Export link has a download attribute so the browser downloads rather than navigates', () => {
+    const state = baseState({ report: reportStub() })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    expect(screen.getByTestId('export-markdown')).toHaveAttribute('download')
+  })
+
+  it('the Export link is suppressed (aria-disabled, click prevented) while a report action is in progress', () => {
+    const state = baseState({ report: reportStub() })
+    render(
+      <ReportModePanel
+        state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    const link = screen.getByTestId('export-markdown')
+    expect(link).toHaveAttribute('aria-disabled', 'true')
+
+    // <a> has no native disabled attribute -- the real guarantee is that
+    // the click handler calls preventDefault(). fireEvent.click() returns
+    // false exactly when the dispatched event's default action was
+    // prevented (per the DOM spec), which is the precise thing to assert
+    // here rather than something indirect like "no navigation happened"
+    // (jsdom doesn't navigate on <a> clicks at all, disabled or not, so
+    // that wouldn't actually prove anything).
+    const notPrevented = fireEvent.click(link)
+    expect(notPrevented).toBe(false)
+  })
+
+  it('the Export link is not suppressed when disabled is false', () => {
+    const state = baseState({ report: reportStub() })
+    render(
+      <ReportModePanel
+        state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
+        onActivateReportVersion={vi.fn()} exportMarkdownUrl={EXPORT_URL}
+      />,
+    )
+
+    expect(screen.getByTestId('export-markdown')).toHaveAttribute('aria-disabled', 'false')
+    // Not asserting a real fireEvent.click() here -- jsdom attempts an
+    // actual (unsupported) navigation for a non-prevented <a href>
+    // click, which only adds console noise. The disabled-case test
+    // above already proves the meaningful contrast (its click IS
+    // prevented); an unprevented click is simply the default behavior
+    // of an <a> with no disabling guard, not something that needs its
+    // own separate proof.
   })
 })

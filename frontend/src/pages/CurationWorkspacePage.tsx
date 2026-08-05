@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useCurationSession } from '../hooks/useCurationSession'
+import { curationApi } from '../lib/api/client'
 import { AppHeader } from '../components/AppHeader/AppHeader'
 import { ReviewsList } from '../components/ReviewsList/ReviewsList'
 import { TopicHeader } from '../components/TurnFeed/TopicHeader'
@@ -328,6 +329,7 @@ export default function CurationWorkspacePage() {
                       onGenerateReport={handleGenerateReport}
                       onRegenerateReport={handleRegenerateReport}
                       onActivateReportVersion={handleActivateReportVersion}
+                      exportMarkdownUrl={curationApi.getReportExportUrl(state.session_id, 'markdown')}
                     />
                   )}
                 </>
