@@ -2391,6 +2391,106 @@ shape, what the evaluator computes, or what the API exposes.
 **Validation**: frontend `npm test` → 235 passed, build clean (`tsc -b
 && vite build`). Commit `88aac1f`.
 
+### R5A — backend Markdown export for the active report version (2026-08-05) — complete
+
+**Endpoint**: `GET /curation/{session_id}/report/export?format=markdown`.
+`format` is required to be exactly `"markdown"` — any other value 400s
+before any session lookup happens at all (the endpoint deliberately
+validates the format first, session existence second). 404s if the
+session doesn't exist or has no report yet.
+
+**Exports the ACTIVE version, never just the latest.** Mirrors the same
+invariant every other report read in this codebase already follows —
+resolved via the existing, unmodified `get_active_report_version(session)`
+/ `session.report`, so R5A needed zero new version-resolution logic.
+Regenerating or activating a different version changes what a
+subsequent export call returns, with no export-specific state to keep
+in sync.
+
+**Deterministic renderer, no LLM call.** `render_report_markdown`
+(`research_agent/report.py`) walks a version's own already-finalized
+`sections`/`references` exactly as stored — citation markers are
+already resolved to `[N]` and citations already formatted (via
+`format_apa_citation`/`format_web_citation`) at generation time, so
+export does no re-processing of any kind. A report saved before
+`sections`/`references` existed as explicit keys (a legacy shape) falls
+back to the same `derive_sections_from_legacy_report`/
+`derive_legacy_references` functions `api_app/serializers.py`'s
+`_report_to_out` already uses for the same purpose — no new fallback
+logic, no new legacy-shape handling.
+
+**Deliberately excludes `report["refinement"]` and chat history/chat
+references.** An export is the report's own content — evaluator/QA
+metadata (R4.1/R4.2) is internal information about how the report was
+produced, not part of it, matching the same "don't turn it into a
+dashboard" philosophy the in-app Evaluation details disclosure already
+follows. Chat history and chat-side references (R3.2) are a separate,
+unversioned scratchpad, not part of any specific report version, so
+they have no place in an export of one.
+
+**Response shape**: `Content-Type: text/markdown; charset=utf-8`;
+`Content-Disposition: attachment; filename="<slug>-v<N>.md"` where
+`<slug>` is `session.display_title` (falling back to `session.topic`,
+then to `"report"`) lowercased and sanitized to `[a-z0-9-]` via
+`report_export_filename`, and `<N>` is the exported version's
+`version_number` — so re-exporting after activating a different version
+downloads under a different filename, never silently overwriting a
+same-named file from another version.
+
+**Location**: `research_agent/report.py` (`render_report_markdown`,
+`report_export_filename`), `research_agent/services/
+curation_report_service.py` (`export_active_report`),
+`research_agent/api_app/routers/curation_reports.py` (the route
+itself).
+
+**Validation**: `tests/test_report.py` + `tests/test_curation_api.py`
+(targeted) → 237 passed; full backend suite → 573 passed. Commit
+`a6d8a8c`.
+
+### R5B — frontend Export Markdown link (2026-08-05) — complete
+
+**Browser-native download, no fetch/blob.** `curationApi.
+getReportExportUrl(sessionId, format = 'markdown')` (`frontend/src/lib/
+api/client.ts`) returns a plain URL string — deliberately not routed
+through the existing JSON `request()`/`postJson()` helpers, since it's
+consumed as a real `<a href={...} download>` link and never fetched via
+JS. The browser handles the download natively, the same approach this
+app already takes everywhere else it has no auth layer to route
+around, and one that extends unchanged to future binary formats
+(PDF/DOCX) without needing blob/object-URL plumbing later.
+
+**UI**: a compact "Export Markdown" link in `ReportModePanel`, next to
+Regenerate. Hidden whenever there's no report — it sits inside the same
+report-view block already gated behind the panel's existing `if
+(!state.report)` guard, so no separate visibility check was needed.
+Disabled/suppressed while a report action is in progress: since `<a>`
+has no native `disabled` attribute, this is enforced manually via
+`aria-disabled` plus an `onClick` handler that calls `preventDefault()`
+when disabled, with conditional styling standing in for the `disabled:`
+Tailwind variant (which only applies to elements with a real `disabled`
+attribute). Always exports the active version — there's no per-version
+export control in R5B, matching R5A's own active-version-only scope.
+
+**`ReportModePanel` stays presentational.** It never imports
+`curationApi` directly; `CurationWorkspacePage` computes
+`exportMarkdownUrl` via `curationApi.getReportExportUrl(state.session_id,
+'markdown')` and passes it down as a plain string prop, the same
+convention every other callback/value on this panel already follows.
+
+**Location**: `frontend/src/lib/api/client.ts`
+(`getReportExportUrl`), `frontend/src/types/index.ts`
+(`ReportExportFormat`), `frontend/src/components/ReportMode/
+ReportModePanel.tsx` (`ExportMarkdownLink`), `frontend/src/pages/
+CurationWorkspacePage.tsx`.
+
+**Validation**: frontend `npm test` → 244 passed, build clean (`tsc -b
+&& vite build`). Commit `37221e9`.
+
+**Deferred**: PDF export, DOCX export, and a cleaner document
+template/layout for exported files are explicit future work (R5C), not
+started in R5A/R5B. See `specs/backend-backlog.md`'s R5A/R5B entry for
+the tracked deferral.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

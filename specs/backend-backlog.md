@@ -737,6 +737,59 @@ invented:
 - **Status**: Closed (2026-08-06). Commits `1918487` (persist/display),
   `88aac1f` (UI polish).
 
+### R5A/R5B: export the active report version as Markdown
+- **Goal**: let a user download the report they're currently looking at
+  as a standalone Markdown file, without any re-processing or a second
+  source of truth for what "the report" contains.
+- **Why it matters**: report content only lived inside the app's own
+  UI — there was no way to hand a report to someone else, paste it
+  somewhere, or keep an offline copy of a specific version.
+- **Implementation**: `GET /curation/{session_id}/report/export?
+  format=markdown` (R5A, backend) exports `get_active_report_version
+  (session)` — the ACTIVE version, never just the latest, matching
+  every other report read's existing invariant, so no new
+  version-resolution logic was needed. `render_report_markdown`
+  (`research_agent/report.py`) is a deterministic renderer with no LLM
+  call: it walks a version's own already-finalized `sections`/
+  `references` exactly as stored, falling back to the same
+  `derive_sections_from_legacy_report`/`derive_legacy_references`
+  functions `_report_to_out` already uses for a legacy-shaped report.
+  Deliberately excludes `report["refinement"]` (R4.1/R4.2 evaluator
+  metadata — internal QA information, not report content) and chat
+  history/chat references (a separate, unversioned scratchpad).
+  Response is `text/markdown; charset=utf-8` with `Content-Disposition:
+  attachment; filename="<slug>-v<N>.md"`, `<slug>` sanitized from
+  `display_title`/`topic` and `<N>` the exported version's own
+  `version_number`. R5B (frontend) adds a compact "Export Markdown"
+  link in `ReportModePanel`, next to Regenerate — a real browser-native
+  download link (`<a href download>`, no `fetch`/blob), hidden when
+  there's no report, disabled/suppressed via `aria-disabled` +
+  `preventDefault()` while a report action is in progress (`<a>` has no
+  native `disabled` attribute). `curationApi.getReportExportUrl(...)`
+  is computed in `CurationWorkspacePage` and passed down as a plain
+  string prop — `ReportModePanel` never imports `curationApi` directly,
+  matching its existing presentational convention. See `docs/
+  architecture.md`'s "R5A — backend Markdown export for the active
+  report version" and "R5B — frontend Export Markdown link" sections
+  for the full design record.
+- **Location**: `research_agent/report.py` (`render_report_markdown`,
+  `report_export_filename`), `research_agent/services/
+  curation_report_service.py` (`export_active_report`), `research_agent/
+  api_app/routers/curation_reports.py`, `frontend/src/lib/api/
+  client.ts` (`getReportExportUrl`), `frontend/src/types/index.ts`
+  (`ReportExportFormat`), `frontend/src/components/ReportMode/
+  ReportModePanel.tsx` (`ExportMarkdownLink`), `frontend/src/pages/
+  CurationWorkspacePage.tsx`.
+- **Deferred follow-ups, not done in this phase (R5C)**: PDF export,
+  DOCX export, and a cleaner document template/layout for exported
+  files (the current Markdown renderer is intentionally minimal — plain
+  headings and a References list, no cover page or styling). The active
+  report version should remain the export target for any of these —
+  no reason to diverge from R5A's own scope decision.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-05). Commits `a6d8a8c` (R5A backend),
+  `37221e9` (R5B frontend).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
