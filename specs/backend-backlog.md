@@ -719,8 +719,23 @@ invented:
   a formal eval harness, and chat/web retrieval red-team all remain
   exactly as scoped in the R4.1 entry above — none of them are
   prerequisites for or blocked by R4.2.
+- **UI polish (2026-08-06)**: the disclosure's original single
+  "Initial score: N · Final score: N" line read as a before/after
+  comparison even when nothing was compared (the no-revision case).
+  Replaced with three distinct score-summary shapes matched to what
+  actually happened (`"Score N" / "No revision needed"` when
+  `rounds===0`; `"Initial score N" / "Revised once" / "Final score not
+  re-evaluated"` when revised but never re-scored; `"Score N → M" /
+  "Revised once"` for an actual transition), section scores rendered as
+  individual labeled rows with a compact progress bar each (reusing the
+  existing shared `ProgressBar` component, no new dependency), and
+  issues moved under an explicit "Draft issues" heading. Purely visual/
+  copy — no change to `report["refinement"]`'s shape, the evaluator, or
+  the API. See `docs/architecture.md`'s R4.2 section's own "UI polish"
+  note for the full design record. Commit `88aac1f`.
 - **Priority**: n/a — done.
-- **Status**: Closed (2026-08-06). Commit `1918487`.
+- **Status**: Closed (2026-08-06). Commits `1918487` (persist/display),
+  `88aac1f` (UI polish).
 
 Placeholders below, ready for real entries:
 

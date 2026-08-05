@@ -2368,6 +2368,29 @@ mid-pipeline, not prose meant for a human reader.
 backend suite → 555 passed; frontend `npm test` → 233 passed, build
 clean (`tsc -b && vite build`). Commit `1918487`.
 
+**UI polish (2026-08-06): clearer score summary, no code/data change.**
+The Evaluation details panel's original single "Initial score: N ·
+Final score: N" line read as a before/after comparison even when
+nothing was actually compared (the `rounds===0` case, where the draft
+simply passed evaluation as-is). Replaced with three distinct shapes
+matching what actually happened: a report with no revision shows
+`"Score N"` / `"No revision needed"` — no "Initial"/"Final" language at
+all; a revised report never re-evaluated shows `"Initial score N"` /
+`"Revised once"` / `"Final score not re-evaluated"`; a revised report
+that *was* re-scored (not possible in R4.1/R4.2's own current flow, but
+the component doesn't assume it never will be) shows `"Score N → M"` /
+`"Revised once"`. Section scores now render as individual rows — label
+plus a compact progress bar (reusing the existing shared `ProgressBar`
+component, no chart library, no new dependency) plus the number — using
+the report's own real section title when the `section_scores` key
+matches a current section, falling back to the raw key otherwise.
+Issues stay capped to the first 5 with a `"+N more"` line, now under an
+explicit "Draft issues" heading. `revision_instructions` remains never
+rendered. Purely visual/copy — no change to `report["refinement"]`'s
+shape, what the evaluator computes, or what the API exposes.
+**Validation**: frontend `npm test` → 235 passed, build clean (`tsc -b
+&& vite build`). Commit `88aac1f`.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
