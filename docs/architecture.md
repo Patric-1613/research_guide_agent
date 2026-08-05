@@ -2278,6 +2278,28 @@ the API does (and doesn't) expose.
 (backend: refinement loop + API wiring) and `8fc7cb4` (frontend:
 refinement toggle).
 
+**Bugfix (2026-08-06): refinement metadata dropped by session
+serialization.** The `refinement` badge never showed in the UI —
+`report["refinement"]` existed correctly in memory right after a
+refine-enabled generate/regenerate, but `curation_session.py`'s
+`_serialize_report`/`_deserialize_report` build their output from an
+explicit, hardcoded key list that never accounted for this new
+top-level key, so it was silently dropped on the very first save/load
+round trip through the checkpointer — present in the immediate POST
+response, gone from every subsequent `GET /curation/{id}` (which is
+what the frontend's own `loadState()` actually renders). The same
+class of gap as R2C's earlier section-key round-trip bug. Fixed by
+adding `refinement` to both functions' existing presence-checked,
+opaque pass-through convention — the same one `references`/`sections`/
+`report_template` already use, no new logic. Applies uniformly to both
+`session.report` and every `report_versions[N].report`, since both go
+through the same two helpers. A report refinement was never requested
+for still round-trips with no `refinement` key at all, not a
+fabricated `{"enabled": false, ...}` placeholder. **Validation**:
+`tests/test_curation_session.py -k refinement` → 3 passed;
+`tests/test_curation_session.py` → 45 passed; full backend suite → 552
+passed. Commit `f6ae9f2`.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

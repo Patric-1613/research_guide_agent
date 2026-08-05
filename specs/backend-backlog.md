@@ -130,6 +130,38 @@ review carries forward as open.)
 - **Priority**: n/a — done.
 - **Status**: Closed (2026-08-04). Commit `0189c2f`.
 
+### R4.1 refinement badge missing after reload
+- **Reported**: 2026-08-06 — a report was regenerated with "Refine
+  once" checked, the refined content looked improved, but the UI never
+  showed the expected `"Refined once · score N"`/`"Evaluated · score
+  N"` badge; the header only showed the template badge.
+- **Symptom**: `report["refinement"]` (R4.1's minimal metadata dict)
+  was present immediately after a refine-enabled generate/regenerate,
+  but gone by the time the UI actually rendered — the frontend's own
+  `loadState()` does a separate `GET /curation/{id}` right after the
+  POST resolves, and that GET reads a session already round-tripped
+  through the checkpointer.
+- **Root cause**: `curation_session.py`'s `_serialize_report`/
+  `_deserialize_report` build their output from an explicit, hardcoded
+  key list that never accounted for R4.1's new top-level `refinement`
+  key — silently dropped on the first save/load round trip. Same class
+  of gap as the earlier "Foundational report leaked raw paper IDs"-
+  adjacent section-key round-trip bug from R2C (see `docs/
+  architecture.md`'s Phase R2C serialization notes).
+- **Fix**: `refinement` added to both functions' existing, presence-
+  checked opaque pass-through convention — the same one `references`/
+  `sections`/`report_template` already use, no new logic introduced.
+  Applies uniformly to `session.report` and every `report_versions[N].
+  report`, since both go through the same two helpers. A report
+  refinement was never requested for still round-trips with no
+  `refinement` key at all, not a fabricated `{"enabled": false, ...}`
+  placeholder. See `docs/architecture.md`'s R4.1 section's own
+  "Bugfix" note for the full design record.
+- **Location**: `research_agent/curation_session.py`
+  (`_serialize_report`, `_deserialize_report`).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-06). Commit `f6ae9f2`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — bug 1]
