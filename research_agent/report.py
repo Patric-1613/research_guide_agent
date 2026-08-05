@@ -1904,16 +1904,27 @@ def refine_report_if_requested(
     for why this is implemented as plain functions, not a LangGraph
     StateGraph.
 
-    Stamps a minimal `refinement` dict onto the returned report:
+    Stamps a `refinement` dict onto the returned report:
     {"enabled": True, "rounds": 0 or 1, "initial_score": int,
-    "final_score": int | None}. `final_score` is None whenever a
-    revision happened -- R4.1 deliberately does not re-evaluate the
-    revision, so there is no real score to report for it; inventing one
-    would be worse than admitting it's unknown. `final_score` equals
-    `initial_score` when no revision was needed (the draft IS the
-    final report). Full evaluator detail (issues/revision_instructions)
-    is intentionally NOT persisted here -- see api_app/schemas.py's
-    ReportRefinementOut for exactly what does get exposed.
+    "final_score": int | None, "issues": list[str],
+    "revision_instructions": str, "section_scores": dict[str, int] |
+    None}. `final_score` is None whenever a revision happened -- R4.1
+    deliberately does not re-evaluate the revision, so there is no real
+    score to report for it; inventing one would be worse than admitting
+    it's unknown. `final_score` equals `initial_score` when no revision
+    was needed (the draft IS the final report).
+
+    report-quality Phase R4.2: `issues`/`revision_instructions`/
+    `section_scores` come straight from the ONE evaluation that ever
+    runs -- there is no second evaluation after a revision (see above),
+    so these ALWAYS describe the DRAFT, not necessarily the finalized
+    report a reader is looking at. If a revision happened, they're "what
+    prompted the fix," not "what's still wrong" -- callers (the API
+    serializer, the frontend) must not present them as a live critique
+    of the current content. `section_scores` is None whenever the LLM
+    evaluator didn't return one (ReportEvaluation's own field is
+    optional); an empty/partial dict is also possible and must be
+    tolerated, not assumed to cover every section key.
     """
     if refinement_mode != "single":
         return draft
@@ -1934,6 +1945,8 @@ def refine_report_if_requested(
 
     final["refinement"] = {
         "enabled": True, "rounds": rounds, "initial_score": initial_score, "final_score": final_score,
+        "issues": evaluation["issues"], "revision_instructions": evaluation["revision_instructions"],
+        "section_scores": evaluation["section_scores"],
     }
     return final
 

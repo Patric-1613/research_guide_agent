@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import (
     build_curation_graph,
     curation_thread_id,
@@ -328,7 +329,13 @@ def test_report_refinement_metadata_survives_serialize_deserialize():
     key, so it was present in the immediate POST response (built from
     the in-memory report dict) but gone from every subsequent GET
     /curation/{id} (which reads the persisted, round-tripped copy) --
-    the same class of gap R2C's own section-key round-trip bug was."""
+    the same class of gap R2C's own section-key round-trip bug was.
+
+    report-quality Phase R4.2: uses the FULL refinement shape (issues/
+    revision_instructions/section_scores included, not just R4.1's
+    original 4 keys) -- proves the opaque, whole-dict pass-through the
+    R4.1 bug fix introduced covers the new fields with zero further
+    changes to this module, exactly as designed."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
         cited_paper = _paper("p0")
@@ -338,7 +345,11 @@ def test_report_refinement_metadata_survives_serialize_deserialize():
             "future_scope": {"content": "", "cited_papers": [], "cited_web_articles": [], "reference_numbers": []},
             "skipped_papers": [],
             "report_template": "analytical",
-            "refinement": {"enabled": True, "rounds": 1, "initial_score": 40, "final_score": None},
+            "refinement": {
+                "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+                "issues": ["too shallow", "missing comparison"], "revision_instructions": "add more depth",
+                "section_scores": {"thematic_findings": 35, "conclusion": 50},
+            },
         }
         session = PaperPoolSession(
             topic="q", stage="synthesize", selected_paper_ids=["p0"], selected_papers=[cited_paper], report=report,
@@ -352,6 +363,8 @@ def test_report_refinement_metadata_survives_serialize_deserialize():
         assert loaded.report is not None
         assert loaded.report["refinement"] == {
             "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+            "issues": ["too shallow", "missing comparison"], "revision_instructions": "add more depth",
+            "section_scores": {"thematic_findings": 35, "conclusion": 50},
         }
 
 
@@ -415,6 +428,58 @@ def test_report_version_body_preserves_refinement_metadata():
         assert loaded.report_versions[0]["report"]["refinement"] == {
             "enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88,
         }
+
+
+def test_report_to_out_includes_full_r42_refinement_fields():
+    """report-quality Phase R4.2: _report_to_out's existing
+    ReportRefinementOut(**report["refinement"]) construction (unchanged
+    since R4.1) correctly surfaces issues/revision_instructions/
+    section_scores once they're present in the report dict -- no
+    serializer code change was needed for R4.2, this proves it."""
+    report = {
+        "findings": {"content": "F", "cited_papers": []},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_paper_ids": [], "skipped_papers": [],
+        "refinement": {
+            "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+            "issues": ["too shallow"], "revision_instructions": "add more depth",
+            "section_scores": {"thematic_findings": 35},
+        },
+    }
+
+    out = _report_to_out(report)
+
+    assert out.refinement is not None
+    assert out.refinement.issues == ["too shallow"]
+    assert out.refinement.revision_instructions == "add more depth"
+    assert out.refinement.section_scores == {"thematic_findings": 35}
+
+
+def test_report_to_out_defaults_new_fields_for_an_r41_only_refinement_dict():
+    """report-quality Phase R4.2 compatibility: a report persisted
+    before R4.2 shipped has a "refinement" dict with only R4.1's
+    original 4 keys (enabled/rounds/initial_score/final_score) -- no
+    issues/revision_instructions/section_scores at all. _report_to_out
+    must still construct a valid ReportRefinementOut, with Pydantic's
+    own field defaults filling the gap -- no migration, no special-
+    casing needed in the serializer itself."""
+    report = {
+        "findings": {"content": "F", "cited_papers": []},
+        "limitations": {"content": "", "cited_papers": []},
+        "future_scope": {"content": "", "cited_papers": []},
+        "skipped_paper_ids": [], "skipped_papers": [],
+        "refinement": {"enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88},
+    }
+
+    out = _report_to_out(report)
+
+    assert out.refinement is not None
+    assert out.refinement.enabled is True
+    assert out.refinement.initial_score == 88
+    assert out.refinement.issues == []
+    assert out.refinement.revision_instructions == ""
+    assert out.refinement.section_scores is None
 
 
 def test_report_all_eight_analytical_sections_survive_serialize_deserialize_with_cited_papers_and_web_articles():

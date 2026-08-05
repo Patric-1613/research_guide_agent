@@ -1997,7 +1997,10 @@ def test_refine_single_mode_no_revision_needed_finalizes_draft():
 
     assert mock_client.chat.completions.parse.call_count == 1
     assert result is draft
-    assert result["refinement"] == {"enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88}
+    assert result["refinement"] == {
+        "enabled": True, "rounds": 0, "initial_score": 88, "final_score": 88,
+        "issues": [], "revision_instructions": "", "section_scores": None,
+    }
 
 
 def test_refine_single_mode_revision_needed_revises_exactly_once_and_stops():
@@ -2026,9 +2029,46 @@ def test_refine_single_mode_revision_needed_revises_exactly_once_and_stops():
     result = refine_report_if_requested(draft, "topic", [p1], [], "analytical", "single", mock_client)
 
     assert mock_client.chat.completions.parse.call_count == 2
-    assert result["refinement"] == {"enabled": True, "rounds": 1, "initial_score": 40, "final_score": None}
+    assert result["refinement"] == {
+        "enabled": True, "rounds": 1, "initial_score": 40, "final_score": None,
+        "issues": ["too shallow"], "revision_instructions": "add more depth", "section_scores": None,
+    }
     assert result["thematic_findings"]["content"] == "A better finding [1]."
     assert len(result["references"]) == 1
+
+
+def test_refine_report_if_requested_stamps_section_scores_when_the_evaluator_returns_them():
+    """report-quality Phase R4.2: a non-null section_scores from the
+    evaluator survives into the final refinement metadata unchanged --
+    proven for both branches (no revision needed / revision needed),
+    since the CURRENT code stamps the same `evaluation` dict's
+    section_scores either way."""
+    p1 = _paper("1111", "Paper One")
+    scores = {"thematic_findings": 70, "conclusion": 85}
+
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=82, needs_revision=False, section_scores=scores),
+    )
+    no_revision_result = refine_report_if_requested(draft, "topic", [p1], [], "analytical", "single", mock_client)
+    assert no_revision_result["refinement"]["section_scores"] == scores
+
+    draft2 = _clean_analytical_draft([p1])
+    mock_client2 = MagicMock()
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    revised_parsed = _analytical_parsed(
+        schema, thematic_findings=section_cls(content="Revised [Paper 1].", cited_paper_ids=["1111"]),
+    )
+    mock_client2.chat.completions.parse.side_effect = [
+        _mock_parsed_response(_evaluation(
+            overall_score=35, needs_revision=True, revision_instructions="deepen it", section_scores=scores,
+        )),
+        _mock_parsed_response(revised_parsed),
+    ]
+    revision_result = refine_report_if_requested(draft2, "topic", [p1], [], "analytical", "single", mock_client2)
+    assert revision_result["refinement"]["section_scores"] == scores
 
 
 def test_evaluate_report_deterministic_hard_gate_forces_revision_even_if_llm_says_no():

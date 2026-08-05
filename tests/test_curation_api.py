@@ -1120,7 +1120,14 @@ def test_curation_report_generate_with_refinement_mode_single_calls_refine_repor
     assert resp.status_code == 200
     assert mock_refine.call_args.kwargs["refinement_mode"] == "single"
     assert resp.json()["findings"]["content"] == "refined"
-    assert resp.json()["refinement"] == {"enabled": True, "rounds": 0, "initial_score": 90, "final_score": 90}
+    # report-quality Phase R4.2: issues/revision_instructions/section_scores
+    # default via ReportRefinementOut's own field defaults even though the
+    # mocked refine_report_if_requested return value only supplies R4.1's
+    # original 4 keys -- proves no serializer change was needed for R4.2.
+    assert resp.json()["refinement"] == {
+        "enabled": True, "rounds": 0, "initial_score": 90, "final_score": 90,
+        "issues": [], "revision_instructions": "", "section_scores": None,
+    }
 
 
 def test_curation_report_regenerate_with_refinement_mode_single_calls_refine_report_if_requested():

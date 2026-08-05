@@ -281,17 +281,28 @@ class ReportSection(BaseModel):
 
 
 class ReportRefinementOut(BaseModel):
-    """report-quality Phase R4.1: the ONLY refinement detail exposed via
-    the API -- deliberately much smaller than report.py's own internal
-    ReportEvaluation. Full evaluator output (issues/revision_
-    instructions/section_scores) is intentionally not persisted or
-    exposed in R4.1; a richer surface is explicit future work (R4.2),
-    not an oversight here."""
+    """report-quality Phase R4.1/R4.2: refinement detail exposed via the
+    API -- still deliberately smaller than report.py's own internal
+    ReportEvaluation (no raw prompt-facing text). R4.2 added issues/
+    revision_instructions/section_scores; all three default safely so a
+    report carrying only R4.1-era metadata (enabled/rounds/
+    initial_score/final_score, persisted before R4.2 shipped) still
+    constructs this model cleanly via ReportRefinementOut(**report[
+    "refinement"]) -- no migration needed, Pydantic's own defaults fill
+    the gap.
+
+    report-quality Phase R4.2: issues/revision_instructions/
+    section_scores describe the DRAFT the one evaluation ran against,
+    not necessarily the finalized report -- R4.1/R4.2 never re-evaluate
+    after a revision. See refine_report_if_requested's own docstring."""
 
     enabled: bool
     rounds: int
     initial_score: int | None = None
     final_score: int | None = None
+    issues: list[str] = Field(default_factory=list)
+    revision_instructions: str = ""
+    section_scores: dict[str, int] | None = None
 
 
 class ReportOut(BaseModel):

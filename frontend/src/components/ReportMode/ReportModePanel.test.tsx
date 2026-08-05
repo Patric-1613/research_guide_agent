@@ -564,7 +564,12 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('renders a compact refinement badge when a revision happened', () => {
     const state = baseState({
-      report: reportStub({ refinement: { enabled: true, rounds: 1, initial_score: 40, final_score: null } }),
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: [], revision_instructions: '', section_scores: null,
+        },
+      }),
     })
     render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
@@ -573,7 +578,12 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('renders a compact refinement badge when the draft was only evaluated (no revision)', () => {
     const state = baseState({
-      report: reportStub({ refinement: { enabled: true, rounds: 0, initial_score: 88, final_score: 88 } }),
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 0, initial_score: 88, final_score: 88,
+          issues: [], revision_instructions: '', section_scores: null,
+        },
+      }),
     })
     render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
@@ -587,13 +597,186 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
     expect(screen.queryByTestId('report-refinement-badge')).not.toBeInTheDocument()
   })
 
-  it('never renders full issues or revision instructions -- only the compact badge', () => {
+  it('the badge alone never renders full issues or revision instructions', () => {
     const state = baseState({
-      report: reportStub({ refinement: { enabled: true, rounds: 1, initial_score: 40, final_score: null } }),
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: [], revision_instructions: '', section_scores: null,
+        },
+      }),
     })
     render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
 
     expect(screen.queryByText(/revision instructions/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/issues/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportModePanel -- report-quality Phase R4.2: evaluation details disclosure', () => {
+  function reportStub(overrides: Record<string, unknown> = {}) {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+      ...overrides,
+    }
+  }
+
+  it('renders no disclosure toggle when the report has no refinement metadata', () => {
+    const state = baseState({ report: reportStub() })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
+  })
+
+  it('renders no disclosure toggle when refinement has no issues and no section_scores', () => {
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 0, initial_score: 90, final_score: 90,
+          issues: [], revision_instructions: '', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
+  })
+
+  it('renders the disclosure toggle when issues exist, collapsed by default', () => {
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: ['Gap Analysis overlaps with Future Research Directions'],
+          revision_instructions: 'merge the two sections', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    expect(screen.getByTestId('evaluation-details-toggle')).toHaveTextContent('Evaluation details')
+    expect(screen.queryByTestId('evaluation-details-panel')).not.toBeInTheDocument()
+  })
+
+  it('expanding the disclosure shows the draft-before-revision copy, scores, and issues', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: ['Issue one', 'Issue two'], revision_instructions: 'fix it', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    const panel = screen.getByTestId('evaluation-details-panel')
+    expect(panel).toHaveTextContent('Evaluator findings from the draft before revision.')
+    expect(panel).toHaveTextContent('Initial score: 40')
+    expect(panel).toHaveTextContent('Final score: not re-evaluated')
+    expect(screen.getByTestId('evaluation-details-issues')).toHaveTextContent('Issue one')
+    expect(screen.getByTestId('evaluation-details-issues')).toHaveTextContent('Issue two')
+  })
+
+  it('shows "not re-evaluated" when final_score is null after a revision', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: ['Issue one'], revision_instructions: 'fix it', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    expect(screen.getByTestId('evaluation-details-panel')).toHaveTextContent('Final score: not re-evaluated')
+  })
+
+  it('shows the real final score when no revision was needed', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 0, initial_score: 90, final_score: 90,
+          issues: ['A minor note'], revision_instructions: '', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    expect(screen.getByTestId('evaluation-details-panel')).toHaveTextContent('Final score: 90')
+  })
+
+  it('shows only the first 5 issues, with a "+N more" line for the rest', async () => {
+    const user = userEvent.setup()
+    const issues = ['one', 'two', 'three', 'four', 'five', 'six', 'seven']
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 30, final_score: null,
+          issues, revision_instructions: 'fix it', section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    const issuesList = screen.getByTestId('evaluation-details-issues')
+    for (const issue of ['one', 'two', 'three', 'four', 'five']) {
+      expect(issuesList).toHaveTextContent(issue)
+    }
+    expect(issuesList).not.toHaveTextContent('six')
+    expect(issuesList).not.toHaveTextContent('seven')
+    expect(screen.getByTestId('evaluation-details-more-issues')).toHaveTextContent('+2 more')
+  })
+
+  it('renders section scores when present, tolerating a partial dict', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 0, initial_score: 85, final_score: 85,
+          issues: [], revision_instructions: '',
+          section_scores: { thematic_findings: 80, conclusion: 90 },
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    const scores = screen.getByTestId('evaluation-details-section-scores')
+    expect(scores).toHaveTextContent('thematic_findings: 80')
+    expect(scores).toHaveTextContent('conclusion: 90')
+  })
+
+  it('never renders the raw revision_instructions text', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      report: reportStub({
+        refinement: {
+          enabled: true, rounds: 1, initial_score: 40, final_score: null,
+          issues: ['Issue one'],
+          revision_instructions: 'REWRITE THE INTRODUCTION TO EMPHASIZE X',
+          section_scores: null,
+        },
+      }),
+    })
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} />)
+
+    await user.click(screen.getByTestId('evaluation-details-toggle'))
+
+    expect(screen.queryByText(/REWRITE THE INTRODUCTION/i)).not.toBeInTheDocument()
   })
 })

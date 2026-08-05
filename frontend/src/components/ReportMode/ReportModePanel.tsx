@@ -120,6 +120,9 @@ export function ReportModePanel({
           </button>
         </div>
       </div>
+      {state.report.refinement && hasEvaluationDetails(state.report.refinement) && (
+        <EvaluationDetails refinement={state.report.refinement} />
+      )}
       {sections.length > 1 && <SectionNav sections={sections} />}
       {sections.map((section) => (
         <ReportSectionBlock key={section.key} section={section} />
@@ -261,13 +264,13 @@ function RefineOnceToggle({
 }
 
 // report-quality Phase R4.1: compact, score-only summary of whatever
-// refinement ran for THIS report -- deliberately never renders
-// issues/revision_instructions (not exposed by the API at all; see
-// ReportRefinementOut's own docstring). "Refined once" when a revision
-// actually happened (rounds===1); "Evaluated" when the draft passed
-// evaluation as-is (rounds===0) -- both cases mean refinement.enabled
-// is true, so this is only ever rendered when there's something real
-// to report.
+// refinement ran for THIS report -- kept deliberately minimal even
+// after R4.2 added the fuller EvaluationDetails disclosure below;
+// this badge never grows beyond a one-line label + score. "Refined
+// once" when a revision actually happened (rounds===1); "Evaluated"
+// when the draft passed evaluation as-is (rounds===0) -- both cases
+// mean refinement.enabled is true, so this is only ever rendered when
+// there's something real to report.
 function RefinementBadge({ refinement }: { refinement: ReportRefinementOut }) {
   const label = refinement.rounds > 0 ? 'Refined once' : 'Evaluated'
   const score = refinement.final_score ?? refinement.initial_score
@@ -278,6 +281,75 @@ function RefinementBadge({ refinement }: { refinement: ReportRefinementOut }) {
     >
       {label}{score !== null ? ` · score ${score}` : ''}
     </span>
+  )
+}
+
+// report-quality Phase R4.2: only worth showing a disclosure at all
+// when there's real evaluator detail to reveal -- a refined report
+// whose evaluator found nothing to say (empty issues, no section
+// scores) gets no toggle at all, not an empty panel.
+function hasEvaluationDetails(refinement: ReportRefinementOut): boolean {
+  return refinement.issues.length > 0 || !!refinement.section_scores
+}
+
+const MAX_VISIBLE_ISSUES = 5
+
+// report-quality Phase R4.2: a compact, collapsed-by-default
+// disclosure -- button+state toggle, matching this app's existing
+// expand/collapse convention (e.g. CurationWorkspacePage's "Browse
+// past turns") rather than introducing a native <details> element for
+// the first time here. Deliberately never renders raw
+// revision_instructions -- that text is written FOR THE MODEL, not
+// for a human reader, and showing it verbatim would read like a
+// leftover prompt fragment. The panel is explicit that issues describe
+// the DRAFT the one evaluation ran against, not necessarily what's
+// still true of the (possibly revised) report currently on screen --
+// see refine_report_if_requested's own docstring for why that's the
+// case structurally, not just a UI copy choice.
+function EvaluationDetails({ refinement }: { refinement: ReportRefinementOut }) {
+  const [open, setOpen] = useState(false)
+  const visibleIssues = refinement.issues.slice(0, MAX_VISIBLE_ISSUES)
+  const hiddenIssueCount = refinement.issues.length - visibleIssues.length
+  const sectionScoreEntries = refinement.section_scores ? Object.entries(refinement.section_scores) : []
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-3 text-xs">
+      <button
+        type="button"
+        data-testid="evaluation-details-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between text-left font-medium text-text-secondary hover:text-text"
+      >
+        <span>Evaluation details</span>
+        <span aria-hidden="true">{open ? '−' : '+'}</span>
+      </button>
+      {open && (
+        <div data-testid="evaluation-details-panel" className="mt-2 flex flex-col gap-2 text-text-secondary">
+          <p className="italic">Evaluator findings from the draft before revision.</p>
+          <p>
+            Initial score: {refinement.initial_score ?? '—'} · Final score:{' '}
+            {refinement.final_score !== null ? refinement.final_score : 'not re-evaluated'} ·{' '}
+            {refinement.rounds > 0 ? 'Revised once' : 'No revision needed'}
+          </p>
+          {visibleIssues.length > 0 && (
+            <ul data-testid="evaluation-details-issues" className="list-disc pl-4">
+              {visibleIssues.map((issue, i) => (
+                <li key={i}>{issue}</li>
+              ))}
+              {hiddenIssueCount > 0 && (
+                <li data-testid="evaluation-details-more-issues">+{hiddenIssueCount} more</li>
+              )}
+            </ul>
+          )}
+          {sectionScoreEntries.length > 0 && (
+            <p data-testid="evaluation-details-section-scores">
+              {sectionScoreEntries.map(([key, score]) => `${key}: ${score}`).join(' · ')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

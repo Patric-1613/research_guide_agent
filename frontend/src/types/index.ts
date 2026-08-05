@@ -124,15 +124,23 @@ export type ReportTemplate = 'foundational' | 'analytical' | 'expert'
 // backend's own report.py RefinementMode Literal field-for-field.
 export type RefinementMode = 'off' | 'single'
 
-// report-quality Phase R4.1: the minimal refinement metadata a report
-// carries when refinement was requested for it -- deliberately small
-// (no issues/revision_instructions), matching the backend's own
-// ReportRefinementOut.
+// report-quality Phase R4.1/R4.2: refinement metadata a report carries
+// when refinement was requested for it, mirrors the backend's own
+// ReportRefinementOut. R4.2's issues/revision_instructions/
+// section_scores describe the DRAFT the one evaluation ran against,
+// not necessarily the finalized report currently shown -- R4.1/R4.2
+// never re-evaluate after a revision. Typed as required (not
+// optional): the backend model's own defaults guarantee these are
+// always present in the response once R4.2 is deployed, even for a
+// report that only ever had R4.1-era metadata persisted.
 export interface ReportRefinementOut {
   enabled: boolean
   rounds: number
   initial_score: number | null
   final_score: number | null
+  issues: string[]
+  revision_instructions: string
+  section_scores: Record<string, number> | null
 }
 
 export interface ReportOut {
