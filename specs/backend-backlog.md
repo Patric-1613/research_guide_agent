@@ -790,6 +790,87 @@ invented:
 - **Status**: Closed (2026-08-05). Commits `a6d8a8c` (R5A backend),
   `37221e9` (R5B frontend).
 
+### R5C: PDF and DOCX report export via a shared document model
+- **Goal**: let a user download the active report version as a clean,
+  document-style PDF or DOCX — not an export of the dark app UI —
+  alongside R5A/R5B's existing Markdown export.
+- **Why it matters**: Markdown is convenient for pasting/version
+  control but isn't what most people want to hand someone else or
+  submit somewhere; PDF/DOCX were the two concrete document formats
+  people actually share.
+- **Implementation**: `build_report_export_document(session, version)`
+  (`research_agent/report.py`) is a new shared `ReportExportDocument`
+  model (`title`, `meta`, `sections`, `references`) — the one place the
+  legacy-report fallback, title fallback, and paragraph-splitting are
+  decided, consumed by all three renderers instead of each re-deriving
+  it. `render_report_markdown` was refactored to consume it with
+  byte-identical output to R5A (proven by every pre-existing R5A test
+  passing unchanged). `render_report_docx` (python-docx) and
+  `render_report_pdf` (ReportLab Platypus flowables, not raw canvas
+  positioning) walk the same model into a clean, minimal layout: title,
+  metadata lines, section headings/paragraphs, a page break, then
+  numbered references with real hyperlinks where `link_url` exists.
+  ReportLab was chosen over WeasyPrint specifically to avoid a
+  system-level dependency (Pango/Cairo/GDK-Pixbuf) this single-user app
+  has no CI/deployment story to absorb. PDF content is escaped via
+  `xml.sax.saxutils.escape` (ReportLab parses `Paragraph` text as
+  XML-like markup) and hyperlink URLs via `xml.sax.saxutils.quoteattr`
+  (attribute-safe, not text-escaping) — covered by a dedicated
+  adversarial test proving `<`, `>`, `&` in report content/reference
+  text and URLs don't crash generation or corrupt the output.
+  `GET /curation/{session_id}/report/export?format=docx|pdf` extends
+  the existing R5A endpoint (format validation still runs before
+  session lookup); DOCX/PDF use FastAPI's base `Response` (binary, no
+  charset) rather than `PlainTextResponse`. Frontend: R5B's single
+  direct "Export Markdown" link is replaced by a compact `ExportMenu`
+  in `ReportModePanel` — an "Export ▾" trigger opening Markdown/PDF/
+  DOCX options, each a real `<a href download>` link, still no
+  `fetch`/blob. The trigger is a real `<button disabled>` (simpler than
+  R5B's `<a>`-based manual workaround — disabling it fully prevents the
+  menu from opening), and the menu closes on option click/outside
+  click/Escape, reusing `ChatMessageRow`'s existing per-row action-menu
+  pattern rather than a new one. See `docs/architecture.md`'s "R5C —
+  PDF and DOCX report export via a shared document model" section for
+  the full design record.
+- **Location**: `research_agent/report.py` (`ExportSection`,
+  `ExportReference`, `ReportExportDocument`,
+  `build_report_export_document`, `render_report_docx`,
+  `render_report_pdf`), `research_agent/services/
+  curation_report_service.py`, `research_agent/api_app/routers/
+  curation_reports.py`, `frontend/src/types/index.ts`
+  (`ReportExportFormat`), `frontend/src/lib/api/client.ts`
+  (`getReportExportUrl`), `frontend/src/components/ReportMode/
+  ReportModePanel.tsx` (`ExportMenu`), `frontend/src/pages/
+  CurationWorkspacePage.tsx`.
+- **Implementation split**: R5C.1 (shared export document model +
+  byte-identical Markdown refactor + DOCX backend), R5C.2 (PDF
+  backend), R5C.3 (frontend Export menu for all three formats) — same
+  commit-per-chunk granularity as every prior phase, each independently
+  testable and revertable.
+- **Dependencies added**: `python-docx==1.2.0`, `reportlab==5.0.0` —
+  both pure Python, no system-level dependency, added via `uv add` and
+  repinned to exact versions matching this project's existing
+  convention.
+- **Deferred follow-ups, not done in this phase**:
+  - Manual visual QA polish of the rendered DOCX/PDF layout, if it
+    turns out to need it — only structural/round-trip validity has
+    been machine-checked so far, same as R5A's markdown got one manual
+    look before being called done.
+  - An optional cover/title page (explicitly skipped as a distinct
+    branding decision outside this phase's actual goal).
+  - Optional export of evaluator/refinement details — deliberately
+    excluded from every export format so far (R4.2's "don't turn it
+    into a dashboard" precedent applied to exports); would need to be
+    an explicit, separate opt-in, not a default.
+  - Optional chat transcript export — chat is a separate, unversioned
+    scratchpad, explicitly out of scope for every R5 sub-phase.
+  - Exporting an arbitrary (not-currently-active) report version
+    directly by `version_id`, without first requiring a separate
+    `/activate` call, if that workflow becomes a real need.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-06). Commits `34625a2` (R5C.1),
+  `d610755` (R5C.2), `34a8b7b` (R5C.3).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
