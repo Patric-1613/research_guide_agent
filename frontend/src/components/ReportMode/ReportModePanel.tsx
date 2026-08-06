@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
-  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportTemplate, ReportVersionSummary,
-  CurationStateResponse,
+  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportTemplate,
+  ReportVersionSummary, CurationStateResponse,
 } from '../../types'
 import { renderContentWithMarkers } from '../../lib/citationMarkers'
 import { ReferencesList } from '../shared/ReferencesList'
@@ -20,13 +20,15 @@ interface ReportModePanelProps {
   onRegenerateReport: (reportTemplate: ReportTemplate, refinementMode: RefinementMode) => void
   // report-quality Phase R3: switches the active report version.
   onActivateReportVersion: (versionId: string) => void
-  // report-quality Phase R5B: a plain URL string (curationApi.
-  // getReportExportUrl(state.session_id, 'markdown'), computed by the
-  // parent) for a real browser download link -- this panel stays
-  // presentational and never imports curationApi directly, same
-  // convention every other prop here already follows. Always exports
-  // the active version; there's no per-version export UI in R5B.
-  exportMarkdownUrl: string
+  // report-quality Phase R5C.3: one URL per supported export format,
+  // computed by the parent via curationApi.getReportExportUrl(...) for
+  // each entry -- this panel stays presentational and never imports
+  // curationApi directly, same convention exportMarkdownUrl (R5B)
+  // already established, just widened from a single string to one per
+  // format since the Export control is now a menu with 3 options
+  // instead of a single direct link. Always exports the active
+  // version; there's no per-version export UI here.
+  exportUrls: Record<ReportExportFormat, string>
 }
 
 const TEMPLATE_OPTIONS: { value: ReportTemplate; label: string }[] = [
@@ -56,7 +58,7 @@ const GENERATION_REASON_LABELS: Record<string, string> = {
 // backend but never rendered. This panel is the first place it's
 // actually shown.
 export function ReportModePanel({
-  state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportMarkdownUrl,
+  state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportUrls,
 }: ReportModePanelProps) {
   // report-quality Phase R2C: initialized from the current report's own
   // template (defaulting to analytical before a first generation), kept
@@ -126,7 +128,7 @@ export function ReportModePanel({
           >
             Regenerate
           </button>
-          <ExportMarkdownLink url={exportMarkdownUrl} disabled={disabled} />
+          <ExportMenu urls={exportUrls} disabled={disabled} />
         </div>
       </div>
       {state.report.refinement && hasEvaluationDetails(state.report.refinement) && (
@@ -272,35 +274,92 @@ function RefineOnceToggle({
   )
 }
 
-// report-quality Phase R5B: a real browser download link, not a
-// fetch()-triggered action -- <a href download> lets the browser
-// handle the download natively (no blob/object-URL plumbing needed,
-// and it works identically for the binary formats a later phase will
-// add). A plain "Export Markdown" link, not a menu -- with only one
-// supported format, a dropdown showing disabled PDF/DOCX options would
-// read as broken UI rather than "coming soon." <a> has no native
-// disabled attribute, so the disabled state is enforced manually
-// (preventDefault + aria-disabled + suppressed styling) rather than
-// via Tailwind's disabled: variant, which only applies to elements
-// with a real disabled attribute.
-function ExportMarkdownLink({ url, disabled }: { url: string; disabled: boolean }) {
-  return (
-    <a
-      data-testid="export-markdown"
-      href={url}
-      download
-      aria-disabled={disabled}
-      onClick={(e) => {
-        if (disabled) e.preventDefault()
-      }}
-      className={
-        disabled
-          ? 'cursor-not-allowed rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary opacity-40'
-          : 'rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text'
+const EXPORT_FORMAT_OPTIONS: { value: ReportExportFormat; label: string }[] = [
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'pdf', label: 'PDF' },
+  { value: 'docx', label: 'DOCX' },
+]
+
+// report-quality Phase R5B/R5C.3: each option is a real browser
+// download link (<a href download>), not a fetch()-triggered action --
+// the browser handles the download natively (no blob/object-URL
+// plumbing needed), identically for markdown's text response and pdf/
+// docx's binary ones. R5B shipped a single direct "Export Markdown"
+// link since a dropdown showing disabled PDF/DOCX options ahead of
+// those formats existing would have read as broken UI; now that all
+// three are real (R5C.1/R5C.2 backend work), a small trigger+menu is
+// the compact option this task calls for, not a large dashboard.
+//
+// The trigger is a real <button disabled>, unlike R5B's <a> (which had
+// no native disabled attribute and needed a manual preventDefault
+// workaround) -- disabling it fully prevents the menu from ever
+// opening, which is the simplest way to satisfy "disable/suppress
+// while a report action is in progress." The extra effect below closes
+// an already-open menu if `disabled` flips true out from under it
+// (e.g. a fast-fired Regenerate click), so a stale open menu can never
+// outlive the disabled state that should have suppressed it.
+function ExportMenu({ urls, disabled }: { urls: Record<ReportExportFormat, string>; disabled: boolean }) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
+
+  useEffect(() => {
+    if (!open) return
+    function handleOutsideClick(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false)
       }
-    >
-      Export Markdown
-    </a>
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        data-testid="export-menu-trigger"
+        aria-label="Export report"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
+      >
+        Export ▾
+      </button>
+      {open && (
+        <div
+          data-testid="export-menu"
+          role="menu"
+          className="absolute right-0 z-10 mt-1 w-32 rounded-md border border-border bg-panel py-1 text-xs shadow-lg"
+        >
+          {EXPORT_FORMAT_OPTIONS.map((option) => (
+            <a
+              key={option.value}
+              role="menuitem"
+              data-testid={`export-menu-option-${option.value}`}
+              href={urls[option.value]}
+              download
+              onClick={() => setOpen(false)}
+              className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt"
+            >
+              {option.label}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

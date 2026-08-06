@@ -329,7 +329,11 @@ export default function CurationWorkspacePage() {
                       onGenerateReport={handleGenerateReport}
                       onRegenerateReport={handleRegenerateReport}
                       onActivateReportVersion={handleActivateReportVersion}
-                      exportMarkdownUrl={curationApi.getReportExportUrl(state.session_id, 'markdown')}
+                      exportUrls={{
+                        markdown: curationApi.getReportExportUrl(state.session_id, 'markdown'),
+                        pdf: curationApi.getReportExportUrl(state.session_id, 'pdf'),
+                        docx: curationApi.getReportExportUrl(state.session_id, 'docx'),
+                      }}
                     />
                   )}
                 </>

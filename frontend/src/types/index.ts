@@ -124,13 +124,12 @@ export type ReportTemplate = 'foundational' | 'analytical' | 'expert'
 // backend's own report.py RefinementMode Literal field-for-field.
 export type RefinementMode = 'off' | 'single'
 
-// report-quality Phase R5A/R5B: which export format GET /curation/
-// {id}/report/export?format=... accepts. "markdown" is the only value
-// the backend supports as of R5B -- a single-member union today,
-// deliberately named/typed the same way as ReportTemplate/
-// RefinementMode above so adding "pdf"/"docx" later (R5C) is a plain,
-// additive type change, not a rename.
-export type ReportExportFormat = 'markdown'
+// report-quality Phase R5A/R5B/R5C.3: which export format GET
+// /curation/{id}/report/export?format=... accepts, mirroring the
+// backend's own supported set (research_agent/services/
+// curation_report_service.py's _EXPORT_FORMATS) field-for-field, same
+// plain string-union convention as ReportTemplate/RefinementMode above.
+export type ReportExportFormat = 'markdown' | 'pdf' | 'docx'
 
 // report-quality Phase R4.1/R4.2: refinement metadata a report carries
 // when refinement was requested for it, mirrors the backend's own

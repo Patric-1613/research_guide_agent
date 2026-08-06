@@ -225,6 +225,20 @@ describe('curationApi', () => {
     expect(url).toBe('http://test-api.local/curation/s1/report/export?format=markdown')
   })
 
+  // report-quality Phase R5C.3: pdf/docx follow the exact same URL
+  // shape as markdown -- only the format query value changes.
+  it('getReportExportUrl() builds the pdf export URL for the given session', () => {
+    const url = curationApi.getReportExportUrl('s1', 'pdf')
+
+    expect(url).toBe('http://test-api.local/curation/s1/report/export?format=pdf')
+  })
+
+  it('getReportExportUrl() builds the docx export URL for the given session', () => {
+    const url = curationApi.getReportExportUrl('s1', 'docx')
+
+    expect(url).toBe('http://test-api.local/curation/s1/report/export?format=docx')
+  })
+
   it('getReportExportUrl() never calls fetch -- it is a plain URL string for a browser download link', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

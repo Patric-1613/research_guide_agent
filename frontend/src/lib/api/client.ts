@@ -90,14 +90,15 @@ export const curationApi = {
   activateReportVersion: (sessionId: string, versionId: string): Promise<ReportOut> =>
     postJson(`/curation/${sessionId}/reports/${versionId}/activate`, {}),
 
-  // report-quality Phase R5A/R5B: a plain URL string, NOT a request()/
-  // postJson() call -- deliberately doesn't go through the JSON request
-  // helper above, since this is meant to be used as a real browser
-  // download link (<a href={...} download>), not fetched via JS at all.
-  // Always exports the session's currently ACTIVE report version (the
-  // backend endpoint's own contract) -- there is no version_id param
-  // here to get wrong. format defaults to "markdown", the only value
-  // R5B supports.
+  // report-quality Phase R5A/R5B/R5C.3: a plain URL string, NOT a
+  // request()/postJson() call -- deliberately doesn't go through the
+  // JSON request helper above, since this is meant to be used as a
+  // real browser download link (<a href={...} download>), not fetched
+  // via JS at all. Always exports the session's currently ACTIVE
+  // report version (the backend endpoint's own contract) -- there is
+  // no version_id param here to get wrong. format defaults to
+  // "markdown" for backward compatibility with pre-R5C.3 callers;
+  // "pdf"/"docx" are now equally supported (R5C.1/R5C.2 backend work).
   getReportExportUrl: (sessionId: string, format: ReportExportFormat = 'markdown'): string =>
     `${baseUrl()}/curation/${sessionId}/report/export?format=${format}`,
 
