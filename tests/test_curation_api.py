@@ -1450,6 +1450,10 @@ def test_curation_report_export_no_report_yet_returns_404():
 
 
 def test_curation_report_export_unsupported_format_returns_400():
+    """"epub" (never implemented, and not on any roadmap) rather than
+    "pdf" -- as of R5C.2, pdf is a supported value (see the sibling
+    docx/pdf tests below), so it no longer proves anything about
+    unsupported-format handling."""
     with _client() as client:
         session_id, pick_ids = _finish_curation(client)
         fake_report = {
@@ -1461,7 +1465,7 @@ def test_curation_report_export_unsupported_format_returns_400():
         with patch.object(api, "generate_report_for_session", return_value=fake_report):
             client.post(f"/curation/{session_id}/report")
 
-        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "epub"})
 
     assert resp.status_code == 400
 
@@ -1470,12 +1474,11 @@ def test_curation_report_export_unsupported_format_checked_before_session_lookup
     """An unsupported format 400s even for a session_id that doesn't
     exist at all -- format validation is a pure request-shape check,
     resolved before any session lookup (see export_active_report's own
-    docstring for why). "pdf" (not yet implemented as of R5C.1 -- see
-    "docx" becoming a supported value in the sibling test above) is used
-    here rather than a plain typo so this test also documents that PDF
-    genuinely isn't wired up yet."""
+    docstring for why). "epub" (see the sibling test above for why not
+    "pdf" anymore) is used here rather than a plain typo so this test
+    also documents a concrete, still-unsupported format."""
     with _client() as client:
-        resp = client.get("/curation/does-not-exist/report/export", params={"format": "pdf"})
+        resp = client.get("/curation/does-not-exist/report/export", params={"format": "epub"})
 
     assert resp.status_code == 400
 
@@ -1553,6 +1556,78 @@ def test_curation_report_export_docx_no_report_yet_returns_404():
     with _client() as client:
         session_id, pick_ids = _finish_curation(client)
         resp = client.get(f"/curation/{session_id}/report/export", params={"format": "docx"})
+
+    assert resp.status_code == 404
+
+
+# --- report-quality Phase R5C.2: GET /curation/{id}/report/export?format=pdf ---
+
+def test_curation_report_export_pdf_returns_valid_pdf_for_the_active_version():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "Per [1].", "cited_papers": [_paper(pick_ids[0], "Paper Zero")]},
+            "limitations": {"content": "L", "cited_papers": []},
+            "future_scope": {"content": "S", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report):
+            client.post(f"/curation/{session_id}/report")
+
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert 'attachment; filename="' in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].strip().endswith('.pdf"')
+    assert resp.content.startswith(b"%PDF-")
+    assert len(resp.content) > 500
+
+
+def test_curation_report_export_pdf_reflects_active_not_latest_version():
+    """Same proof as the markdown/docx equivalents above, for
+    format=pdf -- export_active_report's active-vs-latest resolution is
+    shared across every format, but PDF content isn't text-searchable
+    without an extraction dependency (deliberately not added just for
+    this), so this proves it indirectly: the v1-active export's bytes
+    must differ from a v2-active export's bytes for the same session."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        first_report = {
+            "findings": {"content": "v1 content", "cited_papers": []},
+            "limitations": {"content": "", "cited_papers": []},
+            "future_scope": {"content": "", "cited_papers": []},
+            "skipped_papers": [], "report_template": "analytical",
+        }
+        with patch.object(api, "generate_report_for_session", return_value=first_report):
+            client.post(f"/curation/{session_id}/report")
+        v1_id = client.get(f"/curation/{session_id}").json()["report_versions"][0]["version_id"]
+
+        second_report = {**first_report, "findings": {"content": "v2 content", "cited_papers": []}}
+        with patch.object(api, "regenerate_report_with_new_sources", return_value=second_report):
+            client.post(f"/curation/{session_id}/report/regenerate")
+
+        v2_resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
+
+        client.post(f"/curation/{session_id}/reports/{v1_id}/activate")
+        v1_resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
+
+    assert v1_resp.content.startswith(b"%PDF-")
+    assert v2_resp.content.startswith(b"%PDF-")
+    assert v1_resp.content != v2_resp.content
+
+
+def test_curation_report_export_pdf_unknown_session_id_returns_404():
+    with _client() as client:
+        resp = client.get("/curation/does-not-exist/report/export", params={"format": "pdf"})
+
+    assert resp.status_code == 404
+
+
+def test_curation_report_export_pdf_no_report_yet_returns_404():
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        resp = client.get(f"/curation/{session_id}/report/export", params={"format": "pdf"})
 
     assert resp.status_code == 404
 

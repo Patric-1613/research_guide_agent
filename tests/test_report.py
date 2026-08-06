@@ -51,6 +51,7 @@ from research_agent.report import (
     regenerate_report_with_new_sources,
     render_report_docx,
     render_report_markdown,
+    render_report_pdf,
     report_export_filename,
     revise_report,
     _project_legacy_fields,
@@ -2725,6 +2726,102 @@ def test_render_report_docx_excludes_refinement_metadata_even_when_present():
 
     for forbidden in ("too shallow", "missing comparison", "add more depth", "initial_score", "refinement"):
         assert forbidden not in full_text
+
+
+# --- report-quality Phase R5C.2: PDF export of a report version ---
+
+def test_render_report_pdf_returns_valid_pdf_bytes_of_non_trivial_length():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_pdf(session, version)
+
+    assert isinstance(content, bytes)
+    assert content.startswith(b"%PDF-")
+    assert len(content) > 500  # a real, multi-section rendered document, not a near-empty stub
+
+
+def test_render_report_pdf_succeeds_with_xml_special_characters_in_title_sections_and_references():
+    """Required adversarial test: <, >, & appear in the report's own
+    title, section body content, and a reference's formatted citation
+    (via a paper title containing them) -- render_report_pdf's own
+    xml_escape/xml_quoteattr calls must prevent ReportLab's Paragraph
+    XML-like parser from choking on any of this. Proves no exception AND
+    a still-valid PDF, not just "didn't crash" -- an exception during
+    xml_escape's own absence would either raise inside ReportLab's
+    parser or silently truncate/corrupt the document."""
+    p1 = _paper("1111", 'Paper <One> & "Two" >Three<')
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A <finding> with & an ampersand [Paper 1] and >less< than <tags>.",
+                "cited_papers": [p1],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(
+        topic="t <topic> & stuff", display_title='T <Title> & "Quoted"', stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(report)
+    assert "<" in report["references"][0]["formatted"] or "&" in report["references"][0]["formatted"]
+
+    content = render_report_pdf(session, version)
+
+    assert content.startswith(b"%PDF-")
+    assert len(content) > 500
+
+
+def test_render_report_pdf_succeeds_with_ampersand_in_a_hyperlinked_reference_url():
+    """The href attribute itself is a separate escaping path (xml_
+    quoteattr, not xml_escape) from body/reference text -- a URL
+    containing a literal & (a real, common case: a query string) must
+    not break the <a href="..."> markup either."""
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://example.com/a?x=1&y=2", "Example Article")
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A finding [Paper 1] and a web claim [Web 1].",
+                "cited_papers": [p1], "cited_web_articles": [web],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(report)
+
+    content = render_report_pdf(session, version)
+
+    assert content.startswith(b"%PDF-")
+    assert len(content) > 500
+
+
+def test_render_report_pdf_omits_references_and_page_break_when_there_are_none():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([])  # no papers cited anywhere -> no references
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_pdf(session, version)
+
+    assert content.startswith(b"%PDF-")
+    assert len(content) > 500
 
 
 def test_report_export_filename_is_sanitized_and_includes_version_number():

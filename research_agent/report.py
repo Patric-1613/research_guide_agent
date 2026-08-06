@@ -30,6 +30,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
+from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE
@@ -38,6 +39,9 @@ from docx.oxml.ns import qn
 from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 from research_agent.citations import format_apa_citation, format_web_citation
 from research_agent.query_expansion import PaperPoolSession
@@ -2305,6 +2309,69 @@ def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
 
     buffer = io.BytesIO()
     document.save(buffer)
+    return buffer.getvalue()
+
+
+def render_report_pdf(session: PaperPoolSession, version: dict) -> bytes:
+    """report-quality Phase R5C.2: renders the same ReportExportDocument
+    render_report_markdown/render_report_docx consume as a PDF, via
+    ReportLab's Platypus flowables (SimpleDocTemplate + Paragraph/
+    Spacer/PageBreak + the default style sheet) rather than raw canvas
+    positioning -- gets a clean, document-like layout without hand-
+    rolled coordinate math. Same "no HTTP knowledge, returns raw bytes"
+    scope as render_report_docx.
+
+    **Escaping is required, not optional.** ReportLab's Paragraph text
+    is parsed as a small XML-like markup language (`<b>`, `<a href>`,
+    etc.) -- every piece of text that ultimately comes from the report
+    itself (title, metadata values, section titles, body paragraphs,
+    reference "formatted" strings) is LLM- or user-authored and could
+    structurally contain `<`, `>`, or `&`. Every one of those strings is
+    run through xml_escape before being embedded in a Paragraph's
+    source string; a hyperlink's URL is embedded via xml_quoteattr
+    (not xml_escape -- an href value is an XML ATTRIBUTE, which needs
+    quote-safe quoting, not text-node escaping) so a URL containing a
+    literal `&` or a stray `"` can't break out of the `href="..."`
+    attribute or otherwise malform the markup. Skipping this step is
+    the one way this function could silently corrupt or crash on
+    perfectly ordinary report content.
+
+    Layout mirrors render_report_docx: title -> metadata (italic lines)
+    -> one Heading1 + one Paragraph per non-empty content paragraph per
+    section, in order -> a page break, then a References heading and
+    numbered entries (only when references exist) with a real
+    `<a href>` hyperlink wherever `link_url` is present. No cover page,
+    no custom font embedding -- ReportLab's default Helvetica-based
+    style sheet throughout.
+    """
+    doc = build_report_export_document(session, version)
+    styles = getSampleStyleSheet()
+    meta_style = ParagraphStyle("ExportMeta", parent=styles["Normal"], fontName="Helvetica-Oblique")
+    reference_style = ParagraphStyle("ExportReference", parent=styles["Normal"], spaceAfter=6)
+
+    flowables = [Paragraph(xml_escape(doc.title), styles["Title"]), Spacer(1, 12)]
+    for label, value in doc.meta:
+        flowables.append(Paragraph(f"{xml_escape(label)}: {xml_escape(value)}", meta_style))
+    flowables.append(Spacer(1, 12))
+
+    for section in doc.sections:
+        flowables.append(Paragraph(xml_escape(section.title), styles["Heading1"]))
+        for paragraph_text in section.paragraphs:
+            if paragraph_text:
+                flowables.append(Paragraph(xml_escape(paragraph_text), styles["BodyText"]))
+        flowables.append(Spacer(1, 6))
+
+    if doc.references:
+        flowables.append(PageBreak())
+        flowables.append(Paragraph("References", styles["Heading1"]))
+        for ref in doc.references:
+            escaped_citation = xml_escape(ref.formatted)
+            if ref.link_url:
+                escaped_citation = f'<a href={xml_quoteattr(ref.link_url)} color="blue">{escaped_citation}</a>'
+            flowables.append(Paragraph(f"{ref.number}. {escaped_citation}", reference_style))
+
+    buffer = io.BytesIO()
+    SimpleDocTemplate(buffer, pagesize=letter).build(flowables)
     return buffer.getvalue()
 
 

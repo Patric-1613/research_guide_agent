@@ -70,6 +70,7 @@ from research_agent.report import (
     regenerate_report_with_new_sources,
     render_report_docx,
     render_report_markdown,
+    render_report_pdf,
     report_export_filename,
 )
 from research_agent.storage import get_db_connection, get_search, init_db, list_searches, save_search
