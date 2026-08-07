@@ -36,11 +36,14 @@ from docx import Document
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
+from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 from research_agent.citations import format_apa_citation, format_web_citation
@@ -2102,6 +2105,19 @@ def activate_report_version(session: PaperPoolSession, version_id: str) -> dict 
 
 _EXPORT_FILENAME_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9]+")
 
+# report-quality Phase R5D: shared "Literature Review" document style
+# decisions -- deliberately the SAME numbers for DOCX and PDF (font
+# family, body size, line spacing, margins, heading color, reference
+# hanging indent) so the two formats read as the same document, not
+# two independently-styled products. A white, restrained academic
+# look, not a themed artifact -- no cover page, no logos, no color
+# beyond this one heading accent.
+_EXPORT_BODY_FONT_SIZE_PT = 12
+_EXPORT_LINE_SPACING = 1.15
+_EXPORT_MARGIN_INCHES = 1.0
+_EXPORT_REFERENCE_HANGING_INDENT_INCHES = 0.5
+_EXPORT_HEADING_COLOR_HEX = "1F3864"  # restrained dark navy, not app-UI blue
+
 
 @dataclass
 class ExportSection:
@@ -2263,28 +2279,70 @@ def _add_docx_hyperlink(paragraph, url: str, text: str) -> None:
     paragraph._p.append(hyperlink)  # noqa: SLF001 -- documented workaround, no public API exists
 
 
-def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
-    """report-quality Phase R5C.1: renders the same ReportExportDocument
-    render_report_markdown consumes as a DOCX file, returned as raw
-    bytes (the router wraps them in an HTTP Response; this function
-    stays format-only, same "no HTTP knowledge" scope every other
-    render_* function here already keeps).
+def _apply_docx_literature_review_style(document: Document) -> None:
+    """report-quality Phase R5D: the one place DOCX's default styles
+    are overridden to read as a literature-review document rather than
+    Word's own generic defaults. Margins default to 1in top/bottom but
+    1.25in left/right in a fresh python-docx Document() (verified, not
+    assumed) -- set explicitly on all four sides rather than relying on
+    two of them already happening to match. `Normal`'s font/size/line-
+    spacing cascades to every plain paragraph (metadata lines, section
+    body, references) since none of them set their own font -- one
+    change here instead of one per call site. Title/Heading 1 keep
+    Word's own already-sensible size hierarchy (verified distinct by
+    inspection) and get only a font-family and color update, so this
+    stays a restrained style pass, not a redesign.
+    """
+    section = document.sections[0]
+    section.left_margin = Inches(_EXPORT_MARGIN_INCHES)
+    section.right_margin = Inches(_EXPORT_MARGIN_INCHES)
+    section.top_margin = Inches(_EXPORT_MARGIN_INCHES)
+    section.bottom_margin = Inches(_EXPORT_MARGIN_INCHES)
 
-    Layout: title (Heading 0) -> metadata lines (plain italic
-    paragraphs, not a table -- a handful of label/value lines don't
-    need one) -> one Heading 1 + one paragraph per non-empty content
-    paragraph for each section, in order -> a page break, then a
-    References heading and numbered entries (only when references
+    normal = document.styles["Normal"]
+    normal.font.name = "Times New Roman"
+    normal.font.size = Pt(_EXPORT_BODY_FONT_SIZE_PT)
+    normal.paragraph_format.line_spacing = _EXPORT_LINE_SPACING
+
+    heading_color = RGBColor.from_string(_EXPORT_HEADING_COLOR_HEX)
+    for style_name in ("Title", "Heading 1"):
+        heading_style = document.styles[style_name]
+        heading_style.font.name = "Times New Roman"
+        heading_style.font.color.rgb = heading_color
+
+
+def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
+    """report-quality Phase R5C.1, restyled in R5D: renders the same
+    ReportExportDocument render_report_markdown consumes as a DOCX
+    file, returned as raw bytes (the router wraps them in an HTTP
+    Response; this function stays format-only, same "no HTTP
+    knowledge" scope every other render_* function here already
+    keeps).
+
+    Layout: title (Heading 0) -> a "Literature Review" subtitle (Word's
+    own built-in `Subtitle` style, already present in every fresh
+    Document() and previously unused here) -> metadata lines (plain
+    italic paragraphs, not a table -- a handful of label/value lines
+    don't need one) -> one Heading 1 + one paragraph per non-empty
+    content paragraph for each section, in order -> a page break, then
+    a References heading and numbered entries (only when references
     exist -- same "omit entirely, don't render a placeholder" choice
     render_report_markdown already makes) with a real hyperlink
-    wherever `link_url` is present, plain text otherwise. Deliberately
-    no cover page, no custom fonts, no branding -- a clean, minimal
-    document template, not a styled artifact.
+    wherever `link_url` is present, plain text otherwise, and a 0.5in
+    hanging indent on every reference paragraph (first-class
+    `paragraph_format` support, applies identically whether or not the
+    entry is hyperlinked). R5D layers a literature-review document
+    style on top via _apply_docx_literature_review_style -- still no
+    cover page, no page numbers (deferred), no branding beyond that one
+    style pass.
     """
     doc = build_report_export_document(session, version)
     document = Document()
+    _apply_docx_literature_review_style(document)
 
     document.add_heading(doc.title, level=0)
+    subtitle_paragraph = document.add_paragraph("Literature Review")
+    subtitle_paragraph.style = document.styles["Subtitle"]
     for label, value in doc.meta:
         meta_paragraph = document.add_paragraph()
         meta_run = meta_paragraph.add_run(f"{label}: {value}")
@@ -2301,6 +2359,8 @@ def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
         document.add_heading("References", level=1)
         for ref in doc.references:
             ref_paragraph = document.add_paragraph()
+            ref_paragraph.paragraph_format.left_indent = Inches(_EXPORT_REFERENCE_HANGING_INDENT_INCHES)
+            ref_paragraph.paragraph_format.first_line_indent = Inches(-_EXPORT_REFERENCE_HANGING_INDENT_INCHES)
             ref_paragraph.add_run(f"{ref.number}. ")
             if ref.link_url:
                 _add_docx_hyperlink(ref_paragraph, ref.link_url, ref.formatted)
@@ -2312,14 +2372,41 @@ def render_report_docx(session: PaperPoolSession, version: dict) -> bytes:
     return buffer.getvalue()
 
 
+# report-quality Phase R5D: Title and Heading1 shared ReportLab's
+# unmodified sample stylesheet before this phase -- both 18pt
+# Helvetica-Bold, rendering IDENTICALLY with no visual hierarchy
+# between the document title and a section heading (verified by
+# inspection, not assumed). Sized/colored explicitly here instead so
+# the two are visually distinct, same restrained-color decision DOCX's
+# Heading 1 override above uses.
+_EXPORT_PDF_TITLE_FONT_SIZE = 20
+_EXPORT_PDF_HEADING_FONT_SIZE = 15
+
+
+def _draw_pdf_page_number(canvas, doc_template) -> None:
+    """report-quality Phase R5D: ReportLab's documented onFirstPage/
+    onLaterPages mechanism -- the only first-class way Platypus exposes
+    per-page footer content, since a Paragraph flowable has no notion
+    of "current page." This is the sole direct canvas use in this
+    function; the rest of the document stays flowable-driven. Centered
+    just inside the bottom margin, not past it, so it never collides
+    with body content."""
+    canvas.saveState()
+    canvas.setFont("Times-Roman", 9)
+    canvas.drawCentredString(letter[0] / 2, 0.5 * inch, str(canvas.getPageNumber()))
+    canvas.restoreState()
+
+
 def render_report_pdf(session: PaperPoolSession, version: dict) -> bytes:
-    """report-quality Phase R5C.2: renders the same ReportExportDocument
-    render_report_markdown/render_report_docx consume as a PDF, via
-    ReportLab's Platypus flowables (SimpleDocTemplate + Paragraph/
-    Spacer/PageBreak + the default style sheet) rather than raw canvas
-    positioning -- gets a clean, document-like layout without hand-
-    rolled coordinate math. Same "no HTTP knowledge, returns raw bytes"
-    scope as render_report_docx.
+    """report-quality Phase R5C.2, restyled in R5D: renders the same
+    ReportExportDocument render_report_markdown/render_report_docx
+    consume as a PDF, via ReportLab's Platypus flowables
+    (SimpleDocTemplate + Paragraph/Spacer/PageBreak + a Times-Roman/
+    Times-Bold style set) rather than raw canvas positioning -- gets a
+    clean, document-like layout without hand-rolled coordinate math.
+    Same "no HTTP knowledge, returns raw bytes" scope as
+    render_report_docx. The one direct canvas use (_draw_pdf_page_number
+    above) is scoped to a per-page footer only, not primary layout.
 
     **Escaping is required, not optional.** ReportLab's Paragraph text
     is parsed as a small XML-like markup language (`<b>`, `<a href>`,
@@ -2336,34 +2423,74 @@ def render_report_pdf(session: PaperPoolSession, version: dict) -> bytes:
     the one way this function could silently corrupt or crash on
     perfectly ordinary report content.
 
-    Layout mirrors render_report_docx: title -> metadata (italic lines)
-    -> one Heading1 + one Paragraph per non-empty content paragraph per
-    section, in order -> a page break, then a References heading and
-    numbered entries (only when references exist) with a real
-    `<a href>` hyperlink wherever `link_url` is present. No cover page,
-    no custom font embedding -- ReportLab's default Helvetica-based
-    style sheet throughout.
+    Layout mirrors render_report_docx: title -> a "Literature Review"
+    subtitle -> metadata (italic lines) -> one Heading1 + one Paragraph
+    per non-empty content paragraph per section, in order -> a page
+    break, then a References heading and numbered entries (only when
+    references exist) with a real `<a href>` hyperlink wherever
+    `link_url` is present and a 0.5in hanging indent on every entry
+    (`leftIndent`/`firstLineIndent` on the reference style -- first-
+    class ParagraphStyle support, same numeric indent as DOCX's own).
+    Margins are explicit 1in on all sides (previously relying on
+    ReportLab's own matching default, verified, not assumed --  made
+    explicit so this doesn't silently depend on a library default not
+    changing). `pageCompression=0` trades a slightly larger file for an
+    uncompressed content stream, which is what makes rendered text
+    greppable in the raw bytes for tests below -- ReportLab compresses
+    by default, which is why R5C.2's own tests could only assert
+    structural validity, not content. No cover page, no custom font
+    embedding -- Times-Roman/Times-Bold/Times-Italic are ReportLab's
+    own built-in Base-14 PDF fonts, not embedded files.
     """
     doc = build_report_export_document(session, version)
     styles = getSampleStyleSheet()
-    meta_style = ParagraphStyle("ExportMeta", parent=styles["Normal"], fontName="Helvetica-Oblique")
-    reference_style = ParagraphStyle("ExportReference", parent=styles["Normal"], spaceAfter=6)
+    heading_color = HexColor(f"#{_EXPORT_HEADING_COLOR_HEX}")
 
-    flowables = [Paragraph(xml_escape(doc.title), styles["Title"]), Spacer(1, 12)]
+    title_style = ParagraphStyle(
+        "ExportTitle", parent=styles["Title"], fontName="Times-Bold",
+        fontSize=_EXPORT_PDF_TITLE_FONT_SIZE, leading=_EXPORT_PDF_TITLE_FONT_SIZE * 1.2, textColor=heading_color,
+    )
+    subtitle_style = ParagraphStyle(
+        "ExportSubtitle", parent=styles["Normal"], fontName="Times-Italic",
+        fontSize=_EXPORT_BODY_FONT_SIZE_PT, leading=_EXPORT_BODY_FONT_SIZE_PT * _EXPORT_LINE_SPACING,
+    )
+    meta_style = ParagraphStyle(
+        "ExportMeta", parent=styles["Normal"], fontName="Times-Italic",
+        fontSize=_EXPORT_BODY_FONT_SIZE_PT, leading=_EXPORT_BODY_FONT_SIZE_PT * _EXPORT_LINE_SPACING,
+    )
+    heading_style = ParagraphStyle(
+        "ExportHeading1", parent=styles["Heading1"], fontName="Times-Bold",
+        fontSize=_EXPORT_PDF_HEADING_FONT_SIZE, leading=_EXPORT_PDF_HEADING_FONT_SIZE * 1.2, textColor=heading_color,
+    )
+    body_style = ParagraphStyle(
+        "ExportBody", parent=styles["BodyText"], fontName="Times-Roman",
+        fontSize=_EXPORT_BODY_FONT_SIZE_PT, leading=_EXPORT_BODY_FONT_SIZE_PT * _EXPORT_LINE_SPACING, spaceAfter=6,
+    )
+    reference_style = ParagraphStyle(
+        "ExportReference", parent=body_style, spaceAfter=6,
+        leftIndent=_EXPORT_REFERENCE_HANGING_INDENT_INCHES * inch,
+        firstLineIndent=-_EXPORT_REFERENCE_HANGING_INDENT_INCHES * inch,
+    )
+
+    flowables = [
+        Paragraph(xml_escape(doc.title), title_style),
+        Paragraph("Literature Review", subtitle_style),
+        Spacer(1, 12),
+    ]
     for label, value in doc.meta:
         flowables.append(Paragraph(f"{xml_escape(label)}: {xml_escape(value)}", meta_style))
     flowables.append(Spacer(1, 12))
 
     for section in doc.sections:
-        flowables.append(Paragraph(xml_escape(section.title), styles["Heading1"]))
+        flowables.append(Paragraph(xml_escape(section.title), heading_style))
         for paragraph_text in section.paragraphs:
             if paragraph_text:
-                flowables.append(Paragraph(xml_escape(paragraph_text), styles["BodyText"]))
+                flowables.append(Paragraph(xml_escape(paragraph_text), body_style))
         flowables.append(Spacer(1, 6))
 
     if doc.references:
         flowables.append(PageBreak())
-        flowables.append(Paragraph("References", styles["Heading1"]))
+        flowables.append(Paragraph("References", heading_style))
         for ref in doc.references:
             escaped_citation = xml_escape(ref.formatted)
             if ref.link_url:
@@ -2371,7 +2498,12 @@ def render_report_pdf(session: PaperPoolSession, version: dict) -> bytes:
             flowables.append(Paragraph(f"{ref.number}. {escaped_citation}", reference_style))
 
     buffer = io.BytesIO()
-    SimpleDocTemplate(buffer, pagesize=letter).build(flowables)
+    document = SimpleDocTemplate(
+        buffer, pagesize=letter, pageCompression=0,
+        leftMargin=_EXPORT_MARGIN_INCHES * inch, rightMargin=_EXPORT_MARGIN_INCHES * inch,
+        topMargin=_EXPORT_MARGIN_INCHES * inch, bottomMargin=_EXPORT_MARGIN_INCHES * inch,
+    )
+    document.build(flowables, onFirstPage=_draw_pdf_page_number, onLaterPages=_draw_pdf_page_number)
     return buffer.getvalue()
 
 

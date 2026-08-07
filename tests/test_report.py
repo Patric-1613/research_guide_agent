@@ -53,6 +53,8 @@ from research_agent.report import (
     render_report_markdown,
     render_report_pdf,
     report_export_filename,
+    _EXPORT_PDF_HEADING_FONT_SIZE,
+    _EXPORT_PDF_TITLE_FONT_SIZE,
     revise_report,
     _project_legacy_fields,
     _sections_list,
@@ -2728,6 +2730,71 @@ def test_render_report_docx_excludes_refinement_metadata_even_when_present():
         assert forbidden not in full_text
 
 
+# --- report-quality Phase R5D: DOCX literature-review document style ---
+
+def test_render_report_docx_subtitle_literature_review_appears_immediately_after_title():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="t", display_title="Transformer Architectures", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+
+    assert doc.paragraphs[0].text == "Transformer Architectures"
+    assert doc.paragraphs[0].style.name == "Title"
+    assert doc.paragraphs[1].text == "Literature Review"
+    assert doc.paragraphs[1].style.name == "Subtitle"
+
+
+def test_render_report_docx_margins_are_one_inch_on_all_sides():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+    section = doc.sections[0]
+
+    assert section.left_margin.inches == 1.0
+    assert section.right_margin.inches == 1.0
+    assert section.top_margin.inches == 1.0
+    assert section.bottom_margin.inches == 1.0
+
+
+def test_render_report_docx_body_style_uses_times_new_roman_12pt_and_1_15_line_spacing():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+    normal = doc.styles["Normal"]
+
+    assert normal.font.name == "Times New Roman"
+    assert normal.font.size.pt == 12
+    assert normal.paragraph_format.line_spacing == 1.15
+
+
+def test_render_report_docx_references_use_a_half_inch_hanging_indent():
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(draft)
+
+    content = render_report_docx(session, version)
+    doc = DocxDocument(io.BytesIO(content))
+
+    reference_paragraph = next(p for p in doc.paragraphs if p.text.startswith("1. "))
+    assert reference_paragraph.paragraph_format.left_indent.inches == 0.5
+    assert reference_paragraph.paragraph_format.first_line_indent.inches == -0.5
+
+
 # --- report-quality Phase R5C.2: PDF export of a report version ---
 
 def test_render_report_pdf_returns_valid_pdf_bytes_of_non_trivial_length():
@@ -2822,6 +2889,78 @@ def test_render_report_pdf_omits_references_and_page_break_when_there_are_none()
 
     assert content.startswith(b"%PDF-")
     assert len(content) > 500
+
+
+# --- report-quality Phase R5D: PDF literature-review document style ---
+
+def test_render_report_pdf_content_includes_title_subtitle_and_section_text():
+    """pageCompression=0 (new in R5D) leaves the content stream
+    uncompressed, so rendered text is greppable directly in the raw
+    bytes -- the same real-content check Markdown/DOCX already get,
+    not previously possible for PDF (R5C.2's own tests were structural-
+    only because ReportLab compresses by default)."""
+    p1 = _paper("1111", "Paper One")
+    draft = _full_export_draft([p1])
+    session = PaperPoolSession(
+        topic="t", display_title="Transformer Architectures", stage="synthesize",
+        selected_papers=[p1], selected_paper_ids=["1111"],
+    )
+    version = _export_version(draft)
+
+    content = render_report_pdf(session, version)
+    text = content.decode("latin-1")
+
+    assert "Transformer Architectures" in text
+    assert "Literature Review" in text
+    for section_def in REPORT_SECTION_DEFINITIONS:
+        assert section_def["title"] in text
+
+
+def test_render_report_pdf_has_a_page_number_footer_on_each_page():
+    """A references page break (already present since R5C.2) makes this
+    a real 2-page document, so the onFirstPage/onLaterPages callback
+    fires twice with different page numbers -- ReportLab emits each
+    drawn footer string as its own `(N) Tj` text-show operator in the
+    (uncompressed) content stream, which is directly greppable without
+    a PDF-parsing dependency."""
+    p1 = _paper("1111", "Paper One")
+    web = _web_article("https://example.com/a", "Example Article")
+    section_defs = REPORT_TEMPLATES["analytical"]
+    sections_out = {}
+    for d in section_defs:
+        key = d["key"]
+        if key == "thematic_findings":
+            sections_out[key] = {
+                "content": "A finding [Paper 1] and a web claim [Web 1].",
+                "cited_papers": [p1], "cited_web_articles": [web],
+            }
+        else:
+            sections_out[key] = {"content": f"{d['title']} text.", "cited_papers": []}
+    report = _build_references_and_renumber({**sections_out, "skipped_papers": []}, ANALYTICAL_SECTION_NAMES)
+    report["report_template"] = "analytical"
+    report = _project_legacy_fields(report)
+    report["sections"] = _sections_list(report)
+    session = PaperPoolSession(topic="t", display_title="T", stage="synthesize", selected_papers=[p1], selected_paper_ids=["1111"])
+    version = _export_version(report)
+
+    content = render_report_pdf(session, version)
+    text = content.decode("latin-1")
+
+    assert text.count("/Type /Page") - text.count("/Type /Pages") == 2  # a real 2-page document
+    assert "(1) Tj" in text
+    assert "(2) Tj" in text
+
+
+def test_render_report_pdf_title_font_size_is_larger_than_section_heading_font_size():
+    """Before R5D, Title and Heading1 shared ReportLab's unmodified
+    sample stylesheet -- both 18pt, no visual hierarchy (verified by
+    inspection during planning). Asserted directly against the module's
+    own style constants (this file already imports/tests other private
+    helpers the same way, e.g. _build_references_and_renumber) rather
+    than trying to recover font sizes from the raw PDF byte stream,
+    which ReportLab doesn't expose in an easily-parseable way without a
+    real PDF layout parser."""
+    assert _EXPORT_PDF_TITLE_FONT_SIZE > _EXPORT_PDF_HEADING_FONT_SIZE
 
 
 def test_report_export_filename_is_sanitized_and_includes_version_number():
