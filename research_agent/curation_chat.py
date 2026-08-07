@@ -63,11 +63,17 @@ def _build_chat_session(session: PaperPoolSession) -> qa.ChatSession:
     reassignment in ask_in_session() below (rather than relying on that
     aliasing) is what actually keeps the two in sync regardless of
     whether qa.py's internals ever start reassigning the list instead of
-    mutating it in place."""
+    mutating it in place.
+
+    chat-web-relevance-guardrails R7A: also populates the new
+    ChatSession.topic from session.topic -- purely additive metadata as
+    of this phase (see ChatSession's own docstring), not yet read by any
+    qa.py graph node."""
     return qa.ChatSession(
         papers=session.selected_papers,
         web_articles=session.web_articles_added,
         history=session.chat_history,
+        topic=session.topic,
     )
 
 

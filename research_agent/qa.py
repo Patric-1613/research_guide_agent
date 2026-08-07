@@ -147,11 +147,23 @@ class ChatSession:
     topic — Q&A doesn't search on its own, only answers from what's already
     been retrieved. `web_articles` (round-2 enhancement 5) is the same idea
     for the separate web-context corpus.
+
+    chat-web-relevance-guardrails R7A: `topic` is the session's own stable
+    subject (curation_chat.py's `_build_chat_session` populates it from
+    `PaperPoolSession.topic`) -- distinct from `question`/the condensed
+    per-turn query, which drift turn to turn. Purely additive metadata as
+    of R7A: nothing in this module's graph reads it yet (see
+    _filter_web_relevance_node's own docstring), so a caller that omits it
+    (default "") sees byte-identical behavior to before this field
+    existed. Threading it through now, unused, is what lets a later phase
+    wire topic-anchored relevance into the live path without a second,
+    separate plumbing change.
     """
 
     papers: list[Paper] = field(default_factory=list)
     web_articles: list[WebArticle] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)  # [{"role": "user"|"assistant", "content": str}]
+    topic: str = ""
 
 
 def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None) -> type[BaseModel]:
@@ -614,6 +626,7 @@ def _retrieve_node(state: QAState) -> dict:
 
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
+    topic: str = "",
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -634,6 +647,21 @@ def _filter_relevant_web_articles(
     context, so "relevant enough to keep" and "what the model actually
     sees" never diverge.
 
+    chat-web-relevance-guardrails R7A: `topic` is an optional SECOND
+    relevance dimension, on top of (not instead of) the query check above
+    -- an article must clear `threshold` against BOTH the per-turn query
+    AND the session's stable topic when a topic is given, matching the
+    approved product decision that it's better to reject/abstain than
+    cite a topically weak source. `topic=""` (the default) skips the
+    topic check entirely and reproduces the exact pre-R7A behavior --
+    this is what makes threading ChatSession.topic through the rest of
+    this module additive rather than a live behavior change: as of R7A,
+    every real caller (_filter_web_relevance_node below) still calls this
+    with no `topic` argument at all. Reuses the same `threshold` for both
+    dimensions rather than inventing a second, uncalibrated constant --
+    see _WEB_ARTICLE_RELEVANCE_THRESHOLD's own comment on why a new
+    number shouldn't be guessed without real data first.
+
     Never mutates `articles` -- always returns a new list (or the same
     object back unchanged on the empty/fail-open paths below), so a
     caller holding onto the original list is never surprised.
@@ -648,12 +676,16 @@ def _filter_relevant_web_articles(
         return articles
     try:
         query_vector = _embed_with_cache(client, query)
-        return [
-            article for article in articles
-            if _cosine_similarity(
-                query_vector, _embed_with_cache(client, f"{article.title}\n{article.snippet or ''}"),
-            ) >= threshold
-        ]
+        topic_vector = _embed_with_cache(client, topic) if topic else None
+        kept = []
+        for article in articles:
+            article_vector = _embed_with_cache(client, f"{article.title}\n{article.snippet or ''}")
+            if _cosine_similarity(query_vector, article_vector) < threshold:
+                continue
+            if topic_vector is not None and _cosine_similarity(topic_vector, article_vector) < threshold:
+                continue
+            kept.append(article)
+        return kept
     except Exception:
         logger.warning(
             "_filter_relevant_web_articles: embedding call raised unexpectedly for query %r -- "
@@ -670,7 +702,16 @@ def _filter_web_relevance_node(state: QAState) -> dict:
     retrieve and route_retrieved (not a conditional edge -- it's a
     transformation of retrieved_web_articles, not a branch decision;
     route_retrieved's own branching condition is unchanged, just now fed
-    higher-quality input)."""
+    higher-quality input).
+
+    chat-web-relevance-guardrails R7A: deliberately does NOT pass
+    state["session"].topic to _filter_relevant_web_articles yet, even
+    though ChatSession now carries one -- wiring topic-anchored relevance
+    into the live graph is scoped to a later phase (R7B), not this one.
+    See ChatSession's own docstring and _filter_relevant_web_articles's
+    `topic` parameter for why omitting it here reproduces pre-R7A
+    behavior exactly.
+    """
     query = state["standalone_query"] or state["question"]
     filtered = _filter_relevant_web_articles(query, state["retrieved_web_articles"], state["client"])
     return {"retrieved_web_articles": filtered}

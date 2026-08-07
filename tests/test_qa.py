@@ -280,6 +280,240 @@ def test_ask_mixed_web_pool_passes_only_the_relevant_article_to_the_model_prompt
     assert result["cited_web_articles"][0].url == "https://relevant.com"
 
 
+# --- chat-web-relevance-guardrails R7A: topic-aware relevance foundation
+# (red-team fixtures) ---
+#
+# All of these test _filter_relevant_web_articles' new optional `topic`
+# parameter directly -- deterministic via patched _embed_with_cache, same
+# convention the pre-R7A tests above already use (parallel vectors ->
+# similarity 1.0 -> passes; orthogonal -> similarity 0.0 -> fails). None
+# of this is wired into the live graph yet (see the dedicated
+# not-wired-yet test at the end of this section) -- these prove the
+# HELPER's own logic in isolation.
+
+def test_filter_relevant_web_articles_rejects_housing_source_for_ai_governance_topic():
+    """The actual reported regression: a chat session about AI governance
+    cited a web source about a housing/zoning case study that merely
+    shared governance-adjacent vocabulary ("policy", "regulatory
+    framework"). Modeled here as a query that has drifted to something
+    generic enough to superficially match the housing article (passes
+    the query-only check on its own -- see the query-relevant-but-topic-
+    irrelevant test below for the same mechanism without the narrative),
+    while the session's own stable topic ("AI governance") does not
+    match it at all. Topic-aware filtering must reject it."""
+    topic = "AI governance frameworks"
+    query = "what's the latest on governance frameworks?"  # drifted -- lost "AI"
+    housing_article = WebArticle(
+        title="Housing Policy Case Study: Zoning Reform",
+        url="https://example.com/housing-zoning-case-study",
+        snippet="A regulatory framework and governance case study examining local zoning policy reform.",
+        published_date=None, source_domain="example.com",
+    )
+    vectors = {
+        query: [1.0, 0.0],
+        f"{housing_article.title}\n{housing_article.snippet}": [1.0, 0.0],  # matches the drifted query
+        topic: [0.0, 1.0],  # orthogonal to the housing article -- genuinely unrelated to AI governance
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [housing_article], MagicMock(), topic=topic)
+
+    assert kept == []
+
+
+def test_filter_relevant_web_articles_accepts_a_genuinely_relevant_ai_governance_source():
+    topic = "AI governance frameworks"
+    query = "what's the latest on AI governance frameworks?"
+    relevant_article = _web_article("https://example.com/ai-governance-report", "New AI Governance Report")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{relevant_article.title}\n{relevant_article.snippet}": [1.0, 0.0],
+        topic: [1.0, 0.0],
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [relevant_article], MagicMock(), topic=topic)
+
+    assert kept == [relevant_article]
+
+
+def test_filter_relevant_web_articles_rejects_query_relevant_but_topic_irrelevant_source():
+    """The general mechanism behind the housing regression above, without
+    the narrative: an article can match the per-turn query closely while
+    having nothing to do with the session's actual topic. Query-only
+    filtering (pre-R7A behavior) would have kept this; topic-aware
+    filtering must not."""
+    topic = "quantum computing hardware"
+    query = "tell me more about this"
+    article = _web_article("https://example.com/unrelated", "Matches The Query, Not The Topic")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": [1.0, 0.0],
+        topic: [0.0, 1.0],
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), topic=topic)
+
+    assert kept == []
+
+
+def test_filter_relevant_web_articles_rejects_topic_relevant_but_query_irrelevant_source_when_both_required():
+    """The inverse: an article that's squarely on-topic but doesn't
+    actually answer THIS question. Both dimensions are required (AND,
+    not OR) -- topic relevance alone is not sufficient to keep an
+    article that doesn't match what was actually asked."""
+    topic = "quantum computing hardware"
+    query = "what's the weather like today"
+    article = _web_article("https://example.com/on-topic", "Matches The Topic, Not The Query")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": [0.0, 1.0],
+        topic: [0.0, 1.0],
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), topic=topic)
+
+    assert kept == []
+
+
+def test_filter_relevant_web_articles_empty_topic_preserves_query_only_behavior():
+    """topic="" (the default) must reproduce the exact pre-R7A, query-
+    only outcome -- same scenario as test_filter_relevant_web_articles_
+    keeps_relevant_and_removes_stale_articles above, run explicitly with
+    topic="" this time, proving the new parameter is a true no-op when
+    omitted/empty rather than just "usually behaves the same."."""
+    query = "is jailbreaking covered?"
+    relevant = _web_article("https://relevant.com", "Jailbreak coverage")
+    stale = _web_article("https://stale.com", "Unrelated roundup")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{relevant.title}\n{relevant.snippet}": [1.0, 0.0],
+        f"{stale.title}\n{stale.snippet}": [0.0, 1.0],
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept_no_topic_arg = _filter_relevant_web_articles(query, [relevant, stale], MagicMock())
+        kept_explicit_empty_topic = _filter_relevant_web_articles(query, [relevant, stale], MagicMock(), topic="")
+
+    assert kept_no_topic_arg == [relevant]
+    assert kept_explicit_empty_topic == [relevant]
+
+
+def test_filter_relevant_web_articles_temporal_query_trap_rejects_off_topic_recent_source():
+    """chat-ux-fixes bug 2/4's own documented trap pattern (see curation_
+    chat.py's _accept_web_offer): a temporal follow-up like "what about
+    very recent developments, like in 2026?" condenses to something
+    generic enough to match almost any "recent roundup" article on query
+    alone, with the actual subject lost. Topic-aware filtering catches
+    what a temporal, subject-less query cannot."""
+    topic = "AI governance frameworks"
+    query = "what about very recent developments, like in 2026?"
+    recent_but_unrelated = WebArticle(
+        title="2026 Tech Trends Roundup",
+        url="https://example.com/2026-trends",
+        snippet="The latest developments and recent trends shaping industries in 2026.",
+        published_date="2026-01-01", source_domain="example.com",
+    )
+    vectors = {
+        query: [1.0, 0.0],
+        f"{recent_but_unrelated.title}\n{recent_but_unrelated.snippet}": [1.0, 0.0],  # matches the generic temporal query
+        topic: [0.0, 1.0],  # not actually about AI governance
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [recent_but_unrelated], MagicMock(), topic=topic)
+
+    assert kept == []
+
+
+def test_filter_relevant_web_articles_rejects_when_title_looks_on_topic_but_combined_snippet_is_not():
+    """Proves title+snippet (not title alone) is genuinely what gets
+    judged, matching this function's own existing "article text is
+    title+snippet" contract: a title reading "AI Governance in Practice"
+    would pass a title-only check, but the embedded TEXT here is the
+    combined title+snippet string, and it's this combined string's
+    vector that's off-topic -- the title alone is never embedded or
+    checked in isolation."""
+    topic = "AI governance frameworks"
+    query = "how is AI governance applied in practice?"
+    misleading_title_article = WebArticle(
+        title="AI Governance in Practice",
+        url="https://example.com/misleading-title",
+        snippet="A zoning board case study on housing permit approval timelines in suburban planning.",
+        published_date=None, source_domain="example.com",
+    )
+    combined_text = f"{misleading_title_article.title}\n{misleading_title_article.snippet}"
+    vectors = {
+        query: [1.0, 0.0],
+        topic: [1.0, 0.0],
+        combined_text: [0.0, 1.0],  # the SNIPPET's real subject dominates the combined embedding
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [misleading_title_article], MagicMock(), topic=topic)
+
+    assert kept == []
+
+
+def test_ask_ignores_chat_session_topic_in_r7a_filter_web_relevance_node_not_wired_yet():
+    """R7A adds ChatSession.topic and a topic-aware _filter_relevant_web_
+    articles, but explicitly does NOT wire topic into the live graph --
+    _filter_web_relevance_node still calls the filter with no topic
+    argument (see that node's own docstring). Proven here end-to-end
+    through ask()'s real graph: the exact same turn, run once with an
+    empty topic and once with a topic a topic-aware check WOULD reject
+    this article against, produces an IDENTICAL outcome either way --
+    carrying a topic on the session changes nothing yet."""
+    paper = _paper("p1", "AI Risk Tiering")
+    article = _web_article("https://housing.example.com/zoning", "Housing Case Study")
+    schema = _build_answer_schema(["p1"], [article.url])
+    query = "governance frameworks"
+    vectors = {
+        query: [1.0, 0.0],
+        "a topic this article would fail against": [0.0, 1.0],
+        f"{article.title}\n{article.snippet}": [1.0, 0.0],
+    }
+
+    def run(topic: str) -> dict:
+        session = ChatSession(papers=[paper], web_articles=[article], topic=topic)
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+        )
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+             patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+            return ask(session, query, client=mock_client)
+
+    result_no_topic = run(topic="")
+    result_with_rejecting_topic = run(topic="a topic this article would fail against")
+
+    no_topic_urls = [a.url for a in result_no_topic["retrieved_web_articles"]]
+    with_topic_urls = [a.url for a in result_with_rejecting_topic["retrieved_web_articles"]]
+    assert no_topic_urls == with_topic_urls == [article.url]
+    assert [a.url for a in result_no_topic["cited_web_articles"]] == [a.url for a in result_with_rejecting_topic["cited_web_articles"]] == [article.url]
+
+
+def test_ask_ignores_chat_session_topic_end_to_end():
+    """ChatSession(..., topic=...) round-trips into the graph state without
+    raising or otherwise changing behavior -- a minimal smoke test that
+    the new field is wired through ask()'s own state construction
+    cleanly (session is held by reference in QAState, per its own
+    docstring), independent of the more targeted not-wired-yet proof
+    above."""
+    session = ChatSession(papers=[], topic="some topic")
+    mock_client = MagicMock()
+
+    result = ask(session, "anything?", client=mock_client)
+
+    assert result["answerable"] is False
+    mock_client.chat.completions.parse.assert_not_called()
+
+
 def test_ask_forces_empty_citations_when_model_marks_unanswerable():
     """Defensive check: even if the model violates instructions and returns
     cited_paper_ids alongside answerable=False, ask() must not surface a
