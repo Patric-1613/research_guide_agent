@@ -2653,6 +2653,118 @@ arbitrary (not-currently-active) report version directly by
 workflow becomes a real need. None of these are started. See
 `specs/backend-backlog.md`'s R5C entry for the tracked list.
 
+### R5D — Literature Review export template polish (2026-08-07) — complete
+
+**A default document style, not a themed artifact.** R5C shipped DOCX/
+PDF export with a functional but generic layout — Word/ReportLab's own
+unmodified defaults. R5D lays a restrained "literature review" style
+on top of `render_report_docx`/`render_report_pdf`, deliberately using
+the *same* numeric decisions in both (font family, body size, line
+spacing, margins, heading color, reference hanging indent) so the two
+formats read as the same document rather than two independently-
+styled products — a small set of shared constants at the top of the
+export section (`_EXPORT_BODY_FONT_SIZE_PT`, `_EXPORT_LINE_SPACING`,
+`_EXPORT_MARGIN_INCHES`, `_EXPORT_REFERENCE_HANGING_INDENT_INCHES`,
+`_EXPORT_HEADING_COLOR_HEX`) is what enforces that parity, not just
+convention. `ReportExportDocument` itself is unchanged — this phase is
+purely a rendering-style pass on top of it.
+
+**Title block**: title, then a new "Literature Review" subtitle line
+directly beneath it, then the existing metadata lines — unchanged
+content, just a new label making the document's genre explicit at a
+glance. DOCX uses Word's own built-in `Subtitle` style (already
+present in every fresh `Document()`, previously unused here); PDF uses
+a small dedicated `ParagraphStyle`.
+
+**Typography**: Times New Roman (DOCX) / the `Times-Roman`/`Times-Bold`/
+`Times-Italic` family (PDF — ReportLab's built-in Base-14 PDF fonts,
+not embedded files, so this added no new dependency) throughout —
+title, headings, body, metadata, and references. Body text is 12pt
+with 1.15 line spacing. DOCX applies this once, on the `Normal` style,
+which cascades to every plain paragraph; PDF applies it per
+`ParagraphStyle` since Platypus has no single inherited "normal" the
+way a DOCX document does.
+
+**Heading hierarchy**: before this phase, PDF's Title and Heading1
+rendered *identically* — both 18pt Helvetica-Bold, sharing ReportLab's
+unmodified sample stylesheet untouched since R5C.2 (confirmed by
+inspection during planning, not assumed) — a real, visible gap between
+"clear section headings" and what the code actually did. Now
+explicitly sized apart (20pt Title vs 15pt Heading1) and colored a
+restrained dark navy (`#1F3864`). DOCX's Title/Heading 1 already had a
+sensible size hierarchy from Word's own built-in template, so only
+their font family and color needed changing, not their sizes.
+
+**References**: unchanged — already started on a new page since R5C.1/
+R5C.2, and hyperlinks (DOCX's low-level `w:hyperlink` workaround, PDF's
+`<a href>` markup) are preserved exactly as before. New in R5D: a
+0.5in hanging indent on every reference entry, in both formats — a
+first-class, no-workaround feature in each library
+(`paragraph_format.left_indent`/`first_line_indent` in python-docx;
+`leftIndent`/`firstLineIndent` on a `ParagraphStyle` in ReportLab).
+
+**PDF page numbers**, DOCX deliberately not. PDF gets a centered
+footer page number via ReportLab's documented `onFirstPage`/
+`onLaterPages` callback passed to `SimpleDocTemplate.build()` — the
+only first-class way Platypus exposes per-page content; this is the
+one place `render_report_pdf` touches the canvas directly, scoped
+strictly to footer text, not primary layout (the rest of the document
+stays flowable-driven, unchanged). DOCX page numbers were explicitly
+scoped out of this chunk — python-docx has no first-class API for
+them, only a hand-built field-code XML workaround of the same shape as
+the hyperlink helper already shipped, deliberately deferred rather
+than added to an already-multi-part chunk.
+
+**Margins made explicit**: 1in on all sides, both formats. DOCX's
+default is actually 1in top/bottom but 1.25in left/right (verified,
+not assumed) — now set explicitly on all four sides. PDF's margins
+were already 1in by ReportLab's own default (unchanged since R5C.2);
+R5D makes that explicit in code so it no longer silently depends on a
+library default that could change. Page size stays Letter — no locale
+signal exists to justify guessing A4, and Letter keeps parity with
+what PDF already committed to in R5C.2.
+
+**A genuinely new testing capability**: `pageCompression=0` on PDF's
+`SimpleDocTemplate` trades a slightly larger file for an uncompressed
+content stream. ReportLab compresses by default
+(`rl_config.pageCompression = 1`), which is exactly why R5C.2's own
+PDF tests could only assert structural validity (`%PDF-` prefix,
+non-trivial length) — rendered text wasn't present anywhere in the raw
+bytes to check. With compression off, section text, the "Literature
+Review" subtitle, and even the page-number footer's own `(1) Tj`/
+`(2) Tj` text-show operators are directly greppable — real
+content-level PDF tests, for the first time, with no new dependency.
+
+**Markdown is unchanged.** No metadata inconsistency was found between
+formats during inspection — all three renderers already read the
+identical `ReportExportDocument.meta` list built once by
+`build_report_export_document`, so there was nothing to reconcile, and
+the one exception that would have permitted a Markdown change did not
+apply.
+
+**Location**: `research_agent/report.py`
+(`_apply_docx_literature_review_style`, `_draw_pdf_page_number`, the
+shared `_EXPORT_*` style constants, and the restyled bodies of
+`render_report_docx`/`render_report_pdf`). No changes to
+`ReportExportDocument`, `build_report_export_document`,
+`render_report_markdown`, `report_export_filename`, the export API
+route, or any frontend file.
+
+**Validation**: `tests/test_report.py` + `tests/test_curation_api.py`
++ `tests/test_api.py` → 268 passed; full backend suite → 604 passed.
+Commit `46abd89`.
+
+**Deferred**: DOCX page numbers (same class of XML field-code
+workaround as the existing hyperlink helper, deliberately left out of
+this chunk); an A4 page-size option (no locale signal to base it on —
+would want a real user-facing setting first, itself still deferred); a
+cover/title page; a table of contents; branding or logos; multiple
+export style modes/themes; exporting evaluator/refinement details or
+chat/chat references (both remain permanently excluded from every
+export format, not just deferred — see R5A's and R5C's own exclusion
+rationale). None started. See `specs/backend-backlog.md`'s R5D entry
+for the tracked list.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

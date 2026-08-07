@@ -871,6 +871,72 @@ invented:
 - **Status**: Closed (2026-08-06). Commits `34625a2` (R5C.1),
   `d610755` (R5C.2), `34a8b7b` (R5C.3).
 
+### R5D: Literature Review export template polish
+- **Goal**: make the DOCX/PDF exports look like a proper literature-
+  review document by default — a real title block, serif body
+  typography, sensible margins/spacing, a visible title-vs-heading
+  hierarchy, and page numbers where clean to add — not plain dumped
+  text or an export of the dark app UI.
+- **Why it matters**: R5C shipped structurally correct DOCX/PDF export,
+  but both used Word/ReportLab's own unmodified default styling. PDF's
+  Title and Heading1 in particular rendered identically (both 18pt
+  Helvetica-Bold) — no visual hierarchy at all between the document
+  title and a section heading.
+- **Implementation**: shared style constants
+  (`_EXPORT_BODY_FONT_SIZE_PT`, `_EXPORT_LINE_SPACING`,
+  `_EXPORT_MARGIN_INCHES`, `_EXPORT_REFERENCE_HANGING_INDENT_INCHES`,
+  `_EXPORT_HEADING_COLOR_HEX`) in `research_agent/report.py` drive both
+  renderers so DOCX and PDF share identical formatting decisions, not
+  just similar ones. A "Literature Review" subtitle now sits under the
+  title in both (Word's own built-in `Subtitle` style for DOCX, a
+  dedicated `ParagraphStyle` for PDF). Times New Roman / Times-Roman
+  family (PDF's is ReportLab's built-in Base-14 font, no embedding, no
+  new dependency) at 12pt with 1.15 line spacing, 1in margins on all
+  sides made explicit in both (DOCX's own default was actually 1.25in
+  left/right, not 1in — verified, not assumed), a restrained dark-navy
+  (`#1F3864`) heading color, and PDF's Title/Heading1 now genuinely
+  differ in size (20pt vs 15pt). References keep their existing new-
+  page-break and preserved hyperlinks, plus a new 0.5in hanging indent
+  in both formats via each library's own first-class paragraph-format
+  support. PDF page numbers are drawn via ReportLab's documented
+  `onFirstPage`/`onLaterPages` canvas callback — the only first-class
+  way Platypus exposes per-page footer content, scoped strictly to
+  footer text. `pageCompression=0` on PDF's `SimpleDocTemplate` trades
+  a slightly larger file for an uncompressed content stream, making
+  rendered text (and the page-number footer's own operators) directly
+  greppable in raw bytes — real content-level PDF tests for the first
+  time, with no new dependency. `ReportExportDocument` and Markdown
+  output are both untouched; no metadata inconsistency was found
+  between formats to justify the one exception that would have allowed
+  a Markdown change. See `docs/architecture.md`'s "R5D — Literature
+  Review export template polish" section for the full design record.
+- **Location**: `research_agent/report.py`
+  (`_apply_docx_literature_review_style`, `_draw_pdf_page_number`, the
+  shared `_EXPORT_*` constants, restyled `render_report_docx`/
+  `render_report_pdf`). No API, frontend, or `ReportExportDocument`
+  changes.
+- **Deferred follow-ups, not done in this phase**:
+  - DOCX page numbers — python-docx has no first-class API for them,
+    only a hand-built field-code XML workaround of the same shape as
+    the hyperlink helper already shipped; deliberately left out of an
+    already-multi-part chunk rather than added on top.
+  - An A4 page-size option — no locale signal anywhere in
+    `session`/`report` to base the choice on; would want a real
+    user-facing setting first (itself still not started).
+  - A cover/title page, a table of contents, branding or logos,
+    multiple export style modes/themes — none started.
+  - Exporting evaluator/refinement details or chat/chat references —
+    both remain permanently excluded from every export format (not
+    merely deferred), matching every R5 sub-phase's own exclusion
+    rationale.
+  - Manual visual QA of the actual rendered layout — only structural/
+    content-presence checks have been machine-verified so far.
+  - Everything already listed as deferred under R5C above (evaluator/
+    chat export overlaps with this list; arbitrary-version export by
+    `version_id` without `/activate` remains untouched).
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-07). Commit `46abd89`.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
