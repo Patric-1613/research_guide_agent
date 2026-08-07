@@ -626,7 +626,7 @@ def _retrieve_node(state: QAState) -> dict:
 
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
-    topic: str = "",
+    topic: str = "", fail_open: bool = True,
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -653,24 +653,33 @@ def _filter_relevant_web_articles(
     AND the session's stable topic when a topic is given, matching the
     approved product decision that it's better to reject/abstain than
     cite a topically weak source. `topic=""` (the default) skips the
-    topic check entirely and reproduces the exact pre-R7A behavior --
-    this is what makes threading ChatSession.topic through the rest of
-    this module additive rather than a live behavior change: as of R7A,
-    every real caller (_filter_web_relevance_node below) still calls this
-    with no `topic` argument at all. Reuses the same `threshold` for both
-    dimensions rather than inventing a second, uncalibrated constant --
-    see _WEB_ARTICLE_RELEVANCE_THRESHOLD's own comment on why a new
-    number shouldn't be guessed without real data first.
+    topic check entirely and reproduces the exact pre-R7A behavior.
+    Reuses the same `threshold` for both dimensions rather than
+    inventing a second, uncalibrated constant -- see
+    _WEB_ARTICLE_RELEVANCE_THRESHOLD's own comment on why a new number
+    shouldn't be guessed without real data first.
+
+    chat-web-relevance-guardrails R7B: `fail_open` controls what happens
+    on an embedding-call exception -- `True` (the default, and what R7A's
+    live caller, _filter_web_relevance_node, still uses unchanged) keeps
+    the ORIGINAL "return `articles` unfiltered" behavior; `False` (used
+    by curation_chat.py's `_accept_web_offer` for its insertion-time
+    gate) returns `[]` instead. These two call sites need genuinely
+    different failure postures: the answer-time gate is re-filtering an
+    already-existing, previously-vetted pool every turn, so a transient
+    hiccup degrading to "less scrutiny this once" is low-stakes and
+    reversible next turn; the insertion-time gate is the ONLY thing
+    deciding whether a brand-new, never-before-seen article joins a
+    PERSISTENT pool that outlives this turn -- failing open there would
+    silently readd exactly the unfiltered-web-result risk this whole
+    guardrail exists to close. Either way this function still never
+    RAISES -- same "no-raise" contract as search_web/condense_question
+    elsewhere in this codebase -- fail_open only changes what gets
+    returned on failure, not whether failure propagates.
 
     Never mutates `articles` -- always returns a new list (or the same
     object back unchanged on the empty/fail-open paths below), so a
     caller holding onto the original list is never surprised.
-
-    Fails OPEN (returns `articles` unchanged) on any exception from the
-    embedding calls -- same defensive posture as this module's existing
-    search_web/condense_question try/except guards: a transient
-    embedding-API hiccup must degrade to today's "include everything"
-    behavior, not silently drop every web citation for the turn.
     """
     if not articles:
         return articles
@@ -689,9 +698,10 @@ def _filter_relevant_web_articles(
     except Exception:
         logger.warning(
             "_filter_relevant_web_articles: embedding call raised unexpectedly for query %r -- "
-            "falling back to the full, unfiltered article pool", query, exc_info=True,
+            "%s", query, "falling back to the full, unfiltered article pool" if fail_open else
+            "failing CLOSED (treating as no relevant articles) since fail_open=False", exc_info=True,
         )
-        return articles
+        return articles if fail_open else []
 
 
 def _filter_web_relevance_node(state: QAState) -> dict:
@@ -704,16 +714,23 @@ def _filter_web_relevance_node(state: QAState) -> dict:
     route_retrieved's own branching condition is unchanged, just now fed
     higher-quality input).
 
-    chat-web-relevance-guardrails R7A: deliberately does NOT pass
-    state["session"].topic to _filter_relevant_web_articles yet, even
-    though ChatSession now carries one -- wiring topic-anchored relevance
-    into the live graph is scoped to a later phase (R7B), not this one.
-    See ChatSession's own docstring and _filter_relevant_web_articles's
-    `topic` parameter for why omitting it here reproduces pre-R7A
-    behavior exactly.
+    chat-web-relevance-guardrails R7B: now passes state["session"].topic
+    through, so a stale/irrelevant article surviving the per-turn query
+    check alone (e.g. a drifted condensed query) can still be caught
+    against the session's own stable subject. `fail_open` is left at its
+    default (True) here deliberately -- this node re-filters an already-
+    existing, previously-vetted pool every turn, so a transient embedding
+    hiccup degrading to "less scrutiny this once" is low-stakes; see
+    _filter_relevant_web_articles's own docstring for why the insertion-
+    time gate (curation_chat.py's _accept_web_offer) needs the opposite
+    posture. `state["session"].topic` defaults to "" for any ChatSession
+    that doesn't set one, which reproduces pre-R7A/R7B query-only
+    behavior exactly -- not a special case here, just topic's own default.
     """
     query = state["standalone_query"] or state["question"]
-    filtered = _filter_relevant_web_articles(query, state["retrieved_web_articles"], state["client"])
+    filtered = _filter_relevant_web_articles(
+        query, state["retrieved_web_articles"], state["client"], topic=state["session"].topic,
+    )
     return {"retrieved_web_articles": filtered}
 
 

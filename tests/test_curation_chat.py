@@ -253,7 +253,8 @@ def test_chat_turn_accept_triggers_web_search_adds_articles_and_clears_offer():
          patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
-         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", side_effect=lambda query, articles, client, **kwargs: articles):
         result = chat_turn(session, "yes please", client=mock_client)
 
     mock_search.assert_called_once_with("what's new in 2026?")
@@ -296,7 +297,8 @@ def test_chat_turn_accept_records_a_curated_search_label_not_a_repeated_question
          patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
-         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", side_effect=lambda query, articles, client, **kwargs: articles):
         chat_turn(session, "yes please", client=mock_client)
 
     # curation-chat-metadata Phase 1: exact dict equality no longer holds
@@ -363,7 +365,8 @@ def test_chat_turn_accept_resolves_a_follow_up_fragment_into_a_standalone_search
          patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
-         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", side_effect=lambda query, articles, client, **kwargs: articles):
         chat_turn(session, "yes", client=mock_client)
 
     mock_search.assert_called_once_with("Recent invasive species sightings in the UK in 2026")
@@ -607,6 +610,216 @@ def test_chat_turn_refuses_when_session_has_not_finished_curation():
     mock_client.chat.completions.parse.assert_not_called()
 
 
+# --- chat-web-relevance-guardrails R7B: live insertion-time relevance gate ---
+#
+# Unlike the tests above (which patch qa._filter_relevant_web_articles as
+# an identity pass-through to stay focused on accept-flow mechanics),
+# these patch qa._embed_with_cache with a vectors dict so the REAL
+# topic-aware filter runs -- proving the gate is actually wired in, not
+# just that _accept_web_offer still works around it.
+
+def test_accept_web_offer_rejects_irrelevant_search_results_before_appending():
+    """The insertion-time gate: search_web found a real candidate, but
+    it's genuinely unrelated to both the search query and the session
+    topic, so it must never reach session.web_articles_added."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "governance frameworks"},
+    )
+    irrelevant_article = WebArticle(
+        title="Housing Case Study", url="https://housing.example.com/zoning",
+        snippet="A zoning policy case study.", published_date=None, source_domain="housing.example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        "governance frameworks": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{irrelevant_article.title}\n{irrelevant_article.snippet}": [0.0, 1.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered by the selected papers.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[irrelevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == []
+    assert result["new_web_articles_found"] == 0
+
+
+def test_accept_web_offer_appends_and_uses_a_genuinely_relevant_search_result():
+    """Positive-case mirror of the rejection test above, with the real
+    (unpatched) topic-aware filter running -- proves the gate doesn't
+    just reject, it actually lets a real match through."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance news"},
+    )
+    relevant_article = WebArticle(
+        title="New AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A new report on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [relevant_article.url])
+    vectors = {
+        "AI governance news": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{relevant_article.title}\n{relevant_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[relevant_article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[relevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == [relevant_article]
+    assert result["new_web_articles_found"] == 1
+    assert result["cited_web_articles"] == [relevant_article]
+
+
+def test_accept_web_offer_gives_abstention_message_when_all_search_results_fail_relevance():
+    """The transparent-abstention requirement: candidates existed, all
+    failed relevance -- the assistant's answer gets the honest suffix
+    appended (not replaced), pending_web_offer still clears (no loop),
+    and used_web_search (derived from actual citations) is False even
+    though web_search_used (a real search was attempted) is True --
+    these are two different fields and must not be conflated."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "governance frameworks"},
+    )
+    irrelevant_article = WebArticle(
+        title="Housing Case Study", url="https://housing.example.com/zoning",
+        snippet="A zoning policy case study.", published_date=None, source_domain="housing.example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        "governance frameworks": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{irrelevant_article.title}\n{irrelevant_article.snippet}": [0.0, 1.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered by the selected papers.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[irrelevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert result["answer"] == (
+        "Not covered by the selected papers. I searched the web, but I did not find sources "
+        "clearly relevant to this review topic."
+    )
+    assert session.chat_history[-1]["content"] == result["answer"]
+    assert session.web_articles_added == []
+    assert session.pending_web_offer is None
+    assert "web_offer_made" not in result  # does not immediately re-offer/loop
+    assert result["web_search_used"] is True
+    assert result["cited_web_articles"] == []
+    assert session.chat_history[-1]["used_web_search"] is False
+
+
+def test_accept_web_offer_treats_insertion_time_embedding_failure_as_no_relevant_results():
+    """fail_open=False at the insertion-time gate: an embedding failure
+    here must NOT silently admit the unfiltered search result into the
+    persistent pool the way the answer-time gate's own fail-open default
+    would -- it degrades the same way "all candidates failed relevance"
+    does (abstention message included), never a crash."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "governance frameworks"},
+    )
+    new_article = WebArticle(
+        title="Some article", url="https://example.com/a", snippet="s", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered by the selected papers.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[new_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == []
+    assert result["new_web_articles_found"] == 0
+    assert "I did not find sources clearly relevant" in result["answer"]
+
+
+def test_accept_web_offer_empty_session_topic_preserves_query_only_relevance():
+    """topic="" on the PaperPoolSession (and therefore on the ChatSession
+    _build_chat_session builds from it) must reproduce pre-R7A/R7B,
+    query-only relevance at the insertion-time gate too -- an article
+    matching the query alone, with no topic anchor to fail against, is
+    still added."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "some query"},
+    )
+    article = WebArticle(
+        title="Matches the query", url="https://example.com/a", snippet="s", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "some query": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == [article]
+    assert result["new_web_articles_found"] == 1
+
+
 # --- curation-refinement-and-auto-offer Phase 6f-3: automatic report-update offer ---
 # Same rigor as Phase 5c's web-offer testing above, including the exact
 # bug classes found there (an ignored offer must not persist; a
@@ -641,7 +854,8 @@ def test_accept_web_offer_sets_pending_report_update_when_report_becomes_stale()
          patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
-         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", side_effect=lambda query, articles, client, **kwargs: articles):
         result = chat_turn(session, "yes please", client=mock_client)
 
     assert result["report_update_offer_made"] is True
@@ -669,7 +883,8 @@ def test_accept_web_offer_does_not_offer_report_update_when_no_report_exists():
          patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
          patch("research_agent.qa.embed_and_index_papers"), \
          patch("research_agent.qa.get_chroma_collection"), \
-         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._filter_relevant_web_articles", side_effect=lambda query, articles, client, **kwargs: articles):
         result = chat_turn(session, "yes please", client=mock_client)
 
     assert "report_update_offer_made" not in result

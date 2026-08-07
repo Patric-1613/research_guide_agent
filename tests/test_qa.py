@@ -199,11 +199,13 @@ def test_filter_relevant_web_articles_keeps_relevant_and_removes_stale_articles(
 
 
 def test_filter_relevant_web_articles_returns_original_articles_on_embedding_exception():
-    """Fail OPEN, not closed -- same defensive posture as this module's
-    existing search_web/condense_question try/except guards. Also proves
-    the original list itself is returned (not a copy), matching the
-    'never mutate the original list' contract trivially since nothing
-    about it is touched on this path."""
+    """Fail OPEN, not closed -- the default (fail_open=True, unpassed
+    here, matching _filter_web_relevance_node's own live call site as of
+    R7B) -- same defensive posture as this module's existing search_web/
+    condense_question try/except guards. Also proves the original list
+    itself is returned (not a copy), matching the 'never mutate the
+    original list' contract trivially since nothing about it is touched
+    on this path."""
     articles = [_web_article("https://a.com", "A"), _web_article("https://b.com", "B")]
 
     with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
@@ -211,6 +213,21 @@ def test_filter_relevant_web_articles_returns_original_articles_on_embedding_exc
 
     assert result == articles
     assert result is articles
+
+
+def test_filter_relevant_web_articles_fail_open_false_returns_empty_list_on_embedding_exception():
+    """chat-web-relevance-guardrails R7B: fail_open=False (used by
+    curation_chat.py's insertion-time gate) inverts the default posture
+    above -- an embedding failure returns [] instead of the unfiltered
+    original list, since this is the one gate deciding whether a
+    brand-new article ever joins a persistent pool. Still never RAISES
+    -- same no-raise contract, just a different failure value."""
+    articles = [_web_article("https://a.com", "A"), _web_article("https://b.com", "B")]
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = _filter_relevant_web_articles("some query", articles, MagicMock(), fail_open=False)
+
+    assert result == []
 
 
 def test_filter_relevant_web_articles_empty_list_is_a_noop_with_no_embedding_calls():
@@ -457,45 +474,106 @@ def test_filter_relevant_web_articles_rejects_when_title_looks_on_topic_but_comb
     assert kept == []
 
 
-def test_ask_ignores_chat_session_topic_in_r7a_filter_web_relevance_node_not_wired_yet():
-    """R7A adds ChatSession.topic and a topic-aware _filter_relevant_web_
-    articles, but explicitly does NOT wire topic into the live graph --
-    _filter_web_relevance_node still calls the filter with no topic
-    argument (see that node's own docstring). Proven here end-to-end
-    through ask()'s real graph: the exact same turn, run once with an
-    empty topic and once with a topic a topic-aware check WOULD reject
-    this article against, produces an IDENTICAL outcome either way --
-    carrying a topic on the session changes nothing yet."""
+def test_ask_now_filters_stale_web_pool_by_topic():
+    """chat-web-relevance-guardrails R7B: _filter_web_relevance_node now
+    passes state["session"].topic through to _filter_relevant_web_
+    articles (R7A built the mechanism but deliberately left it
+    unwired). Proven here by running the same article/query through
+    twice: with no topic, the article survives on query-only relevance
+    (matching pre-R7B behavior exactly); with a topic the article is
+    genuinely unrelated to, it's filtered out before generate_answer
+    ever sees it -- proven both via retrieved/cited_web_articles being
+    empty AND via the article's own text being absent from the actual
+    prompt sent to the model."""
     paper = _paper("p1", "AI Risk Tiering")
     article = _web_article("https://housing.example.com/zoning", "Housing Case Study")
-    schema = _build_answer_schema(["p1"], [article.url])
     query = "governance frameworks"
+    rejecting_topic = "a topic this article would fail against"
     vectors = {
         query: [1.0, 0.0],
-        "a topic this article would fail against": [0.0, 1.0],
+        rejecting_topic: [0.0, 1.0],
         f"{article.title}\n{article.snippet}": [1.0, 0.0],
     }
 
-    def run(topic: str) -> dict:
-        session = ChatSession(papers=[paper], web_articles=[article], topic=topic)
-        mock_client = MagicMock()
-        mock_client.chat.completions.parse.return_value = _mock_parse_response(
-            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
-        )
-        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
-             patch("research_agent.qa.embed_and_index_papers"), \
-             patch("research_agent.qa.get_chroma_collection"), \
-             patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
-             patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
-            return ask(session, query, client=mock_client)
+    session_no_topic = ChatSession(papers=[paper], web_articles=[article], topic="")
+    schema_with_web = _build_answer_schema(["p1"], [article.url])
+    mock_client_no_topic = MagicMock()
+    mock_client_no_topic.chat.completions.parse.return_value = _mock_parse_response(
+        schema_with_web, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+    )
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result_no_topic = ask(session_no_topic, query, client=mock_client_no_topic)
 
-    result_no_topic = run(topic="")
-    result_with_rejecting_topic = run(topic="a topic this article would fail against")
+    assert [a.url for a in result_no_topic["retrieved_web_articles"]] == [article.url]
+    assert [a.url for a in result_no_topic["cited_web_articles"]] == [article.url]
 
-    no_topic_urls = [a.url for a in result_no_topic["retrieved_web_articles"]]
-    with_topic_urls = [a.url for a in result_with_rejecting_topic["retrieved_web_articles"]]
-    assert no_topic_urls == with_topic_urls == [article.url]
-    assert [a.url for a in result_no_topic["cited_web_articles"]] == [a.url for a in result_with_rejecting_topic["cited_web_articles"]] == [article.url]
+    session_with_topic = ChatSession(papers=[paper], web_articles=[article], topic=rejecting_topic)
+    schema_papers_only = _build_answer_schema(["p1"], None)
+    mock_client_with_topic = MagicMock()
+    mock_client_with_topic.chat.completions.parse.return_value = _mock_parse_response(
+        schema_papers_only, answerable=True, answer="Per papers, X.", cited_paper_ids=[],
+    )
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result_with_topic = ask(session_with_topic, query, client=mock_client_with_topic)
+
+    assert result_with_topic["retrieved_web_articles"] == []
+    assert result_with_topic["cited_web_articles"] == []
+    generate_messages = mock_client_with_topic.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in generate_messages)
+    assert "Housing Case Study" not in joined
+    assert article.url not in joined
+
+
+def test_ask_housing_vs_ai_governance_article_does_not_reach_generate_answer_prompt():
+    """The actual reported regression, now proven live through ask()'s
+    real graph (R7A only proved this at the _filter_relevant_web_
+    articles helper level, in isolation). A chat session about AI
+    governance must not let a housing/zoning article with merely
+    governance-adjacent vocabulary reach the model's context, even when
+    the per-turn query has drifted generic enough to match it on query
+    relevance alone."""
+    paper = _paper("p1", "AI Risk Tiering")
+    topic = "AI governance frameworks"
+    query = "what's the latest on governance frameworks?"  # drifted -- lost "AI"
+    housing_article = WebArticle(
+        title="Housing Policy Case Study: Zoning Reform",
+        url="https://example.com/housing-zoning-case-study",
+        snippet="A regulatory framework and governance case study examining local zoning policy reform.",
+        published_date=None, source_domain="example.com",
+    )
+    session = ChatSession(papers=[paper], web_articles=[housing_article], topic=topic)
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        query: [1.0, 0.0],
+        f"{housing_article.title}\n{housing_article.snippet}": [1.0, 0.0],  # matches the drifted query
+        topic: [0.0, 1.0],  # genuinely unrelated to AI governance
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per papers, X.", cited_paper_ids=[],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = ask(session, query, client=mock_client)
+
+    assert result["retrieved_web_articles"] == []
+    assert result["cited_web_articles"] == []
+    generate_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+    joined = " ".join(m["content"] for m in generate_messages)
+    assert "Housing Policy Case Study" not in joined
+    assert housing_article.url not in joined
 
 
 def test_ask_ignores_chat_session_topic_end_to_end():

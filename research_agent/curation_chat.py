@@ -102,6 +102,11 @@ def ask_in_session(
 
 _WEB_OFFER_SUFFIX = " Would you like me to search the web for more on this?"
 
+# chat-web-relevance-guardrails R7B
+_WEB_SEARCH_NO_RELEVANT_RESULTS_SUFFIX = (
+    " I searched the web, but I did not find sources clearly relevant to this review topic."
+)
+
 
 class _OfferResponseIntent(BaseModel):
     """Fixed 3-way choice, unlike qa.py's per-call dynamic Literals
@@ -213,8 +218,28 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
         # of by trusting the callee never to violate its own contract.
         logger.warning("search_web raised unexpectedly for query %r -- treating as no new results", search_query, exc_info=True)
         found = []
-    new_articles = [a for a in found if a.url not in existing_urls]
-    session.web_articles_added.extend(new_articles)
+    candidate_articles = [a for a in found if a.url not in existing_urls]
+
+    # chat-web-relevance-guardrails R7B: the insertion-time gate. Judged
+    # against search_query (the same string that actually drove the
+    # search above, not the raw per-turn `question` fragment) AND
+    # session.topic -- an article must clear both to ever join the
+    # persistent web_articles_added pool. fail_open=False here on
+    # purpose, unlike qa.py's own answer-time filter (which stays
+    # fail-open) -- see _filter_relevant_web_articles's own docstring
+    # for why these two call sites need opposite failure postures: this
+    # is the ONLY gate deciding whether a brand-new article ever enters
+    # a pool that outlives this turn, so a failure here must reject, not
+    # silently admit whatever search_web happened to return.
+    relevant_articles = qa._filter_relevant_web_articles(
+        search_query, candidate_articles, client, topic=session.topic, fail_open=False,
+    )
+    # True only when search_web genuinely returned deduped candidates
+    # AND every one of them failed relevance -- deliberately distinct
+    # from search_web finding nothing at all (candidate_articles == []),
+    # which keeps its existing, unmodified plain-refusal behavior below.
+    web_search_found_nothing_relevant = bool(candidate_articles) and not relevant_articles
+    session.web_articles_added.extend(relevant_articles)
 
     # Deliberately does NOT run back through _maybe_set_web_offer: if the
     # re-asked question is still unanswerable even with fresh web results
@@ -243,7 +268,25 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     # is guaranteed to be at [-2], never anything upstream of it.
     if len(session.chat_history) >= 2:
         session.chat_history[-2] = {"role": "user", "content": f'Search the web for: "{search_query}"'}
-    result = {**result, "web_search_used": True, "new_web_articles_found": len(new_articles)}
+    # chat-web-relevance-guardrails R7B: appended, not a replacement --
+    # if papers or an already-approved older web source still answered
+    # the question despite THIS search finding nothing relevant, the
+    # user gets both the real answer and the honest caveat, not a hard
+    # stop. Patches the same freshly-appended assistant turn the label
+    # fix above patches the user side of -- same "answer text is not
+    # final until this function returns" pattern _maybe_set_web_offer
+    # and _maybe_set_report_update_offer both already rely on. Does NOT
+    # re-set pending_web_offer (unlike _maybe_set_web_offer) -- see the
+    # "deliberately does NOT run back through _maybe_set_web_offer"
+    # comment above for why re-offering the same search would loop.
+    if web_search_found_nothing_relevant:
+        augmented_answer = result["answer"] + _WEB_SEARCH_NO_RELEVANT_RESULTS_SUFFIX
+        if session.chat_history and session.chat_history[-1]["role"] == "assistant":
+            session.chat_history[-1] = {"role": "assistant", "content": augmented_answer}
+        result = {**result, "answer": augmented_answer}
+    result = {
+        **result, "web_search_used": True, "new_web_articles_found": len(relevant_articles),
+    }
     # report-quality Phase R2D citation-revocation fix: this call only
     # ever ADDS to chat_history, never removes -- so no live_before
     # snapshot is needed, just un-revoke whatever the fresh answer
