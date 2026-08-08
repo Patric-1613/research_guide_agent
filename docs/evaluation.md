@@ -93,9 +93,19 @@ directly. A larger, per-run detail dump → `eval_results/runs/`,
 snapshot of an aggregate log → `eval_results/archive/`, tracked, with an
 entry in that directory's `README.md` explaining what it captures.
 
-## Planned evaluation architecture (E0 decision, 2026-08-08) — design only, not yet implemented
+## Planned evaluation architecture (E0 decision, 2026-08-08)
 
-Nothing below exists yet. This records the architecture decided during
+**Update (R7D.1, 2026-08-08)**: the `chat_relevance` suite below is now
+real, mock-mode only — `research_agent/evals/` (`cli.py`, `runners/`,
+`evaluators/`), `eval_data/chat_web_relevance_redteam.jsonl` (9
+hand-curated cases covering the R7A-R7C red-team scenarios), and
+`eval_results/chat_relevance_history.csv`. `--mode live` is a
+recognized flag but returns a clear "not implemented yet" error — no
+live model/web call exists anywhere in this package yet. Everything
+else in this section (the mentor-repo comparison, phase order, the
+`report_quality` suite) is still design-only, not yet implemented.
+
+This section records the architecture decided during
 E0, an audit-and-design-only checkpoint that studied a mentor repo's
 `backend/evals/` folder (github.com/cwijayasundara/document_intelligence_
 adv_v2) as a reference pattern for this project's own next eval phases

@@ -1,0 +1,4 @@
+run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
+1,2026-08-08T16:25:02.129165+00:00,33540f9,chat_relevance,mock,9,9,0,1.0,,
+2,2026-08-08T16:25:03.114694+00:00,33540f9,chat_relevance,mock,3,3,0,1.0,redteam,
+3,2026-08-08T16:25:04.328686+00:00,33540f9,chat_relevance,mock,9,9,0,1.0,,
