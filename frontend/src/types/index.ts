@@ -55,6 +55,15 @@ export interface ChatTurn {
   cited_papers?: CitedPaperOut[]
   cited_web_articles?: CitedWebArticleOut[]
   added_to_report?: boolean
+  // chat-web-relevance-guardrails R7C: only ever set (true/false) on an
+  // assistant entry that actually cited web articles -- true means a
+  // genuine answer-time relevance check ran; false means that check
+  // fail-opened, so relevance is unverified. undefined/null covers both
+  // "no web citation to judge" and "predates R7C" -- same additive
+  // convention as every field above. See ChatMessageRow's own
+  // isEligibleForAddToReport for where this gates the "Add to report"
+  // action.
+  web_relevance_verified?: boolean | null
 }
 
 export interface CurationTurnResponse {

@@ -820,6 +820,87 @@ def test_accept_web_offer_empty_session_topic_preserves_query_only_relevance():
     assert result["new_web_articles_found"] == 1
 
 
+# --- chat-web-relevance-guardrails R7C: _attach_exchange_metadata stamping ---
+# Exercised through the public chat_turn() (a plain fallback turn, not
+# accept-web-offer) since _attach_exchange_metadata itself is private and
+# already-imported test conventions in this file don't reach past
+# chat_turn()'s own public surface.
+
+def test_attach_exchange_metadata_stamps_true_for_normal_web_cited_turn():
+    papers = [_paper("p1", "RoCoFT")]
+    article = WebArticle(
+        title="Relevant article", url="https://a.com", snippet="s",
+        published_date=None, source_domain="a.com",
+    )
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[article],
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "what's new?": [1.0, 0.0],
+        "peft": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": [1.0, 0.0],
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        chat_turn(session, "what's new?", client=mock_client)
+
+    assert session.chat_history[-1]["web_relevance_verified"] is True
+
+
+def test_attach_exchange_metadata_stamps_false_for_fail_open_web_cited_turn():
+    papers = [_paper("p1", "RoCoFT")]
+    article = WebArticle(
+        title="Relevant article", url="https://a.com", snippet="s",
+        published_date=None, source_domain="a.com",
+    )
+    session = PaperPoolSession(
+        topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        web_articles_added=[article],
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        chat_turn(session, "what's new?", client=mock_client)
+
+    assert session.chat_history[-1]["web_relevance_verified"] is False
+
+
+def test_attach_exchange_metadata_does_not_stamp_when_no_web_citation():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize")
+    schema = _build_answer_schema(["p1"], None)
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per papers, X.", cited_paper_ids=["p1"],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "what is RoCoFT?", client=mock_client)
+
+    assert "web_relevance_verified" not in session.chat_history[-1]
+
+
 # --- curation-refinement-and-auto-offer Phase 6f-3: automatic report-update offer ---
 # Same rigor as Phase 5c's web-offer testing above, including the exact
 # bug classes found there (an ignored offer must not persist; a
@@ -1676,15 +1757,27 @@ def test_deleted_exchange_content_is_excluded_from_the_next_chat_turns_openai_me
 
 # --- curation-chat-add-to-report Phase 4: domain helpers ---
 
-def _web_exchange(exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False) -> list[dict]:
+def _web_exchange(
+    exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False,
+    web_relevance_verified: bool | None = None,
+) -> list[dict]:
+    """chat-web-relevance-guardrails R7C: web_relevance_verified defaults
+    to None and, when None, is left OUT of the assistant dict entirely --
+    not stored as a literal None -- matching _attach_exchange_metadata's
+    own real behavior (a legacy/pre-R7C exchange simply never has the
+    key) rather than a value select_eligible_exchanges_for_report would
+    never actually see from real code."""
+    assistant_turn = {
+        "role": "assistant", "content": f"answer for {exchange_id}", "exchange_id": exchange_id,
+        "used_web_search": True,
+        "cited_web_articles": [{"url": url, "title": title}],
+        "added_to_report": added_to_report,
+    }
+    if web_relevance_verified is not None:
+        assistant_turn["web_relevance_verified"] = web_relevance_verified
     return [
         {"role": "user", "content": f"question for {exchange_id}", "exchange_id": exchange_id},
-        {
-            "role": "assistant", "content": f"answer for {exchange_id}", "exchange_id": exchange_id,
-            "used_web_search": True,
-            "cited_web_articles": [{"url": url, "title": title}],
-            "added_to_report": added_to_report,
-        },
+        assistant_turn,
     ]
 
 
@@ -1722,6 +1815,72 @@ def test_select_eligible_exchanges_for_report_dedupes_requested_ids():
 
     assert eligible == ["ex-1"]
     assert skipped == []
+
+
+# --- chat-web-relevance-guardrails R7C: relevance-gated eligibility ---
+
+def test_select_eligible_exchanges_for_report_verified_web_turn_is_eligible():
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=_web_exchange("ex-verified", "https://a.com", web_relevance_verified=True),
+    )
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, ["ex-verified"])
+
+    assert eligible == ["ex-verified"]
+    assert skipped == []
+
+
+def test_select_eligible_exchanges_for_report_unverified_web_turn_is_skipped():
+    """The actual R7C behavior change: a turn whose web citation came
+    from a fail-open (unverified) relevance check must not be eligible,
+    even though it otherwise looks identical to an eligible one
+    (used_web_search=True, real cited_web_articles, not yet added)."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=_web_exchange("ex-unverified", "https://a.com", web_relevance_verified=False),
+    )
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, ["ex-unverified"])
+
+    assert eligible == []
+    assert skipped == ["ex-unverified"]
+
+
+def test_select_eligible_exchanges_for_report_legacy_turn_with_no_relevance_key_is_eligible():
+    """Backward compatibility: a pre-R7C exchange never had this key
+    stamped at all -- missing (not False) must remain eligible, same as
+    it was before this phase."""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=_web_exchange("ex-legacy", "https://a.com"),  # web_relevance_verified omitted entirely
+    )
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, ["ex-legacy"])
+
+    assert eligible == ["ex-legacy"]
+    assert skipped == []
+
+
+def test_select_eligible_exchanges_for_report_mixed_batch_excludes_only_the_unverified_one():
+    """Defensive/documentation test: the gate operates per-exchange, not
+    globally -- a batch containing both a verified and an unverified
+    exchange partitions them independently. (A single EXCHANGE can't
+    itself be "mixed" under R7B's all-or-nothing filter mechanics -- see
+    the R7C design record -- so this proves the aggregation logic across
+    exchanges, not a per-article split within one.)"""
+    session = PaperPoolSession(
+        topic="peft", stage="synthesize",
+        chat_history=[
+            *_web_exchange("ex-verified", "https://a.com", web_relevance_verified=True),
+            *_web_exchange("ex-unverified", "https://b.com", web_relevance_verified=False),
+        ],
+    )
+
+    eligible, skipped = select_eligible_exchanges_for_report(session, ["ex-verified", "ex-unverified"])
+
+    assert eligible == ["ex-verified"]
+    assert skipped == ["ex-unverified"]
 
 
 def test_cited_web_article_urls_for_exchanges_unions_and_dedupes():

@@ -8,6 +8,14 @@ import { EditQuestionDialog } from '../shared/EditQuestionDialog'
 // this row's own menu item and ChatModePanel's bulk-button gate, so the
 // two can never disagree. Assistant-only, real exchange_id, actually
 // used web sources, not already added.
+//
+// chat-web-relevance-guardrails R7C: additionally requires
+// web_relevance_verified !== false -- undefined/null (no web citation
+// to judge, or a turn predating R7C) stays eligible for backward
+// compatibility; only an explicit false (the citation came from a
+// fail-open, unverified relevance check) disables it. Mirrors the
+// backend's own select_eligible_exchanges_for_report gate exactly, so
+// this pre-check and the server's real enforcement never disagree.
 export function isEligibleForAddToReport(turn: ChatTurn): boolean {
   return (
     turn.role === 'assistant'
@@ -15,6 +23,7 @@ export function isEligibleForAddToReport(turn: ChatTurn): boolean {
     && !!turn.used_web_search
     && (turn.cited_web_articles?.length ?? 0) > 0
     && !turn.added_to_report
+    && turn.web_relevance_verified !== false
   )
 }
 

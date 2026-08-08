@@ -535,6 +535,12 @@ class QAState(TypedDict):
     standalone_query: str | None
     retrieved_papers: list[Paper]
     retrieved_web_articles: list[WebArticle]
+    # chat-web-relevance-guardrails R7C: set by _filter_web_relevance_node,
+    # defaults to True in ask()'s own initial_state -- a turn that never
+    # reaches that node (non_substantive/no_sources early exits) trivially
+    # has no web citations either, so the default's exact value there is
+    # moot, not a meaningful claim.
+    web_relevance_verified: bool
     result: dict
 
 
@@ -626,7 +632,7 @@ def _retrieve_node(state: QAState) -> dict:
 
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
-    topic: str = "", fail_open: bool = True,
+    topic: str = "", fail_open: bool = True, outcome: dict | None = None,
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -680,8 +686,24 @@ def _filter_relevant_web_articles(
     Never mutates `articles` -- always returns a new list (or the same
     object back unchanged on the empty/fail-open paths below), so a
     caller holding onto the original list is never surprised.
+
+    chat-web-relevance-guardrails R7C: `outcome`, if given a dict, gets
+    `outcome["fail_open_triggered"]` set on every return path -- `False`
+    on a genuine, completed check (including the trivial empty-input
+    case, where there was nothing to fail on), `True` only when the
+    except branch actually fired. This is how curation_chat.py's
+    report-promotion gate later learns whether a turn's web citations
+    came from a REAL relevance check or from this function degrading
+    under failure -- explicit and visible at the call site, rather than
+    inferred from return-value identity (e.g. "is the returned list the
+    same object as the input"), which would work today but silently
+    depend on an internal implementation detail (kept is always a fresh
+    list on the success path) that a future refactor could break
+    without anyone noticing report-eligibility depended on it.
     """
     if not articles:
+        if outcome is not None:
+            outcome["fail_open_triggered"] = False
         return articles
     try:
         query_vector = _embed_with_cache(client, query)
@@ -694,6 +716,8 @@ def _filter_relevant_web_articles(
             if topic_vector is not None and _cosine_similarity(topic_vector, article_vector) < threshold:
                 continue
             kept.append(article)
+        if outcome is not None:
+            outcome["fail_open_triggered"] = False
         return kept
     except Exception:
         logger.warning(
@@ -701,6 +725,8 @@ def _filter_relevant_web_articles(
             "%s", query, "falling back to the full, unfiltered article pool" if fail_open else
             "failing CLOSED (treating as no relevant articles) since fail_open=False", exc_info=True,
         )
+        if outcome is not None:
+            outcome["fail_open_triggered"] = True
         return articles if fail_open else []
 
 
@@ -726,12 +752,25 @@ def _filter_web_relevance_node(state: QAState) -> dict:
     posture. `state["session"].topic` defaults to "" for any ChatSession
     that doesn't set one, which reproduces pre-R7A/R7B query-only
     behavior exactly -- not a special case here, just topic's own default.
+
+    chat-web-relevance-guardrails R7C: also records whether THIS turn's
+    filtering was a genuine check or a fail-open fallback, via the
+    `outcome` dict -- surfaced as web_relevance_verified in QAState/the
+    final result, and from there stamped onto the chat exchange by
+    curation_chat.py::_attach_exchange_metadata for report-promotion
+    gating (select_eligible_exchanges_for_report). Purely observational:
+    doesn't change what gets filtered or how, just reports what already
+    happened.
     """
     query = state["standalone_query"] or state["question"]
+    outcome: dict = {}
     filtered = _filter_relevant_web_articles(
-        query, state["retrieved_web_articles"], state["client"], topic=state["session"].topic,
+        query, state["retrieved_web_articles"], state["client"], topic=state["session"].topic, outcome=outcome,
     )
-    return {"retrieved_web_articles": filtered}
+    return {
+        "retrieved_web_articles": filtered,
+        "web_relevance_verified": not outcome.get("fail_open_triggered", False),
+    }
 
 
 def _route_retrieved(state: QAState) -> str:
@@ -833,6 +872,12 @@ def _generate_node(state: QAState) -> dict:
             "retrieved_papers": retrieved_papers,
             "cited_web_articles": cited_web_articles,
             "retrieved_web_articles": retrieved_web_articles,
+            # chat-web-relevance-guardrails R7C: whether THIS turn's web
+            # citations came from a genuine relevance check (see
+            # _filter_web_relevance_node) -- curation_chat.py stamps this
+            # onto the chat exchange for report-promotion gating. Moot
+            # (but harmless) when cited_web_articles is empty.
+            "web_relevance_verified": state["web_relevance_verified"],
         },
     }
 
@@ -951,6 +996,7 @@ def ask(
         "standalone_query": None,
         "retrieved_papers": [],
         "retrieved_web_articles": [],
+        "web_relevance_verified": True,
         "result": {},
     }
     final_state = _DEFAULT_GRAPH.invoke(initial_state)

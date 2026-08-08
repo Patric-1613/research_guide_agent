@@ -492,6 +492,16 @@ def _attach_exchange_metadata(session: PaperPoolSession, result: dict) -> None:
     cited_papers = result.get("cited_papers") or []
     assistant_turn["cited_papers"] = [{"paper_id": p.paper_id, "title": p.title} for p in cited_papers]
     assistant_turn["added_to_report"] = False
+    # chat-web-relevance-guardrails R7C: only stamped when there's a real
+    # web citation to judge -- a turn with no cited_web_articles has
+    # nothing for report-promotion eligibility to gate on this basis, so
+    # leaving the key entirely absent (same treatment a pre-R7C turn
+    # gets) avoids a meaningless True/False on a citation-less turn.
+    # qa.ask()'s result carries web_relevance_verified on every code path
+    # that can produce a citation; .get(..., False) is a defensive
+    # fallback, not the expected case.
+    if cited_web_articles:
+        assistant_turn["web_relevance_verified"] = result.get("web_relevance_verified", False)
 
 
 def chat_turn(
@@ -788,6 +798,17 @@ def select_eligible_exchanges_for_report(session: PaperPoolSession, exchange_ids
     added_to_report=True. Everything else -- unknown id, a paper-only
     answer, or an already-added one -- lands in skipped, not an error;
     the caller decides whether an empty eligible list is itself an error.
+
+    chat-web-relevance-guardrails R7C: additionally excludes a turn whose
+    web citations came from a fail-open (unverified) relevance check --
+    `turn.get("web_relevance_verified", True) is not False`, so a
+    missing key (pre-R7C turn, or a turn that never stamped one because
+    it cited no web articles -- moot either way since the mechanical
+    checks above already require cited_web_articles) is treated as
+    eligible for backward compatibility, and only an EXPLICIT stored
+    `False` excludes. This is the one place that stored judgment is
+    actually enforced -- see _attach_exchange_metadata for where it's
+    recorded.
     """
     assistant_by_id = _assistant_entries_by_exchange_id(session)
     seen: set[str] = set()
@@ -803,6 +824,7 @@ def select_eligible_exchanges_for_report(session: PaperPoolSession, exchange_ids
             and turn.get("used_web_search")
             and turn.get("cited_web_articles")
             and not turn.get("added_to_report")
+            and turn.get("web_relevance_verified", True) is not False
         ):
             eligible.append(exchange_id)
         else:

@@ -746,6 +746,75 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     }
   })
 
+  // chat-web-relevance-guardrails R7C: same 2-entry (user, assistant)
+  // shape as mixedEligibilityState's own ex-1 pair -- index [1] is the
+  // assistant message's own menu button, same convention the tests
+  // above already establish.
+  function relevanceState(webRelevanceVerified: boolean | null | undefined): CurationStateResponse {
+    return baseState({
+      chat_history: [
+        { role: 'user', content: 'anything recent?', exchange_id: 'ex-1' },
+        {
+          role: 'assistant', content: 'Per [Web 1], ...', exchange_id: 'ex-1',
+          used_web_search: true, cited_web_articles: [{ url: 'https://a.com', title: 'A' }], added_to_report: false,
+          web_relevance_verified: webRelevanceVerified,
+        },
+      ],
+    })
+  }
+
+  it('Add to report is disabled for a web-backed answer whose relevance check failed open (verified === false)', async () => {
+    const user = userEvent.setup()
+    render(
+      <ChatModePanel
+        state={relevanceState(false)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getAllByTestId('message-menu-button')[1])
+    expect(screen.getByTestId('message-menu-add-to-report')).toBeDisabled()
+  })
+
+  it('Add to report stays enabled for a web-backed answer with a genuinely verified relevance check', async () => {
+    const user = userEvent.setup()
+    render(
+      <ChatModePanel
+        state={relevanceState(true)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getAllByTestId('message-menu-button')[1])
+    expect(screen.getByTestId('message-menu-add-to-report')).toBeEnabled()
+  })
+
+  it('Add to report stays enabled for a legacy web-backed answer with no relevance metadata (undefined)', async () => {
+    const user = userEvent.setup()
+    render(
+      <ChatModePanel
+        state={relevanceState(undefined)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getAllByTestId('message-menu-button')[1])
+    expect(screen.getByTestId('message-menu-add-to-report')).toBeEnabled()
+  })
+
+  it('Add to report stays enabled for a legacy web-backed answer with relevance metadata explicitly null', async () => {
+    const user = userEvent.setup()
+    render(
+      <ChatModePanel
+        state={relevanceState(null)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getAllByTestId('message-menu-button')[1])
+    expect(screen.getByTestId('message-menu-add-to-report')).toBeEnabled()
+  })
+
   it('clicking Add to report calls onAddExchangesToReport with just that exchange, no confirmation prompt', async () => {
     const user = userEvent.setup()
     const confirmSpy = vi.spyOn(window, 'confirm')

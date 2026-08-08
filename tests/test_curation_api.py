@@ -1675,16 +1675,20 @@ def test_curation_chat_answers_and_persists_history_across_a_separate_get_reques
     # report-quality Phase R3.2 Chunk 1: cited_papers is the newest such
     # additive field -- also defaults to [] for this exact old-shape
     # fixture, same as cited_web_articles already does.
+    #
+    # chat-web-relevance-guardrails R7C: web_relevance_verified is the
+    # newest such additive field -- defaults to None (not True/False)
+    # for this exact old-shape fixture, same backward-compat convention.
     assert state_resp.json()["chat_history"] == [
         {
             "role": "user", "content": "what does paper 0 say?",
             "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "cited_papers": [],
-            "added_to_report": False,
+            "added_to_report": False, "web_relevance_verified": None,
         },
         {
             "role": "assistant", "content": "Per [Paper 1], X is true.",
             "exchange_id": None, "used_web_search": False, "cited_web_articles": [], "cited_papers": [],
-            "added_to_report": False,
+            "added_to_report": False, "web_relevance_verified": None,
         },
     ]
 
@@ -1860,15 +1864,25 @@ def test_curation_chat_delete_never_touches_pre_phase_1_entries_with_no_exchange
 
 # --- /curation/{id}/chat/exchanges/add-to-report (curation-chat-add-to-report Phase 4) ---
 
-def _fake_chat_turn_with_web_source(exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False):
+def _fake_chat_turn_with_web_source(
+    exchange_id: str, url: str, title: str = "Article", added_to_report: bool = False,
+    web_relevance_verified: bool | None = None,
+):
     def _fake(session, message, client=None, **kwargs):
         answer = f"answer to {message!r}"
         session.chat_history.append({"role": "user", "content": message, "exchange_id": exchange_id})
-        session.chat_history.append({
+        assistant_turn = {
             "role": "assistant", "content": answer, "exchange_id": exchange_id,
             "used_web_search": True, "cited_web_articles": [{"url": url, "title": title}],
             "added_to_report": added_to_report,
-        })
+        }
+        # chat-web-relevance-guardrails R7C: omitted entirely when None,
+        # matching _attach_exchange_metadata's real behavior for a
+        # citation-less turn or a pre-R7C entry -- not stored as a
+        # literal None.
+        if web_relevance_verified is not None:
+            assistant_turn["web_relevance_verified"] = web_relevance_verified
+        session.chat_history.append(assistant_turn)
         # Real chat_turn() can only ever cite a web article that's already
         # in session.web_articles_added (qa.ask() retrieves from exactly
         # that list) -- this fake mirrors that so the article is actually
@@ -2119,6 +2133,31 @@ def test_curation_chat_add_to_report_ineligible_entries_return_400():
             resp = client.post(
                 f"/curation/{session_id}/chat/exchanges/add-to-report",
                 json={"exchange_ids": ["ex-paper-only", "does-not-exist"]},
+            )
+
+    assert resp.status_code == 400
+    mock_regen.assert_not_called()
+
+
+def test_curation_chat_add_to_report_skips_relevance_unverified_exchange():
+    """chat-web-relevance-guardrails R7C: an exchange that otherwise
+    looks eligible (real web citation, not yet added) but whose citation
+    came from a fail-open relevance check must be skipped, not promoted
+    -- proven at the real HTTP boundary, not just the domain-helper
+    level test_curation_chat.py already covers."""
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+        _with_existing_report(client, session_id)
+
+        with patch.object(
+            api, "chat_turn",
+            side_effect=_fake_chat_turn_with_web_source("ex-unverified", "https://a.com", web_relevance_verified=False),
+        ):
+            client.post(f"/curation/{session_id}/chat", json={"message": "q1"})
+
+        with patch.object(api, "regenerate_report_with_approved_web_sources") as mock_regen:
+            resp = client.post(
+                f"/curation/{session_id}/chat/exchanges/add-to-report", json={"exchange_ids": ["ex-unverified"]},
             )
 
     assert resp.status_code == 400

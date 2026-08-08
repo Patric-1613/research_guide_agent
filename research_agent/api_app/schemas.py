@@ -150,6 +150,16 @@ class ChatTurn(BaseModel):
     # Always False in Phase 1 -- no code path sets this True yet (that's a
     # later phase's "Add to report" action).
     added_to_report: bool = False
+    # chat-web-relevance-guardrails R7C: only ever set (True or False) on
+    # an assistant entry that actually cited web articles -- True means a
+    # genuine answer-time relevance check ran; False means that check
+    # fail-opened, so relevance is unverified. None/absent covers both "no
+    # web citation to judge" and "predates R7C" -- same additive/defaulted
+    # convention as every field above, and the exact signal curation_
+    # chat.py's select_eligible_exchanges_for_report gates report-
+    # promotion eligibility on (missing/None is treated as eligible;
+    # explicit False is not).
+    web_relevance_verified: bool | None = None
 
 
 class ChatRequest(BaseModel):

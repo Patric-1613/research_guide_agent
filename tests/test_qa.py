@@ -238,6 +238,62 @@ def test_filter_relevant_web_articles_empty_list_is_a_noop_with_no_embedding_cal
     mock_embed.assert_not_called()
 
 
+# --- chat-web-relevance-guardrails R7C: outcome recording ---
+
+def test_filter_relevant_web_articles_outcome_records_false_on_normal_success():
+    """A genuine, completed check records fail_open_triggered=False --
+    even one that keeps everything it was given (nothing to distinguish
+    "ran and passed" from "ran and happened to keep all of it" here;
+    both are a real, executed check)."""
+    query = "is jailbreaking covered?"
+    relevant = _web_article("https://relevant.com", "Jailbreak coverage")
+    vectors = {
+        query: [1.0, 0.0],
+        f"{relevant.title}\n{relevant.snippet}": [1.0, 0.0],
+    }
+    outcome: dict = {}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(query, [relevant], MagicMock(), outcome=outcome)
+
+    assert outcome == {"fail_open_triggered": False}
+
+
+def test_filter_relevant_web_articles_outcome_records_false_on_empty_input():
+    """The trivial empty-input early return also records False -- there
+    was nothing to fail on, so it's vacuously "not fail-open," not
+    "unknown."""
+    outcome: dict = {}
+
+    with patch("research_agent.qa._embed_with_cache") as mock_embed:
+        _filter_relevant_web_articles("some query", [], MagicMock(), outcome=outcome)
+
+    assert outcome == {"fail_open_triggered": False}
+    mock_embed.assert_not_called()
+
+
+def test_filter_relevant_web_articles_outcome_records_true_on_fail_open_exception():
+    articles = [_web_article("https://a.com", "A")]
+    outcome: dict = {}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = _filter_relevant_web_articles("some query", articles, MagicMock(), outcome=outcome)
+
+    assert outcome == {"fail_open_triggered": True}
+    assert result == articles  # fail_open=True default still returns the unfiltered list
+
+
+def test_filter_relevant_web_articles_outcome_records_true_on_fail_closed_exception():
+    articles = [_web_article("https://a.com", "A")]
+    outcome: dict = {}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = _filter_relevant_web_articles("some query", articles, MagicMock(), fail_open=False, outcome=outcome)
+
+    assert outcome == {"fail_open_triggered": True}
+    assert result == []
+
+
 def test_ask_stale_web_pool_filtered_out_is_not_passed_into_the_model_prompt_for_unrelated_question():
     """End-to-end through ask()'s real graph (filter_web_relevance patched
     at the seam, not the embedding math -- that's covered by the direct
@@ -574,6 +630,61 @@ def test_ask_housing_vs_ai_governance_article_does_not_reach_generate_answer_pro
     joined = " ".join(m["content"] for m in generate_messages)
     assert "Housing Policy Case Study" not in joined
     assert housing_article.url not in joined
+
+
+def test_ask_result_carries_web_relevance_verified_true_on_genuine_filter_run():
+    """chat-web-relevance-guardrails R7C: ask()'s result surfaces
+    web_relevance_verified end-to-end -- True when the answer-time
+    filter genuinely ran this turn (curation_chat.py stamps this onto
+    the chat exchange for report-promotion gating)."""
+    paper = _paper("p1", "AI Risk Tiering")
+    article = _web_article("https://relevant.com", "Relevant article")
+    schema = _build_answer_schema(["p1"], [article.url])
+    query = "some query"
+    vectors = {
+        query: [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": [1.0, 0.0],
+    }
+    session = ChatSession(papers=[paper], web_articles=[article])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = ask(session, query, client=mock_client)
+
+    assert result["web_relevance_verified"] is True
+
+
+def test_ask_result_carries_web_relevance_verified_false_on_fail_open():
+    """The answer-time gate's own fail-open default still lets a cited
+    article through (unchanged R7B behavior) -- but the turn's citation
+    is now correctly flagged as unverified rather than silently
+    indistinguishable from a genuine pass."""
+    paper = _paper("p1", "AI Risk Tiering")
+    article = _web_article("https://relevant.com", "Relevant article")
+    schema = _build_answer_schema(["p1"], [article.url])
+    session = ChatSession(papers=[paper], web_articles=[article])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parse_response(
+        schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+    )
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(paper, 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        result = ask(session, "some query", client=mock_client)
+
+    assert result["web_relevance_verified"] is False
+    assert [a.url for a in result["retrieved_web_articles"]] == [article.url]  # fail-open still let it through
+    assert [a.url for a in result["cited_web_articles"]] == [article.url]
 
 
 def test_ask_ignores_chat_session_topic_end_to_end():
