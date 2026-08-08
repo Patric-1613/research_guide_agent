@@ -2914,6 +2914,17 @@ Neo4j or any graph-database work of any kind — never proposed, not
 part of this arc. See `specs/backend-backlog.md`'s R7 entry for the
 tracked deferred list, including R7D (eval docs/metrics formalization).
 
+**E0 (2026-08-08)**: the evaluation architecture R7D and R6 will both
+build on was decided as its own design-only checkpoint — a small future
+`research_agent/evals/` code package (`cli.py`/`runners/`/`evaluators/`),
+fixtures staying in `eval_data/`, results staying in `eval_results/` as
+one new CSV per suite, mock-by-default/live-opt-in runners, and an
+explicit list of mentor-repo patterns adopted vs. deliberately not
+copied (Postgres persistence, LangSmith, a dashboard route, synthetic
+data generation, automated regression harvesting). No eval code exists
+yet. See `docs/evaluation.md`'s "Planned evaluation architecture" section
+and `specs/backend-backlog.md`'s E0 entry for the full record.
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```

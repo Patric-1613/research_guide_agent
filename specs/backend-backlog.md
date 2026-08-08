@@ -1026,6 +1026,87 @@ invented:
 - **Status**: Closed (2026-08-08). Commits `f6f1f93` (R7A), `9511b33`
   (R7B), `f0d04bc` (R7C).
 
+### E0: evaluation architecture decision checkpoint
+- **Goal**: decide the shape of this project's next eval work (R7D,
+  R6) before building any of it — audit a mentor repo's `backend/evals/`
+  folder as a reference pattern, adopt what fits this project, and
+  explicitly record what's deliberately not being copied, so the
+  distinction doesn't get blurred once implementation starts.
+- **Why it matters**: this project already has two working, documented
+  eval harnesses (`scripts/eval_retrieval.py`, `scripts/ragas_eval.py`)
+  with their own established artifact conventions (`docs/
+  evaluation.md`). A new eval surface for chat/web relevance (R7D) and
+  report quality (R6) needs a shape that extends those conventions
+  rather than fragmenting them — and needs deciding once, deliberately,
+  rather than improvised chunk-by-chunk the way an earlier attempt at
+  this (`specs/migration-plan.md`'s own original Phase 6) was left
+  half-finished.
+- **Decision**: studied github.com/cwijayasundara/document_intelligence_
+  adv_v2's `backend/evals/` folder in full (structure, eval-case format,
+  runner/CLI pattern, evaluator layers, result persistence). Decided:
+  1. A small future `research_agent/evals/` code package —
+     `cli.py`, `runners/`, `evaluators/`, shared base-runner utilities.
+     Not a new idea — matches `specs/migration-plan.md`'s original,
+     never-executed Phase 6 shape almost exactly; the mentor repo is
+     independent validation of that original plan, not a new direction.
+  2. Fixtures stay in `eval_data/`, not moved into `research_agent/
+     evals/` — one canonical location for eval input data, old and new
+     alike.
+  3. Results stay in `eval_results/`, one new CSV per new suite
+     (`chat_relevance_history.csv`, `report_quality_history.csv`),
+     never appended into the existing `retrieval_history.csv`/
+     `history.csv`; per-run detail follows the existing `eval_results/
+     runs/` gitignored convention.
+  4. `scripts/eval_retrieval.py`/`scripts/ragas_eval.py` are unchanged
+     — not wrapped or migrated into the new package in this phase.
+  5. Planned CLI shape: `python -m research_agent.evals.cli
+     list-suites`, `run --suite <name> --mode mock|live [--subset N]
+     [--tags ...]`.
+  6. `--mode` defaults to `mock` (offline) — `live` is always an
+     explicit, opt-in flag.
+  7. pytest and eval runners stay separate: pytest proves deterministic
+     *code* behavior (mocked, zero API key, part of the dev loop); eval
+     runners measure *product/agent* behavior over scenarios (separate,
+     manual, cost-aware) — the same line `docs/evaluation.md` already
+     draws for the two existing harnesses, carried forward.
+  8. Borrowed from the mentor repo: the JSONL example format, the
+     evaluator function shape (`(prediction, expected) -> {"key",
+     "score", "comment"}`), `--subset`/`--tags`, a deterministic +
+     LLM-as-judge evaluator split, the red-team-suite concept, and a
+     consolidated result-summary table.
+  9. Deliberately not copied yet: Postgres-backed eval persistence (no
+     DB engine beyond SQLite exists here); LangSmith as a dataset/
+     experiment system of record (present in `uv.lock` only as a
+     transitive pin, nothing in this project's own code imports it); a
+     FastAPI `/evals` dashboard (downstream of the Postgres call above);
+     a synthetic LLM-generated dataset builder (this project has
+     consistently preferred small, hand-verified fixture sets at its
+     current scale); automated regression harvesting from production
+     correction memory (no persistent memory store exists to harvest
+     from — R7A already applied the same underlying principle by hand,
+     building its entire red-team set from one real reported incident).
+  10. Phase order: **R7D** (chat/web retrieval eval foundation) →
+      **R6** (report quality eval foundation) → later (threshold
+      calibration, an LLM gray-zone judge, Langfuse metrics for the new
+      relevance signals, trend reports/a dashboard).
+  See `docs/evaluation.md`'s "Planned evaluation architecture" section
+  for the same record in workflow-doc form, and `docs/architecture.md`'s
+  R7 section for the short cross-reference.
+- **Why R7D before R6**: R7D targets a real failure already observed in
+  the app (the housing-vs-AI-governance citation, see the R7 entry
+  above) — a concrete, already-diagnosed problem to measure against.
+  R6 follows because report quality should be measured once report
+  generation/export/refinement are already stable, which they now are
+  (R2C through R5D complete).
+- **Location**: docs/spec only — `docs/evaluation.md`,
+  `docs/architecture.md`. No code, dependency, or eval run.
+- **Deferred**: everything under decision points 1–6 above is design
+  only — no `research_agent/evals/` package, no new CLI, no new eval_data/
+  eval_results files exist yet. R7D is the next phase that actually
+  builds any of it.
+- **Priority**: n/a — done (decision recorded).
+- **Status**: Closed (2026-08-08).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
