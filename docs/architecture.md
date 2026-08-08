@@ -2765,7 +2765,7 @@ export format, not just deferred — see R5A's and R5C's own exclusion
 rationale). None started. See `specs/backend-backlog.md`'s R5D entry
 for the tracked list.
 
-### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-08) — R7A/R7B/R7C complete
+### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-08) — R7A/R7B/R7C/R7D.1/R7D.2 complete
 
 **Why**: a real chat session about AI governance retrieved and cited a
 topically unrelated web source (a housing/zoning case study whose text
@@ -2904,15 +2904,16 @@ R7C; a live threshold calibration pass —
 `_WEB_ARTICLE_RELEVANCE_THRESHOLD` is unchanged from its original,
 explicitly-uncalibrated 0.25 value the whole way through this arc;
 Langfuse trace metadata for any of the new relevance signals (query-
-topic preservation, source-relevance pass rate, etc. — all proposed
-during R7 planning, none wired up); gating `agent.py`'s one-shot
-`search_web_tool` path, which still calls the same underlying
-`search_web()` with no relevance check at all (the reported bug was
-curation-chat-specific; extending the shared filter to the one-shot
-agent path is cheap if wanted later, but wasn't in scope here); and no
-Neo4j or any graph-database work of any kind — never proposed, not
-part of this arc. See `specs/backend-backlog.md`'s R7 entry for the
-tracked deferred list, including R7D (eval docs/metrics formalization).
+topic preservation, source-relevance pass rate, etc. — proposed during
+R7 planning, still not wired up — R7D built an eval *harness* for the
+relevance guardrail itself, not the Langfuse metrics); gating
+`agent.py`'s one-shot `search_web_tool` path, which still calls the
+same underlying `search_web()` with no relevance check at all (the
+reported bug was curation-chat-specific; extending the shared filter to
+the one-shot agent path is cheap if wanted later, but wasn't in scope
+here); and no Neo4j or any graph-database work of any kind — never
+proposed, not part of this arc. See `specs/backend-backlog.md`'s R7
+entry for the tracked deferred list.
 
 **E0 (2026-08-08)**: the evaluation architecture R7D and R6 will both
 build on was decided as its own design-only checkpoint — a small future
@@ -2921,9 +2922,50 @@ fixtures staying in `eval_data/`, results staying in `eval_results/` as
 one new CSV per suite, mock-by-default/live-opt-in runners, and an
 explicit list of mentor-repo patterns adopted vs. deliberately not
 copied (Postgres persistence, LangSmith, a dashboard route, synthetic
-data generation, automated regression harvesting). No eval code exists
-yet. See `docs/evaluation.md`'s "Planned evaluation architecture" section
-and `specs/backend-backlog.md`'s E0 entry for the full record.
+data generation, automated regression harvesting). See
+`docs/evaluation.md`'s "Planned evaluation architecture" section and
+`specs/backend-backlog.md`'s E0 entry for the full record.
+
+**R7D.1/R7D.2 — chat/web relevance eval foundation, mock + opt-in live
+(2026-08-08).** Built the `research_agent/evals/` package E0 designed:
+`cli.py` (`list-suites`, `run --suite --mode --subset --tags --note`),
+`runners/_base.py` (JSONL loading with the mentor-repo-inspired
+metadata/`expected_`-prefix input-output split, the shared predict →
+evaluate → aggregate loop, CSV append), `evaluators/relevance.py`
+(`chat_relevance_correctness`), and the first suite, `chat_relevance`,
+against `eval_data/chat_web_relevance_redteam.jsonl` (9 hand-curated
+cases covering the R7A–R7C red-team scenarios: topic drift, query-only/
+topic-only mismatches, a temporal "latest" trap, stale web-pool reuse,
+an empty candidate pool, and fail-open/fail-closed embedding-failure
+behavior).
+
+Both modes call the real, unmodified `_filter_relevant_web_articles` —
+never a reimplementation of the relevance logic. **Mock mode (R7D.1,
+default)** patches `_embed_with_cache` with small, fixed vectors keyed
+off each fixture case's own `mock_relevance` label, so the suite is a
+genuine regression test of the real threshold/AND-of-query-and-topic
+decision, deterministic and network-free. **Live mode (R7D.2, opt-in
+via `--mode live`)** constructs a real `OpenAI()` client (same
+construction `qa.ask()` itself uses) and lets the real embedding API
+decide relevance; it never runs by default, fails cleanly with no
+traceback if credentials are missing (raises `LiveModeSetupError`,
+caught by the CLI), and prints a cost warning before running. Two
+fixture cases that simulate an embedding-API exception are marked
+`mock_only: true` and are skipped (not forced) in live mode, with a
+clear per-example reason recorded. Every run appends a summary row to
+`eval_results/chat_relevance_history.csv`, kept to the same 11-column
+header R7D.1 established — a live run's skipped-case count and mean
+latency are folded into the free-text `note` column rather than adding
+new columns, so mock and live rows always read against one stable
+header.
+
+**Validation**: `tests/test_evals_chat_relevance.py` → 26 passed
+(every live-mode test patches `OpenAI`/`_embed_with_cache`, so no test
+run ever makes a real API call); full backend suite → 660 passed.
+Commits `69f07be` (R7D.1, mock mode) and `5c95bec` (R7D.2, live mode).
+See `docs/evaluation.md`'s "Planned evaluation architecture" section
+for the CLI shape and artifact policy, and `specs/backend-backlog.md`'s
+R7D entry for the full record.
 
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 

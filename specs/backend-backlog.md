@@ -1003,13 +1003,14 @@ invented:
   `frontend/src/types/index.ts`,
   `frontend/src/components/TurnFeed/ChatMessageRow.tsx`.
 - **Deferred follow-ups, not done in this arc**:
-  - **R7D**: formalizing the red-team fixture set as a tracked eval
-    suite, wiring the proposed metrics (query-topic preservation,
-    source-relevance pass rate, citation-support correctness, false-
-    positive web-offer rate, irrelevant-source-blocked count, answer-
-    abstention correctness) into Langfuse trace metadata, and an
-    `docs/evaluation.md` section documenting this arc the way the
-    existing two harnesses are documented. Not started.
+  - ~~**R7D**: formalizing the red-team fixture set as a tracked eval
+    suite~~ — done, see the dedicated **R7D** entry below. Wiring the
+    remaining proposed metrics (query-topic preservation, source-
+    relevance pass rate, citation-support correctness, false-positive
+    web-offer rate, irrelevant-source-blocked count, answer-abstention
+    correctness) into Langfuse trace metadata is still not started —
+    R7D built an eval *harness* for the relevance guardrail, not these
+    Langfuse signals.
   - An LLM binary relevance judgment for borderline embedding scores
     (a "gray zone" secondary check) — not added; the guardrail is
     embedding-similarity-only throughout R7A–R7C.
@@ -1022,9 +1023,83 @@ invented:
     filter there later would be cheap but wasn't in scope.
   - No Neo4j or graph-database work of any kind — never proposed, not
     part of this arc.
-- **Priority**: n/a — done (R7A–R7C); R7D not scheduled.
+- **Priority**: n/a — done (R7A–R7C; R7D also done, see its own entry
+  below).
 - **Status**: Closed (2026-08-08). Commits `f6f1f93` (R7A), `9511b33`
   (R7B), `f0d04bc` (R7C).
+
+### R7D: chat/web relevance eval foundation — mock (R7D.1) + opt-in live (R7D.2)
+- **Goal**: turn R7A–R7C's hand-verified red-team scenarios into a
+  tracked, re-runnable eval suite, per the architecture E0 decided —
+  mock mode first (deterministic, no API key, safe to run anytime),
+  live mode as a deliberate, opt-in follow-up once the harness itself
+  was proven out.
+- **Why it matters**: R7A's red-team fixtures were real but only ever
+  exercised as one-off pytest cases inside `tests/test_qa.py` — no
+  standing way to re-run them as a suite, subset/tag-filter them, or
+  track pass/fail/score history over time the way `scripts/
+  eval_retrieval.py`/`scripts/ragas_eval.py` already do for their own
+  domains. R7D closes that gap for chat/web relevance specifically.
+- **Decision/what shipped**:
+  - **R7D.1 (mock mode, commit `69f07be`)**: the `research_agent/
+    evals/` package E0 designed — `cli.py` (`list-suites`, `run
+    --suite --mode --subset --tags`), `runners/_base.py` (JSONL
+    loading with the mentor-repo-inspired metadata/`expected_`-prefix
+    split, the shared predict → evaluate → aggregate loop, CSV
+    append), `evaluators/relevance.py`
+    (`chat_relevance_correctness`), and the `chat_relevance` suite
+    against `eval_data/chat_web_relevance_redteam.jsonl` (9
+    hand-curated cases: topic drift, query-only/topic-only mismatches,
+    a genuinely relevant positive case, a temporal "latest" trap,
+    stale web-pool reuse, an empty candidate pool, and fail-open/
+    fail-closed embedding-failure behavior). Mock mode patches
+    `research_agent.qa._embed_with_cache` with small, fixed vectors
+    keyed off each case's own `mock_relevance` label, then calls the
+    real, unmodified `_filter_relevant_web_articles` — a genuine
+    regression test of the production relevance logic, not a parallel
+    reimplementation.
+  - **R7D.2 (opt-in live mode, commit `5c95bec`)**: `--mode live`
+    constructs a real `OpenAI()` client (same construction `qa.ask()`
+    uses) and lets the real embedding API decide relevance through the
+    same unmodified `_filter_relevant_web_articles` call. Never runs by
+    default (`--mode` still defaults to `mock`); fails cleanly with no
+    traceback if credentials are missing (`LiveModeSetupError`, caught
+    by the CLI, non-zero exit); prints a cost warning before running.
+    The two embedding-failure fixture cases are marked `mock_only:
+    true` (a new, backward-compatible optional fixture field) and are
+    skipped in live mode with a clear reason — a real API call can't
+    be forced to fail the way the mock does, so R7D.2 skips rather than
+    fakes it. `runners/_base.py::run_suite` gained a generic `skip_if`
+    predicate so mock and live share one predict → evaluate →
+    aggregate loop; no scoring logic is duplicated between modes.
+  - Every run appends one row to `eval_results/
+    chat_relevance_history.csv`, kept to the same 11-column header
+    R7D.1 established (`run_id, date, git_commit, suite, mode, total,
+    passed, failed, average_score, tags, note`) — a live run's
+    skipped-case count and mean latency are folded into the free-text
+    `note` column instead of adding columns, so every row (mock or
+    live) reads against one stable header, matching the append-only
+    convention `retrieval_history.csv`/`history.csv` already set.
+  - `scripts/eval_retrieval.py`/`scripts/ragas_eval.py` and the
+    existing `retrieval_history.csv`/`history.csv` are untouched by
+    either R7D.1 or R7D.2, exactly as E0 decided.
+  - See `docs/evaluation.md`'s "Planned evaluation architecture"
+    section and `docs/architecture.md`'s R7 section for the same record
+    in doc/workflow form.
+- **Location**: `research_agent/evals/` (`cli.py`, `runners/__init__.py`,
+  `runners/_base.py`, `runners/run_chat_relevance.py`,
+  `evaluators/__init__.py`, `evaluators/relevance.py`),
+  `eval_data/chat_web_relevance_redteam.jsonl`, `eval_results/
+  chat_relevance_history.csv`, `tests/test_evals_chat_relevance.py`.
+- **Deferred follow-ups, not done here**: wiring the R7-planning-era
+  Langfuse metrics (query-topic preservation, source-relevance pass
+  rate, etc.) into trace metadata; a `report_quality` suite (R6, a
+  separate phase); threshold calibration; an LLM gray-zone judge for
+  borderline relevance scores; trend reports/a dashboard over
+  `chat_relevance_history.csv`.
+- **Priority**: n/a — done.
+- **Status**: Closed (2026-08-08). Commits `69f07be` (R7D.1), `5c95bec`
+  (R7D.2).
 
 ### E0: evaluation architecture decision checkpoint
 - **Goal**: decide the shape of this project's next eval work (R7D,
@@ -1098,14 +1173,13 @@ invented:
   R6 follows because report quality should be measured once report
   generation/export/refinement are already stable, which they now are
   (R2C through R5D complete).
-- **Location**: docs/spec only — `docs/evaluation.md`,
-  `docs/architecture.md`. No code, dependency, or eval run.
-- **Deferred**: everything under decision points 1–6 above is design
-  only — no `research_agent/evals/` package, no new CLI, no new eval_data/
-  eval_results files exist yet. R7D is the next phase that actually
-  builds any of it.
+- **Location**: docs/spec only at the time this checkpoint closed —
+  `docs/evaluation.md`, `docs/architecture.md`. No code, dependency, or
+  eval run happened as part of E0 itself; the package this decision
+  describes was built immediately after, in R7D (see that entry above)
+  — `research_agent/evals/` now exists exactly as decided here.
 - **Priority**: n/a — done (decision recorded).
-- **Status**: Closed (2026-08-08).
+- **Status**: Closed (2026-08-08). Implementation: see R7D entry above.
 
 Placeholders below, ready for real entries:
 
