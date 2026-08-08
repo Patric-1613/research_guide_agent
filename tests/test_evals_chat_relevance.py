@@ -1,11 +1,12 @@
-"""R7D.1/R7D.2: focused tests for the research_agent/evals/ package --
-JSONL loading/splitting, tag/subset filtering, the mock and live
-chat_relevance runners, the CLI's list-suites/run/mock-default/
-live-dispatch/live-credential-failure/unknown-suite behavior, and CSV
-append-only safety. Deliberately does not duplicate research_agent/
-qa.py's own _filter_relevant_web_articles red-team coverage (tests/
-test_qa.py already owns that) -- this file tests the eval HARNESS built
-on top of it.
+"""R7D.1/R7D.2/R7E.1: focused tests for the research_agent/evals/
+package -- JSONL loading/splitting, tag/subset filtering, the mock and
+live chat_relevance runners, the CLI's list-suites/run/mock-default/
+live-dispatch/live-credential-failure/unknown-suite behavior, CSV
+append-only safety, and (R7E.1) per-example run-detail JSON persistence
+plus relevance debug-score capture. Deliberately does not duplicate
+research_agent/qa.py's own _filter_relevant_web_articles red-team/debug
+coverage (tests/test_qa.py already owns that) -- this file tests the
+eval HARNESS built on top of it.
 
 Live mode is never exercised against the real OpenAI API here --
 `OpenAI` and `research_agent.qa._embed_with_cache` are always patched,
@@ -16,6 +17,7 @@ constraint for eval runners (docs/evaluation.md).
 from __future__ import annotations
 
 import csv
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +28,10 @@ from research_agent.evals.runners import run_chat_relevance
 from research_agent.evals.runners._base import (
     Example,
     LiveModeSetupError,
+    SuiteResult,
     append_result_csv,
     load_examples,
+    write_run_detail_json,
 )
 
 DATASET_FILE = run_chat_relevance.DATASET_FILE
@@ -105,7 +109,7 @@ class TestMockChatRelevanceRunner:
         examples = load_examples(DATASET_FILE)
         example = next(e for e in examples if e.id == "chat_relevance_007_empty_candidate_pool")
         prediction = run_chat_relevance.predict(example)
-        assert prediction == {"relevant_urls": []}
+        assert prediction == {"relevant_urls": [], "debug_scores": []}
 
     def test_embedding_failure_fail_open_keeps_the_unfiltered_pool(self):
         examples = load_examples(DATASET_FILE)
@@ -129,6 +133,25 @@ class TestMockChatRelevanceRunner:
     def test_run_experiment_unknown_mode_is_a_clean_error(self):
         with pytest.raises(ValueError, match="mock.*live|live.*mock"):
             run_chat_relevance.run_experiment(mode="banana")
+
+    def test_predict_debug_scores_do_not_change_relevant_urls(self):
+        """R7E.1: debug_scores rides along in the prediction dict but
+        must never affect which URLs are judged relevant."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_004_genuinely_relevant_ai_governance_source")
+
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == ["https://eu.example.org/ai-act-high-risk-systems"]
+        assert prediction["debug_scores"] == [{
+            "url": "https://eu.example.org/ai-act-high-risk-systems",
+            "title": "EU AI Act: obligations for high-risk AI systems",
+            "query_similarity": pytest.approx(0.7071, abs=1e-3),
+            "topic_similarity": pytest.approx(0.7071, abs=1e-3),
+            "passed_query_threshold": True,
+            "passed_topic_threshold": True,
+            "kept": True,
+        }]
 
 
 class TestLiveChatRelevanceRunner:
@@ -165,8 +188,8 @@ class TestLiveChatRelevanceRunner:
             "chat_relevance_009_embedding_failure_fail_closed",
         }
         for entry in skipped.values():
-            assert "mock_only" in entry["reason"]
-            assert "prediction" not in entry  # predict_live was never called for it
+            assert "mock_only" in entry["skipped_reason"]
+            assert entry["prediction"] is None  # predict_live was never called for it
 
     def test_live_mode_never_calls_predict_live_for_mock_only_cases(self):
         openai_patch, embed_patch = _patch_live_embeddings()
@@ -196,6 +219,23 @@ class TestLiveChatRelevanceRunner:
                     run_chat_relevance.run_experiment(mode="live")
                 embed_mock.assert_not_called()
 
+    def test_live_mode_prediction_carries_debug_scores_without_changing_kept_urls(self):
+        """R7E.1: predict_live's debug_scores must reflect the same
+        kept/rejected decision as relevant_urls -- proves the debug
+        capture is read-only instrumentation, not a second code path
+        that could disagree with the real filtering result."""
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live")
+
+        entry = next(pe for pe in result.per_example if pe["example_id"] == "chat_relevance_004_genuinely_relevant_ai_governance_source")
+        debug_scores = entry["prediction"]["debug_scores"]
+        assert len(debug_scores) == 1
+        assert debug_scores[0]["url"] == entry["prediction"]["relevant_urls"][0]
+        assert debug_scores[0]["kept"] is True
+        assert debug_scores[0]["query_similarity"] is not None
+        assert debug_scores[0]["topic_similarity"] is not None
+
 
 class TestCli:
     def test_list_suites_exits_zero_and_prints_chat_relevance(self, capsys):
@@ -213,6 +253,13 @@ class TestCli:
         out = capsys.readouterr().out
         assert "mode=mock" in out
         assert csv_path.exists()
+
+        detail_path = tmp_path / "runs" / "chat_relevance_run_1.json"
+        assert detail_path.exists()
+        assert f"run detail written to {detail_path}" in out
+        detail = json.loads(detail_path.read_text())
+        assert detail["run_id"] == 1
+        assert len(detail["per_example"]) == 9
 
     def test_run_mock_with_subset_and_tags(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
@@ -260,20 +307,96 @@ class TestCli:
 
 
 def test_append_result_csv_writes_header_and_increments_run_id(tmp_path):
-    from research_agent.evals.runners._base import SuiteResult
-
     csv_path = tmp_path / "chat_relevance_history.csv"
     result = SuiteResult(suite="chat_relevance", mode="mock", total=9, passed=9, failed=0, average_score=1.0)
 
-    append_result_csv(result, csv_path, tags=["redteam"], note="first run")
-    append_result_csv(result, csv_path, tags=None, note="second run")
+    first_run_id = append_result_csv(result, csv_path, tags=["redteam"], note="first run")
+    second_run_id = append_result_csv(result, csv_path, tags=None, note="second run")
 
+    assert (first_run_id, second_run_id) == (1, 2)
     with csv_path.open() as f:
         rows = list(csv.DictReader(f))
     assert [r["run_id"] for r in rows] == ["1", "2"]
     assert rows[0]["tags"] == "redteam"
     assert rows[0]["suite"] == "chat_relevance"
     assert rows[1]["tags"] == ""
+
+
+class TestRunDetailJson:
+    """R7E.1: write_run_detail_json persists what append_result_csv's
+    aggregate-only row can't -- per-example predictions, evaluator
+    results, latency, skip reasons, and errors."""
+
+    def test_write_run_detail_json_creates_the_runs_dir_and_file(self, tmp_path):
+        result = run_chat_relevance.run_experiment(mode="mock", subset=2)
+        runs_dir = tmp_path / "runs"
+
+        path = write_run_detail_json(result, run_id=1, runs_dir=runs_dir, subset=2, tags=None, note="")
+
+        assert path == runs_dir / "chat_relevance_run_1.json"
+        assert path.exists()
+
+    def test_detail_json_contains_prediction_evaluator_and_latency_fields(self, tmp_path):
+        result = run_chat_relevance.run_experiment(mode="mock", subset=1)
+
+        path = write_run_detail_json(result, run_id=7, runs_dir=tmp_path, note="unit test")
+        data = json.loads(path.read_text())
+
+        assert data["run_id"] == 7
+        assert data["suite"] == "chat_relevance"
+        assert data["mode"] == "mock"
+        assert data["note"] == "unit test"
+        assert data["total"] == data["passed"] == 1
+        assert len(data["per_example"]) == 1
+
+        entry = data["per_example"][0]
+        assert entry["skipped"] is False
+        assert "relevant_urls" in entry["prediction"]
+        assert "chat_relevance_correctness" in entry["evaluator_results"]
+        assert entry["evaluator_results"]["chat_relevance_correctness"]["score"] == 1.0
+        assert isinstance(entry["latency_ms"], (int, float))
+        assert entry["error"] is None
+
+    def test_detail_json_represents_skipped_mock_only_live_cases(self, tmp_path):
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live", tags=["fail_open"])
+
+        path = write_run_detail_json(result, run_id=1, runs_dir=tmp_path, tags=["fail_open"])
+        data = json.loads(path.read_text())
+
+        assert data["skipped"] == 1
+        [entry] = data["per_example"]
+        assert entry["example_id"] == "chat_relevance_008_embedding_failure_fail_open"
+        assert entry["skipped"] is True
+        assert "mock_only" in entry["skipped_reason"]
+        assert entry["prediction"] is None
+        assert entry["evaluator_results"] is None
+
+    def test_detail_json_represents_a_predict_exception(self, tmp_path):
+        """A predict() exception is recorded per-example (run_suite's
+        existing "catch and keep going" posture, unchanged by R7E.1) --
+        the detail file must surface it, not just an aggregate failed
+        count."""
+        from research_agent.evals.evaluators.relevance import ALL_EVALUATORS
+        from research_agent.evals.runners._base import run_suite
+
+        def failing_predict(example: Example) -> dict:
+            raise RuntimeError("simulated API failure")
+
+        result = run_suite(
+            suite="chat_relevance", dataset_file=DATASET_FILE, predict=failing_predict,
+            evaluators=[("chat_relevance_correctness", ALL_EVALUATORS["chat_relevance_correctness"])],
+            mode="mock", subset=1,
+        )
+
+        path = write_run_detail_json(result, run_id=1, runs_dir=tmp_path)
+        data = json.loads(path.read_text())
+
+        [entry] = data["per_example"]
+        assert entry["error"] == "simulated API failure"
+        assert entry["prediction"] == {"error": "simulated API failure"}
+        assert entry["evaluator_results"]["chat_relevance_correctness"]["score"] == 0.0
 
 
 def test_no_existing_eval_result_csvs_are_touched(tmp_path):

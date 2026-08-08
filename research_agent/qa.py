@@ -632,7 +632,7 @@ def _retrieve_node(state: QAState) -> dict:
 
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
-    topic: str = "", fail_open: bool = True, outcome: dict | None = None,
+    topic: str = "", fail_open: bool = True, outcome: dict | None = None, debug: list[dict] | None = None,
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -700,6 +700,24 @@ def _filter_relevant_web_articles(
     depend on an internal implementation detail (kept is always a fresh
     list on the success path) that a future refactor could break
     without anyone noticing report-eligibility depended on it.
+
+    eval-instrumentation R7E.1: `debug`, if given a list, gets one dict
+    appended per candidate article -- `{"url", "title",
+    "query_similarity", "topic_similarity", "passed_query_threshold",
+    "passed_topic_threshold", "kept"}` (the two `topic_*` keys stay
+    `None` when no `topic` was given). Purely additive and off by
+    default (`None`) -- computing it never changes `threshold`,
+    `fail_open`, which articles are kept, or how many embedding calls
+    happen (topic_vector, when present, is already computed once above
+    regardless of `debug`; the only extra work is a second, already-free
+    cosine-similarity call for a candidate that already failed the
+    query check, done only when `debug is not None`, purely so a
+    borderline case's topic score is visible even though it wasn't
+    needed to reach the filtering decision). Built for
+    research_agent/evals/runners/run_chat_relevance.py's live mode, so
+    a live eval run can report the actual similarity numbers behind a
+    pass/fail instead of just the kept/rejected URL list -- see R7E's
+    own analysis of the first live eval run for why that mattered.
     """
     if not articles:
         if outcome is not None:
@@ -711,11 +729,40 @@ def _filter_relevant_web_articles(
         kept = []
         for article in articles:
             article_vector = _embed_with_cache(client, f"{article.title}\n{article.snippet or ''}")
-            if _cosine_similarity(query_vector, article_vector) < threshold:
-                continue
-            if topic_vector is not None and _cosine_similarity(topic_vector, article_vector) < threshold:
-                continue
-            kept.append(article)
+            query_similarity = _cosine_similarity(query_vector, article_vector)
+            passed_query_threshold = query_similarity >= threshold
+            topic_similarity: float | None = None
+            passed_topic_threshold: bool | None = None
+            article_kept = False
+
+            if passed_query_threshold:
+                if topic_vector is not None:
+                    topic_similarity = _cosine_similarity(topic_vector, article_vector)
+                    passed_topic_threshold = topic_similarity >= threshold
+                    article_kept = passed_topic_threshold
+                else:
+                    article_kept = True
+            elif debug is not None and topic_vector is not None:
+                # Debug-only: the query check alone already decided this
+                # article is dropped (matching the original control flow
+                # exactly), but a debug caller still wants to see the
+                # topic score too -- free to compute, topic_vector is
+                # already in hand.
+                topic_similarity = _cosine_similarity(topic_vector, article_vector)
+                passed_topic_threshold = topic_similarity >= threshold
+
+            if article_kept:
+                kept.append(article)
+            if debug is not None:
+                debug.append({
+                    "url": article.url,
+                    "title": article.title,
+                    "query_similarity": round(query_similarity, 4),
+                    "topic_similarity": round(topic_similarity, 4) if topic_similarity is not None else None,
+                    "passed_query_threshold": passed_query_threshold,
+                    "passed_topic_threshold": passed_topic_threshold,
+                    "kept": article_kept,
+                })
         if outcome is not None:
             outcome["fail_open_triggered"] = False
         return kept

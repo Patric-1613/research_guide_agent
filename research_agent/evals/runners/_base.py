@@ -20,6 +20,12 @@ Example/evaluator shape borrowed from the mentor repo studied during E0
 (github.com/cwijayasundara/document_intelligence_adv_v2's backend/evals),
 adapted to this project: no LangSmith `Run`/`Example` SDK objects, no
 Postgres persistence -- just plain dataclasses and a CSV append.
+
+R7E.1: `SuiteResult.per_example` now carries full per-example detail
+(inputs, expected outputs, prediction, evaluator results, latency,
+skip/error info), and `write_run_detail_json` persists it to
+`eval_results/runs/<suite>_run_<run_id>.json` -- instrumentation only,
+no filtering/scoring semantics changed.
 """
 
 from __future__ import annotations
@@ -206,22 +212,30 @@ def run_suite(
     per_example: list[dict[str, Any]] = []
 
     for example in examples:
+        example_tags = example.metadata.get("tags", [])
         skip_reason = skip_if(example) if skip_if else None
         if skip_reason:
             skipped += 1
-            per_example.append({"example_id": example.id, "skipped": True, "reason": skip_reason})
+            per_example.append({
+                "example_id": example.id, "tags": example_tags,
+                "inputs": example.inputs, "expected": example.outputs,
+                "skipped": True, "skipped_reason": skip_reason,
+                "prediction": None, "evaluator_results": None, "latency_ms": None, "error": None,
+            })
             continue
 
         start = time.perf_counter()
+        error: str | None = None
         try:
             prediction = predict(example)
         except Exception as exc:  # noqa: BLE001 -- record the failure, keep going, same posture the mentor repo's runner uses.
             logger.exception("predict() failed for example %s", example.id)
-            prediction = {"error": str(exc)}
+            error = str(exc)
+            prediction = {"error": error}
         elapsed_ms = (time.perf_counter() - start) * 1000
         latencies_ms.append(elapsed_ms)
 
-        scores: dict[str, Any] = {}
+        evaluator_results: dict[str, Any] = {}
         example_passed = True
         for name, evaluator in evaluators:
             try:
@@ -230,7 +244,7 @@ def run_suite(
                 logger.exception("evaluator=%s example=%s failed", name, example.id)
                 result = {"key": name, "score": None, "comment": f"error: {exc}"}
             key = result.get("key", name)
-            scores[key] = result
+            evaluator_results[key] = result
             raw_score = result.get("score")
             if isinstance(raw_score, (int, float)):
                 all_scores.append(float(raw_score))
@@ -243,8 +257,11 @@ def run_suite(
         else:
             failed += 1
         per_example.append({
-            "example_id": example.id, "prediction": prediction, "scores": scores,
-            "latency_ms": round(elapsed_ms, 2),
+            "example_id": example.id, "tags": example_tags,
+            "inputs": example.inputs, "expected": example.outputs,
+            "skipped": False, "skipped_reason": None,
+            "prediction": prediction, "evaluator_results": evaluator_results,
+            "latency_ms": round(elapsed_ms, 2), "error": error,
         })
 
     average_score = round(sum(all_scores) / len(all_scores), 4) if all_scores else None
@@ -277,13 +294,17 @@ def _enrich_note(result: SuiteResult, note: str) -> str:
 
 def append_result_csv(
     result: SuiteResult, csv_path: Path, tags: list[str] | None = None, note: str = "",
-) -> None:
+) -> int:
     """Appends one row to `csv_path` (creating it with a header if it
     doesn't exist yet) -- the exact append-only convention `docs/
     evaluation.md`'s artifact policy already establishes for
     `retrieval_history.csv`/`history.csv`. `csv_path` is a parameter
     (not hardcoded to eval_results/), specifically so tests can point it
     at a tmp_path instead of ever touching a real tracked file.
+
+    Returns the `run_id` this row was assigned, so a caller (R7E.1:
+    cli.py's cmd_run) can use the same id to name a companion per-example
+    detail file under eval_results/runs/ -- see write_run_detail_json.
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = csv_path.exists()
@@ -311,3 +332,49 @@ def append_result_csv(
             "tags": ";".join(tags) if tags else "",
             "note": _enrich_note(result, note),
         })
+    return next_run_id
+
+
+def write_run_detail_json(
+    result: SuiteResult,
+    run_id: int,
+    runs_dir: Path,
+    subset: int | None = None,
+    tags: list[str] | None = None,
+    note: str = "",
+) -> Path:
+    """R7E.1: writes the full per-example detail `append_result_csv`'s
+    aggregate-only CSV row can't carry -- predictions, evaluator
+    results/comments, latency, skip reasons, and (for chat_relevance's
+    live mode) the raw query/topic similarity scores riding along inside
+    each example's `prediction` dict (see run_chat_relevance.py's
+    `predict_live`). Filed at `runs_dir / f"{suite}_run_{run_id}.json"`,
+    the same `run_id` `append_result_csv` assigned that run's CSV row, so
+    the two artifacts correlate 1:1. Mirrors the `eval_results/runs/`
+    convention `scripts/ragas_eval.py` already established (gitignored,
+    reviewed locally, not meant to accumulate in git history the way the
+    history CSVs do) -- extended here to every suite this package runs,
+    not just ragas_eval.py's own.
+    """
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    detail = {
+        "run_id": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_sha": _git_sha() or "unknown",
+        "suite": result.suite,
+        "mode": result.mode,
+        "subset": subset,
+        "tags": tags or [],
+        "note": note,
+        "total": result.total,
+        "passed": result.passed,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "average_score": result.average_score,
+        "mean_latency_ms": result.mean_latency_ms,
+        "per_example": result.per_example,
+    }
+    path = runs_dir / f"{result.suite}_run_{run_id}.json"
+    with path.open("w") as f:
+        json.dump(detail, f, indent=2, default=str)
+    return path

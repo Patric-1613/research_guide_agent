@@ -67,7 +67,14 @@ def _build_web_article(candidate: dict[str, Any]) -> WebArticle:
 def predict(example: Example) -> dict[str, Any]:
     """Mock-mode prediction -- see module docstring. `mock_relevance`/
     `mock_embedding_error` are mock-only fixture fields; live mode
-    ignores them entirely (see predict_live below)."""
+    ignores them entirely (see predict_live below).
+
+    R7E.1: also captures `_filter_relevant_web_articles`'s new `debug`
+    scores under `debug_scores` -- since mock mode drives the same real
+    function through mocked (not skipped) `_embed_with_cache` calls, the
+    resulting query/topic "similarity" numbers are meaningful relative
+    to the fixed 3D vector scheme above, useful for confirming the mock
+    scheme itself behaves as designed."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
@@ -91,26 +98,38 @@ def predict(example: Example) -> dict[str, Any]:
             "research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text],
         )
 
+    debug_scores: list[dict[str, Any]] = []
     with embed_patch:
         kept = _filter_relevant_web_articles(
-            query, articles, MagicMock(), topic=topic, fail_open=fail_open,
+            query, articles, MagicMock(), topic=topic, fail_open=fail_open, debug=debug_scores,
         )
 
-    return {"relevant_urls": [a.url for a in kept]}
+    return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
 
 
 def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     """Live-mode prediction (R7D.2) -- the real embedding pathway, no
     mocking at all. Never called for a `mock_only` example -- see
-    `_mock_only_skip_reason` and run_experiment's own skip_if."""
+    `_mock_only_skip_reason` and run_experiment's own skip_if.
+
+    R7E.1: passes `debug=debug_scores` through to
+    `_filter_relevant_web_articles` so the real per-candidate query/
+    topic cosine-similarity scores ride along in the returned
+    prediction (under `debug_scores`) -- persisted by
+    write_run_detail_json, this is what closes R7E's own finding that
+    the first live run's failures couldn't be diagnosed from the
+    aggregate CSV row alone."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
     candidates = example.inputs.get("candidates") or []
 
     articles = [_build_web_article(c) for c in candidates]
-    kept = _filter_relevant_web_articles(query, articles, client, topic=topic, fail_open=fail_open)
-    return {"relevant_urls": [a.url for a in kept]}
+    debug_scores: list[dict[str, Any]] = []
+    kept = _filter_relevant_web_articles(
+        query, articles, client, topic=topic, fail_open=fail_open, debug=debug_scores,
+    )
+    return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
 
 
 def _build_live_client() -> OpenAI:

@@ -21,7 +21,13 @@ import argparse
 import sys
 from typing import Any, Callable
 
-from research_agent.evals.runners._base import EVAL_RESULTS_DIR, LiveModeSetupError, SuiteResult, append_result_csv
+from research_agent.evals.runners._base import (
+    EVAL_RESULTS_DIR,
+    LiveModeSetupError,
+    SuiteResult,
+    append_result_csv,
+    write_run_detail_json,
+)
 
 SUITES: dict[str, dict[str, Any]] = {
     "chat_relevance": {
@@ -67,7 +73,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(result.summary_line())
 
     csv_path = EVAL_RESULTS_DIR / SUITES[args.suite]["results_csv"]
-    append_result_csv(result, csv_path, tags=args.tags, note=args.note or "")
+    run_id = append_result_csv(result, csv_path, tags=args.tags, note=args.note or "")
+    detail_path = write_run_detail_json(
+        result, run_id, EVAL_RESULTS_DIR / "runs", subset=args.subset, tags=args.tags, note=args.note or "",
+    )
+    print(f"[eval] run detail written to {detail_path}")
 
     return 0 if result.failed == 0 else 1
 

@@ -294,6 +294,97 @@ def test_filter_relevant_web_articles_outcome_records_true_on_fail_closed_except
     assert result == []
 
 
+# --- eval-instrumentation R7E.1: debug scores ---
+
+def test_filter_relevant_web_articles_debug_is_additive_and_does_not_change_kept_articles():
+    """`debug` is off by default and, when given, must never change
+    which articles survive -- proven by running the exact same inputs
+    with and without it and asserting the kept list is identical."""
+    query = "is jailbreaking covered?"
+    topic = "AI safety research"
+    relevant = _web_article("https://relevant.com", "Jailbreak coverage")
+    stale = _web_article("https://stale.com", "Unrelated roundup")
+    vectors = {
+        query: [1.0, 0.0],
+        topic: [1.0, 0.0],
+        f"{relevant.title}\n{relevant.snippet}": [1.0, 0.0],
+        f"{stale.title}\n{stale.snippet}": [0.0, 1.0],
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept_without_debug = _filter_relevant_web_articles(query, [relevant, stale], MagicMock(), topic=topic)
+        debug: list[dict] = []
+        kept_with_debug = _filter_relevant_web_articles(
+            query, [relevant, stale], MagicMock(), topic=topic, debug=debug,
+        )
+
+    assert kept_with_debug == kept_without_debug == [relevant]
+
+
+def test_filter_relevant_web_articles_debug_records_per_candidate_scores_with_topic():
+    query = "is jailbreaking covered?"
+    topic = "AI safety research"
+    relevant = _web_article("https://relevant.com", "Jailbreak coverage")
+    stale = _web_article("https://stale.com", "Unrelated roundup")
+    vectors = {
+        query: [1.0, 0.0],
+        topic: [1.0, 0.0],
+        f"{relevant.title}\n{relevant.snippet}": [1.0, 0.0],  # clears both -- kept
+        f"{stale.title}\n{stale.snippet}": [0.0, 1.0],  # orthogonal to both -- dropped on the query check
+    }
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(query, [relevant, stale], MagicMock(), topic=topic, debug=debug)
+
+    assert len(debug) == 2
+    kept_entry = next(d for d in debug if d["url"] == "https://relevant.com")
+    dropped_entry = next(d for d in debug if d["url"] == "https://stale.com")
+
+    assert kept_entry["query_similarity"] == pytest.approx(1.0)
+    assert kept_entry["topic_similarity"] == pytest.approx(1.0)
+    assert kept_entry["passed_query_threshold"] is True
+    assert kept_entry["passed_topic_threshold"] is True
+    assert kept_entry["kept"] is True
+
+    # Dropped on the query check alone -- but the topic score is still
+    # surfaced for debugging even though it wasn't needed for the decision.
+    assert dropped_entry["query_similarity"] == pytest.approx(0.0)
+    assert dropped_entry["topic_similarity"] == pytest.approx(0.0)
+    assert dropped_entry["passed_query_threshold"] is False
+    assert dropped_entry["passed_topic_threshold"] is False
+    assert dropped_entry["kept"] is False
+
+
+def test_filter_relevant_web_articles_debug_topic_fields_are_none_without_a_topic():
+    query = "is jailbreaking covered?"
+    article = _web_article("https://relevant.com", "Jailbreak coverage")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": [1.0, 0.0]}
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(query, [article], MagicMock(), debug=debug)
+
+    assert debug == [{
+        "url": "https://relevant.com", "title": article.title,
+        "query_similarity": 1.0, "topic_similarity": None,
+        "passed_query_threshold": True, "passed_topic_threshold": None, "kept": True,
+    }]
+
+
+def test_filter_relevant_web_articles_debug_stays_empty_on_embedding_exception():
+    """An embedding-call exception is caught before any per-candidate
+    scoring happens -- debug should reflect that (empty), not a
+    fabricated entry."""
+    articles = [_web_article("https://a.com", "A")]
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=RuntimeError("embedding API down")):
+        _filter_relevant_web_articles("some query", articles, MagicMock(), debug=debug)
+
+    assert debug == []
+
+
 def test_ask_stale_web_pool_filtered_out_is_not_passed_into_the_model_prompt_for_unrelated_question():
     """End-to-end through ask()'s real graph (filter_web_relevance patched
     at the seam, not the embedding math -- that's covered by the direct
