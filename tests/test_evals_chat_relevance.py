@@ -1,27 +1,61 @@
-"""R7D.1: focused tests for the new research_agent/evals/ package --
-JSONL loading/splitting, tag/subset filtering, the mock chat_relevance
-runner, the CLI's list-suites/run/mock-default/live-rejected/unknown-
-suite behavior, and CSV append-only safety. Deliberately does not
-duplicate research_agent/qa.py's own _filter_relevant_web_articles
-red-team coverage (tests/test_qa.py already owns that) -- this file
-tests the eval HARNESS built on top of it.
+"""R7D.1/R7D.2: focused tests for the research_agent/evals/ package --
+JSONL loading/splitting, tag/subset filtering, the mock and live
+chat_relevance runners, the CLI's list-suites/run/mock-default/
+live-dispatch/live-credential-failure/unknown-suite behavior, and CSV
+append-only safety. Deliberately does not duplicate research_agent/
+qa.py's own _filter_relevant_web_articles red-team coverage (tests/
+test_qa.py already owns that) -- this file tests the eval HARNESS built
+on top of it.
+
+Live mode is never exercised against the real OpenAI API here --
+`OpenAI` and `research_agent.qa._embed_with_cache` are always patched,
+matching this project's "no real API calls in automated tests"
+constraint for eval runners (docs/evaluation.md).
 """
 
 from __future__ import annotations
 
 import csv
+from unittest.mock import MagicMock, patch
 
 import pytest
+from openai import OpenAIError
 
 from research_agent.evals import cli
 from research_agent.evals.runners import run_chat_relevance
 from research_agent.evals.runners._base import (
     Example,
+    LiveModeSetupError,
     append_result_csv,
     load_examples,
 )
 
 DATASET_FILE = run_chat_relevance.DATASET_FILE
+
+
+def _patch_live_embeddings():
+    """Live-mode tests still must not touch the real OpenAI API --
+    patches `OpenAI` construction (so no credentials are needed) and
+    `_embed_with_cache` (so no network call happens), using the same
+    per-candidate `mock_relevance` vector scheme mock mode's own
+    `predict` uses, so live-mode assertions can reuse the same expected
+    relevant/rejected URLs as the mock-mode tests above."""
+    vectors: dict[str, list[float]] = {}
+    for example in load_examples(DATASET_FILE):
+        query = example.inputs.get("query", "")
+        topic = example.inputs.get("topic", "")
+        vectors[query] = run_chat_relevance._QUERY_VECTOR
+        if topic:
+            vectors[topic] = run_chat_relevance._TOPIC_VECTOR
+        for candidate in example.inputs.get("candidates") or []:
+            key = f"{candidate['title']}\n{candidate.get('snippet', '')}"
+            label = candidate.get("mock_relevance", "neither")
+            vectors[key] = run_chat_relevance._RELEVANCE_VECTORS[label]
+
+    return (
+        patch.object(run_chat_relevance, "OpenAI", return_value=MagicMock()),
+        patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]),
+    )
 
 
 def test_load_examples_splits_metadata_inputs_and_expected_outputs():
@@ -92,9 +126,75 @@ class TestMockChatRelevanceRunner:
         assert result.passed == 9
         assert result.average_score == 1.0
 
-    def test_run_experiment_rejects_live_mode(self):
-        with pytest.raises(ValueError, match="mock"):
+    def test_run_experiment_unknown_mode_is_a_clean_error(self):
+        with pytest.raises(ValueError, match="mock.*live|live.*mock"):
+            run_chat_relevance.run_experiment(mode="banana")
+
+
+class TestLiveChatRelevanceRunner:
+    """R7D.2. Every test here patches OpenAI construction and
+    _embed_with_cache -- see _patch_live_embeddings() -- so nothing in
+    this class ever makes a real network/API call."""
+
+    def test_live_mode_dispatches_to_the_live_predict_path_and_uses_the_same_loader(self):
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live")
+
+        assert result.mode == "live"
+        assert result.total == 7  # 9 fixture cases minus the 2 mock_only embedding-failure cases
+        assert result.skipped == 2
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_live_mode_respects_subset_and_tags(self):
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live", subset=2, tags=["redteam"])
+
+        assert result.total + result.skipped == 2
+
+    def test_live_mode_skips_mock_only_cases_with_a_clear_reason(self):
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live")
+
+        skipped = {pe["example_id"]: pe for pe in result.per_example if pe.get("skipped")}
+        assert set(skipped) == {
+            "chat_relevance_008_embedding_failure_fail_open",
+            "chat_relevance_009_embedding_failure_fail_closed",
+        }
+        for entry in skipped.values():
+            assert "mock_only" in entry["reason"]
+            assert "prediction" not in entry  # predict_live was never called for it
+
+    def test_live_mode_never_calls_predict_live_for_mock_only_cases(self):
+        openai_patch, embed_patch = _patch_live_embeddings()
+        seen_example_ids = []
+        real_predict_live = run_chat_relevance.predict_live
+
+        def spying_predict_live(example, client):
+            seen_example_ids.append(example.id)
+            return real_predict_live(example, client)
+
+        with openai_patch, embed_patch, patch.object(run_chat_relevance, "predict_live", spying_predict_live):
             run_chat_relevance.run_experiment(mode="live")
+
+        assert "chat_relevance_008_embedding_failure_fail_open" not in seen_example_ids
+        assert "chat_relevance_009_embedding_failure_fail_closed" not in seen_example_ids
+        assert len(seen_example_ids) == 7
+
+    def test_live_mode_missing_credentials_raises_live_mode_setup_error(self):
+        with patch.object(run_chat_relevance, "OpenAI", side_effect=OpenAIError("no api key")):
+            with pytest.raises(LiveModeSetupError, match="credentials"):
+                run_chat_relevance.run_experiment(mode="live")
+
+    def test_live_mode_missing_credentials_never_reaches_the_predict_loop(self):
+        with patch.object(run_chat_relevance, "OpenAI", side_effect=OpenAIError("no api key")):
+            with patch("research_agent.qa._embed_with_cache") as embed_mock:
+                with pytest.raises(LiveModeSetupError):
+                    run_chat_relevance.run_experiment(mode="live")
+                embed_mock.assert_not_called()
 
 
 class TestCli:
@@ -123,19 +223,40 @@ class TestCli:
         out = capsys.readouterr().out
         assert "total=3" in out
 
-    def test_run_live_mode_is_rejected_without_any_side_effects(self, monkeypatch, tmp_path, capsys):
+    def test_run_live_mode_dispatches_and_warns_of_cost(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
-        exit_code = cli.main(["run", "--suite", "chat_relevance", "--mode", "live"])
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            exit_code = cli.main(["run", "--suite", "chat_relevance", "--mode", "live"])
+
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "can incur cost" in captured.err
+        assert "mode=live" in captured.out
+        assert (tmp_path / "chat_relevance_history.csv").exists()
+
+    def test_run_live_mode_missing_credentials_is_a_clean_error_with_no_side_effects(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        with patch.object(run_chat_relevance, "OpenAI", side_effect=OpenAIError("no api key")):
+            exit_code = cli.main(["run", "--suite", "chat_relevance", "--mode", "live"])
+
         assert exit_code != 0
         err = capsys.readouterr().err
-        assert "not implemented" in err
-        assert list(tmp_path.iterdir()) == []
+        assert "credentials" in err
+        assert "Traceback" not in err
+        assert list(tmp_path.iterdir()) == []  # no CSV written -- setup failed before any run happened
 
     def test_run_unknown_suite_is_a_clean_cli_error(self, capsys):
         exit_code = cli.main(["run", "--suite", "nonexistent", "--mode", "mock"])
         assert exit_code != 0
         err = capsys.readouterr().err
         assert "unknown suite" in err
+
+    def test_run_unknown_mode_is_rejected_by_argparse(self, capsys):
+        with pytest.raises(SystemExit):
+            cli.main(["run", "--suite", "chat_relevance", "--mode", "banana"])
 
 
 def test_append_result_csv_writes_header_and_increments_run_id(tmp_path):

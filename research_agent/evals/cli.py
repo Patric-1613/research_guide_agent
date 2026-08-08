@@ -9,12 +9,10 @@ Usage:
 
 `--mode` defaults to `mock` -- E0's own decision (docs/evaluation.md's
 "Planned evaluation architecture" section): every suite is mocked/
-offline by default, live is a separate, later, explicitly opt-in mode.
-`--mode live` is a recognized value (not an argparse-level error) but is
-rejected here at runtime with a clear message and a non-zero exit code
--- live mode does not exist yet in this package at all, and this
-function never reaches any code path that could make a network/model
-call for it.
+offline by default, live is a separate, explicitly opt-in mode (R7D.2)
+that calls the real OpenAI embeddings API and can incur cost -- a
+warning is printed whenever `--mode live` is used, and live mode is
+never selected implicitly by anything in this module.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ import argparse
 import sys
 from typing import Any, Callable
 
-from research_agent.evals.runners._base import EVAL_RESULTS_DIR, SuiteResult, append_result_csv
+from research_agent.evals.runners._base import EVAL_RESULTS_DIR, LiveModeSetupError, SuiteResult, append_result_csv
 
 SUITES: dict[str, dict[str, Any]] = {
     "chat_relevance": {
@@ -50,20 +48,22 @@ def cmd_list_suites(_args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    if args.mode == "live":
-        print(
-            "[eval] mode=live is not implemented yet (research_agent.evals is "
-            "mock-only as of R7D.1) -- no live model/web call was made. Use --mode mock.",
-            file=sys.stderr,
-        )
-        return 2
-
     if args.suite not in SUITES:
         print(f"[eval] unknown suite {args.suite!r}. Known suites: {sorted(SUITES)}", file=sys.stderr)
         return 2
 
+    if args.mode == "live":
+        print(
+            "[eval] WARNING: mode=live calls the real OpenAI embeddings API and can incur cost.",
+            file=sys.stderr,
+        )
+
     run_experiment = _load_run_experiment(args.suite)
-    result = run_experiment(mode=args.mode, subset=args.subset, tags=args.tags)
+    try:
+        result = run_experiment(mode=args.mode, subset=args.subset, tags=args.tags)
+    except LiveModeSetupError as exc:
+        print(f"[eval] {exc}", file=sys.stderr)
+        return 2
     print(result.summary_line())
 
     csv_path = EVAL_RESULTS_DIR / SUITES[args.suite]["results_csv"]

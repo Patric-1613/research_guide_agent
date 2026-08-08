@@ -96,14 +96,23 @@ entry in that directory's `README.md` explaining what it captures.
 ## Planned evaluation architecture (E0 decision, 2026-08-08)
 
 **Update (R7D.1, 2026-08-08)**: the `chat_relevance` suite below is now
-real, mock-mode only — `research_agent/evals/` (`cli.py`, `runners/`,
-`evaluators/`), `eval_data/chat_web_relevance_redteam.jsonl` (9
-hand-curated cases covering the R7A-R7C red-team scenarios), and
-`eval_results/chat_relevance_history.csv`. `--mode live` is a
-recognized flag but returns a clear "not implemented yet" error — no
-live model/web call exists anywhere in this package yet. Everything
-else in this section (the mentor-repo comparison, phase order, the
-`report_quality` suite) is still design-only, not yet implemented.
+real — `research_agent/evals/` (`cli.py`, `runners/`, `evaluators/`),
+`eval_data/chat_web_relevance_redteam.jsonl` (9 hand-curated cases
+covering the R7A-R7C red-team scenarios), and `eval_results/
+chat_relevance_history.csv`.
+
+**Update (R7D.2, 2026-08-08)**: `--mode live` is now implemented for
+`chat_relevance` — it runs the real `_filter_relevant_web_articles`
+through a real `OpenAI()` client (same construction `qa.ask()` uses),
+never falls back to mock, and requires explicit opt-in (`--mode` still
+defaults to `mock`). It fails cleanly (no traceback) if OpenAI
+credentials aren't set, and prints a cost warning before running. Two
+fixture cases (`chat_relevance_008`/`009`, the simulated embedding-
+failure cases) are marked `mock_only: true` and are skipped in live
+mode with a clear reason, since a real failure can't be forced against
+the live API. Everything else in this section (the mentor-repo
+comparison, phase order, the `report_quality` suite) is still
+design-only, not yet implemented.
 
 This section records the architecture decided during
 E0, an audit-and-design-only checkpoint that studied a mentor repo's
@@ -146,7 +155,8 @@ not wrapped or migrated into the new package in this phase. Revisiting
 that is an explicit future option, not a requirement of building the
 new suites.
 
-**Planned CLI shape** (none of this exists yet):
+**CLI shape** (the first three lines are real as of R7D.1/R7D.2; the
+`report_quality` line is still planned, not yet implemented):
 
 ```bash
 uv run python -m research_agent.evals.cli list-suites

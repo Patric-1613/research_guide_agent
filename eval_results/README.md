@@ -13,10 +13,14 @@ policy — this file is a short local index.
   behavior.
 - `chat_relevance_history.csv` — current running log, appended to by
   every `uv run python -m research_agent.evals.cli run --suite
-  chat_relevance` run (mock mode only as of R7D.1). **Tracked**, same
-  expected-modified behavior as the two logs above. Separate file by
-  design — new eval suites get their own CSV, never appended into
-  `retrieval_history.csv`/`history.csv`.
+  chat_relevance` run, mock (default) or live (opt-in via `--mode
+  live`, R7D.2). **Tracked**, same expected-modified behavior as the
+  two logs above. Separate file by design — new eval suites get their
+  own CSV, never appended into `retrieval_history.csv`/`history.csv`.
+  Header stays the same 11-column shape R7D.1 established either way —
+  a live run's skipped-case count and mean latency are folded into the
+  free-text `note` column instead of adding new columns, to keep every
+  row (mock or live, old or new) reading against one stable header.
 - `latency_history.csv` — a specific historical measurement, referenced
   directly by root `README.md`'s "Search-call parallelization" section.
   **Tracked.** No script currently reproduces it — see
