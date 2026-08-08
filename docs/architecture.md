@@ -2765,6 +2765,155 @@ export format, not just deferred — see R5A's and R5C's own exclusion
 rationale). None started. See `specs/backend-backlog.md`'s R5D entry
 for the tracked list.
 
+### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-08) — R7A/R7B/R7C complete
+
+**Why**: a real chat session about AI governance retrieved and cited a
+topically unrelated web source (a housing/zoning case study whose text
+merely shared governance-adjacent vocabulary — "policy," "regulatory
+framework"). Investigation found the gap was structural, not a one-off
+model mistake: nothing in the chat/web-search flow ever checked a
+candidate web result against what the session was actually *about* —
+only against the current turn's own (sometimes drifted) query — and
+`_WEB_ARTICLE_RELEVANCE_THRESHOLD` (the existing per-turn relevance
+filter's cutoff, unchanged and uncalibrated since it was introduced)
+had no second, topic-anchored dimension to catch exactly this case.
+R7A/R7B/R7C close that gap in three deliberately small, independently
+revertable chunks — foundation, live wiring, report-promotion gating —
+rather than one large change.
+
+**R7A — topic-aware relevance foundation and red-team fixtures, no live
+behavior change (2026-08-07).** `qa.ChatSession` gains an optional
+`topic: str = ""`, populated by `curation_chat.py`'s
+`_build_chat_session` from `PaperPoolSession.topic` — purely additive
+metadata; no graph node reads it yet at this point.
+`_filter_relevant_web_articles(query, articles, client, threshold=...,
+topic="", ...)` gains the topic dimension itself: when `topic` is
+given, an article must clear `threshold` against BOTH the per-turn
+query AND the topic (AND, not OR) to survive — matching the approved
+product decision that it's better to reject/abstain than cite a
+topically weak source. `topic=""` (the default, and the only value the
+one real caller — `_filter_web_relevance_node` — passes as of R7A)
+reproduces the exact pre-R7A, query-only behavior byte-for-byte. Six
+red-team fixtures prove the mechanism in isolation: the actual
+housing-vs-AI-governance regression pattern (a drifted, generic query
+matches the housing article on its own; the session's stable topic
+does not), a genuinely relevant source (accepted), query-relevant/
+topic-irrelevant and topic-relevant/query-irrelevant cases (proving the
+AND semantics independently), empty-topic parity with pre-R7A
+behavior, the temporal-query-trap pattern ("what about very recent
+developments, like in 2026?" — already named in `_accept_web_offer`'s
+own pre-existing comments), and a title-looks-on-topic-but-combined-
+snippet-isn't case (proving title+snippet, not title alone, is what's
+actually judged). **Validation**: full backend suite → 613 passed.
+Commit `f6f1f93`.
+
+**R7B — wired into the live chat flow, two different failure postures
+(2026-08-07).** Two gates, deliberately asymmetric:
+- **Answer-time** (`_filter_web_relevance_node`): now passes
+  `topic=state["session"].topic` through to
+  `_filter_relevant_web_articles`, re-filtering the existing web pool
+  against both the current query and the session's stable topic every
+  turn. Stays **fail-open** — re-filtering an already-vetted pool
+  tolerates a transient embedding hiccup degrading to "less scrutiny
+  this once," reversible next turn.
+- **Insertion-time** (`curation_chat.py`'s `_accept_web_offer`): after
+  `search_web(search_query)` returns and existing-URL dedup runs, the
+  deduped candidates are filtered through
+  `qa._filter_relevant_web_articles(search_query, candidates, client,
+  topic=session.topic, fail_open=False)` **before** ever extending
+  `session.web_articles_added` — an irrelevant article now never enters
+  the persistent pool at all, not just fails to be cited later. New
+  `fail_open: bool = True` parameter on `_filter_relevant_web_articles`
+  makes this asymmetry explicit at each call site rather than two
+  duplicated embedding code paths: on an embedding exception,
+  `fail_open=True` (the answer-time gate's default) still returns the
+  unfiltered list; `fail_open=False` (insertion-time) returns `[]`
+  instead — this is the one gate deciding whether a brand-new article
+  joins a pool that outlives the turn, so a failure there must reject,
+  not silently admit. Neither path ever raises.
+
+  `new_web_articles_found`'s meaning tightened, deliberately: "new,
+  deduped, AND relevant," not merely "new and deduped." When
+  `search_web` returns real candidates but every one fails relevance,
+  the assistant's answer gets `" I searched the web, but I did not
+  find sources clearly relevant to this review topic."` **appended**
+  (never a replacement — if papers or an already-approved older source
+  still answered something, that answer survives with the caveat
+  attached). No new offer loop: `_accept_web_offer` already never
+  re-enters `_maybe_set_web_offer`, and `pending_web_offer` clears
+  unconditionally regardless of outcome, both unchanged from before
+  R7B. `used_web_search` stays exactly what it always was — derived
+  from actual `cited_web_articles` by `_attach_exchange_metadata` — so
+  the abstention case correctly shows `used_web_search=False` even
+  though `web_search_used=True` (a search was attempted; nothing from
+  it was ever cited). **Validation**: full backend suite → 620 passed.
+  Commit `9511b33`.
+
+**R7C — gate chat-to-report promotion on stored relevance metadata
+(2026-08-08).** `select_eligible_exchanges_for_report`'s eligibility
+check was purely mechanical (`used_web_search AND cited_web_articles
+non-empty AND not already added_to_report`) — no awareness of whether
+a citation had ever been through a genuine relevance check. R7C closes
+this with metadata-on-exchange, not recompute-at-promotion (the
+approved design): `_filter_relevant_web_articles` gains an optional
+`outcome: dict` parameter, set to `{"fail_open_triggered": False}` on
+every genuinely completed check (including the trivial empty-input
+case — nothing to fail on) and `True` only when the except branch
+actually fires — purely observational, no change to what gets filtered
+or how. `_filter_web_relevance_node` surfaces this as
+`web_relevance_verified` through `QAState` and `ask()`'s final result.
+`_attach_exchange_metadata` stamps it onto an assistant turn **only
+when `cited_web_articles` is non-empty** — `True` means a real
+relevance check ran this turn; `False` means the answer-time filter
+fail-opened, so this turn's citation validity is unverified; the key
+is left **entirely absent** when nothing was cited (not a meaningless
+stamp) or on any pre-R7C turn.
+
+`select_eligible_exchanges_for_report` gains one clause:
+`turn.get("web_relevance_verified", True) is not False` — a missing
+key (legacy, or nothing-cited) stays eligible for backward
+compatibility; only an **explicit** stored `False` excludes. A
+structural fact grounds this design: `_filter_relevant_web_articles`
+is all-or-nothing per invocation (a genuine run always builds a fresh
+list; a fail-open run returns the exact same object unfiltered), so
+every article a model could cite in one turn already passed a real
+check, or the whole set is uniformly unverified — a single exchange's
+citations can never be "mixed" pass/fail under this mechanism (covered
+by a defensive test proving the aggregation logic anyway, since the
+test only needs a hand-constructed fixture to exercise it).
+
+`ChatTurn` (`api_app/schemas.py`, and the mirrored frontend type) gains
+`web_relevance_verified: bool | None = None` — same additive/defaulted
+convention as `exchange_id`/`used_web_search`/`added_to_report`
+already use; a pre-R7C entry serializes at `null`, unchanged behavior.
+`ChatMessageRow.tsx`'s `isEligibleForAddToReport` — the one shared
+predicate driving both the per-message menu item and
+`ChatModePanel`'s bulk-select filter — additionally requires
+`turn.web_relevance_verified !== false`, mirroring the backend gate
+exactly so the client-side pre-check and the server's real enforcement
+can never disagree. **Validation**: `tests/test_qa.py` +
+`tests/test_curation_chat.py` + `tests/test_curation_api.py` +
+`tests/test_api.py` → 279 passed; full backend suite → 634 passed;
+frontend `npm test` → 257 passed, build clean (`tsc -b && vite
+build`). Commit `f0d04bc`.
+
+**Current scope limits, not started**: an LLM binary relevance
+judgment for borderline embedding scores (a "gray zone" secondary
+check) — the guardrail is embedding-similarity-only throughout R7A–
+R7C; a live threshold calibration pass —
+`_WEB_ARTICLE_RELEVANCE_THRESHOLD` is unchanged from its original,
+explicitly-uncalibrated 0.25 value the whole way through this arc;
+Langfuse trace metadata for any of the new relevance signals (query-
+topic preservation, source-relevance pass rate, etc. — all proposed
+during R7 planning, none wired up); gating `agent.py`'s one-shot
+`search_web_tool` path, which still calls the same underlying
+`search_web()` with no relevance check at all (the reported bug was
+curation-chat-specific; extending the shared filter to the one-shot
+agent path is cheap if wanted later, but wasn't in scope here); and no
+Neo4j or any graph-database work of any kind — never proposed, not
+part of this arc. See `specs/backend-backlog.md`'s R7 entry for the
+tracked deferred list, including R7D (eval docs/metrics formalization).
+
 ### Validation recorded at the end of Phase 2 (2026-07-29)
 
 ```
