@@ -5,3 +5,5 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 4,2026-08-08T18:51:25.641514+00:00,895dd36,chat_relevance,live,1,1,0,1.0,,R7D.2 smoke | mean_latency_ms=3633.9
 5,2026-08-08T18:51:58.506148+00:00,895dd36,chat_relevance,live,5,2,3,0.5,redteam,"R7D first live redteam | skipped=2, mean_latency_ms=392.2"
 6,2026-08-09T15:32:48.103699+00:00,4956c1c,chat_relevance,live,5,2,3,0.5,redteam,"R7E.1 detailed live redteam | skipped=2, mean_latency_ms=4.4"
+7,2026-08-09T20:02:00.311747+00:00,bebf5f1,chat_relevance,live,5,2,3,0.5,redteam,"R7E.3 provenance-aware stale-pool filtering | skipped=2, mean_latency_ms=4.2"
+8,2026-08-09T20:14:09.269541+00:00,acee821,chat_relevance,live,5,3,2,0.7,redteam,"R7E.3 post-fix stale-pool validation | skipped=2, mean_latency_ms=3.9"
