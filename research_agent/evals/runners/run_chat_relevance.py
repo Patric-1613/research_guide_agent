@@ -51,6 +51,16 @@ _RELEVANCE_VECTORS = {
     "query_only": [1.0, 0.0, 0.0],
     "topic_only": [0.0, 1.0, 0.0],
     "neither": [0.0, 0.0, 1.0],
+    # R7E.3: cosine([1,1,3], query)==cosine([1,1,3], topic)==1/sqrt(11)
+    # ~= 0.3015 -- clears the general 0.25 threshold on BOTH dimensions
+    # (unlike the other 4 labels above, deliberately weak rather than a
+    # clean 0/0.71/1.0) but fails _STALE_POOL_QUERY_THRESHOLD (0.50) --
+    # for stale-pool fixture cases that need to reproduce a candidate
+    # clearing the base AND-check yet still failing the stricter
+    # different-source-query re-check, matching the real numbers R7E's
+    # live-eval analysis found (query_similarity=0.4756,
+    # topic_similarity=0.4291 for the actual stale US-policy source).
+    "query_and_topic_weak": [1.0, 1.0, 3.0],
 }
 
 
@@ -74,12 +84,21 @@ def predict(example: Example) -> dict[str, Any]:
     function through mocked (not skipped) `_embed_with_cache` calls, the
     resulting query/topic "similarity" numbers are meaningful relative
     to the fixed 3D vector scheme above, useful for confirming the mock
-    scheme itself behaves as designed."""
+    scheme itself behaves as designed.
+
+    R7E.3: also passes a fixture's optional `provenance_by_url` straight
+    through to the real `_filter_relevant_web_articles` -- no
+    reimplementation of the stale-pool comparison here, and no mock
+    vector needed for `source_query` text itself (the real function
+    never embeds it -- see that function's own R7E.3 docstring section:
+    it only does a plain string comparison against `query`, reusing the
+    query_similarity already computed for the candidate)."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
     mock_embedding_error = bool(example.inputs.get("mock_embedding_error", False))
     candidates = example.inputs.get("candidates") or []
+    provenance_by_url = example.inputs.get("provenance_by_url")
 
     articles = [_build_web_article(c) for c in candidates]
     vectors: dict[str, list[float]] = {query: _QUERY_VECTOR}
@@ -102,6 +121,7 @@ def predict(example: Example) -> dict[str, Any]:
     with embed_patch:
         kept = _filter_relevant_web_articles(
             query, articles, MagicMock(), topic=topic, fail_open=fail_open, debug=debug_scores,
+            provenance_by_url=provenance_by_url,
         )
 
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
@@ -118,16 +138,22 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     prediction (under `debug_scores`) -- persisted by
     write_run_detail_json, this is what closes R7E's own finding that
     the first live run's failures couldn't be diagnosed from the
-    aggregate CSV row alone."""
+    aggregate CSV row alone.
+
+    R7E.3: also passes a fixture's optional `provenance_by_url` straight
+    through -- same real, unmodified stale-pool logic as mock mode,
+    driven by real embeddings instead of mocked ones."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
     candidates = example.inputs.get("candidates") or []
+    provenance_by_url = example.inputs.get("provenance_by_url")
 
     articles = [_build_web_article(c) for c in candidates]
     debug_scores: list[dict[str, Any]] = []
     kept = _filter_relevant_web_articles(
         query, articles, client, topic=topic, fail_open=fail_open, debug=debug_scores,
+        provenance_by_url=provenance_by_url,
     )
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
 

@@ -983,6 +983,53 @@ def test_accept_web_offer_treats_insertion_time_embedding_failure_as_no_relevant
     assert "I did not find sources clearly relevant" in result["answer"]
 
 
+def test_accept_web_offer_insertion_time_gate_does_not_pass_provenance_by_url():
+    """R7E.3: the insertion-time gate's own call to
+    _filter_relevant_web_articles must stay exactly as R7B/R7C left it --
+    no provenance_by_url kwarg -- since a brand-new candidate has no
+    provenance recorded yet at this point in the flow (see
+    _accept_web_offer's own R7E.3 comment). Asserted directly against
+    the call signature, not just the observable outcome, so a future
+    accidental "just pass it everywhere" edit would be caught here even
+    if it happened not to change behavior for this particular test case."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance news"},
+    )
+    relevant_article = WebArticle(
+        title="New AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A new report on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [relevant_article.url])
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[relevant_article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[relevant_article]), \
+         patch("research_agent.qa._filter_relevant_web_articles", return_value=[relevant_article]) as filter_mock, \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+        chat_turn(session, "yes please", client=mock_client)
+
+    # chat_turn's own ask_in_session (-> qa.ask() -> _filter_web_relevance_node)
+    # calls _filter_relevant_web_articles a SECOND time, answer-time, WITH
+    # provenance_by_url -- confirms the R7E.3 wiring end to end. This
+    # assertion is about the FIRST (insertion-time) call specifically.
+    assert filter_mock.call_count == 2
+    insertion_time_call = filter_mock.call_args_list[0]
+    assert "provenance_by_url" not in insertion_time_call.kwargs
+    answer_time_call = filter_mock.call_args_list[1]
+    assert "provenance_by_url" in answer_time_call.kwargs
+
+
 def test_accept_web_offer_empty_session_topic_preserves_query_only_relevance():
     """topic="" on the PaperPoolSession (and therefore on the ChatSession
     _build_chat_session builds from it) must reproduce pre-R7A/R7B,

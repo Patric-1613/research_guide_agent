@@ -69,12 +69,19 @@ def _build_chat_session(session: PaperPoolSession) -> qa.ChatSession:
     chat-web-relevance-guardrails R7A: also populates the new
     ChatSession.topic from session.topic -- purely additive metadata as
     of this phase (see ChatSession's own docstring), not yet read by any
-    qa.py graph node."""
+    qa.py graph node.
+
+    chat-web-relevance-guardrails R7E.3: also populates ChatSession.
+    web_article_provenance_by_url from session.web_article_provenance_by_url
+    (R7E.2's own field) -- same pass-through convention as topic above,
+    now actually read by _filter_web_relevance_node for the stale-pool
+    re-check."""
     return qa.ChatSession(
         papers=session.selected_papers,
         web_articles=session.web_articles_added,
         history=session.chat_history,
         topic=session.topic,
+        web_article_provenance_by_url=session.web_article_provenance_by_url,
     )
 
 
@@ -256,6 +263,16 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     # is the ONLY gate deciding whether a brand-new article ever enters
     # a pool that outlives this turn, so a failure here must reject, not
     # silently admit whatever search_web happened to return.
+    #
+    # chat-web-relevance-guardrails R7E.3: deliberately does NOT pass
+    # provenance_by_url here -- these are brand-new candidates that have
+    # no provenance recorded yet (they're being judged BEFORE
+    # _record_web_article_provenance below ever runs for them), so the
+    # stale-pool re-check has nothing to apply to at this point in the
+    # flow anyway. The stale-pool check only ever matters for the
+    # answer-time re-filter of an ALREADY-persistent pool -- see
+    # qa.py::_filter_web_relevance_node, the only call site that passes
+    # provenance_by_url.
     relevant_articles = qa._filter_relevant_web_articles(
         search_query, candidate_articles, client, topic=session.topic, fail_open=False,
     )

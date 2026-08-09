@@ -368,7 +368,10 @@ def test_filter_relevant_web_articles_debug_topic_fields_are_none_without_a_topi
     assert debug == [{
         "url": "https://relevant.com", "title": article.title,
         "query_similarity": 1.0, "topic_similarity": None,
-        "passed_query_threshold": True, "passed_topic_threshold": None, "kept": True,
+        "passed_query_threshold": True, "passed_topic_threshold": None,
+        "source_query": None, "stale_pool_check_applied": False,
+        "stale_pool_threshold": None, "passed_stale_pool_threshold": None,
+        "kept": True,
     }]
 
 
@@ -383,6 +386,152 @@ def test_filter_relevant_web_articles_debug_stays_empty_on_embedding_exception()
         _filter_relevant_web_articles("some query", articles, MagicMock(), debug=debug)
 
     assert debug == []
+
+
+# --- chat-web-relevance-guardrails R7E.3: provenance-aware stale-pool re-check ---
+
+def _borderline_vector() -> list[float]:
+    """cosine([1, 0], v) == 1/sqrt(10) ~= 0.3162 -- clears the general
+    0.25 threshold but not R7E.3's stricter 0.50 stale-pool threshold."""
+    return [1.0, 3.0]
+
+
+def _strong_vector() -> list[float]:
+    """cosine([1, 0], v) == 1/sqrt(2) ~= 0.7071 -- clears both."""
+    return [1.0, 1.0]
+
+
+def test_filter_relevant_web_articles_stale_pool_missing_provenance_map_preserves_existing_behavior():
+    """provenance_by_url=None (the default) -- a borderline candidate
+    that clears only the general 0.25 threshold is kept exactly as
+    pre-R7E.3, since there's no provenance to trigger the stricter
+    re-check at all."""
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock())
+
+    assert kept == [article]
+
+
+def test_filter_relevant_web_articles_stale_pool_empty_source_query_preserves_existing_behavior():
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    provenance_by_url = {article.url: {"source_query": "", "added_at": "2026-08-01T00:00:00+00:00"}}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
+
+    assert kept == [article]
+
+
+def test_filter_relevant_web_articles_stale_pool_same_source_query_preserves_existing_behavior():
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    provenance_by_url = {article.url: {"source_query": query, "added_at": "2026-08-01T00:00:00+00:00"}}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
+
+    assert kept == [article]
+
+
+def test_filter_relevant_web_articles_stale_pool_different_source_query_rejects_borderline_candidate():
+    """The case this phase exists for: a candidate that clears the
+    general 0.25 threshold (~0.3162 here) but was recorded under a
+    DIFFERENT source_query must now fail the stricter 0.50 bar."""
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    provenance_by_url = {
+        article.url: {"source_query": "US AI executive order summary", "added_at": "2026-08-01T00:00:00+00:00"},
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
+
+    assert kept == []
+
+
+def test_filter_relevant_web_articles_stale_pool_strongly_relevant_candidate_from_different_query_survives():
+    """A prior-query candidate that's STILL strongly relevant to the
+    current query (~0.7071 here, well above 0.50) survives -- the
+    stale-pool check tightens the bar, it doesn't reject every
+    different-source-query candidate outright."""
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _strong_vector()}
+    provenance_by_url = {
+        article.url: {"source_query": "US AI executive order summary", "added_at": "2026-08-01T00:00:00+00:00"},
+    }
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
+
+    assert kept == [article]
+
+
+def test_filter_relevant_web_articles_stale_pool_debug_records_provenance_and_decision():
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    provenance_by_url = {
+        article.url: {"source_query": "US AI executive order summary", "added_at": "2026-08-01T00:00:00+00:00"},
+    }
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(
+            query, [article], MagicMock(), provenance_by_url=provenance_by_url, debug=debug,
+        )
+
+    [entry] = debug
+    assert entry["passed_query_threshold"] is True  # cleared the general 0.25 threshold
+    assert entry["source_query"] == "US AI executive order summary"
+    assert entry["stale_pool_check_applied"] is True
+    assert entry["stale_pool_threshold"] == pytest.approx(0.50)
+    assert entry["passed_stale_pool_threshold"] is False
+    assert entry["kept"] is False
+
+
+def test_filter_relevant_web_articles_stale_pool_debug_not_applied_when_provenance_absent_for_url():
+    """A candidate whose url has no entry in provenance_by_url at all
+    (e.g. an article added before R7E.2 existed) -- source_query is
+    None, the stale-pool check never activates, matching the
+    missing-provenance-map behavior exactly."""
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url={}, debug=debug)
+
+    [entry] = debug
+    assert entry["source_query"] is None
+    assert entry["stale_pool_check_applied"] is False
+    assert entry["stale_pool_threshold"] is None
+    assert entry["passed_stale_pool_threshold"] is None
+    assert entry["kept"] is True
+
+
+def test_filter_relevant_web_articles_stale_pool_does_not_mutate_provenance_map():
+    query = "EU AI Act high-risk systems"
+    article = _web_article("https://a.com", "A")
+    vectors = {query: [1.0, 0.0], f"{article.title}\n{article.snippet}": _borderline_vector()}
+    provenance_by_url = {
+        article.url: {"source_query": "US AI executive order summary", "added_at": "2026-08-01T00:00:00+00:00"},
+    }
+    provenance_snapshot = {url: dict(entry) for url, entry in provenance_by_url.items()}
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
+
+    assert provenance_by_url == provenance_snapshot
 
 
 def test_ask_stale_web_pool_filtered_out_is_not_passed_into_the_model_prompt_for_unrelated_question():

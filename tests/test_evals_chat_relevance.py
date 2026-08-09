@@ -94,10 +94,45 @@ def test_load_examples_unknown_dataset_file_raises_clear_error():
 
 class TestMockChatRelevanceRunner:
     def test_topic_drift_case_rejects_the_off_topic_article(self):
+        """chat_relevance_001 -- remains passing after R7E.3 (no
+        provenance recorded for this case, so the stale-pool check never
+        activates; it's still rejected purely on the pre-existing
+        topic check, exactly as before)."""
         examples = load_examples(DATASET_FILE, tags=["topic_drift"])
         [example] = examples
         prediction = run_chat_relevance.predict(example)
         assert prediction["relevant_urls"] == []
+        assert prediction["debug_scores"][0]["stale_pool_check_applied"] is False
+
+    def test_query_relevant_topic_irrelevant_case_rejects_the_off_topic_article(self):
+        """chat_relevance_002 -- remains passing after R7E.3, same
+        reasoning as the topic-drift case above (no provenance -> no
+        stale-pool involvement)."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_002_query_relevant_topic_irrelevant")
+        prediction = run_chat_relevance.predict(example)
+        assert prediction["relevant_urls"] == []
+        assert prediction["debug_scores"][0]["stale_pool_check_applied"] is False
+
+    def test_stale_web_pool_reuse_case_now_rejected_via_stale_pool_check(self):
+        """R7E.3: chat_relevance_006 now passes -- and specifically
+        BECAUSE the new stale-pool check activates and rejects it, not
+        because it happens to fail the pre-existing query/topic check
+        for some other reason (it clears both -- 'query_and_topic_weak'
+        -- matching the real live-eval numbers, see the fixture's own
+        R7E.3 note)."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_006_stale_web_pool_reuse")
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == []
+        [entry] = prediction["debug_scores"]
+        assert entry["passed_query_threshold"] is True
+        assert entry["passed_topic_threshold"] is True
+        assert entry["source_query"] == "What did the US executive order on AI say?"
+        assert entry["stale_pool_check_applied"] is True
+        assert entry["passed_stale_pool_threshold"] is False
+        assert entry["kept"] is False
 
     def test_genuinely_relevant_source_is_kept(self):
         examples = load_examples(DATASET_FILE)
@@ -150,6 +185,8 @@ class TestMockChatRelevanceRunner:
             "topic_similarity": pytest.approx(0.7071, abs=1e-3),
             "passed_query_threshold": True,
             "passed_topic_threshold": True,
+            "source_query": None, "stale_pool_check_applied": False,
+            "stale_pool_threshold": None, "passed_stale_pool_threshold": None,
             "kept": True,
         }]
 
@@ -169,6 +206,24 @@ class TestLiveChatRelevanceRunner:
         assert result.skipped == 2
         assert result.failed == 0
         assert result.average_score == 1.0
+
+    def test_live_mode_passes_fixture_provenance_through_to_the_real_filter(self):
+        """R7E.3: predict_live must pass a fixture's provenance_by_url
+        through to the real _filter_relevant_web_articles unmodified --
+        chat_relevance_006 is rejected via the stale-pool check in live
+        mode too, using the SAME real function mock mode drives, just
+        with a mocked (not skipped) OpenAI client/embedding call."""
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live", tags=["stale_pool"])
+
+        [entry] = result.per_example
+        assert entry["example_id"] == "chat_relevance_006_stale_web_pool_reuse"
+        debug_scores = entry["prediction"]["debug_scores"]
+        assert entry["prediction"]["relevant_urls"] == []
+        assert debug_scores[0]["stale_pool_check_applied"] is True
+        assert debug_scores[0]["source_query"] == "What did the US executive order on AI say?"
+        assert debug_scores[0]["kept"] is False
 
     def test_live_mode_respects_subset_and_tags(self):
         openai_patch, embed_patch = _patch_live_embeddings()

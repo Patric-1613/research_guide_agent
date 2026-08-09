@@ -158,12 +158,25 @@ class ChatSession:
     existed. Threading it through now, unused, is what lets a later phase
     wire topic-anchored relevance into the live path without a second,
     separate plumbing change.
+
+    chat-web-relevance-guardrails R7E.3: `web_article_provenance_by_url`
+    mirrors `PaperPoolSession.web_article_provenance_by_url` (curation_
+    chat.py's `_build_chat_session` populates it the same way `topic` is
+    populated above) -- {"source_query": str, "added_at": str} per URL,
+    used by `_filter_web_relevance_node` to apply a stricter re-check to
+    pool members whose recorded source_query differs from this turn's
+    query (see `_filter_relevant_web_articles`'s own R7E.3 docstring
+    section). Default empty dict: a caller that omits it (any pre-R7E.3
+    caller, or a bare `ChatSession()`) sees byte-identical behavior to
+    before this field existed, same backward-compatibility posture as
+    `topic`'s own default above.
     """
 
     papers: list[Paper] = field(default_factory=list)
     web_articles: list[WebArticle] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)  # [{"role": "user"|"assistant", "content": str}]
     topic: str = ""
+    web_article_provenance_by_url: dict[str, dict] = field(default_factory=dict)
 
 
 def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None) -> type[BaseModel]:
@@ -369,6 +382,25 @@ _reference_embeddings_cache: dict[str, list[tuple[str, list[float]]]] | None = N
 # of scripts/test_semantic_classify_live.py -- before being trusted as
 # final.
 _WEB_ARTICLE_RELEVANCE_THRESHOLD = 0.25
+
+# chat-web-relevance-guardrails R7E.3: an explicitly PROVISIONAL second
+# threshold, not a calibrated one -- same "starting point, not final"
+# caveat as _WEB_ARTICLE_RELEVANCE_THRESHOLD above, chosen from exactly
+# one observed live-eval data point rather than a real dataset. R7E's own
+# live red-team run found a genuinely stale pool candidate (a prior US
+# AI executive order summary, re-surfaced against a later, unrelated EU
+# AI Act question) clearing the general threshold above on BOTH
+# dimensions -- query_similarity=0.4756, topic_similarity=0.4291 -- so
+# 0.25 alone cannot distinguish "topically close enough" from "actually
+# still relevant to what's being asked right now" for a pool member
+# whose provenance shows it was found under a DIFFERENT prior query.
+# 0.50 is picked specifically to sit just above that observed 0.4756 --
+# high enough to reject that one measured case, not derived from any
+# broader calibration. See _filter_relevant_web_articles's own R7E.3
+# docstring section for how this is applied (only to provenance-tagged,
+# different-source-query candidates, never as a replacement for the
+# general threshold above).
+_STALE_POOL_QUERY_THRESHOLD = 0.50
 
 
 def _contains_content_override_word(normalized: str) -> bool:
@@ -633,6 +665,7 @@ def _retrieve_node(state: QAState) -> dict:
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
     topic: str = "", fail_open: bool = True, outcome: dict | None = None, debug: list[dict] | None = None,
+    provenance_by_url: dict[str, dict] | None = None,
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -718,6 +751,30 @@ def _filter_relevant_web_articles(
     a live eval run can report the actual similarity numbers behind a
     pass/fail instead of just the kept/rejected URL list -- see R7E's
     own analysis of the first live eval run for why that mattered.
+
+    chat-web-relevance-guardrails R7E.3: `provenance_by_url`, if given,
+    applies a STRICTER re-check on top of (never instead of) the query/
+    topic AND-check above, only for a candidate that (a) clears that
+    check already, AND (b) has a `provenance_by_url[article.url]` entry
+    with a non-empty `source_query` that DIFFERS from `query` (this
+    turn's own query) -- exactly the "pool member discovered under a
+    different, earlier question" signal R7E's live-eval analysis found
+    the general threshold alone can't distinguish from genuine ongoing
+    relevance (see _STALE_POOL_QUERY_THRESHOLD's own comment for the
+    concrete case that motivated this). When both conditions hold, the
+    candidate must ALSO clear `_STALE_POOL_QUERY_THRESHOLD` (reusing the
+    SAME `query_similarity` already computed above -- no second
+    embedding call) to survive; failing it flips `article_kept` back to
+    False. Backward compatible on every other path: `provenance_by_url
+    is None` (the default, and what `_accept_web_offer`'s insertion-time
+    gate deliberately keeps passing -- see that call site's own R7E.3
+    comment for why), a URL missing from the map, or an empty/missing
+    `source_query` all skip this check entirely, reproducing pre-R7E.3
+    behavior exactly. A candidate whose `source_query` matches `query`
+    verbatim (the pool member was found under literally this same
+    query) also skips it -- nothing "stale" about that. Never mutates
+    `provenance_by_url` or any of its entries -- read-only, same as
+    every other input this function takes.
     """
     if not articles:
         if outcome is not None:
@@ -751,6 +808,27 @@ def _filter_relevant_web_articles(
                 topic_similarity = _cosine_similarity(topic_vector, article_vector)
                 passed_topic_threshold = topic_similarity >= threshold
 
+            # chat-web-relevance-guardrails R7E.3: stale-pool re-check --
+            # only ever tightens a candidate that's ALREADY kept by the
+            # base query/topic check above; never loosens/reconsiders one
+            # that already failed it. source_query is surfaced in debug
+            # unconditionally (a factual provenance attribute, independent
+            # of whether the stricter check ends up applying), but the
+            # check itself only activates when article_kept is still True
+            # here AND source_query is non-empty AND differs from `query`.
+            source_query: str | None = None
+            if provenance_by_url is not None:
+                provenance = provenance_by_url.get(article.url)
+                if provenance:
+                    source_query = provenance.get("source_query") or None
+            stale_pool_check_applied = False
+            passed_stale_pool_threshold: bool | None = None
+            if article_kept and source_query and source_query != query:
+                stale_pool_check_applied = True
+                passed_stale_pool_threshold = query_similarity >= _STALE_POOL_QUERY_THRESHOLD
+                if not passed_stale_pool_threshold:
+                    article_kept = False
+
             if article_kept:
                 kept.append(article)
             if debug is not None:
@@ -761,6 +839,10 @@ def _filter_relevant_web_articles(
                     "topic_similarity": round(topic_similarity, 4) if topic_similarity is not None else None,
                     "passed_query_threshold": passed_query_threshold,
                     "passed_topic_threshold": passed_topic_threshold,
+                    "source_query": source_query,
+                    "stale_pool_check_applied": stale_pool_check_applied,
+                    "stale_pool_threshold": _STALE_POOL_QUERY_THRESHOLD if stale_pool_check_applied else None,
+                    "passed_stale_pool_threshold": passed_stale_pool_threshold,
                     "kept": article_kept,
                 })
         if outcome is not None:
@@ -808,11 +890,25 @@ def _filter_web_relevance_node(state: QAState) -> dict:
     gating (select_eligible_exchanges_for_report). Purely observational:
     doesn't change what gets filtered or how, just reports what already
     happened.
+
+    chat-web-relevance-guardrails R7E.3: now also passes
+    state["session"].web_article_provenance_by_url through as
+    `provenance_by_url`, so a pool member re-surfacing this turn under a
+    materially different query than the one that originally found it
+    gets the stricter stale-pool re-check (see _filter_relevant_web_
+    articles's own R7E.3 docstring section). Same backward-compatible
+    default as topic above -- any ChatSession without recorded
+    provenance (empty dict, its own default) sees every candidate skip
+    this check entirely, reproducing pre-R7E.3 behavior exactly. This is
+    the ONLY call site that passes provenance_by_url -- _accept_web_
+    offer's insertion-time gate deliberately does not (see that call
+    site's own comment).
     """
     query = state["standalone_query"] or state["question"]
     outcome: dict = {}
     filtered = _filter_relevant_web_articles(
         query, state["retrieved_web_articles"], state["client"], topic=state["session"].topic, outcome=outcome,
+        provenance_by_url=state["session"].web_article_provenance_by_url,
     )
     return {
         "retrieved_web_articles": filtered,
