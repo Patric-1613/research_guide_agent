@@ -39,12 +39,15 @@ DATASET_FILE = run_chat_relevance.DATASET_FILE
 
 def _patch_live_embeddings():
     """Live-mode tests still must not touch the real OpenAI API --
-    patches `OpenAI` construction (so no credentials are needed) and
-    `_embed_with_cache` (so no network call happens), using the same
-    per-candidate `mock_relevance` vector scheme mock mode's own
-    `predict` uses, so live-mode assertions can reuse the same expected
-    relevant/rejected URLs as the mock-mode tests above."""
+    patches `OpenAI` construction (so no credentials are needed),
+    `_embed_with_cache` (so no embedding network call happens), and (R7E.5)
+    `_judge_direct_web_relevance` (so no chat-completion judge call
+    happens either) -- using the same per-candidate `mock_relevance`/
+    `mock_direct_relevance` fixture fields mock mode's own `predict`
+    uses, so live-mode assertions can reuse the same expected relevant/
+    rejected URLs as the mock-mode tests above."""
     vectors: dict[str, list[float]] = {}
+    judge_verdicts: dict[str, str] = {}
     for example in load_examples(DATASET_FILE):
         query = example.inputs.get("query", "")
         topic = example.inputs.get("topic", "")
@@ -55,16 +58,25 @@ def _patch_live_embeddings():
             key = f"{candidate['title']}\n{candidate.get('snippet', '')}"
             label = candidate.get("mock_relevance", "neither")
             vectors[key] = run_chat_relevance._RELEVANCE_VECTORS[label]
+            if candidate.get("mock_direct_relevance"):
+                judge_verdicts[candidate["url"]] = candidate["mock_direct_relevance"]
+
+    def fake_judge(query, topic, candidates, client):
+        return {
+            c.url: {"verdict": judge_verdicts.get(c.url, "failure"), "confidence": 0.9, "reason": "mock", "cache_hit": False}
+            for c in candidates
+        }
 
     return (
         patch.object(run_chat_relevance, "OpenAI", return_value=MagicMock()),
         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]),
+        patch("research_agent.qa._judge_direct_web_relevance", side_effect=fake_judge),
     )
 
 
 def test_load_examples_splits_metadata_inputs_and_expected_outputs():
     examples = load_examples(DATASET_FILE)
-    assert len(examples) == 9
+    assert len(examples) == 15
 
     positive = next(e for e in examples if e.id == "chat_relevance_004_genuinely_relevant_ai_governance_source")
     assert isinstance(positive, Example)
@@ -173,30 +185,113 @@ class TestMockChatRelevanceRunner:
         [entry] = [d for d in prediction["debug_scores"] if d["temporal_intent"] == "this_week"][:1]
         assert entry["freshness_cutoff"] == expected_cutoff
 
-    def test_broad_vs_specific_case_003_remains_an_acknowledged_unresolved_failure(self):
-        """R7E's own scope note, restated as a test: case 003 (a broad
-        survey vs. a specific sub-question) is explicitly OUT of scope
-        for both R7E.3 and R7E.4 -- deferred to a future R7E.5 gray-zone
-        judge. Mock mode happens to already pass this case (it always
-        has, since R7D.1 -- the synthetic 3D vector scheme's 'topic_only'
-        label cleanly fails the query check by construction), but that is
-        NOT evidence the underlying problem is solved: the live-eval
-        evidence recorded in eval_results/chat_relevance_history.csv
-        (runs 5/6/7/8) shows this case genuinely failing against real
-        embeddings, where a broad survey's real query_similarity (~0.29)
-        clears the coarse 0.25 threshold. This test only pins the KNOWN,
-        unchanged mock-mode behavior so a future regression is caught --
-        it is not a claim that case 003 is fixed."""
+    def test_broad_vs_specific_case_003_now_rejected_via_the_judge_not_the_base_check(self):
+        """R7E.5: case 003 (a broad survey vs. a specific reward-hacking
+        sub-question) was OUT of scope for R7E.3/R7E.4 -- it cleared the
+        general query/topic threshold both in real live evidence
+        (query_similarity=0.2934, topic_similarity=0.4293, both >= 0.25)
+        and, as of this fixture update, in mock mode too
+        (mock_relevance: query_and_topic_weak, chosen specifically to
+        land in the same gray zone rather than fail the base check for
+        an unrelated reason -- see the fixture's own R7E.5 note). This
+        test proves the REJECTION now genuinely comes from the judge
+        (mock_direct_relevance: not_relevant), not from the base check
+        that used to reject it before this fixture update. This is NOT
+        proof the real judge model is accurate -- the mock stub simply
+        replays the fixture's own asserted verdict -- that requires a
+        real live run (see docs/evaluation.md); it only proves the
+        HARNESS wiring (gray-zone trigger -> judge -> reject) works."""
         examples = load_examples(DATASET_FILE)
         example = next(e for e in examples if e.id == "chat_relevance_003_topic_relevant_query_irrelevant")
         prediction = run_chat_relevance.predict(example)
-        assert prediction["relevant_urls"] == []  # unchanged mock-mode result, not a live-mode claim
+
+        assert prediction["relevant_urls"] == []
+        [entry] = prediction["debug_scores"]
+        assert entry["passed_query_threshold"] is True  # cleared the base check -- NOT rejected there
+        assert entry["passed_topic_threshold"] is True
+        assert entry["direct_relevance_gray_zone"] is True
+        assert entry["direct_relevance_check_applied"] is True
+        assert entry["direct_relevance_verdict"] == "not_relevant"
+        assert entry["kept"] is False
 
     def test_genuinely_relevant_source_is_kept(self):
         examples = load_examples(DATASET_FILE)
         example = next(e for e in examples if e.id == "chat_relevance_004_genuinely_relevant_ai_governance_source")
         prediction = run_chat_relevance.predict(example)
         assert prediction["relevant_urls"] == ["https://eu.example.org/ai-act-high-risk-systems"]
+
+    @pytest.mark.parametrize("case_id,url", [
+        (
+            "chat_relevance_010_gray_zone_direct_rlhf_source",
+            "https://arxiv.example.org/rlhf-reward-hacking-causes",
+        ),
+        (
+            "chat_relevance_011_gray_zone_useful_paraphrase",
+            "https://arxiv.example.org/specification-gaming-rl-finetuning",
+        ),
+    ])
+    def test_gray_zone_positive_cases_are_kept_by_the_judge(self, case_id, url):
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == case_id)
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == [url]
+        [entry] = prediction["debug_scores"]
+        assert entry["direct_relevance_gray_zone"] is True
+        assert entry["direct_relevance_verdict"] == "relevant"
+
+    @pytest.mark.parametrize("case_id,url", [
+        (
+            "chat_relevance_012_gray_zone_same_keywords_wrong_context",
+            "https://arxiv.example.org/reward-hacking-atari-agents",
+        ),
+        (
+            "chat_relevance_013_gray_zone_prompt_injection",
+            "https://arxiv.example.org/ai-alignment-overview-injected",
+        ),
+    ])
+    def test_gray_zone_negative_cases_are_rejected_by_the_judge(self, case_id, url):
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == case_id)
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == []
+        [entry] = prediction["debug_scores"]
+        assert entry["url"] == url
+        assert entry["direct_relevance_gray_zone"] is True
+        assert entry["direct_relevance_verdict"] == "not_relevant"
+
+    def test_gray_zone_uncertain_verdict_is_kept_under_fail_open(self):
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_014_gray_zone_judge_uncertain_fail_open")
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == ["https://arxiv.example.org/rlhf-challenges-ambiguous"]
+        [entry] = prediction["debug_scores"]
+        assert entry["direct_relevance_verdict"] == "uncertain"
+        assert entry["direct_relevance_failure"] is False  # uncertain is a real verdict, not a failure
+        assert entry["kept"] is True
+
+    def test_strong_candidate_bypasses_the_judge_entirely(self):
+        """R7E.5 case 7 -- query_similarity clears
+        _DIRECT_RELEVANCE_JUDGE_THRESHOLD, so the candidate never enters
+        the gray zone at all -- `direct_relevance_gray_zone=False`
+        proves it, since that field is only ever True for a candidate
+        `_judge_direct_web_relevance` was actually given (see
+        _filter_relevant_web_articles's own R7E.5 gray-zone-selection
+        code: membership is decided before the judge is ever called). A
+        rigorous call-count assertion against the real production judge
+        function (not the mock stub predict() installs internally) lives
+        in tests/test_qa.py, calling _filter_relevant_web_articles
+        directly rather than through this eval runner."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_015_strong_candidate_bypasses_judge")
+
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == ["https://arxiv.example.org/rlhf-reward-hacking-strong-match"]
+        assert prediction["debug_scores"][0]["direct_relevance_gray_zone"] is False
+        assert prediction["debug_scores"][0]["direct_relevance_check_applied"] is False
 
     def test_empty_candidate_pool_returns_empty_list_without_error(self):
         examples = load_examples(DATASET_FILE)
@@ -218,9 +313,9 @@ class TestMockChatRelevanceRunner:
 
     def test_run_experiment_scores_every_case_at_1_0_or_none(self):
         result = run_chat_relevance.run_experiment(mode="mock")
-        assert result.total == 9
+        assert result.total == 15
         assert result.failed == 0
-        assert result.passed == 9
+        assert result.passed == 15
         assert result.average_score == 1.0
 
     def test_run_experiment_unknown_mode_is_a_clean_error(self):
@@ -248,22 +343,44 @@ class TestMockChatRelevanceRunner:
             "temporal_check_applied": False, "temporal_intent": None,
             "candidate_published_at": None, "freshness_cutoff": None,
             "published_date_status": "missing", "passed_temporal_check": None,
+            "direct_relevance_gray_zone": False, "direct_relevance_check_applied": False,
+            "direct_relevance_verdict": None, "direct_relevance_confidence": None,
+            "direct_relevance_failure": False, "direct_relevance_cache_hit": False,
             "kept": True,
         }]
 
 
 class TestLiveChatRelevanceRunner:
-    """R7D.2. Every test here patches OpenAI construction and
-    _embed_with_cache -- see _patch_live_embeddings() -- so nothing in
-    this class ever makes a real network/API call."""
+    """R7D.2. Every test here patches OpenAI construction,
+    _embed_with_cache, and (R7E.5) _judge_direct_web_relevance -- see
+    _patch_live_embeddings() -- so nothing in this class ever makes a
+    real network/API call, embedding or judge."""
+
+    def test_live_mode_passes_gray_zone_candidates_through_the_real_judge_orchestration(self):
+        """R7E.5: predict_live's enable_direct_relevance_judge=True must
+        reach the same real gray-zone trigger mock mode exercises --
+        case 003 is rejected via the judge in live mode too, using the
+        SAME real _filter_relevant_web_articles orchestration, just with
+        a mocked (not skipped) OpenAI client for the judge call as well
+        as the embedding calls."""
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
+            result = run_chat_relevance.run_experiment(mode="live", tags=["gray_zone"])
+
+        by_id = {pe["example_id"]: pe for pe in result.per_example}
+        entry = by_id["chat_relevance_003_topic_relevant_query_irrelevant"]
+        assert entry["prediction"]["relevant_urls"] == []
+        [debug_entry] = entry["prediction"]["debug_scores"]
+        assert debug_entry["direct_relevance_gray_zone"] is True
+        assert debug_entry["direct_relevance_verdict"] == "not_relevant"
 
     def test_live_mode_dispatches_to_the_live_predict_path_and_uses_the_same_loader(self):
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live")
 
         assert result.mode == "live"
-        assert result.total == 7  # 9 fixture cases minus the 2 mock_only embedding-failure cases
+        assert result.total == 13  # 15 fixture cases minus the 2 mock_only embedding-failure cases
         assert result.skipped == 2
         assert result.failed == 0
         assert result.average_score == 1.0
@@ -274,8 +391,8 @@ class TestLiveChatRelevanceRunner:
         chat_relevance_006 is rejected via the stale-pool check in live
         mode too, using the SAME real function mock mode drives, just
         with a mocked (not skipped) OpenAI client/embedding call."""
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live", tags=["stale_pool"])
 
         [entry] = result.per_example
@@ -292,8 +409,8 @@ class TestLiveChatRelevanceRunner:
         rejected via the temporal check in live mode too, using the SAME
         real function mock mode drives. No real network/API call --
         OpenAI construction and _embed_with_cache are both mocked."""
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live", tags=["temporal"])
 
         [entry] = result.per_example
@@ -305,15 +422,15 @@ class TestLiveChatRelevanceRunner:
         assert stale_entry["passed_temporal_check"] is False
 
     def test_live_mode_respects_subset_and_tags(self):
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live", subset=2, tags=["redteam"])
 
         assert result.total + result.skipped == 2
 
     def test_live_mode_skips_mock_only_cases_with_a_clear_reason(self):
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live")
 
         skipped = {pe["example_id"]: pe for pe in result.per_example if pe.get("skipped")}
@@ -326,7 +443,7 @@ class TestLiveChatRelevanceRunner:
             assert entry["prediction"] is None  # predict_live was never called for it
 
     def test_live_mode_never_calls_predict_live_for_mock_only_cases(self):
-        openai_patch, embed_patch = _patch_live_embeddings()
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
         seen_example_ids = []
         real_predict_live = run_chat_relevance.predict_live
 
@@ -334,12 +451,12 @@ class TestLiveChatRelevanceRunner:
             seen_example_ids.append(example.id)
             return real_predict_live(example, client)
 
-        with openai_patch, embed_patch, patch.object(run_chat_relevance, "predict_live", spying_predict_live):
+        with openai_patch, embed_patch, judge_patch, patch.object(run_chat_relevance, "predict_live", spying_predict_live):
             run_chat_relevance.run_experiment(mode="live")
 
         assert "chat_relevance_008_embedding_failure_fail_open" not in seen_example_ids
         assert "chat_relevance_009_embedding_failure_fail_closed" not in seen_example_ids
-        assert len(seen_example_ids) == 7
+        assert len(seen_example_ids) == 13
 
     def test_live_mode_missing_credentials_raises_live_mode_setup_error(self):
         with patch.object(run_chat_relevance, "OpenAI", side_effect=OpenAIError("no api key")):
@@ -358,8 +475,8 @@ class TestLiveChatRelevanceRunner:
         kept/rejected decision as relevant_urls -- proves the debug
         capture is read-only instrumentation, not a second code path
         that could disagree with the real filtering result."""
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live")
 
         entry = next(pe for pe in result.per_example if pe["example_id"] == "chat_relevance_004_genuinely_relevant_ai_governance_source")
@@ -393,7 +510,7 @@ class TestCli:
         assert f"run detail written to {detail_path}" in out
         detail = json.loads(detail_path.read_text())
         assert detail["run_id"] == 1
-        assert len(detail["per_example"]) == 9
+        assert len(detail["per_example"]) == 15
 
     def test_run_mock_with_subset_and_tags(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
@@ -406,8 +523,8 @@ class TestCli:
 
     def test_run_live_mode_dispatches_and_warns_of_cost(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             exit_code = cli.main(["run", "--suite", "chat_relevance", "--mode", "live"])
 
         assert exit_code == 0
@@ -492,8 +609,8 @@ class TestRunDetailJson:
         assert entry["error"] is None
 
     def test_detail_json_represents_skipped_mock_only_live_cases(self, tmp_path):
-        openai_patch, embed_patch = _patch_live_embeddings()
-        with openai_patch, embed_patch:
+        openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live", tags=["fail_open"])
 
         path = write_run_detail_json(result, run_id=1, runs_dir=tmp_path, tags=["fail_open"])

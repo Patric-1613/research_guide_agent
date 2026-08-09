@@ -88,6 +88,42 @@ def _parse_evaluation_time(example: Example):
     return _parse_published_date(raw) if raw else None
 
 
+def _mock_judge_direct_web_relevance(example: Example):
+    """R7E.5: builds a `side_effect` callable matching
+    `_judge_direct_web_relevance`'s own `(query, topic, candidates,
+    client) -> {url: {...}}` contract, from a fixture's optional
+    per-candidate `mock_direct_relevance` field ("relevant"/
+    "not_relevant"/"uncertain"). Patches exactly this ONE function --
+    the focused helper that would otherwise make a real
+    `client.chat.completions.parse` call -- while `_filter_relevant_web_
+    articles`'s own gray-zone trigger, batch capping, fail_open policy,
+    and debug-field assembly all still run completely real and
+    unmodified, the exact same "patch the one call that would hit a real
+    API, keep everything else real" pattern this module already uses for
+    `_embed_with_cache`. A gray-zone candidate with no `mock_direct_
+    relevance` set in the fixture defaults to "failure" here (never a
+    silent missing-key no-op), matching the real function's own
+    contract of always returning a result for every url it's asked
+    about."""
+    verdict_by_url = {
+        c["url"]: c["mock_direct_relevance"]
+        for c in example.inputs.get("candidates") or [] if c.get("mock_direct_relevance")
+    }
+
+    def fake_judge(query: str, topic: str, candidates: list[WebArticle], client: OpenAI) -> dict[str, dict[str, Any]]:
+        return {
+            c.url: {
+                "verdict": verdict_by_url.get(c.url, "failure"),
+                "confidence": 0.9 if c.url in verdict_by_url else None,
+                "reason": "mock" if c.url in verdict_by_url else None,
+                "cache_hit": False,
+            }
+            for c in candidates
+        }
+
+    return fake_judge
+
+
 def predict(example: Example) -> dict[str, Any]:
     """Mock-mode prediction -- see module docstring. `mock_relevance`/
     `mock_embedding_error` are mock-only fixture fields; live mode
@@ -112,7 +148,14 @@ def predict(example: Example) -> dict[str, Any]:
     `now` -- see `_parse_evaluation_time`. Candidate `published_date`
     values are also passed straight through via `_build_web_article`
     (already wired since R7D.1); the real function does all temporal
-    comparison work, nothing reimplemented here."""
+    comparison work, nothing reimplemented here.
+
+    R7E.5: `enable_direct_relevance_judge=True` -- mock mode must
+    exercise the REAL gray-zone trigger/orchestration inside
+    `_filter_relevant_web_articles`, not skip it. Only
+    `_judge_direct_web_relevance` itself (the one call that would
+    otherwise hit a real API) is patched, via `_mock_judge_direct_web_
+    relevance` -- see that function's own docstring."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
@@ -137,12 +180,15 @@ def predict(example: Example) -> dict[str, Any]:
         embed_patch = patch(
             "research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text],
         )
+    judge_patch = patch(
+        "research_agent.qa._judge_direct_web_relevance", side_effect=_mock_judge_direct_web_relevance(example),
+    )
 
     debug_scores: list[dict[str, Any]] = []
-    with embed_patch:
+    with embed_patch, judge_patch:
         kept = _filter_relevant_web_articles(
             query, articles, MagicMock(), topic=topic, fail_open=fail_open, debug=debug_scores,
-            provenance_by_url=provenance_by_url, now=now,
+            provenance_by_url=provenance_by_url, now=now, enable_direct_relevance_judge=True,
         )
 
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
@@ -166,7 +212,17 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     driven by real embeddings instead of mocked ones.
 
     R7E.4: also passes a fixture's optional `evaluation_time` through as
-    `now`, same as mock mode's predict()."""
+    `now`, same as mock mode's predict().
+
+    R7E.5: `enable_direct_relevance_judge=True` -- live mode makes a
+    REAL judge call (same `client`, same `CONDENSE_MODEL`) for any
+    gray-zone candidate, on top of the real embedding calls it already
+    makes. `mock_direct_relevance` is mock-only fixture metadata, same
+    as `mock_relevance`/`mock_embedding_error` above -- live mode
+    ignores it entirely; nothing here mocks the judge itself. Tests
+    exercising this function mock `OpenAI`/`_embed_with_cache` AND
+    `_judge_direct_web_relevance` (see test_evals_chat_relevance.py's
+    `_patch_live_embeddings`) so no test run ever makes a real call."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
@@ -178,7 +234,7 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     debug_scores: list[dict[str, Any]] = []
     kept = _filter_relevant_web_articles(
         query, articles, client, topic=topic, fail_open=fail_open, debug=debug_scores,
-        provenance_by_url=provenance_by_url, now=now,
+        provenance_by_url=provenance_by_url, now=now, enable_direct_relevance_judge=True,
     )
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
 

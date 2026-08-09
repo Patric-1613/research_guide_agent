@@ -10,9 +10,11 @@ Usage:
 `--mode` defaults to `mock` -- E0's own decision (docs/evaluation.md's
 "Planned evaluation architecture" section): every suite is mocked/
 offline by default, live is a separate, explicitly opt-in mode (R7D.2)
-that calls the real OpenAI embeddings API and can incur cost -- a
-warning is printed whenever `--mode live` is used, and live mode is
-never selected implicitly by anything in this module.
+that calls the real OpenAI embeddings API -- and, as of R7E.5, also a
+real chat-completion judge call for any embedding gray-zone candidate
+-- and can incur cost on both. A warning is printed whenever `--mode
+live` is used, and live mode is never selected implicitly by anything
+in this module.
 """
 
 from __future__ import annotations
@@ -60,7 +62,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if args.mode == "live":
         print(
-            "[eval] WARNING: mode=live calls the real OpenAI embeddings API and can incur cost.",
+            "[eval] WARNING: mode=live calls the real OpenAI embeddings API, and may also call a "
+            "real chat-completion judge model for embedding gray-zone candidates -- both can incur cost.",
             file=sys.stderr,
         )
 

@@ -281,8 +281,18 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     # query (e.g. "latest AI regulation") already gets a known-stale
     # brand-new search result rejected right here at insertion, not just
     # caught later at answer time.
+    #
+    # chat-web-relevance-guardrails R7E.5: enable_direct_relevance_judge=
+    # True here too -- this is one of the two REAL production call sites
+    # (the other is qa.py's _filter_web_relevance_node, answer-time).
+    # fail_open=False already set above governs the judge's own
+    # uncertain/failure/over-cap fallback the same way it already governs
+    # an embedding exception -- an unresolved gray-zone judgment must not
+    # silently admit a brand-new article into the persistent pool, same
+    # reasoning as every other insertion-time failure mode.
     relevant_articles = qa._filter_relevant_web_articles(
         search_query, candidate_articles, client, topic=session.topic, fail_open=False,
+        enable_direct_relevance_judge=True,
     )
     # True only when search_web genuinely returned deduped candidates
     # AND every one of them failed relevance -- deliberately distinct

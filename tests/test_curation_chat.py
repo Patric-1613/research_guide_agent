@@ -1271,6 +1271,242 @@ def test_attach_exchange_metadata_does_not_stamp_when_no_web_citation():
     assert "web_relevance_verified" not in session.chat_history[-1]
 
 
+# --- chat-web-relevance-guardrails R7E.5: selective direct-relevance judge ---
+# Production wiring: enable_direct_relevance_judge=True at both real call
+# sites (qa.py's _filter_web_relevance_node, answer-time, fail_open=True;
+# curation_chat.py's _accept_web_offer, insertion-time, fail_open=False).
+# These tests drive that wiring end to end through chat_turn(), not
+# _filter_relevant_web_articles directly (tests/test_qa.py already owns
+# the focused unit-level judge coverage) -- each isolates the cache to a
+# tmp_path file so no test run ever touches the real project cache DB.
+
+def _gray_zone_vector() -> list[float]:
+    """cosine([1, 0], v) == 0.25 exactly (computed via math.sqrt, not a
+    hand-typed decimal -- see tests/test_qa.py's own _unit_vector for
+    why that matters), landing squarely in the gray zone between the
+    general 0.25 threshold and _DIRECT_RELEVANCE_JUDGE_THRESHOLD (0.50)."""
+    import math
+    return [0.25, math.sqrt(1.0 - 0.25 * 0.25)]
+
+
+def _judge_parse_response(url: str, verdict: str) -> MagicMock:
+    parsed = MagicMock()
+    parsed.verdicts = [MagicMock(url=url, verdict=verdict, confidence=0.5, reason="r")]
+    message = MagicMock(parsed=parsed)
+    response = MagicMock()
+    response.choices = [MagicMock(message=message)]
+    return response
+
+
+def test_insertion_time_judge_enabled_rejects_uncertain_verdict(tmp_path):
+    """Insertion-time (_accept_web_offer, fail_open=False): an uncertain
+    judge verdict for a gray-zone candidate must reject it -- it must
+    never enter the persistent pool."""
+    from research_agent.qa import _init_direct_relevance_cache_db
+
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="large language model alignment", selected_paper_ids=["p1"], selected_papers=papers,
+        stage="synthesize", pending_web_offer={"question": "RLHF reward hacking"},
+    )
+    article = WebArticle(
+        title="A survey of LLM alignment techniques", url="https://arxiv.example.org/survey",
+        snippet="This survey covers instruction tuning, constitutional AI, and debate.",
+        published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        "RLHF reward hacking": [1.0, 0.0],
+        "large language model alignment": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": _gray_zone_vector(),
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _judge_parse_response(article.url, "uncertain"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]), \
+         patch("research_agent.qa._init_direct_relevance_cache_db", side_effect=lambda: _init_direct_relevance_cache_db(path=tmp_path / "cache.sqlite")):
+        chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == []
+
+
+def test_insertion_time_judge_enabled_keeps_definite_relevant_verdict(tmp_path):
+    from research_agent.qa import _init_direct_relevance_cache_db
+
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="large language model alignment", selected_paper_ids=["p1"], selected_papers=papers,
+        stage="synthesize", pending_web_offer={"question": "RLHF reward hacking"},
+    )
+    article = WebArticle(
+        title="RLHF reward hacking causes and mitigations", url="https://arxiv.example.org/rlhf-reward-hacking",
+        snippet="We analyze cases where reward models are exploited during RLHF fine-tuning.",
+        published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "RLHF reward hacking": [1.0, 0.0],
+        "large language model alignment": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": _gray_zone_vector(),
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _judge_parse_response(article.url, "relevant"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]), \
+         patch("research_agent.qa._init_direct_relevance_cache_db", side_effect=lambda: _init_direct_relevance_cache_db(path=tmp_path / "cache.sqlite")):
+        chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == [article]
+
+
+def test_answer_time_judge_enabled_uncertain_keeps_and_marks_unverified(tmp_path):
+    """Answer-time (_filter_web_relevance_node, fail_open=True): an
+    uncertain judge verdict for an already-pooled gray-zone candidate
+    keeps it (availability) but must flip web_relevance_verified to
+    False for the turn -- the SAME outcome["fail_open_triggered"]
+    signal R7C already established, now widened to cover judge
+    degradation too."""
+    from research_agent.qa import _init_direct_relevance_cache_db
+
+    papers = [_paper("p1", "RoCoFT")]
+    article = WebArticle(
+        title="A survey of LLM alignment techniques", url="https://arxiv.example.org/survey",
+        snippet="This survey covers instruction tuning, constitutional AI, and debate.",
+        published_date=None, source_domain="example.com",
+    )
+    session = PaperPoolSession(
+        topic="large language model alignment", selected_paper_ids=["p1"], selected_papers=papers,
+        stage="synthesize", web_articles_added=[article],
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "RLHF reward hacking": [1.0, 0.0],
+        "large language model alignment": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": _gray_zone_vector(),
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _judge_parse_response(article.url, "uncertain"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+        ),
+    ]
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]), \
+         patch("research_agent.qa._init_direct_relevance_cache_db", side_effect=lambda: _init_direct_relevance_cache_db(path=tmp_path / "cache.sqlite")):
+        chat_turn(session, "RLHF reward hacking", client=mock_client)
+
+    assert session.chat_history[-1]["cited_web_articles"] == [{"url": article.url, "title": article.title}]
+    assert session.chat_history[-1]["web_relevance_verified"] is False
+
+
+def test_answer_time_judge_uncertain_keeps_report_promotion_blocked(tmp_path):
+    from research_agent.qa import _init_direct_relevance_cache_db
+
+    papers = [_paper("p1", "RoCoFT")]
+    article = WebArticle(
+        title="A survey of LLM alignment techniques", url="https://arxiv.example.org/survey",
+        snippet="This survey covers instruction tuning, constitutional AI, and debate.",
+        published_date=None, source_domain="example.com",
+    )
+    session = PaperPoolSession(
+        topic="large language model alignment", selected_paper_ids=["p1"], selected_papers=papers,
+        stage="synthesize", web_articles_added=[article],
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "RLHF reward hacking": [1.0, 0.0],
+        "large language model alignment": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": _gray_zone_vector(),
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _judge_parse_response(article.url, "uncertain"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+        ),
+    ]
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]), \
+         patch("research_agent.qa._init_direct_relevance_cache_db", side_effect=lambda: _init_direct_relevance_cache_db(path=tmp_path / "cache.sqlite")):
+        chat_turn(session, "RLHF reward hacking", client=mock_client)
+
+    exchange_id = session.chat_history[-1]["exchange_id"]
+    eligible, skipped = select_eligible_exchanges_for_report(session, [exchange_id])
+    assert eligible == []
+    assert skipped == [exchange_id]
+
+
+def test_answer_time_judge_definite_relevant_stays_eligible_for_report(tmp_path):
+    from research_agent.qa import _init_direct_relevance_cache_db
+
+    papers = [_paper("p1", "RoCoFT")]
+    article = WebArticle(
+        title="RLHF reward hacking causes and mitigations", url="https://arxiv.example.org/rlhf-reward-hacking",
+        snippet="We analyze cases where reward models are exploited during RLHF fine-tuning.",
+        published_date=None, source_domain="example.com",
+    )
+    session = PaperPoolSession(
+        topic="large language model alignment", selected_paper_ids=["p1"], selected_papers=papers,
+        stage="synthesize", web_articles_added=[article],
+    )
+    schema = _build_answer_schema(["p1"], [article.url])
+    vectors = {
+        "RLHF reward hacking": [1.0, 0.0],
+        "large language model alignment": [1.0, 0.0],
+        f"{article.title}\n{article.snippet}": _gray_zone_vector(),
+    }
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _judge_parse_response(article.url, "relevant"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[article.url],
+        ),
+    ]
+
+    with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]), \
+         patch("research_agent.qa._init_direct_relevance_cache_db", side_effect=lambda: _init_direct_relevance_cache_db(path=tmp_path / "cache.sqlite")):
+        chat_turn(session, "RLHF reward hacking", client=mock_client)
+
+    assert session.chat_history[-1]["web_relevance_verified"] is True
+    exchange_id = session.chat_history[-1]["exchange_id"]
+    eligible, skipped = select_eligible_exchanges_for_report(session, [exchange_id])
+    assert eligible == [exchange_id]
+    assert skipped == []
+
+
 # --- curation-refinement-and-auto-offer Phase 6f-3: automatic report-update offer ---
 # Same rigor as Phase 5c's web-offer testing above, including the exact
 # bug classes found there (an ignored offer must not persist; a
