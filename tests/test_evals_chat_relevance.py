@@ -240,26 +240,39 @@ class TestMockChatRelevanceRunner:
         assert entry["direct_relevance_gray_zone"] is True
         assert entry["direct_relevance_verdict"] == "relevant"
 
-    @pytest.mark.parametrize("case_id,url", [
-        (
-            "chat_relevance_012_gray_zone_same_keywords_wrong_context",
-            "https://arxiv.example.org/reward-hacking-atari-agents",
-        ),
-        (
-            "chat_relevance_013_gray_zone_prompt_injection",
-            "https://arxiv.example.org/ai-alignment-overview-injected",
-        ),
-    ])
-    def test_gray_zone_negative_cases_are_rejected_by_the_judge(self, case_id, url):
+    def test_high_similarity_wrong_context_case_is_rejected_by_the_judge_not_bypassed(self):
+        """R7E.5b: chat_relevance_012 reproduces the ACTUAL observed live
+        leak -- HIGH similarity (mock_relevance: query_and_topic, not the
+        weak gray-zone label), so direct_relevance_gray_zone is False,
+        but the candidate must still reach the judge (no more bypass)
+        and get rejected via a genuine not_relevant verdict."""
         examples = load_examples(DATASET_FILE)
-        example = next(e for e in examples if e.id == case_id)
+        example = next(e for e in examples if e.id == "chat_relevance_012_gray_zone_same_keywords_wrong_context")
         prediction = run_chat_relevance.predict(example)
 
         assert prediction["relevant_urls"] == []
         [entry] = prediction["debug_scores"]
-        assert entry["url"] == url
-        assert entry["direct_relevance_gray_zone"] is True
+        assert entry["url"] == "https://arxiv.example.org/reward-hacking-atari-agents"
+        assert entry["direct_relevance_gray_zone"] is False  # high similarity -- proves this isn't a gray-zone-only fix
+        assert entry["direct_relevance_check_applied"] is True
         assert entry["direct_relevance_verdict"] == "not_relevant"
+
+    def test_prompt_injection_case_is_rejected_before_the_mocked_judge(self):
+        """R7E.5b: chat_relevance_013's injected candidate must be
+        rejected by the deterministic injection guard, never even
+        reaching (mocked or real) _judge_direct_web_relevance --
+        direct_relevance_check_applied stays False, unlike a genuine
+        judge rejection."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_013_gray_zone_prompt_injection")
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == []
+        [entry] = prediction["debug_scores"]
+        assert entry["url"] == "https://arxiv.example.org/ai-alignment-overview-injected"
+        assert entry["prompt_injection_detected"] is True
+        assert entry["direct_relevance_check_applied"] is False
+        assert entry["direct_relevance_verdict"] is None
 
     def test_gray_zone_uncertain_verdict_is_kept_under_fail_open(self):
         examples = load_examples(DATASET_FILE)
@@ -272,18 +285,18 @@ class TestMockChatRelevanceRunner:
         assert entry["direct_relevance_failure"] is False  # uncertain is a real verdict, not a failure
         assert entry["kept"] is True
 
-    def test_strong_candidate_bypasses_the_judge_entirely(self):
-        """R7E.5 case 7 -- query_similarity clears
-        _DIRECT_RELEVANCE_JUDGE_THRESHOLD, so the candidate never enters
-        the gray zone at all -- `direct_relevance_gray_zone=False`
-        proves it, since that field is only ever True for a candidate
-        `_judge_direct_web_relevance` was actually given (see
-        _filter_relevant_web_articles's own R7E.5 gray-zone-selection
-        code: membership is decided before the judge is ever called). A
-        rigorous call-count assertion against the real production judge
-        function (not the mock stub predict() installs internally) lives
-        in tests/test_qa.py, calling _filter_relevant_web_articles
-        directly rather than through this eval runner."""
+    def test_strong_candidate_still_reaches_the_judge_and_is_confirmed_relevant(self):
+        """R7E.5b: this case (id kept as chat_relevance_015_strong_
+        candidate_bypasses_judge for stability, but its behavior
+        changed) previously bypassed the judge entirely on similarity
+        alone -- R7E's own first live run proved a different, wrong-
+        context candidate could leak through that same bypass (case
+        012), so the bypass is gone. query_similarity still clears
+        _DIRECT_RELEVANCE_JUDGE_THRESHOLD (direct_relevance_gray_zone
+        stays False, a pure diagnostic now), but the candidate still
+        reaches the judge and is kept because it's genuinely confirmed
+        relevant (mock_direct_relevance='relevant'), not trusted on
+        similarity alone."""
         examples = load_examples(DATASET_FILE)
         example = next(e for e in examples if e.id == "chat_relevance_015_strong_candidate_bypasses_judge")
 
@@ -291,7 +304,8 @@ class TestMockChatRelevanceRunner:
 
         assert prediction["relevant_urls"] == ["https://arxiv.example.org/rlhf-reward-hacking-strong-match"]
         assert prediction["debug_scores"][0]["direct_relevance_gray_zone"] is False
-        assert prediction["debug_scores"][0]["direct_relevance_check_applied"] is False
+        assert prediction["debug_scores"][0]["direct_relevance_check_applied"] is True
+        assert prediction["debug_scores"][0]["direct_relevance_verdict"] == "relevant"
 
     def test_empty_candidate_pool_returns_empty_list_without_error(self):
         examples = load_examples(DATASET_FILE)
@@ -343,8 +357,10 @@ class TestMockChatRelevanceRunner:
             "temporal_check_applied": False, "temporal_intent": None,
             "candidate_published_at": None, "freshness_cutoff": None,
             "published_date_status": "missing", "passed_temporal_check": None,
-            "direct_relevance_gray_zone": False, "direct_relevance_check_applied": False,
-            "direct_relevance_verdict": None, "direct_relevance_confidence": None,
+            "prompt_injection_check_applied": True, "prompt_injection_detected": False,
+            "prompt_injection_pattern_ids": [],
+            "direct_relevance_gray_zone": False, "direct_relevance_check_applied": True,
+            "direct_relevance_verdict": "relevant", "direct_relevance_confidence": pytest.approx(0.9),
             "direct_relevance_failure": False, "direct_relevance_cache_hit": False,
             "kept": True,
         }]
@@ -380,8 +396,8 @@ class TestLiveChatRelevanceRunner:
             result = run_chat_relevance.run_experiment(mode="live")
 
         assert result.mode == "live"
-        assert result.total == 13  # 15 fixture cases minus the 2 mock_only embedding-failure cases
-        assert result.skipped == 2
+        assert result.total == 12  # 15 fixture cases minus 3 mock_only (2 embedding-failure + the uncertain-policy case)
+        assert result.skipped == 3
         assert result.failed == 0
         assert result.average_score == 1.0
 
@@ -437,6 +453,7 @@ class TestLiveChatRelevanceRunner:
         assert set(skipped) == {
             "chat_relevance_008_embedding_failure_fail_open",
             "chat_relevance_009_embedding_failure_fail_closed",
+            "chat_relevance_014_gray_zone_judge_uncertain_fail_open",
         }
         for entry in skipped.values():
             assert "mock_only" in entry["skipped_reason"]
@@ -456,7 +473,8 @@ class TestLiveChatRelevanceRunner:
 
         assert "chat_relevance_008_embedding_failure_fail_open" not in seen_example_ids
         assert "chat_relevance_009_embedding_failure_fail_closed" not in seen_example_ids
-        assert len(seen_example_ids) == 13
+        assert "chat_relevance_014_gray_zone_judge_uncertain_fail_open" not in seen_example_ids
+        assert len(seen_example_ids) == 12
 
     def test_live_mode_missing_credentials_raises_live_mode_setup_error(self):
         with patch.object(run_chat_relevance, "OpenAI", side_effect=OpenAIError("no api key")):
