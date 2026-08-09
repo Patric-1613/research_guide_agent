@@ -2,3 +2,6 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 1,2026-08-08T16:25:02.129165+00:00,33540f9,chat_relevance,mock,9,9,0,1.0,,
 2,2026-08-08T16:25:03.114694+00:00,33540f9,chat_relevance,mock,3,3,0,1.0,redteam,
 3,2026-08-08T16:25:04.328686+00:00,33540f9,chat_relevance,mock,9,9,0,1.0,,
+4,2026-08-08T18:51:25.641514+00:00,895dd36,chat_relevance,live,1,1,0,1.0,,R7D.2 smoke | mean_latency_ms=3633.9
+5,2026-08-08T18:51:58.506148+00:00,895dd36,chat_relevance,live,5,2,3,0.5,redteam,"R7D first live redteam | skipped=2, mean_latency_ms=392.2"
+6,2026-08-09T15:32:48.103699+00:00,4956c1c,chat_relevance,live,5,2,3,0.5,redteam,"R7E.1 detailed live redteam | skipped=2, mean_latency_ms=4.4"
