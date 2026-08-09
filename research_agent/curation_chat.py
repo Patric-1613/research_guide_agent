@@ -273,6 +273,14 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     # answer-time re-filter of an ALREADY-persistent pool -- see
     # qa.py::_filter_web_relevance_node, the only call site that passes
     # provenance_by_url.
+    #
+    # chat-web-relevance-guardrails R7E.4: the temporal-freshness
+    # re-check needs no new argument here either -- search_query and
+    # each candidate's published_date are already in scope inside
+    # _filter_relevant_web_articles, so a freshness-sensitive search
+    # query (e.g. "latest AI regulation") already gets a known-stale
+    # brand-new search result rejected right here at insertion, not just
+    # caught later at answer time.
     relevant_articles = qa._filter_relevant_web_articles(
         search_query, candidate_articles, client, topic=session.topic, fail_open=False,
     )

@@ -134,6 +134,64 @@ class TestMockChatRelevanceRunner:
         assert entry["passed_stale_pool_threshold"] is False
         assert entry["kept"] is False
 
+    def test_temporal_query_trap_case_now_passes_via_the_freshness_guard(self):
+        """R7E.4: chat_relevance_005 -- the current-week source is kept,
+        the 2019 primer is rejected specifically by the new temporal
+        check (both clear the base query/topic check identically, see
+        the fixture's own R7E.4 note -- the temporal mechanism is what
+        actually distinguishes them here, not the pre-existing checks)."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_005_temporal_query_trap")
+        prediction = run_chat_relevance.predict(example)
+
+        assert prediction["relevant_urls"] == ["https://news.example.com/ai-regulation-this-week"]
+        entries = {d["url"]: d for d in prediction["debug_scores"]}
+        kept_entry = entries["https://news.example.com/ai-regulation-this-week"]
+        rejected_entry = entries["https://archive.example.com/ai-governance-2019-primer"]
+        assert kept_entry["temporal_intent"] == "this_week"
+        assert kept_entry["passed_temporal_check"] is True
+        assert rejected_entry["temporal_intent"] == "this_week"
+        assert rejected_entry["published_date_status"] == "present"
+        assert rejected_entry["passed_temporal_check"] is False
+
+    def test_evaluation_time_fixture_field_is_parsed_and_threaded_into_mock_prediction(self):
+        """The `now` the real filter actually reasons against must come
+        from the fixture's own evaluation_time, not real wall-clock time
+        -- proven by checking the exact freshness_cutoff value, which is
+        only correct if evaluation_time (2026-08-09T12:00:00+00:00) was
+        actually parsed and passed through, not silently defaulted."""
+        from datetime import datetime, timedelta, timezone
+
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_005_temporal_query_trap")
+        assert example.inputs["evaluation_time"] == "2026-08-09T12:00:00+00:00"
+
+        prediction = run_chat_relevance.predict(example)
+
+        expected_now = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
+        expected_cutoff = (expected_now - timedelta(days=7)).isoformat()
+        [entry] = [d for d in prediction["debug_scores"] if d["temporal_intent"] == "this_week"][:1]
+        assert entry["freshness_cutoff"] == expected_cutoff
+
+    def test_broad_vs_specific_case_003_remains_an_acknowledged_unresolved_failure(self):
+        """R7E's own scope note, restated as a test: case 003 (a broad
+        survey vs. a specific sub-question) is explicitly OUT of scope
+        for both R7E.3 and R7E.4 -- deferred to a future R7E.5 gray-zone
+        judge. Mock mode happens to already pass this case (it always
+        has, since R7D.1 -- the synthetic 3D vector scheme's 'topic_only'
+        label cleanly fails the query check by construction), but that is
+        NOT evidence the underlying problem is solved: the live-eval
+        evidence recorded in eval_results/chat_relevance_history.csv
+        (runs 5/6/7/8) shows this case genuinely failing against real
+        embeddings, where a broad survey's real query_similarity (~0.29)
+        clears the coarse 0.25 threshold. This test only pins the KNOWN,
+        unchanged mock-mode behavior so a future regression is caught --
+        it is not a claim that case 003 is fixed."""
+        examples = load_examples(DATASET_FILE)
+        example = next(e for e in examples if e.id == "chat_relevance_003_topic_relevant_query_irrelevant")
+        prediction = run_chat_relevance.predict(example)
+        assert prediction["relevant_urls"] == []  # unchanged mock-mode result, not a live-mode claim
+
     def test_genuinely_relevant_source_is_kept(self):
         examples = load_examples(DATASET_FILE)
         example = next(e for e in examples if e.id == "chat_relevance_004_genuinely_relevant_ai_governance_source")
@@ -187,6 +245,9 @@ class TestMockChatRelevanceRunner:
             "passed_topic_threshold": True,
             "source_query": None, "stale_pool_check_applied": False,
             "stale_pool_threshold": None, "passed_stale_pool_threshold": None,
+            "temporal_check_applied": False, "temporal_intent": None,
+            "candidate_published_at": None, "freshness_cutoff": None,
+            "published_date_status": "missing", "passed_temporal_check": None,
             "kept": True,
         }]
 
@@ -224,6 +285,24 @@ class TestLiveChatRelevanceRunner:
         assert debug_scores[0]["stale_pool_check_applied"] is True
         assert debug_scores[0]["source_query"] == "What did the US executive order on AI say?"
         assert debug_scores[0]["kept"] is False
+
+    def test_live_mode_passes_fixture_evaluation_time_through_to_the_real_filter(self):
+        """R7E.4: predict_live must parse a fixture's evaluation_time and
+        pass it through as `now` -- chat_relevance_005's 2019 primer is
+        rejected via the temporal check in live mode too, using the SAME
+        real function mock mode drives. No real network/API call --
+        OpenAI construction and _embed_with_cache are both mocked."""
+        openai_patch, embed_patch = _patch_live_embeddings()
+        with openai_patch, embed_patch:
+            result = run_chat_relevance.run_experiment(mode="live", tags=["temporal"])
+
+        [entry] = result.per_example
+        assert entry["example_id"] == "chat_relevance_005_temporal_query_trap"
+        assert entry["prediction"]["relevant_urls"] == ["https://news.example.com/ai-regulation-this-week"]
+        debug_by_url = {d["url"]: d for d in entry["prediction"]["debug_scores"]}
+        stale_entry = debug_by_url["https://archive.example.com/ai-governance-2019-primer"]
+        assert stale_entry["temporal_intent"] == "this_week"
+        assert stale_entry["passed_temporal_check"] is False
 
     def test_live_mode_respects_subset_and_tags(self):
         openai_patch, embed_patch = _patch_live_embeddings()

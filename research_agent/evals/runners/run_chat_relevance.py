@@ -32,7 +32,7 @@ from openai import OpenAI, OpenAIError
 
 from research_agent.evals.evaluators.relevance import ALL_EVALUATORS
 from research_agent.evals.runners._base import Example, LiveModeSetupError, SuiteResult, run_suite
-from research_agent.qa import _filter_relevant_web_articles
+from research_agent.qa import _filter_relevant_web_articles, _parse_published_date
 from research_agent.schema import WebArticle
 
 SUITE = "chat_relevance"
@@ -74,6 +74,20 @@ def _build_web_article(candidate: dict[str, Any]) -> WebArticle:
     )
 
 
+def _parse_evaluation_time(example: Example):
+    """R7E.4: a fixture's optional top-level `evaluation_time` (ISO-8601,
+    e.g. "2026-08-09T12:00:00+00:00") is parsed via the SAME production
+    parser `_filter_relevant_web_articles` itself uses for
+    `published_date` -- no second date-parsing implementation here --
+    and passed through as `now` so "this week"/"today"/generic-recency
+    cutoffs are deterministic instead of drifting with real wall-clock
+    time. Returns None (production default: real UTC now) for the many
+    existing cases that don't set this field -- fully optional, fully
+    backward compatible."""
+    raw = example.inputs.get("evaluation_time")
+    return _parse_published_date(raw) if raw else None
+
+
 def predict(example: Example) -> dict[str, Any]:
     """Mock-mode prediction -- see module docstring. `mock_relevance`/
     `mock_embedding_error` are mock-only fixture fields; live mode
@@ -92,13 +106,20 @@ def predict(example: Example) -> dict[str, Any]:
     vector needed for `source_query` text itself (the real function
     never embeds it -- see that function's own R7E.3 docstring section:
     it only does a plain string comparison against `query`, reusing the
-    query_similarity already computed for the candidate)."""
+    query_similarity already computed for the candidate).
+
+    R7E.4: also passes a fixture's optional `evaluation_time` through as
+    `now` -- see `_parse_evaluation_time`. Candidate `published_date`
+    values are also passed straight through via `_build_web_article`
+    (already wired since R7D.1); the real function does all temporal
+    comparison work, nothing reimplemented here."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
     mock_embedding_error = bool(example.inputs.get("mock_embedding_error", False))
     candidates = example.inputs.get("candidates") or []
     provenance_by_url = example.inputs.get("provenance_by_url")
+    now = _parse_evaluation_time(example)
 
     articles = [_build_web_article(c) for c in candidates]
     vectors: dict[str, list[float]] = {query: _QUERY_VECTOR}
@@ -121,7 +142,7 @@ def predict(example: Example) -> dict[str, Any]:
     with embed_patch:
         kept = _filter_relevant_web_articles(
             query, articles, MagicMock(), topic=topic, fail_open=fail_open, debug=debug_scores,
-            provenance_by_url=provenance_by_url,
+            provenance_by_url=provenance_by_url, now=now,
         )
 
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
@@ -142,18 +163,22 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
 
     R7E.3: also passes a fixture's optional `provenance_by_url` straight
     through -- same real, unmodified stale-pool logic as mock mode,
-    driven by real embeddings instead of mocked ones."""
+    driven by real embeddings instead of mocked ones.
+
+    R7E.4: also passes a fixture's optional `evaluation_time` through as
+    `now`, same as mock mode's predict()."""
     query = example.inputs.get("query", "")
     topic = example.inputs.get("topic", "")
     fail_open = example.inputs.get("fail_open", True)
     candidates = example.inputs.get("candidates") or []
     provenance_by_url = example.inputs.get("provenance_by_url")
+    now = _parse_evaluation_time(example)
 
     articles = [_build_web_article(c) for c in candidates]
     debug_scores: list[dict[str, Any]] = []
     kept = _filter_relevant_web_articles(
         query, articles, client, topic=topic, fail_open=fail_open, debug=debug_scores,
-        provenance_by_url=provenance_by_url,
+        provenance_by_url=provenance_by_url, now=now,
     )
     return {"relevant_urls": [a.url for a in kept], "debug_scores": debug_scores}
 

@@ -898,6 +898,128 @@ def test_record_web_article_provenance_overwrites_not_duplicates_for_a_reused_ur
     assert entry["added_at"] >= first_added_at
 
 
+# --- chat-web-relevance-guardrails R7E.4: temporal-freshness guard, insertion-time ---
+#
+# Queries below use an explicit "since 2024" anchor (not a bare recency
+# word like "latest") specifically so these tests are deterministic
+# regardless of real wall-clock time -- _accept_web_offer deliberately
+# takes no `now` parameter (see that call site's own R7E.4 comment), so
+# an explicit year-anchored query is what keeps these tests independent
+# of when they're actually run, without needing to patch datetime.now().
+
+def test_accept_web_offer_insertion_time_rejects_a_known_stale_article_for_a_freshness_sensitive_query():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance updates since 2024"},
+    )
+    stale_article = WebArticle(
+        title="AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A report on AI governance frameworks.", published_date="2019-03-15", source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        "AI governance updates since 2024": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{stale_article.title}\n{stale_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered by the selected papers.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[stale_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == []
+    assert result["new_web_articles_found"] == 0
+    assert "I did not find sources clearly relevant" in result["answer"]
+
+
+def test_accept_web_offer_insertion_time_accepts_a_recent_relevant_article_for_a_freshness_sensitive_query():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance updates since 2024"},
+    )
+    recent_article = WebArticle(
+        title="AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A report on AI governance frameworks.", published_date="2025-06-01", source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [recent_article.url])
+    vectors = {
+        "AI governance updates since 2024": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{recent_article.title}\n{recent_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[recent_article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[recent_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == [recent_article]
+    assert result["new_web_articles_found"] == 1
+
+
+def test_accept_web_offer_insertion_time_missing_published_date_still_accepted_for_freshness_sensitive_query():
+    """Tavily frequently omits published_date -- a freshness-sensitive
+    query must not reject a genuinely relevant new result solely because
+    that field is missing."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance updates since 2024"},
+    )
+    undated_article = WebArticle(
+        title="AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A report on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [undated_article.url])
+    vectors = {
+        "AI governance updates since 2024": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{undated_article.title}\n{undated_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[undated_article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[undated_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        result = chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == [undated_article]
+    assert result["new_web_articles_found"] == 1
+
+
 def test_accept_web_offer_gives_abstention_message_when_all_search_results_fail_relevance():
     """The transparent-abstention requirement: candidates existed, all
     failed relevance -- the assistant's answer gets the honest suffix

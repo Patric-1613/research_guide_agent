@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -371,6 +372,9 @@ def test_filter_relevant_web_articles_debug_topic_fields_are_none_without_a_topi
         "passed_query_threshold": True, "passed_topic_threshold": None,
         "source_query": None, "stale_pool_check_applied": False,
         "stale_pool_threshold": None, "passed_stale_pool_threshold": None,
+        "temporal_check_applied": False, "temporal_intent": None,
+        "candidate_published_at": None, "freshness_cutoff": None,
+        "published_date_status": "missing", "passed_temporal_check": None,
         "kept": True,
     }]
 
@@ -532,6 +536,244 @@ def test_filter_relevant_web_articles_stale_pool_does_not_mutate_provenance_map(
         _filter_relevant_web_articles(query, [article], MagicMock(), provenance_by_url=provenance_by_url)
 
     assert provenance_by_url == provenance_snapshot
+
+
+# --- chat-web-relevance-guardrails R7E.4: deterministic temporal-freshness guard ---
+
+_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
+_STALE_DATE = "2019-03-15"
+
+
+def _dated_article(url: str, title: str, published_date: str | None) -> WebArticle:
+    return WebArticle(
+        title=title, url=url, snippet=f"Snippet for {title}.", published_date=published_date,
+        source_domain="example.com",
+    )
+
+
+def _run_temporal(query: str, articles: list[WebArticle], **kwargs) -> tuple[list[WebArticle], list[dict]]:
+    """Every candidate gets a vector that clears the general 0.25
+    threshold on the query dimension (no topic passed in these tests --
+    isolating the temporal mechanism from the query/topic AND-check,
+    same isolation style the stale-pool tests above use)."""
+    vectors = {query: [1.0, 0.0]}
+    for article in articles:
+        vectors[f"{article.title}\n{article.snippet}"] = [1.0, 0.0]
+    debug: list[dict] = []
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(query, articles, MagicMock(), debug=debug, now=_NOW, **kwargs)
+    return kept, debug
+
+
+def test_temporal_today_retains_todays_source_and_rejects_an_older_known_date():
+    recent = _dated_article("https://a.com", "A", "2026-08-09")
+    stale = _dated_article("https://b.com", "B", _STALE_DATE)
+
+    kept, debug = _run_temporal("What happened today in AI regulation?", [recent, stale])
+
+    assert [a.url for a in kept] == [recent.url]
+    entries = {d["url"]: d for d in debug}
+    assert entries[recent.url]["temporal_intent"] == "today"
+    assert entries[recent.url]["passed_temporal_check"] is True
+    assert entries[stale.url]["passed_temporal_check"] is False
+
+
+def test_temporal_this_week_retains_recent_source_and_rejects_2019_source():
+    recent = _dated_article("https://a.com", "A", "2026-08-08")
+    stale = _dated_article("https://b.com", "B", _STALE_DATE)
+
+    kept, debug = _run_temporal("What is the latest news on AI regulation this week?", [recent, stale])
+
+    assert [a.url for a in kept] == [recent.url]
+    entries = {d["url"]: d for d in debug}
+    assert entries[recent.url]["temporal_intent"] == "this_week"
+    assert entries[recent.url]["freshness_cutoff"] == (_NOW - timedelta(days=7)).isoformat()
+    assert entries[stale.url]["passed_temporal_check"] is False
+
+
+def test_temporal_this_month_computes_the_intended_cutoff():
+    article = _dated_article("https://a.com", "A", "2026-08-05")
+
+    _, debug = _run_temporal("What's new this month in AI regulation?", [article])
+
+    assert debug[0]["temporal_intent"] == "this_month"
+    assert debug[0]["freshness_cutoff"] == datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat()
+
+
+def test_temporal_explicit_last_n_days_window():
+    recent = _dated_article("https://a.com", "A", "2026-08-08")
+    stale = _dated_article("https://b.com", "B", _STALE_DATE)
+
+    kept, debug = _run_temporal("AI regulation news from the last 3 days", [recent, stale])
+
+    assert [a.url for a in kept] == [recent.url]
+    entries = {d["url"]: d for d in debug}
+    assert entries[recent.url]["temporal_intent"] == "explicit_window"
+    assert entries[recent.url]["freshness_cutoff"] == (_NOW - timedelta(days=3)).isoformat()
+
+
+def test_temporal_since_year():
+    kept_article = _dated_article("https://a.com", "A", "2024-06-01")
+    old_article = _dated_article("https://b.com", "B", "2023-06-01")
+
+    kept, debug = _run_temporal("AI regulation news since 2024", [kept_article, old_article])
+
+    assert [a.url for a in kept] == [kept_article.url]
+    entries = {d["url"]: d for d in debug}
+    assert entries[kept_article.url]["temporal_intent"] == "since_year"
+    assert entries[kept_article.url]["freshness_cutoff"] == datetime(2024, 1, 1, tzinfo=timezone.utc).isoformat()
+
+
+def test_temporal_after_year():
+    kept_article = _dated_article("https://a.com", "A", "2025-01-01")
+    boundary_article = _dated_article("https://b.com", "B", "2024-06-01")
+
+    kept, debug = _run_temporal("AI regulation news after 2024", [kept_article, boundary_article])
+
+    assert [a.url for a in kept] == [kept_article.url]
+    entries = {d["url"]: d for d in debug}
+    assert entries[kept_article.url]["temporal_intent"] == "after_year"
+    assert entries[kept_article.url]["freshness_cutoff"] == datetime(2025, 1, 1, tzinfo=timezone.utc).isoformat()
+
+
+def test_temporal_generic_latest_uses_the_provisional_configurable_horizon():
+    from research_agent.qa import _DEFAULT_RECENCY_WINDOW_DAYS
+
+    article = _dated_article("https://a.com", "A", "2026-07-01")
+
+    _, debug = _run_temporal("What's the latest on AI regulation?", [article])
+
+    assert debug[0]["temporal_intent"] == "generic_recency"
+    assert debug[0]["freshness_cutoff"] == (_NOW - timedelta(days=_DEFAULT_RECENCY_WINDOW_DAYS)).isoformat()
+
+
+def test_temporal_explicit_rules_take_precedence_over_generic_words():
+    """A query containing BOTH an explicit window and a bare recency word
+    must use the explicit (tier 1) rule, not fall through to generic
+    recency (tier 4)."""
+    article = _dated_article("https://a.com", "A", "2026-08-08")
+
+    _, debug = _run_temporal("Give me the latest AI regulation news from the last 3 days", [article])
+
+    assert debug[0]["temporal_intent"] == "explicit_window"
+    assert debug[0]["freshness_cutoff"] == (_NOW - timedelta(days=3)).isoformat()
+
+
+def test_temporal_non_temporal_query_preserves_prior_behavior():
+    article = _dated_article("https://a.com", "A", _STALE_DATE)
+
+    kept, debug = _run_temporal("How does the EU AI Act define a high-risk system?", [article])
+
+    assert kept == [article]
+    assert debug[0]["temporal_check_applied"] is False
+    assert debug[0]["temporal_intent"] is None
+
+
+def test_temporal_historical_2019_question_accepts_a_2019_source():
+    article = _dated_article("https://a.com", "A", _STALE_DATE)
+
+    kept, debug = _run_temporal("What happened in 2019?", [article])
+
+    assert kept == [article]
+    assert debug[0]["temporal_check_applied"] is False
+    assert debug[0]["temporal_intent"] is None
+
+
+def test_temporal_bare_from_year_is_not_freshness_sensitive():
+    """'from 2019' WITHOUT 'onward' must not trigger the tier-3 rule --
+    only distinguishing signal from test_temporal_historical above is
+    the exact phrasing, proving the regex boundary, not just the general
+    behavior."""
+    article = _dated_article("https://a.com", "A", _STALE_DATE)
+
+    kept, debug = _run_temporal("Tell me about developments from 2019", [article])
+
+    assert kept == [article]
+    assert debug[0]["temporal_check_applied"] is False
+    assert debug[0]["temporal_intent"] is None
+
+
+def test_temporal_missing_date_passes_with_status_missing():
+    article = _dated_article("https://a.com", "A", None)
+
+    kept, debug = _run_temporal("What is the latest news on AI regulation this week?", [article])
+
+    assert kept == [article]
+    assert debug[0]["published_date_status"] == "missing"
+    assert debug[0]["temporal_check_applied"] is False
+    assert debug[0]["passed_temporal_check"] is None
+
+
+def test_temporal_malformed_date_passes_with_status_malformed():
+    article = _dated_article("https://a.com", "A", "not-a-real-date")
+
+    kept, debug = _run_temporal("What is the latest news on AI regulation this week?", [article])
+
+    assert kept == [article]
+    assert debug[0]["published_date_status"] == "malformed"
+    assert debug[0]["temporal_check_applied"] is False
+    assert debug[0]["passed_temporal_check"] is None
+
+
+def test_temporal_composes_with_topic_and_provenance_gates():
+    """A candidate already rejected by the stale-pool check must not
+    also show temporal_check_applied=True -- the temporal pass only
+    ever runs against a candidate still kept at that point (checked
+    strictly after query/topic AND stale-pool), proving the ordering,
+    not just that both mechanisms independently work."""
+    query = "How does the EU AI Act define a high-risk system this week?"
+    topic = "AI governance and regulation"
+    stale_pool_article = _dated_article("https://a.com", "Stale pool article", "2026-08-08")
+    vectors = {
+        query: [1.0, 0.0, 0.0],
+        topic: [0.0, 1.0, 0.0],
+        f"{stale_pool_article.title}\n{stale_pool_article.snippet}": [1.0, 1.0, 3.0],  # weak on both -- clears 0.25, not 0.50
+    }
+    provenance_by_url = {
+        stale_pool_article.url: {"source_query": "a different earlier question", "added_at": "2026-08-01T00:00:00+00:00"},
+    }
+    debug: list[dict] = []
+
+    with patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        kept = _filter_relevant_web_articles(
+            query, [stale_pool_article], MagicMock(), topic=topic, provenance_by_url=provenance_by_url,
+            now=_NOW, debug=debug,
+        )
+
+    assert kept == []
+    assert debug[0]["stale_pool_check_applied"] is True
+    assert debug[0]["passed_stale_pool_threshold"] is False
+    assert debug[0]["temporal_check_applied"] is False  # never reached -- already rejected by stale-pool
+
+
+def test_temporal_does_not_mutate_articles_or_input_list():
+    article = _dated_article("https://a.com", "A", "2026-08-08")
+    snapshot = WebArticle(**article.to_dict())
+    articles = [article]
+
+    _run_temporal("What is the latest news on AI regulation this week?", articles)
+
+    assert article == snapshot
+    assert articles == [article]
+
+
+def test_temporal_debug_output_is_correct_for_a_rejected_candidate():
+    stale = _dated_article("https://b.com", "B", _STALE_DATE)
+
+    _, debug = _run_temporal("What is the latest news on AI regulation this week?", [stale])
+
+    assert debug == [{
+        "url": "https://b.com", "title": "B",
+        "query_similarity": 1.0, "topic_similarity": None,
+        "passed_query_threshold": True, "passed_topic_threshold": None,
+        "source_query": None, "stale_pool_check_applied": False,
+        "stale_pool_threshold": None, "passed_stale_pool_threshold": None,
+        "temporal_check_applied": True, "temporal_intent": "this_week",
+        "candidate_published_at": _STALE_DATE,
+        "freshness_cutoff": (_NOW - timedelta(days=7)).isoformat(),
+        "published_date_status": "present", "passed_temporal_check": False,
+        "kept": False,
+    }]
 
 
 def test_ask_stale_web_pool_filtered_out_is_not_passed_into_the_model_prompt_for_unrelated_question():

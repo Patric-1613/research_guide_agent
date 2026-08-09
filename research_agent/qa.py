@@ -76,6 +76,7 @@ import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict, Literal
 
@@ -402,6 +403,146 @@ _WEB_ARTICLE_RELEVANCE_THRESHOLD = 0.25
 # general threshold above).
 _STALE_POOL_QUERY_THRESHOLD = 0.50
 
+# chat-web-relevance-guardrails R7E.4: an explicitly PROVISIONAL, UNCALIBRATED
+# default -- same "starting point, not final" caveat as the two thresholds
+# above -- used ONLY as the last-resort fallback for a bare recency word
+# ("latest", "current", ...) with no more explicit temporal constraint in
+# the query (see _extract_temporal_intent's own precedence order). Explicit
+# windows/years never touch this constant at all -- they compute an exact
+# cutoff straight from what the query itself states, no guessing involved.
+# 180 days is a deliberately generous "obviously not current" bar for a
+# fast-moving policy domain (AI governance/regulation), picked to
+# comfortably separate a 2019 article from anything genuinely current
+# without needing real calibration data this project doesn't have yet --
+# revisit once real query/source pairs exist to tune against, the same
+# future-calibration caveat _WEB_ARTICLE_RELEVANCE_THRESHOLD's own comment
+# states.
+_DEFAULT_RECENCY_WINDOW_DAYS = 180
+
+# Bare recency words -- same token-normalization convention
+# _contains_content_override_word below already uses (strip trailing
+# punctuation, exact-match against a small curated set), not a heavier NLP
+# classifier. Multi-word phrases ("this week", "this month") are handled
+# separately in _extract_temporal_intent as tier-2 NAMED windows, not here.
+_RECENCY_WORDS = {"latest", "current", "recent", "recently", "newly", "updated"}
+
+# Tier 1: "last/past N days|weeks|months". Month is approximated as 30
+# days -- not calendar-exact (no dateutil/heavy date dependency added for
+# this) -- stated explicitly rather than silently assumed.
+_EXPLICIT_WINDOW_RE = re.compile(r"\b(?:last|past)\s+(\d+)\s+(day|days|week|weeks|month|months)\b", re.IGNORECASE)
+# Tier 3: forward-looking year anchors only. Deliberately does NOT match
+# bare "from YYYY" (no "onward"), "in YYYY", "during YYYY", or "what
+# happened in YYYY" -- those describe a specific past reference point, not
+# a request for content published since/after that point, and must fall
+# through to "no match" (tier 5) so a genuinely historical question about
+# an old year never rejects an old, correctly-cited source over it.
+_SINCE_YEAR_RE = re.compile(r"\bsince\s+(\d{4})\b", re.IGNORECASE)
+_AFTER_YEAR_RE = re.compile(r"\bafter\s+(\d{4})\b", re.IGNORECASE)
+_FROM_YEAR_ONWARD_RE = re.compile(r"\bfrom\s+(\d{4})\s+onward\b", re.IGNORECASE)
+
+
+@dataclass
+class _TemporalIntent:
+    """Result of _extract_temporal_intent: `label` identifies which
+    precedence tier/rule matched (surfaced verbatim in debug output as
+    `temporal_intent`); `cutoff` is the UTC-aware datetime a candidate's
+    `published_date` must be >= to pass -- always concrete by the time
+    this is constructed, never re-derived per-candidate."""
+
+    label: str
+    cutoff: datetime
+
+
+def _extract_temporal_intent(query: str, now: datetime) -> _TemporalIntent | None:
+    """Deterministic, five-tier precedence (most explicit first) -- see
+    _filter_relevant_web_articles's own R7E.4 docstring section for how
+    the result is used. Returns None (tier 5: no match) for anything not
+    covered by tiers 1-4, which means the temporal check never activates
+    at all -- byte-identical to pre-R7E.4 behavior for that query,
+    including every non-temporal query and every genuinely historical one
+    ("what happened in 2019?" matches no rule here, on purpose).
+    """
+    normalized = query.lower()
+
+    # Tier 1: explicit numeric windows -- the query gives an exact number,
+    # so the cutoff is exact too, no default/guessing involved.
+    window_match = _EXPLICIT_WINDOW_RE.search(normalized)
+    if window_match:
+        count = int(window_match.group(1))
+        unit = window_match.group(2)
+        if unit.startswith("day"):
+            delta = timedelta(days=count)
+        elif unit.startswith("week"):
+            delta = timedelta(weeks=count)
+        else:  # month/months -- approximated as 30 days each, see _EXPLICIT_WINDOW_RE's own comment
+            delta = timedelta(days=count * 30)
+        return _TemporalIntent(label="explicit_window", cutoff=now - delta)
+
+    # Tier 2: named windows -- checked most-restrictive first (today <
+    # this week < this month) so a query mentioning more than one somehow
+    # still gets the tightest applicable cutoff.
+    if re.search(r"\btoday\b", normalized):
+        return _TemporalIntent(label="today", cutoff=datetime(now.year, now.month, now.day, tzinfo=timezone.utc))
+    if re.search(r"\bthis week\b", normalized):
+        return _TemporalIntent(label="this_week", cutoff=now - timedelta(days=7))
+    if re.search(r"\bthis month\b", normalized):
+        return _TemporalIntent(label="this_month", cutoff=datetime(now.year, now.month, 1, tzinfo=timezone.utc))
+
+    # Tier 3: explicit forward year anchors -- see _SINCE_YEAR_RE's own
+    # comment for why bare "from YYYY"/"in YYYY"/"during YYYY" never
+    # reach here.
+    since_match = _SINCE_YEAR_RE.search(normalized)
+    if since_match:
+        year = int(since_match.group(1))
+        return _TemporalIntent(label="since_year", cutoff=datetime(year, 1, 1, tzinfo=timezone.utc))
+    after_match = _AFTER_YEAR_RE.search(normalized)
+    if after_match:
+        year = int(after_match.group(1))
+        return _TemporalIntent(label="after_year", cutoff=datetime(year + 1, 1, 1, tzinfo=timezone.utc))
+    from_onward_match = _FROM_YEAR_ONWARD_RE.search(normalized)
+    if from_onward_match:
+        year = int(from_onward_match.group(1))
+        return _TemporalIntent(label="from_year_onward", cutoff=datetime(year, 1, 1, tzinfo=timezone.utc))
+
+    # Tier 4: generic recency words -- the only tier that ever falls back
+    # to _DEFAULT_RECENCY_WINDOW_DAYS (see that constant's own comment).
+    for token in normalized.split():
+        stripped = token.rstrip("?!.,;:")
+        if stripped in _RECENCY_WORDS:
+            return _TemporalIntent(label="generic_recency", cutoff=now - timedelta(days=_DEFAULT_RECENCY_WINDOW_DAYS))
+
+    # Tier 5: no match -- temporal check does not apply to this query.
+    return None
+
+
+def _parse_published_date(raw: str | None) -> datetime | None:
+    """Conservative, stdlib-only parser -- accepts `YYYY-MM-DD` and
+    ISO-8601 datetime strings (including a trailing `Z`), never raises.
+    A timezone-naive result is interpreted as UTC (Python 3.11+'s own
+    `datetime.fromisoformat` already accepts a trailing `Z` and bare
+    dates natively, but the `Z` is normalized explicitly here rather than
+    silently depending on that specific interpreter-version behavior).
+    Returns None for anything falsy, empty, or unparseable -- the
+    "missing/malformed" case _filter_relevant_web_articles's own R7E.4
+    section treats identically (pass through, never reject solely for
+    this)."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
 
 def _contains_content_override_word(normalized: str) -> bool:
     for token in normalized.split():
@@ -665,7 +806,7 @@ def _retrieve_node(state: QAState) -> dict:
 def _filter_relevant_web_articles(
     query: str, articles: list[WebArticle], client: OpenAI, threshold: float = _WEB_ARTICLE_RELEVANCE_THRESHOLD,
     topic: str = "", fail_open: bool = True, outcome: dict | None = None, debug: list[dict] | None = None,
-    provenance_by_url: dict[str, dict] | None = None,
+    provenance_by_url: dict[str, dict] | None = None, now: datetime | None = None,
 ) -> list[WebArticle]:
     """curation-chat-web-relevance: the actual filtering logic, kept as its
     own small, directly-patchable function (not inlined into the graph
@@ -775,6 +916,40 @@ def _filter_relevant_web_articles(
     query) also skips it -- nothing "stale" about that. Never mutates
     `provenance_by_url` or any of its entries -- read-only, same as
     every other input this function takes.
+
+    chat-web-relevance-guardrails R7E.4: a THIRD, independent tightening
+    pass -- `query` is parsed once (via `_extract_temporal_intent`, see
+    its own docstring for the 5-tier precedence) into an optional
+    freshness cutoff, applied per candidate against `article.
+    published_date` (parsed via `_parse_published_date`). Same "only ever
+    tightens an already-kept candidate, never restores a rejected one"
+    posture as the stale-pool check above -- checked strictly after both
+    the query/topic AND-check and the stale-pool re-check, so a
+    candidate must clear all three to survive. A candidate whose
+    `published_date` is missing or fails to parse ALWAYS passes this
+    check regardless of temporal intent -- Tavily does not reliably
+    populate this field (confirmed directly, not assumed), so rejecting
+    solely for absent/bad metadata would punish legitimately relevant,
+    simply under-labeled sources; `published_date_status` in debug
+    records "missing"/"malformed" so this is visible without silently
+    admitting anything incorrectly. No temporal intent detected in
+    `query` (the common case) means this pass is a complete no-op --
+    byte-identical to pre-R7E.4 behavior.
+
+    `now`, if given, pins "the current time" this call reasons against --
+    defaults to `datetime.now(timezone.utc)` (production behavior,
+    unchanged from having no clock parameter at all). Tests and eval
+    runs pass a fixed `now` so "this week"/"today"/generic-recency
+    cutoffs are deterministic instead of drifting with wall-clock time --
+    see research_agent/evals/runners/run_chat_relevance.py's own
+    `evaluation_time` fixture field.
+
+    Applies identically at BOTH call sites (`_filter_web_relevance_node`
+    answer-time and `_accept_web_offer` insertion-time) -- unlike
+    `provenance_by_url` above, `query` and `article.published_date` are
+    already available at both, so no new call-site parameter was needed
+    to reach this; it activates automatically wherever this function is
+    called with a freshness-sensitive query.
     """
     if not articles:
         if outcome is not None:
@@ -783,6 +958,9 @@ def _filter_relevant_web_articles(
     try:
         query_vector = _embed_with_cache(client, query)
         topic_vector = _embed_with_cache(client, topic) if topic else None
+        # R7E.4: parsed once per call (not per candidate) -- depends only
+        # on `query`/`now`, never on any individual article.
+        temporal_intent = _extract_temporal_intent(query, now or datetime.now(timezone.utc))
         kept = []
         for article in articles:
             article_vector = _embed_with_cache(client, f"{article.title}\n{article.snippet or ''}")
@@ -829,6 +1007,27 @@ def _filter_relevant_web_articles(
                 if not passed_stale_pool_threshold:
                     article_kept = False
 
+            # chat-web-relevance-guardrails R7E.4: temporal-freshness
+            # re-check -- same "only ever tightens" posture as the
+            # stale-pool check above, checked strictly after it. Missing/
+            # malformed published_date ALWAYS passes (never rejected
+            # solely for absent/bad metadata) -- see this function's own
+            # R7E.4 docstring section.
+            parsed_published_at = _parse_published_date(article.published_date)
+            if not article.published_date:
+                published_date_status = "missing"
+            elif parsed_published_at is None:
+                published_date_status = "malformed"
+            else:
+                published_date_status = "present"
+            temporal_check_applied = False
+            passed_temporal_check: bool | None = None
+            if article_kept and temporal_intent is not None and parsed_published_at is not None:
+                temporal_check_applied = True
+                passed_temporal_check = parsed_published_at >= temporal_intent.cutoff
+                if not passed_temporal_check:
+                    article_kept = False
+
             if article_kept:
                 kept.append(article)
             if debug is not None:
@@ -843,6 +1042,12 @@ def _filter_relevant_web_articles(
                     "stale_pool_check_applied": stale_pool_check_applied,
                     "stale_pool_threshold": _STALE_POOL_QUERY_THRESHOLD if stale_pool_check_applied else None,
                     "passed_stale_pool_threshold": passed_stale_pool_threshold,
+                    "temporal_check_applied": temporal_check_applied,
+                    "temporal_intent": temporal_intent.label if temporal_intent is not None else None,
+                    "candidate_published_at": article.published_date,
+                    "freshness_cutoff": temporal_intent.cutoff.isoformat() if temporal_intent is not None else None,
+                    "published_date_status": published_date_status,
+                    "passed_temporal_check": passed_temporal_check,
                     "kept": article_kept,
                 })
         if outcome is not None:
@@ -903,6 +1108,13 @@ def _filter_web_relevance_node(state: QAState) -> dict:
     the ONLY call site that passes provenance_by_url -- _accept_web_
     offer's insertion-time gate deliberately does not (see that call
     site's own comment).
+
+    chat-web-relevance-guardrails R7E.4: unlike provenance_by_url above,
+    the temporal-freshness re-check needs no new parameter here at all --
+    it activates automatically off `query`/`article.published_date`,
+    both already in play -- so this node reaches R7E.4 for free, with no
+    change to this call itself. `now` is left at its default (real UTC
+    time) in production; only the eval runner pins it.
     """
     query = state["standalone_query"] or state["question"]
     outcome: dict = {}
