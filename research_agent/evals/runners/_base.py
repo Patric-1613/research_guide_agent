@@ -53,11 +53,17 @@ Evaluator = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 # style domain-specific exception here; this project's suites don't need one
 # yet, and adding one speculatively would be exactly the kind of unused
 # generality this project avoids elsewhere). `mock_only` (R7D.2) marks a
-# fixture case that simulates something (e.g. an embedding-API exception)
-# that can't be forced against a real API -- a runner's own `skip_if` can
-# use it to skip the case in live mode instead of forcing an artificial
-# failure; see run_chat_relevance.py.
-_METADATA_KEYS = {"id", "tags", "source", "notes", "mock_only"}
+# fixture case that simulates something (e.g. an embedding-API exception,
+# or -- as of R7E.5b -- a forced direct-relevance judge verdict) that
+# can't be forced against a real API -- a runner's own `skip_if` can use
+# it to skip the case in live mode instead of forcing an artificial
+# failure; see run_chat_relevance.py. `mock_only_reason` (R7E.5b) is an
+# optional, case-specific explanation of WHY -- a single hardcoded skip
+# message (originally written when embedding-failure cases were the only
+# mock_only ones) went stale the moment a second, differently-motivated
+# mock_only case (judge-uncertain) was added; see run_chat_relevance.py's
+# own `_mock_only_skip_reason` for the fallback when this is absent.
+_METADATA_KEYS = {"id", "tags", "source", "notes", "mock_only", "mock_only_reason"}
 
 
 class LiveModeSetupError(RuntimeError):
@@ -133,6 +139,7 @@ def load_examples(
                 "source": record.get("source") or "",
                 "notes": record.get("notes") or "",
                 "mock_only": bool(record.get("mock_only", False)),
+                "mock_only_reason": record.get("mock_only_reason") or None,
             }
             inputs, outputs = _split_inputs_outputs(record)
             examples.append(Example(id=example_id, inputs=inputs, outputs=outputs, metadata=metadata))

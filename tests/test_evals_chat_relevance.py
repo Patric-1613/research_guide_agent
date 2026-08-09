@@ -325,6 +325,22 @@ class TestMockChatRelevanceRunner:
         prediction = run_chat_relevance.predict(example)
         assert prediction["relevant_urls"] == []
 
+    def test_mock_mode_still_executes_mock_only_fixtures_not_skipped(self):
+        """R7E.5b's mock_only_reason changes are purely about the LIVE
+        skip message -- mock mode itself must keep running every
+        mock_only case normally, exactly as before, with a real
+        prediction (not a skip)."""
+        result = run_chat_relevance.run_experiment(mode="mock")
+        by_id = {pe["example_id"]: pe for pe in result.per_example}
+        for mock_only_id in (
+            "chat_relevance_008_embedding_failure_fail_open",
+            "chat_relevance_009_embedding_failure_fail_closed",
+            "chat_relevance_014_gray_zone_judge_uncertain_fail_open",
+        ):
+            entry = by_id[mock_only_id]
+            assert entry["skipped"] is False
+            assert entry["prediction"] is not None
+
     def test_run_experiment_scores_every_case_at_1_0_or_none(self):
         result = run_chat_relevance.run_experiment(mode="mock")
         assert result.total == 15
@@ -445,6 +461,12 @@ class TestLiveChatRelevanceRunner:
         assert result.total + result.skipped == 2
 
     def test_live_mode_skips_mock_only_cases_with_a_clear_reason(self):
+        """R7E.5b: each mock_only case reports its OWN fixture-specific
+        reason (mock_only_reason), not a single hardcoded embedding-
+        failure message reused for cases that don't simulate that at
+        all -- the 008/009 pair simulates an embedding-API exception,
+        014 simulates a judge-uncertain verdict, and the two messages
+        must not be interchangeable."""
         openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
         with openai_patch, embed_patch, judge_patch:
             result = run_chat_relevance.run_experiment(mode="live")
@@ -455,9 +477,38 @@ class TestLiveChatRelevanceRunner:
             "chat_relevance_009_embedding_failure_fail_closed",
             "chat_relevance_014_gray_zone_judge_uncertain_fail_open",
         }
+        for example_id in ("chat_relevance_008_embedding_failure_fail_open", "chat_relevance_009_embedding_failure_fail_closed"):
+            reason = skipped[example_id]["skipped_reason"]
+            assert reason == "simulates an embedding-API exception that cannot be reliably forced against the live API"
+
+        judge_reason = skipped["chat_relevance_014_gray_zone_judge_uncertain_fail_open"]["skipped_reason"]
+        assert judge_reason == "simulates an explicit judge-uncertain verdict to test answer-time fail-open behavior"
+
         for entry in skipped.values():
-            assert "mock_only" in entry["skipped_reason"]
             assert entry["prediction"] is None  # predict_live was never called for it
+
+    def test_mock_only_fixture_without_mock_only_reason_gets_the_generic_fallback(self):
+        """No REAL fixture case currently lacks mock_only_reason (both
+        008/009 and 014 have their own), so this constructs a synthetic
+        Example directly to prove the fallback path itself, independent
+        of what the tracked fixture file happens to contain today."""
+        example = Example(
+            id="synthetic_mock_only_no_reason", inputs={}, outputs={},
+            metadata={"tags": [], "source": "", "notes": "", "mock_only": True, "mock_only_reason": None},
+        )
+        reason = run_chat_relevance._mock_only_skip_reason(example, "live")
+        assert reason == "mock-only fixture case; requires a condition intentionally simulated only in mock mode"
+
+    def test_mock_only_skip_reason_is_none_in_mock_mode(self):
+        """The skip_if predicate itself only ever activates for live
+        mode -- mock mode must never see a skip reason, which is what
+        actually lets it execute mock_only fixtures normally (see the
+        dedicated mock-mode-still-executes test below)."""
+        example = Example(
+            id="synthetic_mock_only", inputs={}, outputs={},
+            metadata={"tags": [], "source": "", "notes": "", "mock_only": True, "mock_only_reason": "some reason"},
+        )
+        assert run_chat_relevance._mock_only_skip_reason(example, "mock") is None
 
     def test_live_mode_never_calls_predict_live_for_mock_only_cases(self):
         openai_patch, embed_patch, judge_patch = _patch_live_embeddings()
@@ -638,7 +689,7 @@ class TestRunDetailJson:
         [entry] = data["per_example"]
         assert entry["example_id"] == "chat_relevance_008_embedding_failure_fail_open"
         assert entry["skipped"] is True
-        assert "mock_only" in entry["skipped_reason"]
+        assert entry["skipped_reason"] == "simulates an embedding-API exception that cannot be reliably forced against the live API"
         assert entry["prediction"] is None
         assert entry["evaluator_results"] is None
 

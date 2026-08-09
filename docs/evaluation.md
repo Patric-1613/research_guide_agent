@@ -106,13 +106,17 @@ chat_relevance_history.csv`.
 through a real `OpenAI()` client (same construction `qa.ask()` uses),
 never falls back to mock, and requires explicit opt-in (`--mode` still
 defaults to `mock`). It fails cleanly (no traceback) if OpenAI
-credentials aren't set, and prints a cost warning before running. Two
-fixture cases (`chat_relevance_008`/`009`, the simulated embedding-
-failure cases) are marked `mock_only: true` and are skipped in live
-mode with a clear reason, since a real failure can't be forced against
-the live API. Everything else in this section (the mentor-repo
-comparison, phase order, the `report_quality` suite) is still
-design-only, not yet implemented.
+credentials aren't set, and prints a cost warning before running.
+Fixture cases that simulate a condition only reachable in mock mode
+(originally `chat_relevance_008`/`009`'s embedding-API failures; as of
+R7E.5b also `chat_relevance_014`'s forced judge-uncertain verdict) are
+marked `mock_only: true` and are skipped in live mode with a clear,
+**fixture-specific** reason (an optional `mock_only_reason` field on
+the fixture record itself, falling back to a generic truthful message
+if absent) — not a single hardcoded message, since different mock_only
+cases simulate genuinely different things. Everything else in this
+section (the mentor-repo comparison, phase order, the `report_quality`
+suite) is still design-only, not yet implemented.
 
 This section records the architecture decided during
 E0, an audit-and-design-only checkpoint that studied a mentor repo's

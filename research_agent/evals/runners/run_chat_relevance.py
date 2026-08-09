@@ -257,12 +257,23 @@ def _build_live_client() -> OpenAI:
         ) from exc
 
 
+_MOCK_ONLY_GENERIC_FALLBACK_REASON = (
+    "mock-only fixture case; requires a condition intentionally simulated only in mock mode"
+)
+
+
 def _mock_only_skip_reason(example: Example, mode: str) -> str | None:
+    """R7E.5b: the skip message is now fixture-specific (`mock_only_
+    reason`, from the fixture's own metadata) rather than a single
+    hardcoded string -- that string was written back when embedding-
+    failure cases (008/009) were the only mock_only ones, and went
+    stale the moment case 014 (a forced judge-uncertain verdict, an
+    unrelated reason) also became mock_only: its live-run detail kept
+    claiming an embedding-API exception it never simulated. A fixture
+    without its own `mock_only_reason` falls back to a generic, still-
+    truthful message rather than reusing another case's specific one."""
     if mode == "live" and example.metadata.get("mock_only"):
-        return (
-            "mock_only fixture case -- skipped in live mode (simulates an embedding-API "
-            "exception that can't be forced against the real API)"
-        )
+        return example.metadata.get("mock_only_reason") or _MOCK_ONLY_GENERIC_FALLBACK_REASON
     return None
 
 
