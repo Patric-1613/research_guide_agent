@@ -272,6 +272,11 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "revoked_web_article_urls": list(session.revoked_web_article_urls),
         "report_versions": [_serialize_report_version(v) for v in session.report_versions],
         "active_report_version_id": session.active_report_version_id,
+        # R7E.2: already plain JSON-native (str -> {str: str}), same
+        # opaque pass-through convention as chat_history/turn_history
+        # above -- no Paper/WebArticle objects nested in it, nothing to
+        # convert.
+        "web_article_provenance_by_url": dict(session.web_article_provenance_by_url),
     }
 
 
@@ -330,6 +335,12 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         revoked_web_article_urls=set(d.get("revoked_web_article_urls", [])),
         report_versions=report_versions,
         active_report_version_id=active_report_version_id,
+        # R7E.2: a session saved before this phase simply has no
+        # provenance recorded yet -- an empty dict is the correct
+        # default (nothing was ever tracked), same backward-compat
+        # convention as report_approved_web_article_urls/
+        # revoked_web_article_urls above.
+        web_article_provenance_by_url=dict(d.get("web_article_provenance_by_url", {})),
     )
 
 

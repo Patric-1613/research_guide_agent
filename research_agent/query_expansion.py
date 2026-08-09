@@ -834,6 +834,29 @@ class PaperPoolSession:
     # drift independently). None only when report_versions is empty (no
     # report has ever been generated for this session yet).
     active_report_version_id: str | None = None
+    # R7E.2 (chat/web relevance eval follow-up): per-URL provenance for
+    # web_articles_added -- {"source_query": str, "added_at": str (UTC
+    # ISO 8601)}. Deliberately a separate URL-keyed map, not fields on
+    # WebArticle itself, same idiom as report_approved_web_article_urls/
+    # revoked_web_article_urls above (both are "side-structures describing
+    # pool membership," not baked into the value object) -- WebArticle
+    # already has two independent Pydantic mirrors (api_app/schemas.py's
+    # WebArticleOut/CitedWebArticleOut) plus a frontend TS type, none of
+    # which need to know how an article entered THIS session's pool.
+    # Populated by curation_chat.py's _accept_web_offer, the only place
+    # web_articles_added is ever extended. `source_exchange_id` is
+    # deliberately NOT included yet -- curation_chat.py's
+    # _attach_exchange_metadata mints exchange_id AFTER _accept_web_offer
+    # already returns, so wiring it through needs _accept_web_offer to
+    # report which URLs it just added back to its caller, a small
+    # follow-up left for whenever that's actually needed (R7E's own
+    # analysis noted this explicitly, not an oversight here). Read by no
+    # filtering logic yet -- this phase is metadata-only, wired into
+    # eval/filtering behavior in a later phase. Same "URL missing from the
+    # map means no provenance recorded" soft-link posture as the two set
+    # fields above -- never assumed to be in 1:1 lockstep with
+    # web_articles_added, always read via .get(url).
+    web_article_provenance_by_url: dict[str, dict] = field(default_factory=dict)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

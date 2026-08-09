@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -176,6 +177,30 @@ def _maybe_set_web_offer(session: PaperPoolSession, question: str, result: dict)
     return {**result, "answer": augmented_answer, "web_offer_made": True}
 
 
+def _record_web_article_provenance(session: PaperPoolSession, articles: list[WebArticle], source_query: str) -> None:
+    """R7E.2: records one provenance entry per URL in `articles` --
+    {"source_query", "added_at"} -- on session.web_article_provenance_by_url.
+    Metadata only, read by no filtering logic yet (see that field's own
+    docstring in query_expansion.py). `source_exchange_id` is
+    deliberately NOT recorded here -- curation_chat.py's own
+    _attach_exchange_metadata mints exchange_id AFTER _accept_web_offer
+    (this function's only caller) already returns, so it doesn't exist
+    yet at this point in the flow; wiring it through is a small,
+    deferred follow-up (_accept_web_offer would need to report which
+    URLs it just added back to its caller), not implemented in this
+    phase. Overwrites any existing entry for a URL already present
+    (matching web_articles_added's own "URL is the identity" convention
+    -- existing_urls dedup in _accept_web_offer already means this is
+    only ever called with genuinely new URLs in practice, but overwrite-
+    not-append keeps this function correct even if that ever changes)."""
+    added_at = datetime.now(timezone.utc).isoformat()
+    for article in articles:
+        session.web_article_provenance_by_url[article.url] = {
+            "source_query": source_query,
+            "added_at": added_at,
+        }
+
+
 def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, top_k: int) -> dict:
     question = session.pending_web_offer["question"]
     session.pending_web_offer = None
@@ -240,6 +265,7 @@ def _accept_web_offer(session: PaperPoolSession, message: str, client: OpenAI, t
     # which keeps its existing, unmodified plain-refusal behavior below.
     web_search_found_nothing_relevant = bool(candidate_articles) and not relevant_articles
     session.web_articles_added.extend(relevant_articles)
+    _record_web_article_provenance(session, relevant_articles, search_query)
 
     # Deliberately does NOT run back through _maybe_set_web_offer: if the
     # re-asked question is still unanswerable even with fresh web results

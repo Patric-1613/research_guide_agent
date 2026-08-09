@@ -174,6 +174,42 @@ def test_phase5_fields_roundtrip_including_nested_papers_inside_report():
         assert loaded.pending_report_update == {"reason": "new web source approved"}
 
 
+def test_web_article_provenance_by_url_round_trips_through_real_sqlite():
+    """R7E.2: web_article_provenance_by_url is plain JSON-native (str ->
+    {str: str}) -- no Paper/WebArticle objects nested in it, so this
+    proves the opaque pass-through in _session_to_dict/_dict_to_session
+    actually preserves it through a real save/load, not just that the
+    dataclass default survives (which would pass trivially even if the
+    field were silently dropped from serialization)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        web_article = WebArticle(
+            title="A Survey", url="https://example.com/survey",
+            snippet="a snippet", published_date="2024-01-01", source_domain="example.com",
+        )
+        session = PaperPoolSession(
+            topic="parameter-efficient fine-tuning",
+            stage="synthesize",
+            web_articles_added=[web_article],
+            web_article_provenance_by_url={
+                "https://example.com/survey": {
+                    "source_query": "PEFT survey papers", "added_at": "2026-08-09T12:00:00+00:00",
+                },
+            },
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-provenance", cp)
+            loaded = load_curation_session("session-provenance", cp)
+
+        assert loaded is not None
+        assert loaded.web_article_provenance_by_url == {
+            "https://example.com/survey": {
+                "source_query": "PEFT survey papers", "added_at": "2026-08-09T12:00:00+00:00",
+            },
+        }
+
+
 def test_report_cited_web_articles_and_references_survive_serialize_deserialize():
     """report-quality Phase R1 bug fix: cited_web_articles used to be
     dropped entirely by _serialize_report/_deserialize_report -- only
@@ -652,6 +688,36 @@ def test_old_session_with_no_report_at_all_has_no_implicit_version():
         assert loaded is not None
         assert loaded.report_versions == []
         assert loaded.active_report_version_id is None
+
+
+def test_old_session_without_web_article_provenance_key_loads_with_empty_dict():
+    """R7E.2 backward compatibility: a checkpoint saved before this phase
+    has no web_article_provenance_by_url key at all -- must load cleanly
+    as an empty dict, same convention as report_approved_web_article_urls/
+    revoked_web_article_urls above (both also absent from this same
+    old_format_dict, and both already load as empty via .get(..., set())
+    -- this proves the new field follows the identical pattern, not a
+    special case)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_format_dict = {
+            "topic": "old style session", "reserve": [], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+            "selected_paper_ids": [], "selected_papers": [], "report": None, "chat_history": [],
+            "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+            "refinement_notes": [], "report_covered_web_article_count": 0,
+            # deliberately no "web_article_provenance_by_url" key
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-no-provenance-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-no-provenance-id", cp)
+
+        assert loaded is not None
+        assert loaded.web_article_provenance_by_url == {}
 
 
 def test_report_versions_round_trip_through_real_sqlite():

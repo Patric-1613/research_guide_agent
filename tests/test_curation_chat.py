@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from research_agent.curation_chat import (
     _OfferResponseIntent,
     _classify_offer_response,
+    _record_web_article_provenance,
     approve_web_article_urls,
     approved_web_article_urls_from_added_to_report_entries,
     ask_in_session,
@@ -695,6 +697,205 @@ def test_accept_web_offer_appends_and_uses_a_genuinely_relevant_search_result():
     assert session.web_articles_added == [relevant_article]
     assert result["new_web_articles_found"] == 1
     assert result["cited_web_articles"] == [relevant_article]
+
+
+# --- R7E.2: web article provenance metadata (no filtering/behavior change) ---
+
+def test_accept_web_offer_records_source_query_provenance_for_newly_added_article():
+    """Metadata-only: proves _accept_web_offer records the same
+    search_query that actually drove the insertion-time relevance gate
+    -- session.chat_history is empty at this point (first turn), so
+    condense_question() short-circuits and search_query equals the
+    pending_web_offer question verbatim, same as the existing positive-
+    case test above."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance news"},
+    )
+    relevant_article = WebArticle(
+        title="New AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A new report on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [relevant_article.url])
+    vectors = {
+        "AI governance news": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{relevant_article.title}\n{relevant_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[relevant_article.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[relevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        chat_turn(session, "yes please", client=mock_client)
+
+    # Behavior unchanged from the mirror test above -- provenance is
+    # additive bookkeeping, not a second filtering path.
+    assert session.web_articles_added == [relevant_article]
+
+    assert list(session.web_article_provenance_by_url.keys()) == [relevant_article.url]
+    entry = session.web_article_provenance_by_url[relevant_article.url]
+    assert entry["source_query"] == "AI governance news"
+    assert "added_at" in entry
+
+
+def test_accept_web_offer_provenance_added_at_is_a_parseable_utc_iso_timestamp():
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance news"},
+    )
+    relevant_article = WebArticle(
+        title="New AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="A new report on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [relevant_article.url])
+    vectors = {
+        "AI governance news": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{relevant_article.title}\n{relevant_article.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1], X.", cited_paper_ids=[], cited_web_urls=[relevant_article.url],
+        ),
+    ]
+
+    before = datetime.now(timezone.utc)
+    with patch("research_agent.curation_chat.search_web", return_value=[relevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        chat_turn(session, "yes please", client=mock_client)
+    after = datetime.now(timezone.utc)
+
+    added_at_raw = session.web_article_provenance_by_url[relevant_article.url]["added_at"]
+    parsed = datetime.fromisoformat(added_at_raw)
+    assert parsed.tzinfo is not None  # a real UTC-aware timestamp, not naive local time
+    assert before <= parsed <= after
+
+
+def test_accept_web_offer_records_one_provenance_entry_per_newly_added_url():
+    """Provenance is keyed by URL -- two distinct relevant articles from
+    the same search get two distinct entries, each with its own url as
+    the key (not a list, not indexed by position)."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "AI governance news"},
+    )
+    article_a = WebArticle(
+        title="AI Governance Report A", url="https://example.com/a",
+        snippet="Report A on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    article_b = WebArticle(
+        title="AI Governance Report B", url="https://example.com/b",
+        snippet="Report B on AI governance frameworks.", published_date=None, source_domain="example.com",
+    )
+    schema = _build_answer_schema(["p1"], [article_a.url, article_b.url])
+    vectors = {
+        "AI governance news": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{article_a.title}\n{article_a.snippet}": [1.0, 0.0],
+        f"{article_b.title}\n{article_b.snippet}": [1.0, 0.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(
+            schema, answerable=True, answer="Per [Web 1] and [Web 2], X.", cited_paper_ids=[],
+            cited_web_urls=[article_a.url, article_b.url],
+        ),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[article_a, article_b]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        chat_turn(session, "yes please", client=mock_client)
+
+    assert set(session.web_article_provenance_by_url.keys()) == {article_a.url, article_b.url}
+    assert session.web_article_provenance_by_url[article_a.url]["source_query"] == "AI governance news"
+    assert session.web_article_provenance_by_url[article_b.url]["source_query"] == "AI governance news"
+
+
+def test_accept_web_offer_rejected_article_gets_no_provenance_entry():
+    """The insertion-time relevance gate still runs first -- an article
+    that never makes it into web_articles_added must not get a
+    provenance entry either (provenance describes real pool membership,
+    not every candidate ever seen)."""
+    papers = [_paper("p1", "RoCoFT")]
+    session = PaperPoolSession(
+        topic="AI governance frameworks", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+        pending_web_offer={"question": "governance frameworks"},
+    )
+    irrelevant_article = WebArticle(
+        title="Housing Case Study", url="https://housing.example.com/zoning",
+        snippet="A zoning policy case study.", published_date=None, source_domain="housing.example.com",
+    )
+    schema = _build_answer_schema(["p1"], None)
+    vectors = {
+        "governance frameworks": [1.0, 0.0],
+        "AI governance frameworks": [1.0, 0.0],
+        f"{irrelevant_article.title}\n{irrelevant_article.snippet}": [0.0, 1.0],
+    }
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_intent_response("accept"),
+        _mock_parse_response(schema, answerable=False, answer="Not covered by the selected papers.", cited_paper_ids=[]),
+    ]
+
+    with patch("research_agent.curation_chat.search_web", return_value=[irrelevant_article]), \
+         patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+         patch("research_agent.qa.embed_and_index_papers"), \
+         patch("research_agent.qa.get_chroma_collection"), \
+         patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]), \
+         patch("research_agent.qa._embed_with_cache", side_effect=lambda client, text: vectors[text]):
+        chat_turn(session, "yes please", client=mock_client)
+
+    assert session.web_articles_added == []
+    assert session.web_article_provenance_by_url == {}
+
+
+def test_record_web_article_provenance_overwrites_not_duplicates_for_a_reused_url():
+    """Unit-level: calling the helper twice for the same URL (e.g. a
+    hypothetical future re-discovery) must overwrite the single dict
+    entry, never create a duplicate/list structure keyed by anything
+    other than the URL itself."""
+    session = PaperPoolSession(topic="AI governance frameworks")
+    article = WebArticle(
+        title="AI Governance Report", url="https://example.com/ai-gov-report",
+        snippet="s", published_date=None, source_domain="example.com",
+    )
+
+    _record_web_article_provenance(session, [article], "first query")
+    first_added_at = session.web_article_provenance_by_url[article.url]["added_at"]
+    _record_web_article_provenance(session, [article], "second query")
+
+    assert len(session.web_article_provenance_by_url) == 1
+    entry = session.web_article_provenance_by_url[article.url]
+    assert entry["source_query"] == "second query"
+    assert entry["added_at"] >= first_added_at
 
 
 def test_accept_web_offer_gives_abstention_message_when_all_search_results_fail_relevance():
