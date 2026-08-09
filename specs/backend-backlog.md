@@ -1101,6 +1101,115 @@ invented:
 - **Status**: Closed (2026-08-08). Commits `69f07be` (R7D.1), `5c95bec`
   (R7D.2).
 
+### R7E: chat relevance evaluation arc — live red-teaming, guardrail fixes, judge hardening (R7E.1-R7E.5b)
+- **Goal**: actually run the R7D harness live against the real pipeline
+  as a red-team tool, and fix whatever it found — not just confirm the
+  harness works.
+- **Why it matters**: R7D built a re-runnable suite but had only run it
+  live once, on a small fixture set, without acting on the results. R7E
+  is where that live loop closed: each live run's findings drove the
+  next fix, and the fix was re-validated live before moving on.
+- **Decision/what shipped** (six sub-steps, each its own commit):
+  - **R7E.1 (commit `4956c1c`)**: per-example live detail — a `debug`
+    param on `_filter_relevant_web_articles`, persisted per run to
+    gitignored `eval_results/runs/chat_relevance_run_<run_id>.json`,
+    correlated to the tracked CSV by `run_id`.
+  - **R7E.2 (commit `5b01103`, live evidence commit `bebf5f1`)**: web
+    article provenance metadata (which query originally surfaced a pool
+    member), recorded at insertion time. First live redteam baseline:
+    run_id 7, 2/5 passed, score 0.5.
+  - **R7E.3 (commit `acee821`, evidence commit `e6a78ab`)**:
+    provenance-aware stale-pool guard — a stricter re-check
+    (`_STALE_POOL_QUERY_THRESHOLD = 0.50`) for a pool member whose
+    provenance shows a different source query than the current turn's,
+    fixing a real leak the run_id 7 baseline found (a stale executive-
+    order summary re-surfacing against an unrelated later question).
+    Post-fix: run_id 8, 3/5 passed, score 0.7.
+  - **R7E.4 (commit `f4aa5f5`, evidence commit `e62de34`)**: temporal
+    freshness guard — a 5-tier query-intent parse into an optional
+    recency cutoff checked against `published_date`
+    (`_DEFAULT_RECENCY_WINDOW_DAYS = 180` fallback); missing/malformed
+    dates always pass. Post-fix: run_id 9, 4/5 passed, score 0.8.
+  - **R7E.5 (commit `3544d13`, evidence commit `9200bf9`)**: selective
+    direct-relevance judge — candidates in a similarity "gray zone" sent
+    to a new batched LLM judge for a `relevant`/`not_relevant`/
+    `uncertain` verdict. Fixture set expanded 5→11 cases for adversarial
+    coverage; the live run this expansion enabled (run_id 10, 8/11
+    passed, score 0.7273 — a **temporary, expected** drop from 0.8, not
+    a regression) found three real bugs: an unsafe high-similarity
+    bypass leak (an Atari RL source at `query_similarity=0.6287`), a
+    live prompt-injection success against the real judge model
+    (`verdict="relevant"`, `confidence=1.0`), and an invalid live
+    fixture expectation (forced `"uncertain"`, mock-only behavior).
+  - **R7E.5b (commit `94eb621`, evidence commit `ac4b9b0`; skip-reason
+    fix commit `ac1f325`)**: removed the gray-zone bypass entirely —
+    every deterministic survivor is now judged; added a deterministic
+    `_detect_retrieved_prompt_injection` guard strictly before the
+    judge, rejecting immediately and never through `fail_open` at either
+    call site; bumped `_DIRECT_RELEVANCE_PROMPT_VERSION` to invalidate
+    stale cache entries; fixed mock-only skip messaging to be
+    fixture-specific (`mock_only_reason`) rather than one hardcoded
+    string. **Final live validation**: run_id 11, 10/10 evaluated cases
+    passed, 0 failed, 3 correctly skipped as mock-only, score 1.0, mean
+    latency ≈1083 ms — 100% on the current 10-case synthetic live
+    chat-relevance red-team set (not a claim of universal accuracy).
+  - New persistent `direct_relevance_cache` SQLite table (same physical
+    file as the embedding cache) keyed on model/prompt-version/topic/
+    query/url/content-hash; only definite `relevant`/`not_relevant`
+    verdicts cached; both production call sites
+    (`qa.py::_filter_web_relevance_node`, `curation_chat.py::
+    _accept_web_offer`) now pass `enable_direct_relevance_judge=True`
+    unconditionally.
+  - See `docs/architecture.md`'s R7 section (R7E.1-R7E.5b subsections)
+    and `docs/evaluation.md`'s "R7E — chat relevance evaluation arc"
+    section for the full design record, live-run evidence table, and
+    known-limitations list.
+- **Location**: `research_agent/qa.py`
+  (`_filter_relevant_web_articles`, `_detect_retrieved_prompt_injection`,
+  `_judge_direct_web_relevance`, `_init_direct_relevance_cache_db`, the
+  `_STALE_POOL_QUERY_THRESHOLD`/`_DEFAULT_RECENCY_WINDOW_DAYS`/
+  `_DIRECT_RELEVANCE_JUDGE_MAX_BATCH_SIZE`/`_DIRECT_RELEVANCE_PROMPT_
+  VERSION` constants), `research_agent/curation_chat.py`
+  (`_accept_web_offer` provenance recording),
+  `research_agent/evals/runners/run_chat_relevance.py` (debug
+  persistence), `eval_data/chat_web_relevance_redteam.jsonl` (expanded
+  to 11 cases), `eval_results/chat_relevance_history.csv`,
+  `eval_results/runs/` (new per-run JSON detail, gitignored).
+- **Explicitly NOT part of this arc**: `report_quality`/R6 (report
+  generation quality evaluation) is a wholly separate, still-not-started
+  phase — R7E only closes the chat/web relevance guardrail arc, nothing
+  about report evaluation shipped here.
+- **Deferred follow-ups, still open** (not closed by this arc):
+  - A real-world, labelled chat relevance dataset — the current suite
+    is entirely synthetic/hand-curated red-team fixtures, not sampled
+    real user sessions.
+  - Threshold/recency calibration — `_WEB_ARTICLE_RELEVANCE_THRESHOLD`
+    (0.25), `_STALE_POOL_QUERY_THRESHOLD` (0.50), and
+    `_DEFAULT_RECENCY_WINDOW_DAYS` (180) all remain explicitly
+    provisional, none calibrated against a real dataset.
+  - A broader prompt-injection corpus — the current deterministic guard
+    covers the one pattern family the R7E.5 live run surfaced; encoded,
+    multilingual, indirect, and quoted-attack variants are unevaluated.
+  - Latency/cost measurement under realistic pool sizes — the ≈1083 ms
+    mean latency is evidence from this 10-case fixture run, not a
+    production SLO measured under realistic candidate-pool sizes or
+    load.
+  - Langfuse/production observability for the relevance signals
+    (query-topic preservation, source-relevance pass rate, etc.) —
+    still not wired into trace metadata; R7E extended the eval
+    *harness*, not production tracing.
+  - Gating `agent.py`'s one-shot `search_web_tool` path with this same
+    cascade, if still applicable — still calls `search_web()` with no
+    relevance check at all; unchanged from the R7 entry's original
+    deferred-follow-up note above.
+- **Priority**: n/a — done (deferred items above tracked separately).
+- **Status**: Closed (2026-08-09). Commits `4956c1c` (R7E.1), `5b01103`
+  (R7E.2), `bebf5f1` (R7E.2 evidence), `acee821` (R7E.3), `e6a78ab`
+  (R7E.3 evidence), `f4aa5f5` (R7E.4), `e62de34` (R7E.4 evidence),
+  `3544d13` (R7E.5), `9200bf9` (R7E.5 evidence), `94eb621` (R7E.5b),
+  `ac4b9b0` (R7E.5b evidence), `ac1f325` (skip-reason fix). Full backend
+  suite → 780 passed.
+
 ### E0: evaluation architecture decision checkpoint
 - **Goal**: decide the shape of this project's next eval work (R7D,
   R6) before building any of it — audit a mentor repo's `backend/evals/`
