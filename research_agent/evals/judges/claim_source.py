@@ -31,7 +31,7 @@ from typing import Any, Literal
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
-CLAIM_SOURCE_JUDGE_PROMPT_VERSION = "r6c2-claim-source-v1"
+CLAIM_SOURCE_JUDGE_PROMPT_VERSION = "r6c2-claim-source-v2"
 
 # Collective: does the evidence attached to a claim, taken together,
 # support the claim as written. Per-source: does ONE specific piece of
@@ -39,7 +39,19 @@ CLAIM_SOURCE_JUDGE_PROMPT_VERSION = "r6c2-claim-source-v1"
 # separate vocabulary (not reused for both) since "collectively
 # supported" and "this one source supports it" are genuinely different
 # questions a grouped citation can answer differently for.
-_COLLECTIVE_VERDICTS = ("supported", "partially_supported", "unsupported", "insufficient_evidence")
+#
+# R6C.2a: "not_a_verifiable_claim" added after the first live smoke
+# (run_id 2, commit cf60191) found the claim/source judge forced to
+# label a pure meta/expository sentence ("Before comparing these
+# approaches, two terms are worth defining.") as "unsupported" -- it
+# had no way to say "this isn't an evidence-checkable claim at all."
+# Deliberately NOT added to _SOURCE_VERDICTS: a per-source verdict only
+# ever exists for a CITED claim's attached evidence, and a cited claim
+# can never legitimately be "not_a_verifiable_claim" (see judge_claims's
+# own validation below) -- so no per-source analogue is needed.
+_COLLECTIVE_VERDICTS = (
+    "supported", "partially_supported", "unsupported", "insufficient_evidence", "not_a_verifiable_claim",
+)
 _SOURCE_VERDICTS = ("supports", "partially_supports", "does_not_support", "insufficient_evidence")
 
 _REASON_MAX_LENGTH = 300
@@ -55,13 +67,19 @@ For each claim, provide:
    - "partially_supported": the evidence supports part of the claim but not all of it, or supports a related but broader/narrower claim than what was actually written.
    - "unsupported": the evidence does not support the claim, or contradicts it.
    - "insufficient_evidence": there is no usable evidence text to judge against (a source was missing its text, or was excluded as untrusted) -- this is NOT the same as "unsupported"; only use it when there is genuinely nothing to check against.
+   - "not_a_verifiable_claim": the sampled sentence makes NO externally verifiable factual assertion at all -- it is framing/organizational prose about the report itself, not a claim about the research. Examples: document-navigation statements ("The next section compares methods."), section-introduction statements describing what the report will do, pure organizational transitions, a "definition" that only announces the report's own structure and asserts nothing checkable, editorial statements like "the following section compares...". This verdict can ONLY ever apply to an "uncited candidate" claim (see below) -- a claim the report itself chose to attach a citation to is, by that act, being presented as a factual assertion, and must be judged supported/partially_supported/unsupported/insufficient_evidence, never this.
+     Do NOT use "not_a_verifiable_claim" merely because a claim is broad, merely because it is uncited, merely because evidence is missing or ambiguous, merely because the sentence is hard to judge, or merely because the claim turns out to be only partially supported -- ALL of those cases must still receive a real verdict (partially_supported / unsupported / insufficient_evidence, as appropriate). Reserve "not_a_verifiable_claim" strictly for sentences that assert nothing checkable about the research at all.
 2. For EACH individual evidence id attached to the claim, an INDEPENDENT per-source verdict:
    - "supports" / "partially_supports" / "does_not_support" / "insufficient_evidence" (same meanings as above, applied to just this one source).
    A claim citing MULTIPLE sources requires EVERY source to be judged on its own merits -- one genuinely supporting source never excuses another attached source that does not actually support the claim. Do not let a strong source's verdict "carry" a weak one.
+   A claim combining facts drawn from more than one paper must cite EVERY source needed for the complete assertion -- if the claim's text relies on something only a DIFFERENT, uncited source would establish, that missing coverage is a real gap: mark the collective verdict "partially_supported" (or "unsupported" if nothing attached supports the part that matters), not "supported".
+   If the collective verdict is "not_a_verifiable_claim", leave source_verdicts completely empty -- there is nothing to attach a source judgment to.
 3. A confidence (0.0 to 1.0) for the collective verdict.
 4. A concise reason (under 300 characters) for the collective verdict.
 
-A claim marked "uncited candidate" has no citation attached in the report at all -- judge its collective verdict against the general evidence pool listed below (not any specific source); it has no source-specific verdicts to provide (leave source_verdicts empty for it).
+A claim marked "uncited candidate" has no citation attached in the report at all -- judge its collective verdict against the general evidence pool listed below (not any specific source, unless you are explicitly identifying which pooled evidence you drew on); it has no source-specific verdicts to provide (leave source_verdicts empty for it) regardless of which collective verdict you choose.
+
+JUDGE SUBSTANTIVE, SEMANTIC SUPPORT -- NOT EXACT WORD OVERLAP. A reasonable paraphrase can be fully "supported" even when the report's wording differs from the source's wording -- do not require the evidence to repeat the report's exact noun phrase or terminology; ask whether the MEANING is the same. For example, evidence describing "a step that scores retrieved passages by relevance" substantively supports a report calling that same mechanism "a relevance model" -- the terminology differs, the substance does not, so this is "supported", not "partially_supported". That said, still mark "partially_supported" (or "unsupported") when the report's claim adds something the evidence does not actually establish -- a material mechanism, a comparison, a superlative ("the most/least..."), a specific metric or number, a causal claim, or a broader scope than the evidence covers. Paraphrase leniency is about WORDING, never about letting an unsupported ADDITION through. For example: evidence stating a method "reduces the rate of unsupported claims" does not support a report calling that an "accuracy improvement" (different metric, not a paraphrase); evidence about one method's latency does not by itself support a claim that it has "the most noticeable latency of the three" (an unestablished three-way comparison); a claim that pulls in a specific detail from a second, uncited paper is only partially supported by the one source actually attached.
 
 Never invent support a source doesn't actually provide, and never assume a claim is true merely because it reads confidently. Only a bounded sample of this report's claims and evidence were selected for this review -- your judgment reflects this SAMPLE only, never a verified claim about the rest of the report."""
 
@@ -167,25 +185,33 @@ def judge_claims(
     `{"verdicts": {claim_id: {"collective_verdict", "collective_
     confidence", "collective_reason", "source_verdicts": [...]}},
     "latency_ms": float, "error": str | None, "token_usage": dict |
-    None, "model": str, "prompt_version": str, "claims_judged": int}`.
+    None, "model": str, "prompt_version": str, "claims_judged": int,
+    "not_a_verifiable_claim_ids": list[str]}`.
 
     Never raises. If there are no claims at all, returns immediately
     with an empty result and no API call -- nothing to judge, nothing
     to pay for.
 
-    A malformed response (duplicate/missing/extra claim_ids, or -- per
-    claim -- duplicate/missing/extra source_verdicts relative to that
-    claim's own `evidence_ids`) is treated as a failure for the WHOLE
-    call: `verdicts` comes back empty and `error` is set, exactly
+    A malformed response is treated as a failure for the WHOLE call --
+    `verdicts` comes back empty and `error` is set, exactly
     `_judge_direct_web_relevance`'s own "a response that's wrong about
     what it's even describing isn't selectively trustworthy for the
-    parts it happened to get right" policy.
+    parts it happened to get right" policy. Malformed includes:
+    duplicate/missing/extra claim_ids; per claim, duplicate/missing/
+    extra source_verdicts relative to that claim's own `evidence_ids`;
+    AND (R6C.2a) a `collective_verdict="not_a_verifiable_claim"`
+    returned for a CITED claim (a citation makes a sentence a factual
+    assertion by construction -- see _SYSTEM_PROMPT's own reasoning --
+    so this combination is rejected rather than silently accepted,
+    per this phase's own "prefer rejecting it for cited claims"
+    requirement) or paired with any non-empty `source_verdicts`.
     """
     all_claims = cited_claims + uncited_claims
     if not all_claims:
         return {
             "verdicts": {}, "latency_ms": 0.0, "error": None, "token_usage": None,
             "model": model, "prompt_version": CLAIM_SOURCE_JUDGE_PROMPT_VERSION, "claims_judged": 0,
+            "not_a_verifiable_claim_ids": [],
         }
 
     claim_ids = [c["claim_id"] for c in all_claims]
@@ -210,8 +236,30 @@ def judge_claims(
             )
 
         verdicts: dict[str, dict[str, Any]] = {}
+        not_a_verifiable_claim_ids: list[str] = []
         for v in parsed.verdicts:
             claim = claims_by_id[v.claim_id]
+
+            if v.collective_verdict == "not_a_verifiable_claim":
+                if claim["claim_kind"] == "cited":
+                    raise ValueError(
+                        f"claim {v.claim_id!r}: not_a_verifiable_claim is not valid for a cited claim -- "
+                        "a citation makes this a factual assertion to judge, not framing prose"
+                    )
+                if v.source_verdicts:
+                    raise ValueError(
+                        f"claim {v.claim_id!r}: not_a_verifiable_claim must have no source_verdicts "
+                        f"(got {[sv.evidence_id for sv in v.source_verdicts]})"
+                    )
+                verdicts[v.claim_id] = {
+                    "collective_verdict": "not_a_verifiable_claim",
+                    "collective_confidence": v.collective_confidence,
+                    "collective_reason": v.collective_reason,
+                    "source_verdicts": [],
+                }
+                not_a_verifiable_claim_ids.append(v.claim_id)
+                continue
+
             expected_evidence_ids = set(claim["evidence_ids"])
             returned_evidence_ids = [sv.evidence_id for sv in v.source_verdicts]
             if len(returned_evidence_ids) != len(set(returned_evidence_ids)) or set(returned_evidence_ids) != expected_evidence_ids:
@@ -233,10 +281,12 @@ def judge_claims(
             "verdicts": verdicts, "latency_ms": round(elapsed_ms, 2), "error": None,
             "token_usage": _extract_token_usage(response), "model": model,
             "prompt_version": CLAIM_SOURCE_JUDGE_PROMPT_VERSION, "claims_judged": len(all_claims),
+            "not_a_verifiable_claim_ids": not_a_verifiable_claim_ids,
         }
     except Exception as exc:  # noqa: BLE001 -- never raises; every failure mode degrades to a recorded error.
         elapsed_ms = (time.perf_counter() - start) * 1000
         return {
             "verdicts": {}, "latency_ms": round(elapsed_ms, 2), "error": str(exc), "token_usage": None,
             "model": model, "prompt_version": CLAIM_SOURCE_JUDGE_PROMPT_VERSION, "claims_judged": 0,
+            "not_a_verifiable_claim_ids": [],
         }

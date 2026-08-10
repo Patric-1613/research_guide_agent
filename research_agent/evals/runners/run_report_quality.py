@@ -599,6 +599,21 @@ def _aggregate_claim_source_dimensions(
     judged collective verdict is "unsupported" or "partially_
     supported"; same insufficient_evidence exclusion as above.
 
+    R6C.2a: a collective verdict of "not_a_verifiable_claim" (framing/
+    organizational prose the claim/source judge determined makes no
+    externally verifiable assertion at all -- see judges/
+    claim_source.py's own prompt) is ALSO excluded from groundedness's
+    judged set, the same way insufficient_evidence already is -- it
+    counts as neither pass, fail, partially supported, nor insufficient
+    evidence. citation_correctness is unaffected by this exclusion:
+    `judge_claims` itself rejects "not_a_verifiable_claim" for any
+    CITED claim as malformed, so it can only ever appear among UNCITED
+    claims, which citation_correctness's own per-source aggregation
+    never reads in the first place. If every sampled claim ends up
+    excluded this way (or insufficient_evidence), groundedness falls
+    through to "not_applicable" via the same "nothing was judgeable"
+    branch below -- no separate case needed.
+
     Never invents support: a claim/source pair with no usable evidence
     contributes to NEITHER pass nor fail -- only to "not_applicable"
     when literally nothing was judgeable at all.
@@ -644,12 +659,13 @@ def _aggregate_claim_source_dimensions(
             }
 
     collective_values = [v["collective_verdict"] for v in verdicts.values()]
-    judged_collective = [v for v in collective_values if v != "insufficient_evidence"]
+    judged_collective = [v for v in collective_values if v not in ("insufficient_evidence", "not_a_verifiable_claim")]
+    excluded_as_non_verifiable = sum(1 for v in collective_values if v == "not_a_verifiable_claim")
     if not judged_collective:
-        groundedness = {
-            "label": "not_applicable", "score": None,
-            "reasons": ["no claim had judgeable (non-insufficient-evidence) evidence"],
-        }
+        reason = "no claim had judgeable (non-insufficient-evidence, non-framing-prose) evidence"
+        if excluded_as_non_verifiable:
+            reason += f"; {excluded_as_non_verifiable} sampled item(s) excluded as non-verifiable framing prose"
+        groundedness = {"label": "not_applicable", "score": None, "reasons": [reason]}
     else:
         bad = sum(1 for v in judged_collective if v in ("unsupported", "partially_supported"))
         if bad:
@@ -747,6 +763,8 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
             "latency_ms": claim_result["latency_ms"], "error": claim_result["error"],
             "claims_judged": claim_result["claims_judged"], "token_usage": claim_result["token_usage"],
             "verdicts": claim_result["verdicts"],
+            "not_a_verifiable_claim_count": len(claim_result["not_a_verifiable_claim_ids"]),
+            "not_a_verifiable_claim_ids": claim_result["not_a_verifiable_claim_ids"],
         },
         "holistic_judge": {
             "latency_ms": holistic_result["latency_ms"], "error": holistic_result["error"],

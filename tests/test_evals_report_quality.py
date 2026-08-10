@@ -1267,6 +1267,251 @@ class TestClaimSourceJudge:
         assert "excluded from evaluation" not in prompt_text
 
 
+# =====================================================================
+# R6C.2a -- claim/source judge semantic hardening (not_a_verifiable_claim)
+#
+# Confirmed smoke finding (run_id 2, commit cf60191): the uncited
+# candidate "Before comparing these approaches, two terms are worth
+# defining." is meta/expository prose, not a factual claim -- the
+# judge had no vocabulary for that and was forced to call it
+# "unsupported", spuriously contributing to a groundedness "fail".
+# =====================================================================
+
+_SMOKE_FRAMING_SENTENCE = "Before comparing these approaches, two terms are worth defining."
+
+
+def _not_a_verifiable_claim_response(claim_ids, other_claim_kwargs=None):
+    """Builds a fake parsed response where every id in `claim_ids` is
+    classified not_a_verifiable_claim (no source_verdicts), plus
+    whatever additional claim_kwargs dicts are supplied verbatim."""
+    schema = claim_source._build_schema(
+        list(claim_ids) + [c["claim_id"] for c in (other_claim_kwargs or [])],
+        ["paper:p1"],
+    )
+    verdicts = [
+        {"claim_id": cid, "collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.95,
+         "collective_reason": "framing prose, not a factual claim", "source_verdicts": []}
+        for cid in claim_ids
+    ] + list(other_claim_kwargs or [])
+    return schema(verdicts=verdicts)
+
+
+class TestNotAVerifiableClaim:
+    def test_smoke_sentence_can_be_classified_not_a_verifiable_claim(self):
+        uncited = [{"claim_id": "introduction_scope:0:0", "claim_text": _SMOKE_FRAMING_SENTENCE,
+                    "evidence_ids": [], "section_key": "introduction_scope", "claim_kind": "uncited_candidate",
+                    "reference_numbers": [], "selection_reason": "..."}]
+        parsed = _not_a_verifiable_claim_response(["introduction_scope:0:0"])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "foundational", [], uncited, {"paper:p1": {"kind": "paper", "reference_number": 1, "title": "P1", "text": "abstract text", "status": "available"}}, client, "fake-model")
+
+        assert result["error"] is None
+        assert result["verdicts"]["introduction_scope:0:0"]["collective_verdict"] == "not_a_verifiable_claim"
+        assert result["verdicts"]["introduction_scope:0:0"]["source_verdicts"] == []
+        assert result["not_a_verifiable_claim_ids"] == ["introduction_scope:0:0"]
+
+    def test_no_longer_causes_groundedness_to_fail(self):
+        """A not_a_verifiable_claim item alongside otherwise-clean
+        claims must not drag groundedness down -- it is excluded
+        entirely, not counted as a failure."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {
+                "framing": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+                            "collective_reason": "framing prose", "source_verdicts": []},
+                "a": {"collective_verdict": "supported", "collective_confidence": 0.9,
+                      "collective_reason": "ok", "source_verdicts": [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"}]},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 2, "not_a_verifiable_claim_ids": ["framing"],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["groundedness"]["label"] == "pass"  # not dragged down by the excluded framing sentence
+        assert dims["citation_correctness"]["label"] == "pass"
+
+    def test_broad_factual_uncited_claim_cannot_escape_evaluation(self):
+        """Broadness alone is not a code-level shortcut to
+        not_a_verifiable_claim -- a broad but genuinely factual claim
+        that the (mocked) judge scores "unsupported" is aggregated as
+        a real failure, not silently excluded."""
+        claim_result = {
+            "verdicts": {
+                "broad": {"collective_verdict": "unsupported", "collective_confidence": 0.8,
+                          "collective_reason": "no evidence supports this broad claim", "source_verdicts": []},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, [])
+        assert dims["groundedness"]["label"] == "fail"
+
+    def test_missing_evidence_remains_insufficient_evidence_distinct_from_not_a_verifiable_claim(self):
+        claim_result = {
+            "verdicts": {
+                "missing_ev": {"collective_verdict": "insufficient_evidence", "collective_confidence": 0.5,
+                               "collective_reason": "no text", "source_verdicts": []},
+                "framing": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+                            "collective_reason": "framing prose", "source_verdicts": []},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 2, "not_a_verifiable_claim_ids": ["framing"],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, [])
+        # Both excluded from judged_collective, but for DIFFERENT reasons --
+        # the reason text distinguishes the framing-prose exclusion count.
+        assert dims["groundedness"]["label"] == "not_applicable"
+        assert "1 sampled item(s) excluded as non-verifiable framing prose" in dims["groundedness"]["reasons"][0]
+
+    def test_unsupported_factual_claims_remain_unsupported(self):
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "unsupported", "collective_confidence": 0.9,
+                                "collective_reason": "contradicted", "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "does_not_support", "reason": "no"}]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["groundedness"]["label"] == "fail"
+        assert dims["citation_correctness"]["label"] == "fail"
+
+    def test_partially_supported_factual_claims_remain_partially_supported(self):
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "partially_supported", "collective_confidence": 0.7,
+                                "collective_reason": "adds an unestablished comparison", "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "partially_supports", "reason": "close but not exact"}]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["groundedness"]["label"] == "fail"  # partially_supported still fails under the unchanged strict rule
+        assert dims["citation_correctness"]["label"] == "fail"
+
+    def test_not_a_verifiable_claim_rejected_for_cited_claims(self):
+        cited = [{"claim_id": "a", "claim_text": "x [1].", "evidence_ids": ["paper:p1"],
+                   "section_key": "s", "claim_kind": "cited", "reference_numbers": [1]}]
+        schema = claim_source._build_schema(["a"], ["paper:p1"])
+        parsed = schema(verdicts=[{
+            "claim_id": "a", "collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+            "collective_reason": "framing", "source_verdicts": [],
+        }])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", cited, [], {}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert "not_a_verifiable_claim" in result["error"]
+        assert "cited" in result["error"]
+        assert result["verdicts"] == {}
+
+    def test_not_a_verifiable_claim_must_have_no_source_verdicts(self):
+        uncited = [{"claim_id": "a", "claim_text": "x", "evidence_ids": [], "section_key": "s",
+                    "claim_kind": "uncited_candidate", "reference_numbers": [], "selection_reason": "..."}]
+        schema = claim_source._build_schema(["a"], ["paper:p1"])
+        parsed = schema(verdicts=[{
+            "claim_id": "a", "collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+            "collective_reason": "framing", "source_verdicts": [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "x"}],
+        }])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", [], uncited, {"paper:p1": {"kind": "paper", "reference_number": 1, "title": "P1", "text": "abstract text", "status": "available"}}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert "source_verdicts" in result["error"]
+        assert result["verdicts"] == {}
+
+    def test_all_sampled_claims_non_verifiable_gives_not_applicable_groundedness(self):
+        claim_result = {
+            "verdicts": {
+                "a": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+                      "collective_reason": "framing", "source_verdicts": []},
+                "b": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+                      "collective_reason": "framing", "source_verdicts": []},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 2, "not_a_verifiable_claim_ids": ["a", "b"],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, [])
+        assert dims["groundedness"]["label"] == "not_applicable"
+        assert dims["groundedness"]["label"] not in ("pass", "fail")
+
+    def test_mixed_sampling_aggregates_only_factual_claims(self):
+        """1 excluded (framing) + 1 supported + 1 unsupported -> the bad
+        ratio must be 1/2 (only the 2 factual claims), never 1/3."""
+        cited = [{"claim_id": "good", "evidence_ids": [], "claim_kind": "cited"},
+                 {"claim_id": "bad", "evidence_ids": [], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {
+                "framing": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.9,
+                            "collective_reason": "framing", "source_verdicts": []},
+                "good": {"collective_verdict": "supported", "collective_confidence": 0.9,
+                         "collective_reason": "ok", "source_verdicts": []},
+                "bad": {"collective_verdict": "unsupported", "collective_confidence": 0.9,
+                        "collective_reason": "no", "source_verdicts": []},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 3, "not_a_verifiable_claim_ids": ["framing"],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["groundedness"]["label"] == "fail"
+        assert dims["groundedness"]["score"] == round(1 - 1 / 2, 4)  # 1 bad out of 2 judged, not 1 out of 3
+
+    def test_prompt_states_semantic_paraphrase_support_not_literal_overlap(self):
+        assert "SEMANTIC SUPPORT" in claim_source._SYSTEM_PROMPT or "semantic" in claim_source._SYSTEM_PROMPT.lower()
+        assert "paraphrase" in claim_source._SYSTEM_PROMPT.lower()
+        assert "exact word overlap" in claim_source._SYSTEM_PROMPT.lower() or "exact noun phrase" in claim_source._SYSTEM_PROMPT.lower()
+
+    def test_prompt_still_requires_material_additions_to_be_flagged(self):
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        for term in ("superlative", "comparison", "metric", "causal"):
+            assert term in prompt_lower, f"expected the prompt to mention {term!r} as a material addition"
+        # Must not excuse the exact smoke-run findings.
+        assert "accuracy improvement" in prompt_lower or "different metric" in prompt_lower
+        assert "three-way" in prompt_lower or "does not by itself support" in prompt_lower
+
+    def test_prompt_requires_citing_every_source_for_cross_source_claims(self):
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "every source" in prompt_lower
+        assert "cross-source" in prompt_lower or "second, uncited paper" in prompt_lower
+
+    def test_grouped_citation_per_source_validation_still_rejects_incomplete_batches(self):
+        """Unchanged regression: R6C.2a must not weaken the existing
+        per-source completeness check for a normal (non-framing) grouped
+        claim."""
+        claim = {"claim_id": "a", "claim_text": "x [1][2].", "evidence_ids": ["paper:p1", "paper:p2"],
+                  "section_key": "s", "claim_kind": "cited", "reference_numbers": [1, 2]}
+        schema = claim_source._build_schema(["a"], ["paper:p1", "paper:p2"])
+        parsed = schema(verdicts=[{
+            "claim_id": "a", "collective_verdict": "supported", "collective_confidence": 0.9,
+            "collective_reason": "ok", "source_verdicts": [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"}],
+        }])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", [claim], [], {}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert result["verdicts"] == {}
+
+    def test_holistic_prompt_version_and_prompt_text_unchanged(self):
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
+
+    def test_claim_source_prompt_version_bumped(self):
+        assert claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION == "r6c2-claim-source-v2"
+
+    def test_no_real_api_call_in_any_test_here(self):
+        # Every test above uses MagicMock; this asserts the module
+        # itself still requires an explicit client argument (no
+        # ambient/default OpenAI() construction anywhere in judge_claims).
+        import inspect
+        assert "client" in inspect.signature(claim_source.judge_claims).parameters
+
+
 class TestHolisticJudge:
     def test_single_call_returns_all_five_dimensions(self):
         client = _all_pass_holistic_client()
@@ -1322,7 +1567,8 @@ class TestPredictLiveOrchestration:
 
     def _passing_claim_result(self, claims_judged=1):
         return {"verdicts": {}, "latency_ms": 1.0, "error": None, "token_usage": None,
-                "model": "fake", "prompt_version": "v", "claims_judged": claims_judged}
+                "model": "fake", "prompt_version": "v", "claims_judged": claims_judged,
+                "not_a_verifiable_claim_ids": []}
 
     def _passing_holistic_result(self):
         dim = {"label": "pass", "score": 0.9, "reasons": ["ok"]}
@@ -1367,7 +1613,8 @@ class TestPredictLiveOrchestration:
         examples = rq.load_report_quality_examples()
         example = next(e for e in examples if e.id == "good_analytical")
         failing_claim_result = {"verdicts": {}, "latency_ms": 1.0, "error": "simulated failure",
-                                 "token_usage": None, "model": "fake", "prompt_version": "v", "claims_judged": 0}
+                                 "token_usage": None, "model": "fake", "prompt_version": "v", "claims_judged": 0,
+                                 "not_a_verifiable_claim_ids": []}
 
         with patch.object(claim_source, "judge_claims", return_value=failing_claim_result), \
              patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()) as holistic_spy:
@@ -1568,7 +1815,8 @@ class TestLiveModeCli:
     def test_live_mode_runs_end_to_end_with_mocked_client_and_writes_artifacts(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
         passing_claim = {"verdicts": {}, "latency_ms": 1.0, "error": None, "token_usage": None,
-                          "model": "fake", "prompt_version": "v", "claims_judged": 0}
+                          "model": "fake", "prompt_version": "v", "claims_judged": 0,
+                          "not_a_verifiable_claim_ids": []}
         passing_holistic = {"dimensions": {name: {"label": "pass", "score": 0.9, "reasons": []} for name in
                                             ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")},
                              "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v"}
