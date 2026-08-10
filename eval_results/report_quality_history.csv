@@ -6,3 +6,4 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 5,2026-08-10T22:04:29.033528+00:00,ff67113,report_quality,live,1,0,1,0.5,,R6C.2c final foundational calibration | mean_latency_ms=31417.0
 6,2026-08-10T22:17:46.113549+00:00,2544e4e,report_quality,live,8,0,8,0.5,,R6C full live benchmark after calibration | mean_latency_ms=24894.8
 7,2026-08-10T22:55:16.324648+00:00,f0eea0a,report_quality,live,3,0,3,0.5,baseline,R6C.3a targeted baseline validation | mean_latency_ms=35332.6
+8,2026-08-10T23:07:42.513093+00:00,3a14d6f,report_quality,live,1,0,1,0.5,foundational,R6C.3a foundational stability check | mean_latency_ms=33413.7
