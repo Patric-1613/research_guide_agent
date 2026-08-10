@@ -1,12 +1,20 @@
-# R6 — report quality evaluation: frozen R6A design
+# R6 — report quality evaluation: frozen R6A design, plus what R6B/R6C actually shipped
 
 This document freezes the R6 result schema, hard-failure identifiers,
-informational-signal list, fixture architecture, and future R6B/R6C/R6D
-scoring semantics, per the R6A checkpoint. **R6A adds no executable
-code** — this is a design/fixture-only phase. See
-`eval_data/report_quality/README.md` for the fixture set this document
-governs, `docs/evaluation.md`'s "R6A" section for the workflow-doc
-cross-reference, and `specs/backend-backlog.md`'s R6A entry for status.
+informational-signal list, fixture architecture, and R6B/R6C/R6D
+scoring semantics, per the R6A checkpoint (§0-11 below, unmodified
+historical record). **R6A itself added no executable code** — it was
+a design/fixture-only phase; R6B and R6C are the phases that actually
+built against this frozen design. §12-14 (added at the R6C.3
+checkpoint, 2026-08-11) record what R6C actually shipped against the
+§10 design, the aggregation semantics it settled on, and the residual
+policy debt left open when R6C was closed — read those sections for
+current status; §0-11 remain the original frozen record and are
+preserved rather than rewritten. See `eval_data/report_quality/
+README.md` for the fixture set this document governs, `docs/
+evaluation.md`'s "R6A" through "R6C.3" sections for the workflow-doc
+cross-reference, and `specs/backend-backlog.md`'s R6A/R6B/R6C entries
+for status.
 
 ## 0. Approved architectural decisions (binding on R6B onward)
 
@@ -439,3 +447,208 @@ help" (it never re-evaluates after revising — see
 report.py:1892-1964`, which documents `final_score` as `None`
 post-revision by design) and was never independent of the model it's
 grading in the first place.
+
+## 12. R6C — what actually shipped (2026-08-10/11) — complete, R6C frozen
+
+Sections 9-10 above froze the *design* R6C would follow. This section
+records what was actually built against that design, and marks R6C
+**closed** — see `specs/backend-backlog.md`'s R6C entry for the status
+record and `docs/evaluation.md`'s "R6C.1" through "R6C.3" sections for
+the full narrative.
+
+**R6C.1 — bounded claim extraction, sampling, evidence registry,
+injection sanitization** (`research_agent/evals/report_quality_inputs.py`):
+- `build_evidence_registry` — deduplicated registry keyed by evidence
+  id (`paper:<id>`/`web:<url>`), enriched from the report's own
+  `references` list plus `selected_papers`/`approved_web_articles`.
+  Runs the same independent injection detector R7E.5b's chat/web-relevance
+  path uses against every source's text; a flagged source is marked
+  `status="blocked_untrusted_source"` with `text=""` — its real content
+  never reaches any judge.
+- `extract_claim_units` — sentence-level claim extraction over the
+  report's **raw** (unsanitized) content, split into `cited` (has a
+  resolvable `[N]` marker, markers merged per sentence) and
+  `uncited_candidate` (marker-free, ≥ a minimum word count) claim units.
+  Deliberately raw, not sanitized — the claim/source judge's job is to
+  fact-check what the report actually asserts, including a claim that
+  is itself an injection attempt (see the security note below).
+- `sample_claim_units` — bounded, transparent round-robin sampling
+  across sections (`MAX_CITED_CLAIM_UNITS=16`, `MAX_UNCITED_CLAIM_
+  CANDIDATES=8`), recorded in every live prediction's `judge_metadata.
+  sampling_coverage` (per-section totals/selected counts, `truncated`
+  flag) — satisfying decision 4/§10's "must be visible in
+  `judge_metadata`, not implicit" requirement.
+- `build_sanitized_report_and_findings` — a **separate** function,
+  independent of claim extraction, that produces a redacted copy of
+  each section's content (flagged sentences replaced with the literal
+  `[BLOCKED_UNTRUSTED_INSTRUCTION]` placeholder) for the holistic
+  judge only. The original report is never mutated.
+
+**R6C.2 — two independent live judges**, wired into `predict_live`
+(`research_agent/evals/runners/run_report_quality.py`):
+- `research_agent/evals/judges/claim_source.py` — citation_correctness
+  + groundedness, one bounded batched call, `CLAIM_SOURCE_JUDGE_
+  PROMPT_VERSION` (now `"r6c2-claim-source-v3"`, see R6C.2c below).
+- `research_agent/evals/judges/holistic.py` — synthesis_quality,
+  analytical_quality, template_fit, coherence, source_balance, one
+  call over the sanitized report, `HOLISTIC_JUDGE_PROMPT_VERSION =
+  "r6c2-holistic-v1"` (unchanged since R6C.2).
+- Both default to `REPORT_QUALITY_JUDGE_MODEL` (env-configurable,
+  default `"gpt-5.6-terra"`), independent of `research_agent.report.
+  REPORT_MODEL` ("gpt-4.1"), per decision "same-model self-evaluation
+  is not considered independent" above. Structured outputs via a
+  per-call `create_model` with `Literal`-constrained claim/evidence
+  ids (the same technique `research_agent/qa.py`'s direct-relevance
+  judge already proves live) — the model cannot invent or omit an id.
+  No silent fallback: a malformed/refused response degrades the whole
+  call to a recorded `error`, never a partially-trusted result.
+
+**R6C.2a** added a fifth collective verdict, `not_a_verifiable_claim`,
+to the claim/source judge — for uncited framing/organizational prose
+that makes no externally verifiable research assertion (e.g. "Before
+comparing these approaches, two terms are worth defining."). Rejected
+as malformed if returned for a *cited* claim (a citation makes a
+sentence a factual assertion by construction). Excluded entirely from
+groundedness's judged set — neither pass nor fail nor unknown.
+
+**R6C.2b/R6C.2c** — evidence-based fixture adjudication plus an
+aggregation-policy recalibration, triggered by live findings (`report_
+quality_history.csv` run_ids 2-5, commits `cf60191`, `bf8541d`,
+`d0c4982`, `ff67113`): corrected demonstrably unsupported/under-cited
+prose across the three `good_*` fixtures (CiteGuard metric
+mischaracterization, an unsupported 3-way latency superlative,
+cross-source under-citation, an unsupported "separate relevance
+model" claim, an over-narrow "better passages" framing), then
+recalibrated citation_correctness/groundedness aggregation from an
+unversioned v1 rule ("any source verdict short of a clean `supports`
+fails citation_correctness") to `r6c2-citation-aggregation-v2`
+(`CITATION_AGGREGATION_POLICY_VERSION` in `run_report_quality.py`,
+recorded in every live prediction's `judge_metadata`) — see §13 below
+for the frozen semantics. `CLAIM_SOURCE_JUDGE_PROMPT_VERSION` bumped
+v2→v3 with two literature-review-specific rules: bounded negative
+claims ("none of the selected papers evaluates X" is checkable
+against the supplied evidence set) and prospective recommendations
+("future work should test X" does not assert X already happened).
+
+**R6C.3** — a full 8-fixture live benchmark (run_id 6, commit
+`2544e4e`) plus a bounded calibration audit that classified every
+dimension mismatch as a fixture defect, a stale/incorrect expected
+label, a judge-prompt/schema issue, an aggregation issue, an
+intentional skip-semantics mismatch, or plausible model variability —
+followed by one offline calibration pass (R6C.3a): 4 fixtures'
+`expected.dimension_labels` corrected (`structural_and_metadata_
+corruption` to `unknown` across all 7 dimensions, matching the
+`predict_live` hard-failure-gate convention rather than the pre-R6C.1
+`not_applicable` assumption; `citation_and_grounding_failure` and
+`verbose_low_synthesis` template_fit/synthesis_quality corrected to
+match the holistic rubric's own depth-inclusive definition;
+`source_prompt_injection` recalibrated to `unknown`/`fail` as
+appropriate), 6 fixtures' prose corrected for directly-evidenced
+overreach (each edit verified against its cited abstract/snippet
+before being applied — see `docs/evaluation.md`'s "R6C.3" section for
+the sentence-level table), then 3 bounded targeted live reruns
+(baseline `--tags baseline`, run_id 7; single-fixture stability check,
+run_id 8; security `--tags security`, run_id 9) to confirm the
+corrections held and no new material defect or injection bypass
+appeared. **R6C is closed as of this checkpoint** — remaining
+disagreement (documented in §14) is accepted, understood policy debt,
+not silently unresolved.
+
+## 13. Frozen aggregation semantics — `r6c2-citation-aggregation-v2`
+
+`_aggregate_claim_source_dimensions` (`run_report_quality.py`) maps
+the claim/source judge's per-claim verdicts onto its 2 owned
+dimensions. This is a deliberately separate question from the R6A
+`label` semantics in §1 — those are frozen; this is the *aggregation
+rule* that produces one of those labels from many individual verdicts,
+versioned independently (`CITATION_AGGREGATION_POLICY_VERSION`) so a
+reader of a run's `judge_metadata` always knows which rule produced a
+given `citation_correctness`/`groundedness` label.
+
+**citation_correctness** — considers cited claims' per-source verdicts
+only:
+- `fail` if any attached source verdict is `does_not_support`.
+- `unknown` if no source is `does_not_support` but at least one is
+  `insufficient_evidence` (a real, inconclusive result — never
+  silently folded into `not_applicable`).
+- `pass` when every attached source is `supports` **or**
+  `partially_supports` — both count as the source genuinely,
+  relevantly contributing to the claim it was cited for. A source is
+  not required to single-handedly cover a different attached source's
+  own clause in a grouped comparative claim.
+- `not_applicable` when no cited claim had any source verdict to
+  judge at all.
+- Persists `counts` (`supports`/`partially_supports`/`does_not_
+  support`/`insufficient_evidence`) alongside the label.
+
+**groundedness** — considers collective verdicts across cited and
+uncited claims:
+- `fail` if any collective verdict is `unsupported` or `partially_
+  supported` — **this currently makes the whole report fail on a
+  single such claim**; see §14 for why this is accepted, unresolved
+  debt rather than a settled design.
+- `unknown` if no collective verdict is a definite failure but at
+  least one judged claim is `insufficient_evidence`.
+- `pass` only when every judged claim's collective verdict is
+  `supported`.
+- `not_a_verifiable_claim` (R6C.2a) is excluded from the judged set
+  entirely — neither pass, fail, nor unknown.
+- `not_applicable` when nothing factual was ever judgeable.
+- Persists matching `counts`.
+
+**Continuous `score`/support-ratio values are diagnostic only.** Per
+decision 2/§1, no calibration evidence exists to treat a `0.65` as
+anything but informational context alongside the categorical `label`
+— they are never averaged into an overall report-quality number and
+never used to override the categorical pass/fail/unknown/not_
+applicable determination above.
+
+## 14. Accepted residual policy debt (not fixed, documented)
+
+- **Groundedness's strict "any partial claim fails the report" rule
+  does not cleanly separate all 8 synthetic fixtures.** Run_id 6's
+  partial-claim rate ranged from 6.7% (`verbose_low_synthesis`) to
+  64.7% (`good_analytical`) and 60.0% (the deliberately-bad `citation_
+  and_grounding_failure`) — a "good" fixture and a deliberately-broken
+  one can land at comparable or worse rates than each other under a
+  binary label, even though the rates themselves clearly differ.
+- **Analytical/Expert-template synthesis frequently introduces
+  defensible, evidence-adjacent inference** (e.g. "ChunkRank assumes
+  the correct passage is already in the top-k set" — a sound logical
+  entailment from "reranks already-retrieved passages," never stated
+  verbatim in any abstract) that the strict per-claim verifier marks
+  `partially_supported`, indistinguishable in the current rule from a
+  materially wrong claim.
+- **Materiality/severity classification is a future improvement, not
+  built.** No numeric threshold was invented from 8 synthetic
+  fixtures — per decision 2, that would require real calibration
+  evidence R6E is responsible for producing.
+- **`good_foundational.template_fit` showed borderline stability**
+  across 3 repeated live calls on the same-or-near-same content: pass
+  (0.93, run_id 6) → fail (0.74, run_id 7) → pass (0.78, run_id 8),
+  turning on how much explicit novice-level definition of terms like
+  "single-hop"/"compressive memory" the judge considers sufficient.
+  Documented as unresolved judge-calibration ambiguity, not "fixed" by
+  any fixture edit.
+- **Synthetic fixtures are not a substitute for a real, human-labelled
+  dataset.** R6E's own real-report calibration work remains
+  unaddressed by anything in R6C.
+- **Judge cost/latency/reliability need broader, production-scale
+  measurement.** Only 9 live runs exist as of this checkpoint (2-9
+  targeted/full smoke runs); no throughput, rate-limit, or
+  cost-at-scale data exists yet.
+- **Evidence scope is abstracts/web snippets only**, never full papers
+  — `judge_metadata.sampling_coverage.evidence_scope`'s own disclaimer
+  states this explicitly on every live prediction.
+- **`REPORT_QUALITY_JUDGE_MODEL` availability/pricing is environment/
+  account dependent** — an invalid or inaccessible model id surfaces
+  as a per-example judge failure (recorded, not a crash), not a
+  guaranteed-available constant.
+- **`.env` loading is not uniform across suite import paths.** Unlike
+  `research_agent/api.py`/`research_agent/config/settings.py` and the
+  `scripts/*.py` harnesses (each calling `load_dotenv()` directly),
+  nothing under `research_agent/evals/` imports `research_agent.
+  config.settings` or calls `load_dotenv()` itself — a live run
+  depends on the shell already having credentials exported, or an
+  explicit `uv run --env-file .env ...` invocation; this is now the
+  documented command form for live report-quality runs.

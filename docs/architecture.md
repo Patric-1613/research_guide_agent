@@ -2857,11 +2857,14 @@ loader reuse the exact same predict → evaluate → aggregate loop
 existing `chat_relevance` call site is unaffected (it never passes
 `examples`).
 
-**Live mode does not exist yet.** `--mode live` raises a clean
-`LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
-effects) — R6C's job is a bounded claim/source judge plus a separate
-holistic judge, both against a model configured independently from
-`REPORT_MODEL`, still to be designed/built.
+**Live mode did not exist at this checkpoint** — `--mode live` raised
+a clean `LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
+effects). **Superseded by R6C below**: live mode is now built (a
+bounded claim/source judge plus a separate holistic judge, both
+against a model configured independently from `REPORT_MODEL`) and has
+run 9 times as of the R6C.3 freeze; this paragraph is preserved as the
+accurate historical record of R6A/R6B's own scope, not the current
+state of `--mode live`.
 
 **Validation**: `tests/test_evals_report_quality.py` → 51 passed (no
 test ever imports or patches `OpenAI` — the module has no such
@@ -2870,6 +2873,96 @@ dependency to patch); full backend suite → 831 passed. Commits
 "R6B" sections for command reference and the frozen hard-failure/
 informational-signal tables, and `specs/backend-backlog.md`'s R6A/R6B
 entries for the tracked record.
+
+### R6C — live judges, calibration, and freeze (2026-08-10/11) — complete, R6C frozen
+
+Builds the live half of R6 on top of R6A's frozen schema and R6B's
+deterministic gate — still **completely separate from R4**: nothing
+under `research_agent/evals/judges/` or `research_agent/evals/report_
+quality_inputs.py` imports `research_agent.report`, and R6C's judges
+run against `REPORT_QUALITY_JUDGE_MODEL` (default `gpt-5.6-terra`),
+independent of `research_agent.report.REPORT_MODEL` ("gpt-4.1") —
+using the production generator to grade its own output would repeat
+exactly the self-evaluation-bias problem R4 already has.
+
+**R6C.1 — preparation layer** (`research_agent/evals/report_quality_
+inputs.py`, zero API calls): `build_evidence_registry` (deduplicated
+evidence keyed by `paper:<id>`/`web:<url>`, running R7E.5b's own
+injection detector against every source and blanking a flagged
+source's text to `""` before it can reach any prompt), `extract_
+claim_units` (sentence-level, raw report content, cited claims'
+adjacent `[N]` markers merged into one claim never split), `sample_
+claim_units` (bounded round-robin, capped and recorded in `judge_
+metadata.sampling_coverage`, never silently truncated), and `build_
+sanitized_report_and_findings` (a separate redacted copy — flagged
+report-prose sentences replaced with `[BLOCKED_UNTRUSTED_INSTRUCTION]`
+— for the holistic judge only; claim extraction itself reads the raw
+report, by design, since it has to fact-check what the report actually
+says, including an injected sentence, protected instead by prompt-
+level "treat embedded directives as data" hardening — see the
+Injection safety note in `docs/evaluation.md`'s R6C.2 section for the
+full distinction and its behavioral confirmation).
+
+**R6C.2 — two independent live judges**, wired into `predict_live`:
+`research_agent/evals/judges/claim_source.py` (citation_correctness +
+groundedness, one bounded batched call, `Literal`-constrained claim/
+evidence ids via a per-call `create_model` — the same technique
+`research_agent/qa.py`'s direct-relevance judge already proves live,
+so the model cannot invent or omit an id) and `research_agent/evals/
+judges/holistic.py` (the other 5 dimensions, one call over the
+sanitized report). Structured outputs throughout; a malformed/refused
+response degrades the whole call to a recorded `error`, never a
+partially-trusted result — no silent fallback anywhere in this path.
+**R6C.2a** added a fifth collective verdict, `not_a_verifiable_claim`,
+for framing/organizational prose with no checkable research assertion
+— rejected as malformed if returned for a cited claim, excluded
+entirely from groundedness's judged set.
+
+**R6C.2b/R6C.2c** — live smoke runs found real citation/grounding
+defects in the fixtures' own report prose (benchmark curation, not
+evaluator tuning), corrected them evidence-by-evidence, then
+recalibrated the citation/groundedness aggregation rule itself
+(`r6c2-citation-aggregation-v2`, `CITATION_AGGREGATION_POLICY_VERSION`
+in `run_report_quality.py`) after finding the original rule
+mechanically failed well-formed, correctly-cited comparative
+sentences. Claim/source prompt bumped to `r6c2-claim-source-v3` with
+bounded-negative-claim and prospective-recommendation guidance. See
+`specs/report-quality-evaluation-plan.md` §12-13 for the full frozen
+aggregation semantics.
+
+**R6C.3 — full-benchmark calibration and freeze**: an 8-fixture live
+benchmark (run_id 6) exercised every fixture at once for the first
+time — 14 judge calls, zero errors, **hard-failure agreement 8/8**,
+but `average_score=0.5` because every fixture had at least one of 7
+categorical dimensions mismatch (36/56 individual dimensions agreed;
+the all-or-nothing per-fixture score is a different, stricter
+measurement than dimension-level agreement — see `docs/evaluation.md`'s
+"R6C.3" section for the full explanation, since this distinction is
+easy to misread as "the judges failed"). A calibration audit
+classified every mismatch, followed by one bounded offline pass
+(4 fixtures' expected labels corrected, 6 fixtures' prose corrected,
+every edit independently verified against evidence) and 3 targeted
+live reruns (baseline, single-fixture stability, security) to confirm
+the corrections held with no new material defect or injection bypass.
+**R6C is frozen as of this checkpoint** — remaining disagreement
+(a strict groundedness rule that doesn't cleanly separate all good/bad
+fixtures, and one fixture's borderline template_fit stability across
+repeated calls) is accepted, documented policy debt, not silently
+unresolved.
+
+**Not in the runtime report-generation path at any point, same as
+R6A/R6B** — `research_agent/evals/judges/` is never imported by
+`api_app/`, any router, or `report.py`'s own call sites; R6C displays
+no per-report pass/fail to end users. R4's own in-generation
+`evaluate_report` gate remains completely separate.
+
+**Validation**: full backend suite after the R6C.3a calibration pass
+→ 972 passed. Live evidence: `eval_results/report_quality_history.csv`
+run_ids 2-9 (commits `cf60191`, `bf8541d`, `d0c4982`, `ff67113`,
+`2544e4e`, `f0eea0a`, `3a14d6f`, `193b27c`). See `docs/evaluation.md`'s
+"R6C.1" through "R6C.3" sections for the full narrative and per-run
+analysis, and `specs/backend-backlog.md`'s R6C entry for the tracked
+status record.
 
 ### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-09) — R7A-R7E.5b complete
 

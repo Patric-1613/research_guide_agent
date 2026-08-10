@@ -1364,9 +1364,10 @@ invented:
   — `judge_dimensions`/`judge_metadata` are always `null` in every
   R6B prediction. `expected.dimension_labels` is loaded but never
   scored. R4/R4.1/R4.2 and report generation are untouched.
-- **Deferred follow-ups, still open** (not addressed by R6B):
+- **Deferred follow-ups, open at this checkpoint** (not addressed by
+  R6B; superseded by the R6C entry below, now closed):
   - R6C — the live claim/source and holistic judges (see that entry's
-    plan; not yet implemented).
+    plan; not yet implemented as of this R6B checkpoint).
   - R6D — the pairwise refinement fixtures and harness (schema
     documented in `specs/report-quality-evaluation-plan.md` section 8,
     nothing built).
@@ -1376,6 +1377,160 @@ invented:
 - **Priority**: n/a — done (R6C is next).
 - **Status**: Closed (2026-08-10). Commits `9430013` (R6A), `e783ec6`
   (R6B).
+
+### R6C: live judges, calibration, and freeze
+- **Goal**: build the two live judges R6A's §10 design specified
+  (bounded claim/source judge + separate holistic judge), then
+  calibrate the whole benchmark — fixtures, expected labels, and the
+  aggregation rule mapping judge verdicts to categorical labels —
+  against real live evidence, and freeze the result.
+- **Why it matters**: R6B proved the deterministic gate works; R6C is
+  where R6 gets an actual qualitative signal, and where that signal
+  gets checked against real model behavior rather than assumed
+  correct from design alone.
+- **Decision/what shipped**:
+  - **R6C.1** (`research_agent/evals/report_quality_inputs.py`):
+    bounded claim extraction (`extract_claim_units`, sentence-level,
+    over raw report content, marker-merged), section-round-robin
+    sampling (`sample_claim_units`, capped and recorded in `judge_
+    metadata.sampling_coverage`), a deduplicated evidence registry
+    with injection blocking (`build_evidence_registry` — a flagged
+    source's text is blanked to `""` before any prompt is built), and
+    report-prose sanitization for the holistic judge only (`build_
+    sanitized_report_and_findings`, `[BLOCKED_UNTRUSTED_INSTRUCTION]`
+    placeholder).
+  - **R6C.2** (`research_agent/evals/judges/claim_source.py`,
+    `research_agent/evals/judges/holistic.py`): two independent live
+    judges wired into `predict_live`, both against `REPORT_QUALITY_
+    JUDGE_MODEL` (default `gpt-5.6-terra`, independently configurable
+    from `research_agent.report.REPORT_MODEL`), structured outputs,
+    no silent fallback (a malformed response degrades to a recorded
+    `error`).
+  - **R6C.2a**: added `not_a_verifiable_claim` as a fifth collective
+    verdict for framing/organizational prose; rejected as malformed
+    for a cited claim; excluded from groundedness's judged set.
+  - **R6C.2b/R6C.2c**: evidence-based correction of real citation/
+    grounding defects found in the fixtures' own report prose by live
+    smoke runs (not evaluator tuning), then a recalibration of the
+    citation/groundedness aggregation rule (`r6c2-citation-
+    aggregation-v2`) after the original rule was found to mechanically
+    fail well-formed, correctly-cited comparative claims. Claim/source
+    prompt bumped to `r6c2-claim-source-v3` (bounded-negative-claim and
+    prospective-recommendation guidance).
+  - **R6C.3**: first full 8-fixture live benchmark (run_id 6) — 14
+    judge calls, zero errors, hard-failure agreement 8/8, `average_
+    score=0.5` because every fixture had at least one of 7 categorical
+    dimension mismatches (36/56 individual dimensions agreed — the
+    all-or-nothing per-fixture score is a stricter, different
+    measurement from dimension-level agreement, not evidence "the
+    judges failed"). A calibration audit classified every mismatch as
+    a fixture defect, a stale expected label, a judge-prompt/schema
+    issue, an aggregation issue, an intentional skip-semantics
+    mismatch, or model variability, followed by one bounded offline
+    pass (R6C.3a: 4 fixtures' expected labels corrected, 6 fixtures'
+    prose corrected, every edit independently verified against
+    evidence — never rewritten merely because a judge called it
+    partial) and 3 targeted live reruns (baseline, single-fixture
+    stability, security) confirming the corrections held.
+  - **Security validation** (run_id 9): both the source-side and
+    report-prose injection fixtures remained fully blocked/rejected
+    after calibration — poisoned evidence produces `insufficient_
+    evidence`, never fabricated support; the report-prose injection is
+    redacted before the holistic judge and, when seen by the claim/
+    source judge as ordinary claim text, is fact-checked and rejected
+    (`unsupported`), never obeyed. No injection bypass found.
+  - **Accepted, documented residual policy debt** (not fixed): the
+    strict "any partial claim fails the whole report" groundedness
+    rule doesn't cleanly separate all 8 synthetic fixtures;
+    Analytical/Expert-template synthesis often reads as
+    `partially_supported` to the strict per-claim verifier even when
+    it's defensible, evidence-adjacent inference; no materiality/
+    severity threshold was invented from 8 synthetic fixtures;
+    `good_foundational.template_fit` showed borderline stability
+    across 3 repeated live calls (pass/fail/pass); synthetic fixtures
+    remain synthetic, not a substitute for R6E's real human-labelled
+    dataset; judge cost/latency/reliability need production-scale
+    measurement; evidence scope is abstracts/snippets, never full
+    papers; `REPORT_QUALITY_JUDGE_MODEL` availability/pricing is
+    environment/account dependent; `.env` loading is not uniform
+    across suite import paths (`uv run --env-file .env ...` is now the
+    documented live-run command form). Full list: `specs/
+    report-quality-evaluation-plan.md` §14.
+  - See `docs/evaluation.md`'s "R6C.1" through "R6C.3" sections and
+    `docs/architecture.md`'s "R6C" section for the full narrative, and
+    `specs/report-quality-evaluation-plan.md` §12-14 for the frozen
+    aggregation semantics and residual-debt record.
+- **Location**: `research_agent/evals/report_quality_inputs.py` (new),
+  `research_agent/evals/judges/claim_source.py` (new), `research_
+  agent/evals/judges/holistic.py` (new), `research_agent/evals/
+  runners/run_report_quality.py` (updated — `predict_live`,
+  `_aggregate_claim_source_dimensions`, `CITATION_AGGREGATION_POLICY_
+  VERSION`), `tests/test_evals_report_quality.py` (updated, many new
+  tests across the R6C.1-R6C.3 phases), `eval_data/report_quality/`
+  (4 fixtures' expected labels corrected, 6 fixtures' prose corrected,
+  manifest notes updated), `eval_results/report_quality_history.csv`
+  (run_ids 2-9), `docs/evaluation.md` / `docs/architecture.md` /
+  `specs/report-quality-evaluation-plan.md` / `eval_data/report_
+  quality/README.md` / `eval_results/README.md` (updated). **No
+  changes to `research_agent/report.py`, `research_agent/qa.py`,
+  `research_agent/curation_session.py`, `research_agent/api_app/`,
+  `frontend/`, `pyproject.toml`, or `uv.lock`.**
+- **Explicitly NOT part of this checkpoint**: R6C is not wired into
+  `research_agent/report.py`'s runtime generation path anywhere and
+  displays no per-report pass/fail to end users. The report-generation
+  prompt-injection gap (see the security-debt entry below) is not
+  closed by R6C — R6C's own injection fixtures test the *evaluation
+  harness's* defenses, not `report.py`'s.
+- **Deferred follow-ups, still open** (not addressed by R6C):
+  - R6D — paired refinement-effectiveness evaluation (see next entry).
+  - R6E — human-labelled calibration, materiality/severity
+    classification, threshold calibration, judge stability/repeated-
+    run study, production observability.
+  - The report-generation prompt-injection gap (separate entry below).
+- **Priority**: n/a — done (R6D is next).
+- **Status**: Closed (2026-08-11). Commits `cf60191`, `bf8541d`,
+  `d0c4982`, `ff67113` (R6C.2/2a/2b/2c); `2544e4e`, `f0eea0a`,
+  `3a14d6f`, `193b27c` (R6C.3/R6C.3a).
+
+### R6D: paired refinement-effectiveness evaluation
+- **Goal**: measure whether `research_agent/report.py`'s existing
+  refinement/revision step (`revise_report`,
+  `refine_report_if_requested`) actually improves report quality — not
+  assumed, measured — by comparing paired versions of the same report.
+- **Why it matters**: R4's own revision flow never re-evaluates after
+  revising (`final_score` is `None` post-revision by design), so
+  today there is no answer to "did the revision help" anywhere in the
+  system. R6C gives R6D a real, calibrated (if still synthetic-
+  benchmark-only) judge to build this comparison on top of.
+- **Required design** (frozen in `specs/report-quality-evaluation-
+  plan.md` §8, not yet built):
+  - Paired comparison: an **unrefined draft** vs. a **bounded refined
+    report**, same topic/template/evidence — never comparing across
+    different topics, templates, or evidence sets.
+  - Both the deterministic (R6B) and live judge (R6C) dimensions
+    recorded for each half of the pair, not just one summary number.
+  - Blinded A/B labels (the judge sees `Report A`/`Report B`, never
+    `draft`/`revised`), swapped order with both calls always made
+    (never cached/short-circuited), stable seeded ordering per
+    fixture/pair id, per-dimension A/B/tie (never one collapsed global
+    winner), `positional_disagreement` reported as its own metric.
+  - Citation-integrity preservation across a revision checked
+    deterministically (`_restore_dropped_citations` covers papers;
+    `revise_report`'s own docstring states web citations are **not**
+    restored the same way — R6D verifies both documented behaviors
+    hold, rather than assuming either).
+  - At least one human-labelled longer-but-not-better pair, reserved
+    for R6E, to catch a judge that defaults to preferring length.
+  - **No claim that refinement helps until actually measured** — R6D's
+    entire purpose is answering that question with evidence, not
+    assuming the answer either way going in.
+- **Location (not yet touched)**: new pairwise fixture schema and
+  harness under `eval_data/report_quality/` and `research_agent/
+  evals/`, presumably a new runner alongside `run_report_quality.py`
+  — not scoped in detail yet.
+- **Priority**: next, immediately after R6C's freeze.
+- **Status**: Open. Not started — design frozen in `specs/
+  report-quality-evaluation-plan.md` §8, no code, no pairwise fixtures.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts
 - **Goal**: close the gap `eval_data/report_quality/fixtures/

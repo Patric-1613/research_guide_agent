@@ -1,9 +1,10 @@
-# Report quality evaluation fixtures (R6A/R6B)
+# Report quality evaluation fixtures (R6A/R6B/R6C — R6C frozen)
 
 Fixtures for the `report_quality` eval suite. See
 `specs/report-quality-evaluation-plan.md` for the full frozen design
 (result schema, hard-failure identifiers, informational signals, judge
-strategy, R6D/pairwise design).
+strategy, R6D/pairwise design) plus its §12-14 for what R6C actually
+shipped (aggregation semantics, residual policy debt).
 
 **R6B (deterministic/mock, complete)**: `research_agent/evals/
 runners/run_report_quality.py` + `research_agent/evals/evaluators/
@@ -17,10 +18,26 @@ uv run python -m research_agent.evals.cli run --suite report_quality --mode mock
 uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --subset 3
 ```
 
-`--mode live` is not implemented yet — it fails cleanly (exit 2, no
-traceback, no CSV/detail side effects) until R6C adds the two bounded
-live judge tasks (claim/source + holistic). See `tests/
-test_evals_report_quality.py` for the harness's own test coverage.
+**`--mode live` is implemented (R6C.2, complete)** — two opt-in live
+judges (`research_agent/evals/judges/claim_source.py` for
+citation_correctness/groundedness, `research_agent/evals/judges/
+holistic.py` for the other 5 dimensions) run against `REPORT_QUALITY_
+JUDGE_MODEL` (default `gpt-5.6-terra`). A live run bills the
+configured model — nothing under `--mode mock` above does. Because
+nothing under `research_agent/evals/` calls `load_dotenv()` itself
+(unlike `research_agent/api.py`/`research_agent/config/settings.py`),
+either export credentials in the shell first or run with an explicit
+env file:
+
+```bash
+uv run --env-file .env python -m research_agent.evals.cli run \
+  --suite report_quality --mode live --tags baseline --note "..."
+```
+
+See `tests/test_evals_report_quality.py` for the harness's own test
+coverage, and `docs/evaluation.md`'s "R6C.1" through "R6C.3" sections
+for the live-run evidence history (run_ids 2-9 in `eval_results/
+report_quality_history.csv`).
 
 ## Layout
 
@@ -65,6 +82,38 @@ against identical evidence. `citation_and_grounding_failure` and
 `verbose_low_synthesis` reuse the same three papers again, specifically
 so a reviewer can compare correct vs. flawed use of identical evidence
 against the `good_analytical` baseline.
+
+## R6C.3 calibration (2026-08-10/11)
+
+After the first full 8-fixture live benchmark (run_id 6, commit
+`2544e4e`) and a bounded calibration audit, two kinds of change landed
+in a single offline pass (R6C.3a):
+
+- **Expected-label corrections** in 4 fixtures — `structural_and_
+  metadata_corruption` (all 7 dimensions to `unknown`, matching the
+  tested zero-live-call hard-failure-gate convention rather than a
+  stale pre-R6C.1 `not_applicable` assumption), `citation_and_
+  grounding_failure` and `verbose_low_synthesis` (`template_fit`/
+  `synthesis_quality` corrected to match the holistic rubric's own
+  depth-inclusive definition), `source_prompt_injection`
+  (`citation_correctness` to `unknown`, three holistic dimensions to
+  `fail`, all independently re-derived from rubric text against the
+  fixture's own prose, never "changed to match what the model
+  returned").
+- **Directly-evidenced prose corrections** in 6 fixtures (the 3
+  `good_*` fixtures, `verbose_low_synthesis`, `evaluator_injection_
+  in_report`) — each edit individually verified against its cited
+  abstract/snippet before being applied; claims found to be
+  defensible analytical inference rather than actual overreach were
+  explicitly left unedited.
+
+Every fixture's own `notes` field records the specific run_id/commit
+that exposed each correction. See `specs/report-quality-evaluation-
+plan.md` §12-14 and `docs/evaluation.md`'s "R6C.3" section for the
+full sentence-level record and the accepted residual policy debt this
+pass did **not** attempt to resolve (a strict groundedness rule that
+doesn't cleanly separate all good/bad fixtures, and one fixture's
+borderline template_fit stability across repeated live calls).
 
 ## Fixture evidence conventions
 
