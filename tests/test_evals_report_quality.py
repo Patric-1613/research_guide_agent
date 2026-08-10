@@ -584,6 +584,17 @@ class TestR6C2bAdjudicatedGoodFixtures:
             assert "getting better passages to the generation model" not in content
             assert "better information to work with" in content
 
+    def test_good_foundational_contradictions_cites_chunkrank_for_its_own_accuracy_and_cost_clause(self):
+        """R6C.2c: the post-adjudication live run (run_id 4) found this
+        section credited ChunkRank with an accuracy improvement and a
+        computation cost while citing only [2][3] -- ChunkRank's own
+        abstract directly supports both clauses, so [1] was added."""
+        report = self._report("good_foundational")
+        for key in ("contradictions_open_debates", "limitations"):
+            section = report[key]
+            assert section["reference_numbers"] == [1, 2, 3]
+            assert "ChunkRank and LongMem each report an accuracy improvement [1]" in section["content"]
+
     def test_adjudicated_fixtures_still_have_zero_hard_failures(self):
         result = rq.run_experiment(mode="mock")
         for example_id in ("good_foundational", "good_analytical", "good_expert"):
