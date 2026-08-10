@@ -1465,10 +1465,13 @@ class TestNotAVerifiableClaim:
             "claims_judged": 2, "not_a_verifiable_claim_ids": ["framing"],
         }
         dims = rq._aggregate_claim_source_dimensions(claim_result, [])
-        # Both excluded from judged_collective, but for DIFFERENT reasons --
-        # the reason text distinguishes the framing-prose exclusion count.
-        assert dims["groundedness"]["label"] == "not_applicable"
-        assert "1 sampled item(s) excluded as non-verifiable framing prose" in dims["groundedness"]["reasons"][0]
+        # not_a_verifiable_claim is excluded from judgeable_collective entirely (framing
+        # prose, neither pass/fail/unknown); insufficient_evidence IS judgeable under
+        # R6C.2c and, with no definite failure present, surfaces as "unknown" rather
+        # than being silently folded into "not_applicable" -- the two exclusions are
+        # for different reasons and must not collapse to the same label.
+        assert dims["groundedness"]["label"] == "unknown"
+        assert dims["groundedness"]["counts"]["insufficient_evidence"] == 1
 
     def test_unsupported_factual_claims_remain_unsupported(self):
         cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
@@ -1484,6 +1487,12 @@ class TestNotAVerifiableClaim:
         assert dims["citation_correctness"]["label"] == "fail"
 
     def test_partially_supported_factual_claims_remain_partially_supported(self):
+        """R6C.2c: a single attached source verdicted 'partially_supports'
+        still fails groundedness (the complete claim is not fully
+        supported) but now PASSES citation_correctness -- the citation
+        genuinely, relevantly contributes to the claim it's attached to,
+        which is all citation_correctness now asks; only a claim-level
+        aggregate judges whether the claim itself is fully made out."""
         cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
         claim_result = {
             "verdicts": {"a": {"collective_verdict": "partially_supported", "collective_confidence": 0.7,
@@ -1493,8 +1502,9 @@ class TestNotAVerifiableClaim:
             "claims_judged": 1, "not_a_verifiable_claim_ids": [],
         }
         dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
-        assert dims["groundedness"]["label"] == "fail"  # partially_supported still fails under the unchanged strict rule
-        assert dims["citation_correctness"]["label"] == "fail"
+        assert dims["groundedness"]["label"] == "fail"
+        assert dims["citation_correctness"]["label"] == "pass"
+        assert dims["citation_correctness"]["counts"]["partially_supports"] == 1
 
     def test_not_a_verifiable_claim_rejected_for_cited_claims(self):
         cited = [{"claim_id": "a", "claim_text": "x [1].", "evidence_ids": ["paper:p1"],
@@ -1608,7 +1618,7 @@ class TestNotAVerifiableClaim:
         assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
 
     def test_claim_source_prompt_version_bumped(self):
-        assert claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION == "r6c2-claim-source-v2"
+        assert claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION == "r6c2-claim-source-v3"
 
     def test_no_real_api_call_in_any_test_here(self):
         # Every test above uses MagicMock; this asserts the module
@@ -1616,6 +1626,217 @@ class TestNotAVerifiableClaim:
         # ambient/default OpenAI() construction anywhere in judge_claims).
         import inspect
         assert "client" in inspect.signature(claim_source.judge_claims).parameters
+
+
+# =====================================================================
+# R6C.2c -- citation aggregation calibration + literature-review prompt
+# guidance
+#
+# Confirmed live finding (run_id 4, commit d0c4982): a well-formed,
+# correctly-cited two-source comparative claim's COLLECTIVE verdict
+# improved from partially_supported to supported after R6C.2b's
+# fixture correction, but citation_correctness stayed "fail" because
+# each individual source, on its own, could only "partially_supports"
+# its half of the comparison. citation_correctness now asks only
+# whether each attached source genuinely, relevantly contributes;
+# groundedness alone asks whether the complete claim is fully made
+# out. All tests here call `rq._aggregate_claim_source_dimensions`
+# directly with hand-built verdict dicts -- no client, no network call,
+# same style every other aggregation test in this file already uses.
+# =====================================================================
+
+class TestR6C2cCitationAggregationCalibration:
+    def test_two_source_compound_claim_both_partially_supports_passes_citation_correctness(self):
+        """Requirement 1: both attached sources verdict partially_supports
+        (each only covers its own half of a comparative claim), the
+        collective verdict is fully supported -- citation_correctness
+        AND groundedness both pass."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1", "paper:p2"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "supported", "collective_confidence": 0.95,
+                                "collective_reason": "together the two sources establish the full contrast",
+                                "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "partially_supports", "reason": "covers clause A only"},
+                                    {"evidence_id": "paper:p2", "verdict": "partially_supports", "reason": "covers clause B only"},
+                                ]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["citation_correctness"]["label"] == "pass"
+        assert dims["citation_correctness"]["counts"]["partially_supports"] == 2
+        assert dims["groundedness"]["label"] == "pass"
+
+    def test_any_does_not_support_source_fails_citation_correctness_even_if_collective_supported(self):
+        """Requirement 2: one source is genuinely irrelevant/wrong
+        (does_not_support) even though the OTHER source alone was
+        enough for the judge to call the collective claim supported --
+        citation_correctness must still fail, because that one source
+        does not belong on this claim regardless of the overall verdict."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1", "paper:p2"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "supported", "collective_confidence": 0.9,
+                                "collective_reason": "paper:p1 alone fully establishes the claim",
+                                "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "supports", "reason": "directly establishes the claim"},
+                                    {"evidence_id": "paper:p2", "verdict": "does_not_support", "reason": "unrelated to this claim"},
+                                ]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["citation_correctness"]["label"] == "fail"
+        assert dims["citation_correctness"]["counts"]["does_not_support"] == 1
+        assert dims["groundedness"]["label"] == "pass"  # collective verdict is decoupled from the bad citation
+
+    def test_insufficient_evidence_with_no_definite_failure_is_unknown(self):
+        """Requirement 3: no does_not_support anywhere, but one attached
+        source has insufficient_evidence -- a genuine "cannot tell" result,
+        distinct from both pass and fail, and distinct from not_applicable
+        (something WAS judged, it just wasn't conclusive)."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1", "paper:p2"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "supported", "collective_confidence": 0.6,
+                                "collective_reason": "one source supports; the other has no usable text",
+                                "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "supports", "reason": "directly supports"},
+                                    {"evidence_id": "paper:p2", "verdict": "insufficient_evidence", "reason": "no text available"},
+                                ]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["citation_correctness"]["label"] == "unknown"
+        assert dims["citation_correctness"]["score"] is None
+        assert dims["citation_correctness"]["counts"]["insufficient_evidence"] == 1
+
+    def test_collective_partially_supported_with_all_sources_relevant_passes_citation_fails_groundedness(self):
+        """Requirement 4: every attached source relevantly contributes
+        (supports/partially_supports, nothing does_not_support or
+        insufficient), but the claim as a whole still isn't fully made
+        out -- citation_correctness passes (the citations are doing
+        their job), groundedness fails (the complete claim is not)."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1", "paper:p2"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {"a": {"collective_verdict": "partially_supported", "collective_confidence": 0.75,
+                                "collective_reason": "adds an unestablished superlative beyond what the sources show",
+                                "source_verdicts": [
+                                    {"evidence_id": "paper:p1", "verdict": "supports", "reason": "supports its own portion"},
+                                    {"evidence_id": "paper:p2", "verdict": "partially_supports", "reason": "supports part, not the superlative"},
+                                ]}},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 1, "not_a_verifiable_claim_ids": [],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["citation_correctness"]["label"] == "pass"
+        assert dims["groundedness"]["label"] == "fail"
+
+    def test_not_a_verifiable_claim_still_excluded_and_never_affects_counts(self):
+        """Requirement 10: not_a_verifiable_claim behavior is unchanged by
+        R6C.2c -- still excluded from groundedness's judged set entirely
+        (never counted in `counts`, never pass/fail/unknown on its own),
+        and citation_correctness is unaffected since a cited claim can
+        never legitimately carry this verdict (judge_claims itself
+        rejects that combination)."""
+        cited = [{"claim_id": "a", "evidence_ids": ["paper:p1"], "claim_kind": "cited"}]
+        claim_result = {
+            "verdicts": {
+                "framing": {"collective_verdict": "not_a_verifiable_claim", "collective_confidence": 0.95,
+                            "collective_reason": "organizational prose", "source_verdicts": []},
+                "a": {"collective_verdict": "supported", "collective_confidence": 0.9,
+                      "collective_reason": "ok", "source_verdicts": [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"}]},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+            "claims_judged": 2, "not_a_verifiable_claim_ids": ["framing"],
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        assert dims["groundedness"]["label"] == "pass"
+        assert sum(dims["groundedness"]["counts"].values()) == 1  # only "a", framing never counted
+        assert dims["citation_correctness"]["label"] == "pass"
+
+    def test_aggregation_policy_version_recorded_in_judge_metadata(self):
+        """The rule VERSION (which aggregation semantics produced this
+        run's labels) is recorded independently of the judge PROMPT
+        version, in both the live and structurally-skipped code paths."""
+        examples = rq.load_report_quality_examples()
+        good = next(e for e in examples if e.id == "good_analytical")
+        broken = next(e for e in examples if e.id == "structural_and_metadata_corruption")
+
+        passing_claim_result = {"verdicts": {}, "latency_ms": 1.0, "error": None, "token_usage": None,
+                                 "model": "fake", "prompt_version": "v", "claims_judged": 0,
+                                 "not_a_verifiable_claim_ids": []}
+        passing_holistic_result = {
+            "dimensions": {name: {"label": "pass", "score": 0.9, "reasons": ["ok"]} for name in
+                           ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")},
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v",
+        }
+        with patch.object(claim_source, "judge_claims", return_value=passing_claim_result), \
+             patch.object(holistic, "judge_report", return_value=passing_holistic_result):
+            live_prediction = rq.predict_live(good, MagicMock())
+        skipped_prediction = rq.predict_live(broken, MagicMock())
+
+        assert live_prediction["judge_metadata"]["citation_aggregation_policy_version"] == "r6c2-citation-aggregation-v2"
+        assert skipped_prediction["judge_metadata"]["citation_aggregation_policy_version"] == "r6c2-citation-aggregation-v2"
+        # Holistic prompt version is untouched by this change, and coexists with the new field.
+        assert live_prediction["judge_metadata"]["holistic_prompt_version"] == holistic.HOLISTIC_JUDGE_PROMPT_VERSION
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
+
+    def test_mock_r6b_remains_8_of_8_after_calibration(self):
+        """Requirement 12: mock mode never calls the live judges or
+        _aggregate_claim_source_dimensions at all, so R6B's own
+        deterministic pass/fail result is untouched by this phase."""
+        result = rq.run_experiment(mode="mock")
+        assert result.total == 8
+        assert result.passed == 8
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_prompt_documents_bounded_negative_claims_over_supplied_evidence(self):
+        """Requirement 6: a bounded claim ('none of the selected papers
+        evaluates X') can be supported once the supplied evidence set was
+        checked -- no external citation-of-absence should be demanded."""
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "bounded negative claims" in prompt_lower
+        assert "none of the selected papers evaluates x" in prompt_lower
+        assert "do not demand an external citation proving" in prompt_lower
+
+    def test_prompt_documents_unbounded_absence_claims_stay_unsupported(self):
+        """Requirement 7: an unbounded, field-wide absence claim ('no
+        research has ever evaluated X') is NOT automatically supported
+        just because the bounded, in-set version would be."""
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "unbounded" in prompt_lower
+        assert "no research has ever evaluated x" in prompt_lower
+        assert "field-wide" in prompt_lower
+
+    def test_prompt_documents_prospective_recommendations_are_not_already_done_claims(self):
+        """Requirement 8: a forward-looking recommendation ('future work
+        should test X') must not be marked unsupported merely because the
+        proposed work hasn't happened yet."""
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "prospective recommendations" in prompt_lower
+        assert "does not assert that x has already been done" in prompt_lower
+        assert "future work should test x" in prompt_lower or "a natural next step is testing x" in prompt_lower
+
+    def test_prompt_still_fails_invented_premises_inside_recommendations(self):
+        """Requirement 9: the prospective-recommendation carve-out never
+        excuses an invented mechanism, metric, or benefit inside the
+        recommendation's own stated rationale."""
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "invented mechanism" in prompt_lower
+        assert "invented metric" in prompt_lower
+        assert "invented benefit" in prompt_lower
+        assert "must still be marked" in prompt_lower
+
+    def test_grouped_citation_still_requires_every_source_judged_independently(self):
+        """R6C.2's original grouped-citation completeness guidance (every
+        attached source gets its own independent verdict, one strong
+        source never excuses a weak one) is unchanged by this phase --
+        R6C.2c only changed how those per-source verdicts are AGGREGATED,
+        never how they're solicited."""
+        prompt_lower = claim_source._SYSTEM_PROMPT.lower()
+        assert "independent" in prompt_lower
+        assert "never excuses" in prompt_lower or "does not excuse" in prompt_lower
 
 
 class TestHolisticJudge:
@@ -1768,9 +1989,10 @@ class TestPredictLiveOrchestration:
         }
         dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
         # Neither missing nor blocked evidence ever gets treated as a pass OR a fail --
-        # both degrade to not_applicable since nothing judgeable was ever produced.
-        assert dims["citation_correctness"]["label"] == "not_applicable"
-        assert dims["groundedness"]["label"] == "not_applicable"
+        # R6C.2c: both are genuinely judged (insufficient_evidence, not absent), so they
+        # surface as "unknown", not "not_applicable" (reserved for nothing-judgeable-at-all).
+        assert dims["citation_correctness"]["label"] == "unknown"
+        assert dims["groundedness"]["label"] == "unknown"
 
     def test_truncated_sampling_coverage_is_surfaced_in_judge_metadata(self):
         examples = rq.load_report_quality_examples()

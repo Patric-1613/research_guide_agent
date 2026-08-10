@@ -21,6 +21,22 @@ trusted. Never raises -- same "never raises" contract
 `_judge_direct_web_relevance` already establishes; every failure mode
 (refusal, malformed batch, network/API error) degrades to a returned
 `error` string instead.
+
+R6C.2c (prompt v2 -> v3): a live run against the R6C.2b-adjudicated
+good_foundational fixture (run_id 4, commit d0c4982) surfaced two
+literature-review-specific judging gaps, both addressed with prompt
+guidance only -- no change to the verdict vocabulary, the schema, or
+`judge_claims`'s own structural validation. (1) Bounded negative claims
+("none of the selected papers evaluates X") were being held to an
+unreasonable "prove a universal absence" standard instead of "the
+supplied evidence set was checked and none reports X". (2) Prospective
+recommendations ("future work should test X") were sometimes read as
+asserting the proposed work already happened. The RULE this module's
+own output feeds into (_aggregate_claim_source_dimensions in
+runners/run_report_quality.py) was recalibrated separately in the same
+phase -- see CITATION_AGGREGATION_POLICY_VERSION there; this module
+only supplies more accurate per-claim verdicts, aggregation semantics
+live entirely on the runner side.
 """
 
 from __future__ import annotations
@@ -31,7 +47,7 @@ from typing import Any, Literal
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
-CLAIM_SOURCE_JUDGE_PROMPT_VERSION = "r6c2-claim-source-v2"
+CLAIM_SOURCE_JUDGE_PROMPT_VERSION = "r6c2-claim-source-v3"
 
 # Collective: does the evidence attached to a claim, taken together,
 # support the claim as written. Per-source: does ONE specific piece of
@@ -80,6 +96,10 @@ For each claim, provide:
 A claim marked "uncited candidate" has no citation attached in the report at all -- judge its collective verdict against the general evidence pool listed below (not any specific source, unless you are explicitly identifying which pooled evidence you drew on); it has no source-specific verdicts to provide (leave source_verdicts empty for it) regardless of which collective verdict you choose.
 
 JUDGE SUBSTANTIVE, SEMANTIC SUPPORT -- NOT EXACT WORD OVERLAP. A reasonable paraphrase can be fully "supported" even when the report's wording differs from the source's wording -- do not require the evidence to repeat the report's exact noun phrase or terminology; ask whether the MEANING is the same. For example, evidence describing "a step that scores retrieved passages by relevance" substantively supports a report calling that same mechanism "a relevance model" -- the terminology differs, the substance does not, so this is "supported", not "partially_supported". That said, still mark "partially_supported" (or "unsupported") when the report's claim adds something the evidence does not actually establish -- a material mechanism, a comparison, a superlative ("the most/least..."), a specific metric or number, a causal claim, or a broader scope than the evidence covers. Paraphrase leniency is about WORDING, never about letting an unsupported ADDITION through. For example: evidence stating a method "reduces the rate of unsupported claims" does not support a report calling that an "accuracy improvement" (different metric, not a paraphrase); evidence about one method's latency does not by itself support a claim that it has "the most noticeable latency of the three" (an unestablished three-way comparison); a claim that pulls in a specific detail from a second, uncited paper is only partially supported by the one source actually attached.
+
+LITERATURE-REVIEW-SPECIFIC GUIDANCE -- bounded negative claims: a statement such as "none of the selected papers evaluates X" is a claim about the COMPLETE SUPPLIED EVIDENCE SET, not about the wider research literature. It may be "supported" once you have inspected every piece of supplied selected-source evidence and none of it reports X -- do not demand an external citation proving an absence that the supplied evidence itself already lets you check directly. An UNBOUNDED claim, such as "no research has ever evaluated X" (a claim about the field at large, not about the specific papers reviewed here), remains "unsupported" or "insufficient_evidence" unless the evidence itself explicitly establishes that field-wide conclusion -- do not let a bounded, checkable observation about the reviewed set license a broader, unchecked claim about the field.
+
+LITERATURE-REVIEW-SPECIFIC GUIDANCE -- prospective recommendations: a clearly forward-looking recommendation, such as "future work should test X" or "a natural next step is testing X," does NOT assert that X has already been done. Do not mark it "unsupported" merely because the proposed experiment or extension has not happened yet. Instead, judge whether the recommendation's STATED RATIONALE follows from the evidence -- for example, does the evidence establish the gap, limitation, or prior result the recommendation is responding to? Still hold everything else in the sentence to the normal standard: a recommendation built on an invented mechanism, an invented metric, an invented benefit, or any other unsupported factual premise must still be marked "partially_supported" or "unsupported" for that premise, exactly as any other claim would be.
 
 Never invent support a source doesn't actually provide, and never assume a claim is true merely because it reads confidently. Only a bounded sample of this report's claims and evidence were selected for this review -- your judgment reflects this SAMPLE only, never a verified claim about the rest of the report."""
 

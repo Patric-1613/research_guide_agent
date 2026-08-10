@@ -71,6 +71,19 @@ SUITE = "report_quality"
 # REPORT_MODEL in code.
 REPORT_QUALITY_JUDGE_MODEL = os.environ.get("REPORT_QUALITY_JUDGE_MODEL", "gpt-5.6-terra")
 
+# R6C.2c: identifies the RULE VERSION _aggregate_claim_source_dimensions
+# implements, independent of the claim/source judge's own PROMPT version
+# (CLAIM_SOURCE_JUDGE_PROMPT_VERSION) -- the same judge output can be
+# aggregated by different rule versions over time, so a reader of a run's
+# judge_metadata must be able to tell which aggregation semantics produced
+# a given citation_correctness/groundedness label without cross-referencing
+# code history. Bumped from an unversioned v1 (the R6C.2/R6C.2a "any
+# partially_supports source verdict fails citation_correctness" rule) to
+# v2 (this module's current "citation correctness is per-source relevance;
+# groundedness is complete-claim support" split -- see
+# _aggregate_claim_source_dimensions's own docstring).
+CITATION_AGGREGATION_POLICY_VERSION = "r6c2-citation-aggregation-v2"
+
 REPORT_QUALITY_DIR = EVAL_DATA_DIR / "report_quality"
 MANIFEST_PATH = REPORT_QUALITY_DIR / "manifest.jsonl"
 FIXTURES_DIR = REPORT_QUALITY_DIR / "fixtures"
@@ -579,44 +592,78 @@ def _aggregate_claim_source_dimensions(
 ) -> dict[str, dict[str, Any]]:
     """Maps Judge 1's per-claim structured verdicts onto the 2 frozen
     dimensions it owns -- a deterministic, PROVISIONAL, documented-as-
-    such aggregation rule (no calibration evidence exists yet to derive
-    a better one from; revisit at R6E per specs/
-    report-quality-evaluation-plan.md section 0 decision 2's own "no
-    invented weights" constraint -- this is an invented RULE, not a
-    weight, and is flagged as provisional for the same reason).
+    such aggregation rule (still no invented WEIGHTS, per specs/
+    report-quality-evaluation-plan.md section 0 decision 2 -- but this IS
+    an invented rule, calibrated once against direct live-run evidence at
+    R6C.2c, see CITATION_AGGREGATION_POLICY_VERSION).
 
-    citation_correctness = aggregated from PER-SOURCE verdicts on
-    CITED claims only (does each individually-attached source support
-    what it's cited for) -- "fail" if any judged source verdict is
-    "does_not_support" or "partially_supports"; "insufficient_evidence"
-    source verdicts are excluded from the pass/fail determination
-    entirely (never invented as either a pass or a fail).
+    R6C.2c recalibration: the R6C.2/R6C.2a rule ("citation_correctness
+    fails if ANY attached source verdict is anything less than a clean
+    'supports'") conflated two genuinely different questions -- (1) does
+    each attached source genuinely and relevantly contribute to the claim
+    it's cited for, and (2) do the attached sources, TOGETHER, fully
+    support the complete claim. A legitimate multi-source comparative
+    sentence ("ChunkRank does X [1], while LongMem does Y [2]") will
+    ALWAYS produce a "partially_supports" per-source verdict for each
+    half -- neither source alone covers the other's clause -- even when
+    the claim is accurately written and properly cited. The old rule
+    mechanically failed citation_correctness on exactly the well-formed,
+    well-cited sentences R6C.2b's own fixture corrections produced (see
+    eval_results/runs/report_quality_run_4.json's methodology_landscape:
+    0:2 and future_research_directions:0:0: both moved from a
+    partially_supported COLLECTIVE verdict to a fully "supported"
+    collective verdict after correction, yet citation_correctness's
+    per-source failure count didn't move, because each half-covering
+    source still verdicted "partially_supports"). Question (2) -- is the
+    complete claim fully supported -- is already groundedness's own job.
 
-    groundedness = aggregated from COLLECTIVE verdicts across BOTH
-    cited and uncited claims (does the claim's content, overall, hold
-    up against its available evidence -- this is what catches an
-    UNCITED fabricated claim, not just a miscited one) -- "fail" if any
-    judged collective verdict is "unsupported" or "partially_
-    supported"; same insufficient_evidence exclusion as above.
+    citation_correctness now answers ONLY question (1), over CITED
+    claims' per-source verdicts:
+    - "fail" if any attached source verdict is "does_not_support" (a
+      source that does not even relevantly support what it's cited
+      for is always a real citation defect, regardless of how the
+      claim's other sources or its collective verdict come out).
+    - "unknown" if no source verdict is "does_not_support" but at least
+      one is "insufficient_evidence" (a real, inconclusive result --
+      never silently dropped into "not_applicable", which is reserved
+      for when nothing was judgeable in the first place).
+    - "pass" when every attached source is "supports" or
+      "partially_supports" (a source that partially, relevantly
+      supports its own clause of a grouped comparative claim is doing
+      its job -- it is not required to single-handedly cover clauses
+      that belong to a DIFFERENT attached source).
+    - "not_applicable" when there are no cited claims with any source
+      verdict to judge at all.
+    `counts` (supports/partially_supports/does_not_support/
+    insufficient_evidence, over all judged attached sources) is always
+    persisted alongside the label so a reader can audit the ratio behind
+    a "pass" without re-deriving it from raw verdicts.
 
-    R6C.2a: a collective verdict of "not_a_verifiable_claim" (framing/
-    organizational prose the claim/source judge determined makes no
-    externally verifiable assertion at all -- see judges/
-    claim_source.py's own prompt) is ALSO excluded from groundedness's
-    judged set, the same way insufficient_evidence already is -- it
-    counts as neither pass, fail, partially supported, nor insufficient
-    evidence. citation_correctness is unaffected by this exclusion:
-    `judge_claims` itself rejects "not_a_verifiable_claim" for any
-    CITED claim as malformed, so it can only ever appear among UNCITED
-    claims, which citation_correctness's own per-source aggregation
-    never reads in the first place. If every sampled claim ends up
-    excluded this way (or insufficient_evidence), groundedness falls
-    through to "not_applicable" via the same "nothing was judgeable"
-    branch below -- no separate case needed.
+    groundedness is UNCHANGED in spirit from R6C.2/R6C.2a, only gaining
+    an "unknown" state that used to be silently folded into
+    "not_applicable": aggregated from COLLECTIVE verdicts across BOTH
+    cited and uncited claims (does the claim's content, overall, fully
+    hold up against its available evidence -- this is what catches an
+    UNCITED fabricated claim, not just a miscited one).
+    - "fail" if any collective verdict is "unsupported" or "partially_
+      supported" (a definite failure always wins, even alongside
+      unrelated insufficient-evidence claims).
+    - "unknown" if no collective verdict is unsupported/partially_
+      supported but at least one judged claim is "insufficient_
+      evidence".
+    - "pass" only when every judged claim's collective verdict is
+      "supported".
+    - "not_a_verifiable_claim" collective verdicts (R6C.2a) are excluded
+      from the judged set entirely, exactly as before -- framing/
+      organizational prose is neither pass, fail, nor unknown.
+    - "not_applicable" when nothing factual (i.e. nothing beyond
+      not_a_verifiable_claim exclusions) was ever judgeable.
+    `counts` (supported/partially_supported/unsupported/insufficient_
+    evidence, over judged collective verdicts) is persisted the same way.
 
     Never invents support: a claim/source pair with no usable evidence
-    contributes to NEITHER pass nor fail -- only to "not_applicable"
-    when literally nothing was judgeable at all.
+    contributes to NEITHER pass nor fail -- only to "unknown" (when
+    something else was judged) or "not_applicable" (when nothing was).
     """
     if claim_result["error"] is not None:
         reason = [f"claim/source judge failed: {claim_result['error']}"]
@@ -639,44 +686,72 @@ def _aggregate_claim_source_dimensions(
         for claim_id in cited_claim_ids
         for sv in verdicts.get(claim_id, {}).get("source_verdicts", [])
     ]
-    judged_source_verdicts = [v for v in source_verdict_values if v != "insufficient_evidence"]
-    if not judged_source_verdicts:
+    source_counts = {
+        "supports": source_verdict_values.count("supports"),
+        "partially_supports": source_verdict_values.count("partially_supports"),
+        "does_not_support": source_verdict_values.count("does_not_support"),
+        "insufficient_evidence": source_verdict_values.count("insufficient_evidence"),
+    }
+    if not source_verdict_values:
         citation_correctness = {
             "label": "not_applicable", "score": None,
-            "reasons": ["no cited claim had a judgeable (non-insufficient-evidence) source verdict"],
+            "reasons": ["no cited claim had any source verdict to judge"], "counts": source_counts,
+        }
+    elif source_counts["does_not_support"]:
+        judged = len(source_verdict_values) - source_counts["insufficient_evidence"]
+        citation_correctness = {
+            "label": "fail",
+            "score": round(1 - source_counts["does_not_support"] / judged, 4) if judged else None,
+            "reasons": [f"{source_counts['does_not_support']}/{len(source_verdict_values)} attached source(s) did not relevantly support their claim"],
+            "counts": source_counts,
+        }
+    elif source_counts["insufficient_evidence"]:
+        citation_correctness = {
+            "label": "unknown", "score": None,
+            "reasons": [f"{source_counts['insufficient_evidence']}/{len(source_verdict_values)} attached source(s) had insufficient evidence to judge"],
+            "counts": source_counts,
         }
     else:
-        bad = sum(1 for v in judged_source_verdicts if v in ("does_not_support", "partially_supports"))
-        if bad:
-            citation_correctness = {
-                "label": "fail", "score": round(1 - bad / len(judged_source_verdicts), 4),
-                "reasons": [f"{bad}/{len(judged_source_verdicts)} judged source(s) did not fully support their attached claim"],
-            }
-        else:
-            citation_correctness = {
-                "label": "pass", "score": 1.0,
-                "reasons": ["every judged source fully supported its attached claim"],
-            }
+        citation_correctness = {
+            "label": "pass",
+            "score": round(source_counts["supports"] / len(source_verdict_values), 4),
+            "reasons": ["every attached source relevantly contributed to the claim it was cited for"],
+            "counts": source_counts,
+        }
 
     collective_values = [v["collective_verdict"] for v in verdicts.values()]
-    judged_collective = [v for v in collective_values if v not in ("insufficient_evidence", "not_a_verifiable_claim")]
+    judgeable_collective = [v for v in collective_values if v != "not_a_verifiable_claim"]
     excluded_as_non_verifiable = sum(1 for v in collective_values if v == "not_a_verifiable_claim")
-    if not judged_collective:
-        reason = "no claim had judgeable (non-insufficient-evidence, non-framing-prose) evidence"
+    collective_counts = {
+        "supported": judgeable_collective.count("supported"),
+        "partially_supported": judgeable_collective.count("partially_supported"),
+        "unsupported": judgeable_collective.count("unsupported"),
+        "insufficient_evidence": judgeable_collective.count("insufficient_evidence"),
+    }
+    if not judgeable_collective:
+        reason = "no claim had judgeable (non-framing-prose) evidence"
         if excluded_as_non_verifiable:
             reason += f"; {excluded_as_non_verifiable} sampled item(s) excluded as non-verifiable framing prose"
-        groundedness = {"label": "not_applicable", "score": None, "reasons": [reason]}
+        groundedness = {"label": "not_applicable", "score": None, "reasons": [reason], "counts": collective_counts}
     else:
-        bad = sum(1 for v in judged_collective if v in ("unsupported", "partially_supported"))
+        bad = collective_counts["unsupported"] + collective_counts["partially_supported"]
         if bad:
             groundedness = {
-                "label": "fail", "score": round(1 - bad / len(judged_collective), 4),
-                "reasons": [f"{bad}/{len(judged_collective)} judged claim(s) were not fully supported by their evidence"],
+                "label": "fail", "score": round(1 - bad / len(judgeable_collective), 4),
+                "reasons": [f"{bad}/{len(judgeable_collective)} judged claim(s) were not fully supported by their evidence"],
+                "counts": collective_counts,
+            }
+        elif collective_counts["insufficient_evidence"]:
+            groundedness = {
+                "label": "unknown", "score": None,
+                "reasons": [f"{collective_counts['insufficient_evidence']}/{len(judgeable_collective)} judged claim(s) had insufficient evidence to judge"],
+                "counts": collective_counts,
             }
         else:
             groundedness = {
                 "label": "pass", "score": 1.0,
                 "reasons": ["every judged claim was fully supported by its evidence"],
+                "counts": collective_counts,
             }
 
     return {"citation_correctness": citation_correctness, "groundedness": groundedness}
@@ -728,6 +803,7 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
             "model": REPORT_QUALITY_JUDGE_MODEL,
             "claim_source_prompt_version": claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION,
             "holistic_prompt_version": holistic.HOLISTIC_JUDGE_PROMPT_VERSION,
+            "citation_aggregation_policy_version": CITATION_AGGREGATION_POLICY_VERSION,
             "claim_source_judge": None,
             "holistic_judge": None,
             "sampling_coverage": payload["sampling_coverage"],
@@ -759,6 +835,7 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
         "model": REPORT_QUALITY_JUDGE_MODEL,
         "claim_source_prompt_version": claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION,
         "holistic_prompt_version": holistic.HOLISTIC_JUDGE_PROMPT_VERSION,
+        "citation_aggregation_policy_version": CITATION_AGGREGATION_POLICY_VERSION,
         "claim_source_judge": {
             "latency_ms": claim_result["latency_ms"], "error": claim_result["error"],
             "claims_judged": claim_result["claims_judged"], "token_usage": claim_result["token_usage"],
