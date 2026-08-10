@@ -115,8 +115,9 @@ marked `mock_only: true` and are skipped in live mode with a clear,
 the fixture record itself, falling back to a generic truthful message
 if absent) — not a single hardcoded message, since different mock_only
 cases simulate genuinely different things. Everything else in this
-section (the mentor-repo comparison, phase order, the `report_quality`
-suite) is still design-only, not yet implemented.
+section (the mentor-repo comparison, phase order) is still design-only
+history; the `report_quality` suite itself is real as of R6A/R6B — see
+the "R6A"/"R6B" sections below.
 
 **Update (R7E.1-R7E.5b, closed 2026-08-09)**: the `chat_relevance` suite
 went from a single mock/live scoring pass to the project's first
@@ -457,7 +458,7 @@ pass rejected:
   10-case fixture run, not a production SLO** — it hasn't been measured
   under realistic candidate-pool sizes or production load.
 
-## R6A — report quality evaluation: rubric and fixtures frozen (2026-08-10)
+## R6A — report quality evaluation: rubric and fixtures frozen (2026-08-10) — complete
 
 R6 is the report-quality counterpart to R7's chat/web-relevance eval
 arc — an independent measurement system over already-produced
@@ -516,8 +517,108 @@ design (result schema, hard-failure identifiers, informational
 signals, fixture architecture, R6B/R6C future scoring semantics, and
 the documented-but-not-built R6D pairwise design) and `eval_data/
 report_quality/README.md` for the fixture index. `specs/
-backend-backlog.md`'s R6A entry tracks status; R6B (the deterministic/
-mock suite itself) is next.
+backend-backlog.md`'s R6A entry tracks status.
+
+## R6B — deterministic report quality evaluation (2026-08-10) — complete
+
+R6B builds the actual `report_quality` suite against R6A's frozen
+schema — `research_agent/evals/runners/run_report_quality.py`
+(manifest+fixture loader, the 6 deterministic hard-failure checks,
+informational signals) and `research_agent/evals/evaluators/
+report_quality.py` (the fixture-agreement evaluator), registered in
+`cli.py` alongside `chat_relevance`.
+
+**Offline, deterministic, free, and independent of R4.** R6B makes
+**no network or API call of any kind** — it never imports `openai`,
+never calls `research_agent.report`'s `generate_report`/
+`evaluate_report`/`revise_report`, and never reuses R4's own
+`_deterministic_report_checks`. Every check in R6B is a fresh,
+independent implementation over a stored report dict and its source
+evidence, confirmed by a dedicated test
+(`test_predict_never_imports_openai`) and by the module itself having
+no such import to patch in the first place.
+
+**`--mode live` is intentionally not implemented yet.** Invoking it
+raises a clean `LiveModeSetupError` before any example is loaded or
+any file is written — no traceback, no fallback to mock, no CSV/detail
+side effects, exit code 2. Live judge dimensions (a bounded claim/
+source judge plus a holistic judge) are R6C's job, not R6B's.
+
+### CLI commands
+
+```bash
+uv run python -m research_agent.evals.cli list-suites
+uv run python -m research_agent.evals.cli run --suite report_quality
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --subset 3
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --tags security
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --note "..."
+uv run python -m research_agent.evals.cli run --suite report_quality --mode live   # clean exit 2, not implemented
+```
+
+### Report structural status vs. evaluation-case correctness — read this carefully
+
+These are two different, easily-conflated things, and the mock
+baseline below only makes sense once they're kept apart:
+
+- **`prediction["structural_integrity"]["status"]`** describes the
+  REPORT ITSELF — `"pass"` if it has zero hard failures, `"fail"` if
+  it has at least one. This is a statement about report quality.
+- **The `report_quality_hard_failure_agreement` evaluator's `score`**
+  describes whether the HARNESS correctly detected that state against
+  a fixture's own `expected_hard_failures` — `1.0` if the detected set
+  exactly matches, `0.0` otherwise. This is a statement about whether
+  the checker is working, not about the report.
+
+A deliberately broken fixture is therefore SUPPOSED to score `1.0`:
+`structural_and_metadata_corruption` has
+`structural_integrity.status="fail"` and all 6 hard-failure
+identifiers present — and the evaluator scores it `1.0`, because the
+checker correctly found every one of them. **"8/8 passed" in the mock
+baseline below means the deterministic evaluator matched every
+fixture's expected hard-failure set — it does not mean all eight
+fixture reports are high quality.** One of the eight is deliberately,
+provably broken; the suite is working exactly as intended by detecting
+that.
+
+### The 6 frozen hard-failure identifiers
+
+| Identifier | Meaning |
+|---|---|
+| `missing_required_section` | A required template section key is entirely absent from the report dict. |
+| `empty_required_section` | A required section is present but its content is blank/whitespace-only. |
+| `unresolved_citation_marker` | A raw `[Paper N]`/`[Web N]` marker, or a single-token bracket matching a known paper_id/url, leaked into rendered content unresolved. Ordinary bracketed prose that matches neither pattern is never flagged. |
+| `non_sequential_reference_numbering` | The `references` list's numbers are not exactly `1..N` (duplicates count as invalid too). |
+| `orphan_reference` | A reference has no inline `[N]` marker actually visible in any section's rendered content — checked against real prose, never trusted from `reference_numbers` metadata alone. |
+| `reference_source_unavailable` | A reference's `paper_id`/`url` doesn't match anything in `selected_papers`/`approved_web_articles` — a check R4's own live generation path can never trigger by construction, only reachable via a stored/regressed report dict. |
+
+### Informational-only signals (never a gate, never a score)
+
+`section_word_counts`, `citation_density_by_section`,
+`source_citation_counts`, `skipped_paper_rate`,
+`selected_source_coverage`, `dominant_source_share` — plus two
+warnings (missing paper abstract, empty web snippet) that never force
+a hard failure. No threshold is attached to any of these: a high
+citation density isn't automatically good, one dominant source isn't
+automatically bad, not every selected source needs to be cited. They
+ride along in the prediction/detail JSON for a human to look at, never
+as a scored evaluator result.
+
+### Mock baseline (2026-08-10)
+
+```
+[eval] suite=report_quality mode=mock total=8 passed=8 failed=0 average_score=1.000
+```
+
+All 8 R6A fixtures' detected hard-failure sets exactly matched their
+`expected_hard_failures` — including `structural_and_metadata_
+corruption`'s all-6-present case, per the distinction explained above.
+Full backend suite at this checkpoint: **831 passed** (780 pre-R6A +
+51 new R6B tests), zero failures.
+
+See `specs/report-quality-evaluation-plan.md` for the frozen design
+this suite implements, and `eval_data/report_quality/README.md` for
+the fixture index and command reference.
 
 ## Related docs
 

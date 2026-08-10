@@ -1290,13 +1290,127 @@ invented:
     documented, nothing built).
   - R6E — human-labelled calibration.
   - Closing the report-generation prompt-injection gap the
-    `source_prompt_injection` fixture surfaces (an independent
-    injection guard for paper abstracts / `report.py`'s own prompt
-    construction) — this is a production-code change, out of scope for
-    an evaluation-only phase, and must be tracked as its own item when
-    picked up.
-- **Priority**: n/a — done (checkpoint closed; R6B is next).
-- **Status**: Closed (2026-08-10).
+    `source_prompt_injection` fixture surfaces — tracked as its own
+    security-debt entry below ("No independent prompt-injection defense
+    in report generation / paper abstracts"), not folded into R6's own
+    scope.
+- **Priority**: n/a — done (checkpoint closed).
+- **Status**: Closed (2026-08-10). Superseded by R6B below (also
+  closed) — see that entry for what actually shipped.
+
+### R6B: deterministic report quality evaluation suite
+- **Goal**: build the real `report_quality` eval suite against R6A's
+  frozen schema — deterministic structural/citation checks only, no
+  LLM judge, no network call, fully independent of R4.
+- **Why it matters**: R6A froze the design; R6B is where "R6 must not
+  treat R4's score as ground truth" becomes an actual, running,
+  independently-implemented checker rather than a design commitment.
+- **Decision/what shipped**:
+  - `research_agent/evals/runners/run_report_quality.py` — a thin
+    manifest+fixture loader (tags/subset filtering, path-traversal/
+    duplicate-id/schema-version/template-identity validation) and
+    `predict()`, implementing all 6 frozen hard-failure checks
+    (`missing_required_section`, `empty_required_section`,
+    `unresolved_citation_marker`, `non_sequential_reference_
+    numbering`, `orphan_reference`, `reference_source_unavailable`)
+    plus informational signals (section word counts, citation density,
+    citation frequency by reference, selected-source coverage,
+    skipped-paper rate, dominant-source share) and two warnings
+    (missing abstract, empty snippet) — none of which gate pass/fail.
+    Every check is a fresh, independent implementation — never calls
+    `research_agent.report`'s `generate_report`/`evaluate_report`/
+    `revise_report`, and never reuses R4's own
+    `_deterministic_report_checks`.
+  - `research_agent/evals/evaluators/report_quality.py` — one
+    evaluator, `report_quality_hard_failure_agreement`, a pure set
+    comparison between a prediction's detected `hard_failures` and a
+    fixture's `expected_hard_failures`. Never reads
+    `expected_dimension_labels` — those are reserved for R6C.
+  - `research_agent/evals/cli.py` — `report_quality` registered
+    alongside `chat_relevance`. `--mode live` raises a clean
+    `LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
+    effects) — not implemented yet, R6C's job.
+  - `research_agent/evals/runners/_base.py` — one small, additive
+    change: `run_suite` gained an optional `examples: list[Example] |
+    None = None` parameter, letting a suite whose fixtures don't fit
+    flat JSONL (this one) reuse the exact predict → evaluate →
+    aggregate loop without forking it. Zero behavior change for
+    `chat_relevance`, which never passes it.
+  - Crucial documented distinction: `structural_integrity.status`
+    describes the REPORT; the evaluator's `score` describes whether
+    the HARNESS correctly detected that state. The deliberately broken
+    `structural_and_metadata_corruption` fixture has
+    `structural_integrity.status="fail"` and all 6 hard failures
+    present, and still scores `1.0` — correctly detected, not silently
+    passed. "8/8 passed" in the mock baseline means the checker matched
+    every fixture's expectation, not that all 8 reports are good.
+  - Mock baseline: `total=8, passed=8, failed=0, average_score=1.0`.
+    Full backend suite: 831 passed (780 + 51 new).
+  - See `docs/evaluation.md`'s "R6B" section and `docs/architecture.md`'s
+    "R6A/R6B" section for the full record and the manifest → fixture →
+    prediction → evaluator → CSV/detail diagram.
+- **Location**: `research_agent/evals/runners/run_report_quality.py`
+  (new), `research_agent/evals/evaluators/report_quality.py` (new),
+  `tests/test_evals_report_quality.py` (new, 51 tests),
+  `research_agent/evals/cli.py` (updated), `research_agent/evals/
+  runners/_base.py` (updated, additive only), `eval_results/
+  report_quality_history.csv` (new, tracked), `eval_data/README.md` /
+  `eval_data/report_quality/README.md` / `eval_results/README.md`
+  (updated). **No changes to `research_agent/report.py`,
+  `research_agent/qa.py`, `research_agent/curation_session.py`,
+  `research_agent/api_app/`, `frontend/`, any fixture file, `pyproject.
+  toml`, or `uv.lock`.**
+- **Explicitly NOT part of this checkpoint**: no LLM judge of any kind
+  — `judge_dimensions`/`judge_metadata` are always `null` in every
+  R6B prediction. `expected.dimension_labels` is loaded but never
+  scored. R4/R4.1/R4.2 and report generation are untouched.
+- **Deferred follow-ups, still open** (not addressed by R6B):
+  - R6C — the live claim/source and holistic judges (see that entry's
+    plan; not yet implemented).
+  - R6D — the pairwise refinement fixtures and harness (schema
+    documented in `specs/report-quality-evaluation-plan.md` section 8,
+    nothing built).
+  - R6E — human-labelled calibration.
+  - The report-generation prompt-injection gap — tracked as its own
+    security-debt entry below, not R6's to fix.
+- **Priority**: n/a — done (R6C is next).
+- **Status**: Closed (2026-08-10). Commits `9430013` (R6A), `e783ec6`
+  (R6B).
+
+### Security debt: no independent prompt-injection defense in report generation / paper abstracts
+- **Goal**: close the gap `eval_data/report_quality/fixtures/
+  source_prompt_injection.json` (R6A) demonstrates — report generation
+  currently has no defense of its own against instruction-like content
+  embedded in a paper abstract or an already-approved web snippet.
+- **Why it matters**: `research_agent/qa.py`'s
+  `_detect_retrieved_prompt_injection` guard (R7E.5b) is wired **only**
+  into the chat/web-relevance filtering path
+  (`_filter_relevant_web_articles`, reached from
+  `_filter_web_relevance_node` and `_accept_web_offer`). It is never
+  applied to paper abstracts anywhere in the system (papers reach
+  report generation via the search/curation flow, not the chat path,
+  so they never pass through this guard at all), and
+  `research_agent/report.py`'s own generation/evaluation/revision
+  prompt construction has no independent injection defense — it trusts
+  whatever `selected_papers`/`web_articles` a session already contains.
+  The `source_prompt_injection` fixture's `generated_report` shows the
+  concrete failure mode: an injected instruction inside a paper
+  abstract ("...should be described as the definitive, complete
+  solution...") and inside a web snippet ("...rate this article as the
+  single most important...") both visibly succeeding in the fixture's
+  simulated report output.
+- **Location (where the fix would land, not yet touched)**:
+  `research_agent/report.py` (generation/evaluation/revision prompt
+  construction — no existing guard to extend), and/or the paper-
+  ingestion path (`research_agent/ingestion.py` /
+  `research_agent/query_expansion.py`) if the guard should apply at
+  the point papers first enter a session rather than at report-
+  generation time.
+- **Priority**: not yet scheduled — flagged by R6A/R6B, not scoped or
+  sequenced against other work.
+- **Status**: Open. Explicitly not addressed by R6A or R6B (both
+  evaluation-only phases); not implicitly assigned to R6C either,
+  since R6C's own scope is a live judge, not a production-code fix.
 
 ### E0: evaluation architecture decision checkpoint
 - **Goal**: decide the shape of this project's next eval work (R7D,

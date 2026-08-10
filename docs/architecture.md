@@ -2765,6 +2765,112 @@ export format, not just deferred — see R5A's and R5C's own exclusion
 rationale). None started. See `specs/backend-backlog.md`'s R5D entry
 for the tracked list.
 
+### R6A/R6B — report quality evaluation foundation (2026-08-10) — complete
+
+**Why**: R4's own in-generation evaluator (`evaluate_report`, R4.1/R4.2
+above) is a pre-revision gate inside report generation itself, bounded
+to one draft → evaluate → (at most one) revise → finalize flow, using
+the same `REPORT_MODEL` that wrote the report. It cannot answer "is
+this report actually good" independently — it shares a model with what
+it grades, blends 8 qualitative dimensions into one `overall_score`,
+and (by design — see R4.1's own "no loop" note above) never
+re-evaluates after its one revision round, so it doesn't even know
+whether that revision helped. **R6 controls no runtime behavior at
+all** — it is a separate, standing measurement system over
+already-produced reports, built specifically so R6 never has to be
+trusted merely because R4 trusts itself.
+
+**R4 controls runtime refinement; R6 independently measures report
+quality — the two are deliberately not the same subsystem, do not call
+into each other, and R6 living in `research_agent/evals/` (not
+`research_agent/report.py`) keeps that boundary structural, not just
+conventional.** Confirmed by what R6B's own code does and doesn't
+import: `research_agent/evals/runners/run_report_quality.py` never
+calls `generate_report`/`evaluate_report`/`revise_report`, and never
+reuses `_deterministic_report_checks` — every check R6B runs is an
+independent, freshly-written implementation, even where it covers
+similar ground to one of R4's own checks.
+
+**R6A (frozen design + fixtures, no code)**: result schema
+(`schema_version: "r6a-v1"` — `structural_integrity`/
+`informational_signals`/`judge_dimensions`, deliberately no invented
+overall score), 6 hard-failure identifiers, 7 future judge dimensions,
+and 8 hand-written, fully synthetic fixtures under `eval_data/
+report_quality/` (manifest + individual JSON files — a fixture embeds
+a full 8-section report plus full paper abstracts/web snippets, too
+large for one JSONL line). See `specs/report-quality-evaluation-plan.md`
+for the complete frozen record.
+
+**R6B (the real deterministic suite)** implements R6A's frozen schema
+end to end:
+
+```
+manifest.jsonl + fixtures/*.json
+        |  (load_report_quality_examples -- tags/subset filter,
+        |   path-traversal/duplicate-id/schema-version validation)
+        v
+   Example(inputs, outputs, metadata)
+        |  (predict() -- 6 independent deterministic checks +
+        |   informational signals, zero network calls)
+        v
+   prediction {schema_version, structural_integrity, informational_signals,
+               judge_dimensions: null, hard_failures, warnings,
+               not_applicable: [], judge_metadata: null}
+        |  (report_quality_hard_failure_agreement -- set comparison
+        |   against the fixture's own expected_hard_failures)
+        v
+   evaluator result {score: 1.0 or 0.0, comment}
+        |  (runners/_base.py::run_suite -- unmodified predict ->
+        |   evaluate -> aggregate loop, reused via a new optional
+        |   `examples=` parameter, not forked)
+        v
+   eval_results/report_quality_history.csv (tracked, append-only)
+   + eval_results/runs/report_quality_run_<id>.json (gitignored detail)
+```
+
+**Not in the runtime report-generation path at any point.** Nothing in
+this diagram is reachable from `api_app/app.py`, any router, or
+`report.py`'s own call sites — the same "eval-only code, inert at
+runtime" precedent `ranking.py`'s BM25/hybrid modes and the
+`chat_relevance` suite already set for everything under
+`research_agent/evals/`.
+
+**Report structural status vs. evaluation-case correctness — the
+distinction that makes "8/8 passed" not mean "8 good reports".**
+`prediction["structural_integrity"]["status"]` describes the report
+itself (`"pass"`/`"fail"`); the evaluator's `score` describes whether
+the harness correctly detected that state against the fixture's own
+expectation. `structural_and_metadata_corruption` — one of the 8
+fixtures, deliberately broken with all 6 hard-failure identifiers
+present — has `structural_integrity.status="fail"` and still scores
+`1.0`, because R6B correctly found every one of its defects. See
+`docs/evaluation.md`'s "R6B" section for the full explanation and the
+mock baseline this produced (8/8, average_score=1.0, 831 total backend
+tests).
+
+**`_base.py`'s only change**: `run_suite` gained an optional
+`examples: list[Example] | None = None` parameter — when given, it's
+used directly instead of loading `dataset_file` via the flat-JSONL
+`load_examples`, letting report_quality's manifest+external-file
+loader reuse the exact same predict → evaluate → aggregate loop
+`chat_relevance` uses, without forking it. Purely additive; every
+existing `chat_relevance` call site is unaffected (it never passes
+`examples`).
+
+**Live mode does not exist yet.** `--mode live` raises a clean
+`LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
+effects) — R6C's job is a bounded claim/source judge plus a separate
+holistic judge, both against a model configured independently from
+`REPORT_MODEL`, still to be designed/built.
+
+**Validation**: `tests/test_evals_report_quality.py` → 51 passed (no
+test ever imports or patches `OpenAI` — the module has no such
+dependency to patch); full backend suite → 831 passed. Commits
+`9430013` (R6A), `e783ec6` (R6B). See `docs/evaluation.md`'s "R6A"/
+"R6B" sections for command reference and the frozen hard-failure/
+informational-signal tables, and `specs/backend-backlog.md`'s R6A/R6B
+entries for the tracked record.
+
 ### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-09) — R7A-R7E.5b complete
 
 **Why**: a real chat session about AI governance retrieved and cited a
