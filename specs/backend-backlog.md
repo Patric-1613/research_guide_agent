@@ -1210,6 +1210,94 @@ invented:
   `ac4b9b0` (R7E.5b evidence), `ac1f325` (skip-reason fix). Full backend
   suite → 780 passed.
 
+### R6A: report quality evaluation — rubric/schema frozen, first fixture set
+- **Goal**: freeze the R6 (report quality evaluation) result schema,
+  hard-failure identifiers, informational-signal list, fixture
+  architecture, and future R6B/R6C/R6D scoring semantics, and build the
+  first reviewable, fully synthetic fixture set — design/fixtures only,
+  no evaluator or runner code yet.
+- **Why it matters**: R4's own in-generation evaluator
+  (`research_agent/report.py::evaluate_report`) shares a model with the
+  report it grades, blends 8 qualitative dimensions into one
+  `overall_score`, and never re-evaluates after its one revision round
+  (`refine_report_if_requested` sets `final_score=None` post-revision
+  by design). R6 is a separate, standing measurement system that must
+  not treat R4's score as ground truth — R6A is where that
+  independence is designed and locked in before any scoring code is
+  written.
+- **Decision/what shipped**:
+  - **Result schema** (`schema_version: "r6a-v1"`) separating
+    `structural_integrity` (deterministic, pass/fail),
+    `informational_signals` (deterministic, never a gate), and
+    `judge_dimensions` (categorical `pass`/`fail`/`not_applicable`/
+    `unknown` now; a future 0-1 `score` is informational only until
+    R6E calibrates it — no overall score, no invented weights).
+  - **6 frozen hard-failure identifiers**: `missing_required_section`,
+    `empty_required_section`, `unresolved_citation_marker`,
+    `non_sequential_reference_numbering`, `orphan_reference` (split
+    from R4's existing combined checks) and `reference_source_
+    unavailable` (new — R4's live generation path can never produce
+    this by construction; only a stored/regressed report dict can).
+  - **7 judge dimensions frozen**: `citation_correctness`,
+    `groundedness`, `synthesis_quality`, `analytical_quality`,
+    `template_fit`, `coherence`, `source_balance` — split into a
+    future bounded claim/source judge (citation + groundedness) and a
+    separate holistic judge (the other five), decided now so R6B's
+    fixtures don't need reworking when R6C lands.
+  - **8 fixtures** under `eval_data/report_quality/` (manifest +
+    individual JSON files, not JSONL — a report-quality fixture is too
+    large for one line): `good_foundational`, `good_analytical`,
+    `good_expert` (identical evidence across all three templates),
+    `citation_and_grounding_failure`, `verbose_low_synthesis`,
+    `source_prompt_injection`, `evaluator_injection_in_report`,
+    `structural_and_metadata_corruption`. Every fixture's expected
+    dimension label carries a rationale a human reviewer can verify
+    against the fixture's own evidence — explicitly synthetic,
+    never described as human calibration data.
+  - **R6D (pairwise refinement evaluation) is documented, not built** —
+    blinded A/B labels, swapped order, per-dimension A/B/tie,
+    positional disagreement, at least one human-labelled longer-but-
+    not-better pair reserved for R6E. No pairwise fixtures exist yet.
+  - **A real, currently undefended gap was surfaced, not fixed**:
+    `research_agent/qa.py`'s prompt-injection guard (R7E.5b) is wired
+    only into the chat/web-relevance path — never applied to paper
+    abstracts, and `research_agent/report.py`'s own prompt construction
+    has no independent injection defense at all. The
+    `source_prompt_injection` fixture proves this with a report that
+    shows the injection succeeding. **Not addressed in R6A** — closing
+    it is separate production work (see "Deferred follow-ups" below).
+  - See `specs/report-quality-evaluation-plan.md` for the full frozen
+    design and `docs/evaluation.md`'s "R6A" section for the workflow-doc
+    cross-reference.
+- **Location**: `specs/report-quality-evaluation-plan.md` (new),
+  `eval_data/report_quality/README.md` (new), `eval_data/
+  report_quality/manifest.jsonl` (new), `eval_data/report_quality/
+  fixtures/*.json` (new, 8 files), `eval_data/README.md` (updated),
+  `docs/evaluation.md` (updated). **No changes to `research_agent/`,
+  `tests/`, `frontend/`, `eval_results/`, `pyproject.toml`, or
+  `uv.lock`.**
+- **Explicitly NOT part of this checkpoint**: R6B (the deterministic/
+  mock evaluator and runner code itself) has not started. R4/R4.1/R4.2
+  are untouched. Report generation, `research_agent/report.py`, and the
+  prompt-injection gap the `source_prompt_injection` fixture surfaces
+  are all unmodified.
+- **Deferred follow-ups, still open** (not addressed by R6A):
+  - R6B — the actual deterministic evaluator/runner code, CLI
+    registration, and `tests/test_evals_report_quality.py`.
+  - R6C — the live claim/source and holistic judges (model choice
+    deliberately deferred to R6C itself, not decided in R6A).
+  - R6D — the pairwise refinement fixtures and harness (schema
+    documented, nothing built).
+  - R6E — human-labelled calibration.
+  - Closing the report-generation prompt-injection gap the
+    `source_prompt_injection` fixture surfaces (an independent
+    injection guard for paper abstracts / `report.py`'s own prompt
+    construction) — this is a production-code change, out of scope for
+    an evaluation-only phase, and must be tracked as its own item when
+    picked up.
+- **Priority**: n/a — done (checkpoint closed; R6B is next).
+- **Status**: Closed (2026-08-10).
+
 ### E0: evaluation architecture decision checkpoint
 - **Goal**: decide the shape of this project's next eval work (R7D,
   R6) before building any of it — audit a mentor repo's `backend/evals/`

@@ -457,6 +457,68 @@ pass rejected:
   10-case fixture run, not a production SLO** — it hasn't been measured
   under realistic candidate-pool sizes or production load.
 
+## R6A — report quality evaluation: rubric and fixtures frozen (2026-08-10)
+
+R6 is the report-quality counterpart to R7's chat/web-relevance eval
+arc — an independent measurement system over already-produced
+literature-review reports, built specifically because R4's own
+in-generation evaluator (`research_agent/report.py::evaluate_report`)
+cannot answer "is this report actually good" on its own: it shares a
+model with the report it grades, blends 8 qualitative dimensions into
+one `overall_score`, and never re-evaluates after its one revision
+round. R6 must not treat that score as ground truth.
+
+**R6A (this checkpoint) is design/fixtures only — no evaluator code,
+no runner code, no CLI registration, and no `research_agent/` change
+of any kind.** It freezes:
+
+- A **result schema** (`schema_version: "r6a-v1"`) that separates
+  `structural_integrity` (deterministic, pass/fail), `informational_
+  signals` (deterministic, never a gate), and `judge_dimensions`
+  (categorical `pass`/`fail`/`not_applicable`/`unknown` labels now, a
+  0-1 `score` later — informational only until R6E calibrates it; a
+  future `0.85` must never by itself mean a failed suite run).
+- **6 stable hard-failure identifiers**: `missing_required_section`,
+  `empty_required_section`, `unresolved_citation_marker`,
+  `non_sequential_reference_numbering`, `orphan_reference` (the first
+  4 mirror R4's own existing deterministic checks, split for isolated
+  testing), and `reference_source_unavailable` (new in R6 — a check
+  R4's own generation path can never trigger by construction, but a
+  stored/regressed report dict can).
+- **7 judge dimensions**: `citation_correctness`, `groundedness`,
+  `synthesis_quality`, `analytical_quality`, `template_fit`,
+  `coherence`, `source_balance` — split, per the approved design, into
+  a future bounded claim/source (citation + groundedness) judge and a
+  separate holistic judge (the other five), not one giant call.
+- **8 hand-written, fully synthetic fixtures** under `eval_data/
+  report_quality/` (manifest + individual JSON files, not one JSONL —
+  a report-quality fixture is too large for one line): three "good"
+  baselines sharing identical evidence across the foundational/
+  analytical/expert templates, and five adversarial/flawed cases
+  (citation misattribution, low-synthesis verbosity, source-side
+  prompt injection, report-prose evaluator injection, and stacked
+  structural corruption). Every fixture's expected dimension label
+  carries a rationale a human reviewer can verify against the
+  fixture's own evidence — explicitly **synthetic fixture
+  expectations, never described as human calibration data** (that's
+  R6E's job, later).
+
+One of the adversarial fixtures (`source_prompt_injection`) surfaces a
+real, currently undefended gap: `research_agent/qa.py`'s prompt-
+injection guard (R7E.5b) is wired only into the chat/web-relevance
+path and is never applied to paper abstracts or to
+`research_agent/report.py`'s own prompt construction anywhere. **R6A
+documents this; it does not fix it** — see `specs/
+report-quality-evaluation-plan.md` section 7.
+
+See `specs/report-quality-evaluation-plan.md` for the full frozen
+design (result schema, hard-failure identifiers, informational
+signals, fixture architecture, R6B/R6C future scoring semantics, and
+the documented-but-not-built R6D pairwise design) and `eval_data/
+report_quality/README.md` for the fixture index. `specs/
+backend-backlog.md`'s R6A entry tracks status; R6B (the deterministic/
+mock suite itself) is next.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

@@ -1,0 +1,153 @@
+{
+  "schema_version": "r6a-v1",
+  "topic": "Improving retrieval-augmented generation (RAG) for question answering",
+  "template": "analytical",
+  "selected_papers": [
+    {
+      "title": "ChunkRank: Relevance-Weighted Passage Selection for RAG",
+      "authors": ["A. Rao", "T. Lindqvist"],
+      "year": 2023,
+      "venue": "arXiv preprint",
+      "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.",
+      "url": "https://papers.example.com/chunkrank-2023",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "chunkrank-2023",
+      "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}
+    },
+    {
+      "title": "Obscure Retrieval Notes",
+      "authors": ["J. Whitfield"],
+      "year": 2022,
+      "venue": "arXiv preprint",
+      "abstract": null,
+      "url": "https://papers.example.com/obscure-2022",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "obscure-2022",
+      "source_urls": {"arxiv": "https://papers.example.com/obscure-2022"}
+    }
+  ],
+  "approved_web_articles": [
+    {
+      "title": "Untitled Roundup",
+      "url": "https://example.com/blog/untitled-roundup",
+      "snippet": "",
+      "published_date": null,
+      "source_domain": "example.com"
+    }
+  ],
+  "generated_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "This review covers recent work on improving retrieval-augmented generation.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers the papers selected for this topic.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "ChunkRank improves retrieval accuracy through passage reranking [1]. Related prior work is also discussed [Paper 9].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1]
+    },
+    "methodology_landscape": {
+      "content": "",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "contradictions_open_debates": {
+      "content": "No contradictions identified.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "As shown by a related withdrawn preprint, no combined evaluation exists across these methods [2].",
+      "cited_papers": [
+        {"title": "Untitled Withdrawn Preprint", "authors": ["Unknown"], "year": null, "venue": null, "abstract": null, "url": null, "doi": null, "citation_count": null, "source": "unknown", "paper_id": "ghost-paper-2099", "source_urls": {}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [2]
+    },
+    "future_research_directions": {
+      "content": "Building on ChunkRank's reranking approach, future work could explore combined retrieval pipelines [1].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1]
+    },
+    "findings": {
+      "content": "ChunkRank improves retrieval accuracy through passage reranking [1]. Related prior work is also discussed [Paper 9].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1]
+    },
+    "limitations": {
+      "content": "No contradictions identified.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "future_scope": {
+      "content": "Building on ChunkRank's reranking approach, future work could explore combined retrieval pipelines [1].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1]
+    },
+    "skipped_papers": [
+      {"title": "Obscure Retrieval Notes", "authors": ["J. Whitfield"], "year": 2022, "venue": "arXiv preprint", "abstract": null, "url": "https://papers.example.com/obscure-2022", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "obscure-2022", "source_urls": {"arxiv": "https://papers.example.com/obscure-2022"}}
+    ],
+    "references": [
+      {"number": 1, "kind": "paper", "paper_id": "chunkrank-2023", "url": null, "title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "formatted": "Rao, A., & Lindqvist, T. (2023). ChunkRank: Relevance-Weighted Passage Selection for RAG. arXiv preprint. https://papers.example.com/chunkrank-2023", "link_url": "https://papers.example.com/chunkrank-2023"},
+      {"number": 2, "kind": "paper", "paper_id": "ghost-paper-2099", "url": null, "title": "Untitled Withdrawn Preprint", "formatted": "Unknown (n.d.). Untitled Withdrawn Preprint. arXiv preprint.", "link_url": null},
+      {"number": 4, "kind": "web", "paper_id": null, "url": "https://example.com/blog/untitled-roundup", "title": "Untitled Roundup", "formatted": "Untitled Roundup. example.com. https://example.com/blog/untitled-roundup", "link_url": "https://example.com/blog/untitled-roundup"}
+    ],
+    "sections": [
+      {"key": "executive_summary", "title": "Executive Summary", "content": "This review covers recent work on improving retrieval-augmented generation.", "reference_numbers": []},
+      {"key": "introduction_scope", "title": "Introduction & Scope", "content": "This review covers the papers selected for this topic.", "reference_numbers": []},
+      {"key": "thematic_findings", "title": "Thematic Findings", "content": "ChunkRank improves retrieval accuracy through passage reranking [1]. Related prior work is also discussed [Paper 9].", "reference_numbers": [1]},
+      {"key": "methodology_landscape", "title": "Methodology Landscape", "content": "", "reference_numbers": []},
+      {"key": "contradictions_open_debates", "title": "Contradictions & Open Debates", "content": "No contradictions identified.", "reference_numbers": []},
+      {"key": "gap_analysis", "title": "Gap Analysis", "content": "As shown by a related withdrawn preprint, no combined evaluation exists across these methods [2].", "reference_numbers": [2]},
+      {"key": "future_research_directions", "title": "Future Research Directions", "content": "Building on ChunkRank's reranking approach, future work could explore combined retrieval pipelines [1].", "reference_numbers": [1]}
+    ]
+  },
+  "expected": {
+    "hard_failures": [
+      "missing_required_section",
+      "empty_required_section",
+      "unresolved_citation_marker",
+      "non_sequential_reference_numbering",
+      "orphan_reference",
+      "reference_source_unavailable"
+    ],
+    "dimension_labels": {
+      "citation_correctness": {"label": "fail", "rationale": "Reference [2] ('Untitled Withdrawn Preprint', paper_id 'ghost-paper-2099') is cited in Gap Analysis for a factual claim, but this paper_id does not match any entry in selected_papers -- the citation points at a source that is not actually part of this report's evidence pool, so the claim attached to it cannot be a correct citation to anything real."},
+      "groundedness": {"label": "not_applicable", "rationale": "Distinct from citation_and_grounding_failure.json's groundedness=fail case (where the cited source exists and its real abstract directly contradicts the claim): here the cited source (paper_id 'ghost-paper-2099') is not present in the evidence pool at all, so there is no real abstract to compare the claim against one way or the other -- unverifiable, not affirmatively contradicted."},
+      "synthesis_quality": {"label": "not_applicable", "rationale": "Methodology Landscape is empty and Conclusion is missing entirely -- a meaningful synthesis-quality judgment requires the report to actually be complete, which this deliberately corrupted fixture is not."},
+      "analytical_quality": {"label": "not_applicable", "rationale": "Same reasoning as synthesis_quality: the missing Conclusion and empty Methodology Landscape section make a fair analytical-quality judgment premature."},
+      "template_fit": {"label": "not_applicable", "rationale": "Template-depth assessment is not meaningful against a report missing a required section and containing an empty required section."},
+      "coherence": {"label": "not_applicable", "rationale": "A coherence judgment presumes a complete report to read; this one is missing its Conclusion and has a blank Methodology Landscape section, so overall coherence cannot be fairly assessed yet."},
+      "source_balance": {"label": "not_applicable", "rationale": "One of the two selected papers ('Obscure Retrieval Notes') has a null abstract and is never cited (it appears only in skipped_papers), and one approved web article has an empty snippet and is never cited (reference [4] is orphaned) -- with this much missing/unused source material, a source-balance judgment would not be meaningful until the structural defects above are resolved."}
+    }
+  },
+  "human_annotations": [],
+  "notes": "Deliberately stacks multiple, independent objective defects in one fixture -- each one isolated below so R6B's unit tests can verify each deterministic checker independently (per the task's own allowance for this): (1) missing_required_section -- 'conclusion' key is entirely absent from generated_report and from its sections list. (2) empty_required_section -- 'methodology_landscape' is present with content=\"\". (3) unresolved_citation_marker -- 'thematic_findings' contains a raw, never-resolved '[Paper 9]' marker (matches the same shape as research_agent/report.py's _UNRESOLVED_MARKER_RE: a bracket containing letters that is not a clean '[N]'). (4) non_sequential_reference_numbering -- references use numbers [1, 2, 4], skipping 3. (5) orphan_reference -- reference #4 (the web article) is never cited in any section's reference_numbers. (6) reference_source_unavailable -- reference #2's paper_id ('ghost-paper-2099') does not match any entry in selected_papers (a NEW R6 check with no R4 equivalent -- report.py's own generation path cannot produce this by construction; only a stored/corrupted report dict can). Additionally, and NOT counted as a hard failure: one selected paper has abstract=null and one approved web article has snippet=\"\" -- these should surface as informational warnings once R6B implements missing-metadata detection, not as hard_failures, matching the frozen distinction in specs/report-quality-evaluation-plan.md section 3. All content is synthetic and hand-constructed to exercise these checks; it does not represent a real report.py output (report.py's own dynamic-Literal schema and _build_references_and_renumber make several of these defects structurally impossible to produce live -- this fixture represents a stored/regressed/corrupted state, which is exactly what R6 (evaluating stored dicts) needs to be able to catch even though R4 (evaluating live generation output) never would encounter it)."
+}

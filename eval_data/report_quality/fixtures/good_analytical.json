@@ -1,0 +1,187 @@
+{
+  "schema_version": "r6a-v1",
+  "topic": "Improving retrieval-augmented generation (RAG) for question answering",
+  "template": "analytical",
+  "selected_papers": [
+    {
+      "title": "ChunkRank: Relevance-Weighted Passage Selection for RAG",
+      "authors": ["A. Rao", "T. Lindqvist"],
+      "year": 2023,
+      "venue": "arXiv preprint",
+      "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.",
+      "url": "https://papers.example.com/chunkrank-2023",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "chunkrank-2023",
+      "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}
+    },
+    {
+      "title": "LongMem: Compressive Memory for Multi-Hop Retrieval",
+      "authors": ["S. Okafor"],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.",
+      "url": "https://papers.example.com/longmem-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "longmem-2024",
+      "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}
+    },
+    {
+      "title": "CiteGuard: Faithfulness Verification for Generated Answers",
+      "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.",
+      "url": "https://papers.example.com/citeguard-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "citeguard-2024",
+      "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}
+    }
+  ],
+  "approved_web_articles": [
+    {
+      "title": "Why Chunk Ranking Matters for RAG Pipelines in Production",
+      "url": "https://example.com/blog/rag-chunking-2026",
+      "snippet": "Teams running retrieval-augmented generation in production report that a simple relevance-ranking pass over retrieved chunks, before generation, meaningfully reduces off-topic citations -- without needing a larger retrieval model.",
+      "published_date": "2026-01-15",
+      "source_domain": "example.com"
+    }
+  ],
+  "generated_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "Three recent techniques address distinct failure points in retrieval-augmented generation: passage-level reranking (ChunkRank), cross-hop memory compression (LongMem), and post-hoc answer verification (CiteGuard). Each reports a measured accuracy gain against its own added computational cost, but none benchmarks its trade-off jointly with the others, and none evaluates outside English, single-domain QA.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers exactly three papers selected for this topic, spanning three distinct intervention points in a RAG pipeline: what gets retrieved (ChunkRank), how retrieval state persists across hops (LongMem), and whether the final answer is verifiably supported (CiteGuard). No broader survey of RAG methods is attempted.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "ChunkRank and LongMem both target the retrieval side of the pipeline but at different granularities: ChunkRank re-scores an already-retrieved passage set for relevance before generation, improving accuracy on single-hop questions [1], while LongMem changes what persists across multiple retrieval steps via compressive memory, improving accuracy on multi-hop questions [2]. Read together, they suggest the accuracy gain from 'using retrieved content better' generalizes across at least two different retrieval granularities, even though the two papers never test each other's setting. CiteGuard operates downstream of both, checking the generated answer's sentences against retrieved passages after generation rather than improving retrieval itself, and independently reduces the rate of unsupported claims [3].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}},
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1, 2, 3]
+    },
+    "methodology_landscape": {
+      "content": "ChunkRank's reranking model is trained/applied independently of the base retriever, making it a composable add-on [1]. LongMem's compressive memory instead modifies the retrieval loop's internal state across steps, which is a more invasive integration than a bolt-on reranker [2]. CiteGuard makes no retrieval-time changes at all -- it is a strictly post-hoc check, which means it can in principle be layered on top of either ChunkRank or LongMem without conflicting with either's own mechanism [3], though none of the three papers actually tests that combination.",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}},
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1, 2, 3]
+    },
+    "contradictions_open_debates": {
+      "content": "Each paper reports its own accuracy-vs-cost trade-off in isolation and none quantifies whether the gain is worth the cost relative to the others: LongMem's added latency is described as 'noticeably higher' without a comparable baseline number [2], while CiteGuard's added cost is a full extra inference pass per answer [3]. This is a methodological gap rather than a direct contradiction between the papers -- they simply made different, individually-justified choices about what to measure.",
+      "cited_papers": [
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [2, 3]
+    },
+    "gap_analysis": {
+      "content": "No paper in this set evaluates on non-English text [1][2][3]. No paper tests its method against more than one question-difficulty class at once (ChunkRank: single-hop only; LongMem: multi-hop only; CiteGuard's verification: not tested on multi-hop answers at all). Critically, no paper measures the combined effect of layering more than one of these three techniques together, despite the Methodology Landscape section above noting they are architecturally composable.",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}},
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1, 2, 3]
+    },
+    "future_research_directions": {
+      "content": "The clearest concrete opportunity is evaluating CiteGuard's verification step specifically against LongMem-produced multi-hop answers, directly testing the composability the Methodology Landscape section identified but no paper measured [2][3]. A second, separate direction is a joint accuracy-vs-latency benchmark across all three techniques on a shared task, so a practitioner could compare trade-offs on common ground rather than across three independently-chosen evaluation setups. Independent of the papers, practitioner reports of chunk-ranking's production impact suggest this line of work already has real deployment relevance, reinforcing why closing the composability gap matters [4].",
+      "cited_papers": [
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [
+        {"title": "Why Chunk Ranking Matters for RAG Pipelines in Production", "url": "https://example.com/blog/rag-chunking-2026", "snippet": "Teams running retrieval-augmented generation in production report that a simple relevance-ranking pass over retrieved chunks, before generation, meaningfully reduces off-topic citations -- without needing a larger retrieval model.", "published_date": "2026-01-15", "source_domain": "example.com"}
+      ],
+      "reference_numbers": [2, 3, 4]
+    },
+    "conclusion": {
+      "content": "These three papers are best read as complementary interventions at different pipeline stages rather than competing solutions -- the open question this review surfaces is not which technique is best, but whether they compose, a question none of the source papers answers.",
+      "cited_papers": [],
+      "cited_web_articles": [],
+      "reference_numbers": []
+    },
+    "findings": {
+      "content": "ChunkRank and LongMem both target the retrieval side of the pipeline but at different granularities: ChunkRank re-scores an already-retrieved passage set for relevance before generation, improving accuracy on single-hop questions [1], while LongMem changes what persists across multiple retrieval steps via compressive memory, improving accuracy on multi-hop questions [2]. Read together, they suggest the accuracy gain from 'using retrieved content better' generalizes across at least two different retrieval granularities, even though the two papers never test each other's setting. CiteGuard operates downstream of both, checking the generated answer's sentences against retrieved passages after generation rather than improving retrieval itself, and independently reduces the rate of unsupported claims [3].",
+      "cited_papers": [
+        {"title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "authors": ["A. Rao", "T. Lindqvist"], "year": 2023, "venue": "arXiv preprint", "abstract": "We propose ChunkRank, a lightweight reranking step that scores retrieved passages by relevance to the query before they are shown to a generation model. On two short-context QA benchmarks, ChunkRank improves answer accuracy over a standard top-k retrieval baseline, with a small added latency cost from the reranking step. All experiments use single-hop, English-language questions.", "url": "https://papers.example.com/chunkrank-2023", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "chunkrank-2023", "source_urls": {"arxiv": "https://papers.example.com/chunkrank-2023"}},
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [1, 2, 3]
+    },
+    "limitations": {
+      "content": "Each paper reports its own accuracy-vs-cost trade-off in isolation and none quantifies whether the gain is worth the cost relative to the others: LongMem's added latency is described as 'noticeably higher' without a comparable baseline number [2], while CiteGuard's added cost is a full extra inference pass per answer [3]. This is a methodological gap rather than a direct contradiction between the papers -- they simply made different, individually-justified choices about what to measure.",
+      "cited_papers": [
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [],
+      "reference_numbers": [2, 3]
+    },
+    "future_scope": {
+      "content": "The clearest concrete opportunity is evaluating CiteGuard's verification step specifically against LongMem-produced multi-hop answers, directly testing the composability the Methodology Landscape section identified but no paper measured [2][3]. A second, separate direction is a joint accuracy-vs-latency benchmark across all three techniques on a shared task, so a practitioner could compare trade-offs on common ground rather than across three independently-chosen evaluation setups. Independent of the papers, practitioner reports of chunk-ranking's production impact suggest this line of work already has real deployment relevance, reinforcing why closing the composability gap matters [4].",
+      "cited_papers": [
+        {"title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "authors": ["S. Okafor"], "year": 2024, "venue": "arXiv preprint", "abstract": "LongMem introduces a compressive memory module that lets a retrieval system summarize and reuse information across multiple retrieval hops instead of re-retrieving from scratch each time. On a multi-hop QA benchmark, LongMem improves accuracy over single-hop retrieval baselines, but adds noticeably higher inference latency due to the memory compression step. Evaluation is limited to English-language corpora.", "url": "https://papers.example.com/longmem-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "longmem-2024", "source_urls": {"arxiv": "https://papers.example.com/longmem-2024"}},
+        {"title": "CiteGuard: Faithfulness Verification for Generated Answers", "authors": ["M. Petrov", "L. Nakashima", "D. Ibrahim"], "year": 2024, "venue": "arXiv preprint", "abstract": "CiteGuard is a post-hoc verifier that checks whether each sentence of a generated answer is actually supported by the retrieved passages it cites, flagging unsupported sentences before the answer is shown to a user. Applying CiteGuard reduces the rate of unsupported claims in generated answers, at the cost of an extra inference pass per answer. The verifier itself is not evaluated on multi-hop or non-English questions.", "url": "https://papers.example.com/citeguard-2024", "doi": null, "citation_count": null, "source": "arxiv", "paper_id": "citeguard-2024", "source_urls": {"arxiv": "https://papers.example.com/citeguard-2024"}}
+      ],
+      "cited_web_articles": [
+        {"title": "Why Chunk Ranking Matters for RAG Pipelines in Production", "url": "https://example.com/blog/rag-chunking-2026", "snippet": "Teams running retrieval-augmented generation in production report that a simple relevance-ranking pass over retrieved chunks, before generation, meaningfully reduces off-topic citations -- without needing a larger retrieval model.", "published_date": "2026-01-15", "source_domain": "example.com"}
+      ],
+      "reference_numbers": [2, 3, 4]
+    },
+    "skipped_papers": [],
+    "references": [
+      {"number": 1, "kind": "paper", "paper_id": "chunkrank-2023", "url": null, "title": "ChunkRank: Relevance-Weighted Passage Selection for RAG", "formatted": "Rao, A., & Lindqvist, T. (2023). ChunkRank: Relevance-Weighted Passage Selection for RAG. arXiv preprint. https://papers.example.com/chunkrank-2023", "link_url": "https://papers.example.com/chunkrank-2023"},
+      {"number": 2, "kind": "paper", "paper_id": "longmem-2024", "url": null, "title": "LongMem: Compressive Memory for Multi-Hop Retrieval", "formatted": "Okafor, S. (2024). LongMem: Compressive Memory for Multi-Hop Retrieval. arXiv preprint. https://papers.example.com/longmem-2024", "link_url": "https://papers.example.com/longmem-2024"},
+      {"number": 3, "kind": "paper", "paper_id": "citeguard-2024", "url": null, "title": "CiteGuard: Faithfulness Verification for Generated Answers", "formatted": "Petrov, M., Nakashima, L., & Ibrahim, D. (2024). CiteGuard: Faithfulness Verification for Generated Answers. arXiv preprint. https://papers.example.com/citeguard-2024", "link_url": "https://papers.example.com/citeguard-2024"},
+      {"number": 4, "kind": "web", "paper_id": null, "url": "https://example.com/blog/rag-chunking-2026", "title": "Why Chunk Ranking Matters for RAG Pipelines in Production", "formatted": "Why Chunk Ranking Matters for RAG Pipelines in Production. example.com. 2026-01-15. https://example.com/blog/rag-chunking-2026", "link_url": "https://example.com/blog/rag-chunking-2026"}
+    ],
+    "sections": [
+      {"key": "executive_summary", "title": "Executive Summary", "content": "Three recent techniques address distinct failure points in retrieval-augmented generation: passage-level reranking (ChunkRank), cross-hop memory compression (LongMem), and post-hoc answer verification (CiteGuard). Each reports a measured accuracy gain against its own added computational cost, but none benchmarks its trade-off jointly with the others, and none evaluates outside English, single-domain QA.", "reference_numbers": []},
+      {"key": "introduction_scope", "title": "Introduction & Scope", "content": "This review covers exactly three papers selected for this topic, spanning three distinct intervention points in a RAG pipeline: what gets retrieved (ChunkRank), how retrieval state persists across hops (LongMem), and whether the final answer is verifiably supported (CiteGuard). No broader survey of RAG methods is attempted.", "reference_numbers": []},
+      {"key": "thematic_findings", "title": "Thematic Findings", "content": "ChunkRank and LongMem both target the retrieval side of the pipeline but at different granularities: ChunkRank re-scores an already-retrieved passage set for relevance before generation, improving accuracy on single-hop questions [1], while LongMem changes what persists across multiple retrieval steps via compressive memory, improving accuracy on multi-hop questions [2]. Read together, they suggest the accuracy gain from 'using retrieved content better' generalizes across at least two different retrieval granularities, even though the two papers never test each other's setting. CiteGuard operates downstream of both, checking the generated answer's sentences against retrieved passages after generation rather than improving retrieval itself, and independently reduces the rate of unsupported claims [3].", "reference_numbers": [1, 2, 3]},
+      {"key": "methodology_landscape", "title": "Methodology Landscape", "content": "ChunkRank's reranking model is trained/applied independently of the base retriever, making it a composable add-on [1]. LongMem's compressive memory instead modifies the retrieval loop's internal state across steps, which is a more invasive integration than a bolt-on reranker [2]. CiteGuard makes no retrieval-time changes at all -- it is a strictly post-hoc check, which means it can in principle be layered on top of either ChunkRank or LongMem without conflicting with either's own mechanism [3], though none of the three papers actually tests that combination.", "reference_numbers": [1, 2, 3]},
+      {"key": "contradictions_open_debates", "title": "Contradictions & Open Debates", "content": "Each paper reports its own accuracy-vs-cost trade-off in isolation and none quantifies whether the gain is worth the cost relative to the others: LongMem's added latency is described as 'noticeably higher' without a comparable baseline number [2], while CiteGuard's added cost is a full extra inference pass per answer [3]. This is a methodological gap rather than a direct contradiction between the papers -- they simply made different, individually-justified choices about what to measure.", "reference_numbers": [2, 3]},
+      {"key": "gap_analysis", "title": "Gap Analysis", "content": "No paper in this set evaluates on non-English text [1][2][3]. No paper tests its method against more than one question-difficulty class at once (ChunkRank: single-hop only; LongMem: multi-hop only; CiteGuard's verification: not tested on multi-hop answers at all). Critically, no paper measures the combined effect of layering more than one of these three techniques together, despite the Methodology Landscape section above noting they are architecturally composable.", "reference_numbers": [1, 2, 3]},
+      {"key": "future_research_directions", "title": "Future Research Directions", "content": "The clearest concrete opportunity is evaluating CiteGuard's verification step specifically against LongMem-produced multi-hop answers, directly testing the composability the Methodology Landscape section identified but no paper measured [2][3]. A second, separate direction is a joint accuracy-vs-latency benchmark across all three techniques on a shared task, so a practitioner could compare trade-offs on common ground rather than across three independently-chosen evaluation setups. Independent of the papers, practitioner reports of chunk-ranking's production impact suggest this line of work already has real deployment relevance, reinforcing why closing the composability gap matters [4].", "reference_numbers": [2, 3, 4]},
+      {"key": "conclusion", "title": "Conclusion", "content": "These three papers are best read as complementary interventions at different pipeline stages rather than competing solutions -- the open question this review surfaces is not which technique is best, but whether they compose, a question none of the source papers answers.", "reference_numbers": []}
+    ]
+  },
+  "expected": {
+    "hard_failures": [],
+    "dimension_labels": {
+      "citation_correctness": {"label": "pass", "rationale": "Each [N] marker is attached to a claim its reference actually makes -- e.g. [2] LongMem is cited only for multi-hop accuracy/added latency, never for anything about verification or reranking."},
+      "groundedness": {"label": "pass", "rationale": "All claims (accuracy direction, relative cost framing, English-only scope, architectural composability as a claim about design, not a tested result) trace directly to abstract text or are explicitly framed as the report's own untested inference, not asserted as a finding."},
+      "synthesis_quality": {"label": "pass", "rationale": "Methodology Landscape and Thematic Findings both compare the three papers against each other by theme/mechanism (granularity of intervention, composability) rather than listing each paper's contribution in isolation."},
+      "analytical_quality": {"label": "pass", "rationale": "Gap Analysis (no cross-technique composability measurement) is turned into a specific, non-duplicate proposal in Future Research Directions (a joint accuracy-vs-latency benchmark; testing CiteGuard against LongMem's own output) -- the two sections make distinct claims."},
+      "template_fit": {"label": "pass", "rationale": "Analytical-appropriate: no term is over-explained (no definition of 'retrieval' or 'faithfulness' the way the foundational version has), but the report still balances explanation with cross-paper synthesis rather than assuming expert-level familiarity."},
+      "coherence": {"label": "pass", "rationale": "No sentence is repeated verbatim across sections; each section's claims build on, rather than restate, the previous section's (Contradictions references the trade-offs Methodology Landscape set up; Future Research Directions references the composability gap Gap Analysis named)."},
+      "source_balance": {"label": "pass", "rationale": "All three papers appear in comparative roles across multiple sections; the single web source supports one specific claim in Future Research Directions rather than substituting for a paper citation anywhere."}
+    }
+  },
+  "human_annotations": [],
+  "notes": "Baseline 'good' fixture, analytical template. Shares the exact same 3 papers + 1 web article as good_foundational.json and good_expert.json. Compared to the foundational version, no term is defined and the comparative claims are more specific (e.g. explicit composability argument in Methodology Landscape) -- this is the intended analytical-vs-foundational contrast a template-fit judge should be able to detect. All source evidence is synthetic and hand-written."
+}
