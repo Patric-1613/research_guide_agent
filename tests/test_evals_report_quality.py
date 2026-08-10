@@ -506,6 +506,101 @@ class TestSuiteBehavior:
             rq.run_experiment(mode="banana")
 
 
+class TestR6C2bAdjudicatedGoodFixtures:
+    """R6C.2b corrected demonstrably unsupported/under-cited prose in the
+    three clean baseline fixtures after live judge runs 2 and 3 found
+    real citation/grounding defects despite their 'pass' expected
+    labels. These regression tests pin the corrected factual/citation
+    relationships directly (never whole paragraphs byte-for-byte), so a
+    future edit that reintroduces one of the same defect patterns fails
+    loudly instead of silently regressing a fixture the suite already
+    trusts.
+    """
+
+    @staticmethod
+    def _report(example_id):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == example_id)
+        return example.inputs["generated_report"]
+
+    def test_citeguard_is_never_credited_with_an_accuracy_claim(self):
+        removed_phrases = (
+            "all three papers report an accuracy improvement",
+            "each reports a measured accuracy gain",
+            "each isolates its own accuracy/cost trade-off",
+        )
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            report = self._report(example_id)
+            for key in ("executive_summary", "contradictions_open_debates", "limitations"):
+                content_lower = report[key]["content"].lower()
+                for phrase in removed_phrases:
+                    assert phrase not in content_lower, (
+                        f"{example_id}.{key} still contains the removed phrase {phrase!r}"
+                    )
+            # CiteGuard's own reported benefit (unsupported-claim reduction) must appear
+            # somewhere the fixture discusses it, rather than being folded into "accuracy".
+            exec_summary = report["executive_summary"]["content"]
+            if "CiteGuard" in exec_summary:
+                assert "unsupported claims" in exec_summary or "benefit" in exec_summary
+
+    def test_no_fixture_claims_longmem_has_the_greatest_latency_of_three(self):
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            report = self._report(example_id)
+            for section in report.values():
+                if not isinstance(section, dict) or "content" not in section:
+                    continue
+                content = section["content"].lower()
+                assert "most noticeable latency of the three" not in content
+                assert "greatest latency" not in content
+
+    def test_no_fixture_calls_chunkrank_a_separate_relevance_model(self):
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            report = self._report(example_id)
+            for section in report.values():
+                if not isinstance(section, dict) or "content" not in section:
+                    continue
+                content = section["content"]
+                assert "separate relevance model" not in content
+                assert "reranking model is trained" not in content
+
+    def test_good_foundational_methodology_landscape_cites_chunkrank_for_the_longmem_contrast(self):
+        report = self._report("good_foundational")
+        content = report["methodology_landscape"]["content"]
+        assert "Unlike ChunkRank" in content
+        assert "[1][2]" in content
+
+    def test_good_foundational_future_directions_cites_longmem_and_chunkrank_by_number(self):
+        report = self._report("good_foundational")
+        for key in ("future_research_directions", "future_scope"):
+            section = report[key]
+            assert section["reference_numbers"] == [1, 2, 3, 4]
+            assert "[2][3]" in section["content"]
+            assert "[1][4]" in section["content"]
+
+    def test_good_foundational_thematic_findings_does_not_reduce_longmem_to_better_passages(self):
+        report = self._report("good_foundational")
+        for key in ("thematic_findings", "findings"):
+            content = report[key]["content"]
+            assert "getting better passages to the generation model" not in content
+            assert "better information to work with" in content
+
+    def test_adjudicated_fixtures_still_have_zero_hard_failures(self):
+        result = rq.run_experiment(mode="mock")
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            entry = next(pe for pe in result.per_example if pe["example_id"] == example_id)
+            assert entry["prediction"]["hard_failures"] == []
+            assert entry["prediction"]["structural_integrity"]["status"] == "pass"
+
+    def test_adjudication_note_is_recorded_without_changing_expected_labels(self):
+        examples = rq.load_report_quality_examples()
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            example = next(e for e in examples if e.id == example_id)
+            assert "R6C.2b" in example.metadata["fixture_notes"]
+            assert "R6C.2b" in example.metadata["notes"]
+            labels = example.outputs["expected_dimension_labels"]
+            assert all(dim["label"] == "pass" for dim in labels.values())
+
+
 class TestCli:
     def test_list_suites_includes_report_quality(self, capsys):
         exit_code = cli.main(["list-suites"])
