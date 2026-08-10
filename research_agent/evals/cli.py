@@ -37,6 +37,11 @@ SUITES: dict[str, dict[str, Any]] = {
         "module": "research_agent.evals.runners.run_chat_relevance",
         "results_csv": "chat_relevance_history.csv",
     },
+    "report_quality": {
+        "description": "Deterministic report structural/citation checks against synthetic fixtures (R6B). No live mode yet (R6C).",
+        "module": "research_agent.evals.runners.run_report_quality",
+        "results_csv": "report_quality_history.csv",
+    },
 }
 
 

@@ -30,13 +30,28 @@ policy — this file is a short local index.
   directly by root `README.md`'s "Search-call parallelization" section.
   **Tracked.** No script currently reproduces it — see
   `docs/evaluation.md`'s "Latency measurement" note.
+- `report_quality_history.csv` — current running log, appended to by
+  every `uv run python -m research_agent.evals.cli run --suite
+  report_quality` run. As of R6B, **mock is the only mode** —
+  deterministic structural/citation checks against the fixtures in
+  `eval_data/report_quality/`, no OpenAI calls, no qualitative judge
+  score. `--mode live` fails cleanly with exit code 2 (no CSV/detail
+  side effects) until R6C adds it. **Tracked**, same expected-modified
+  behavior and same 11-column header shape as the other suite logs
+  above. `run_id` correlates each row to its per-example detail file in
+  `runs/` below. See `specs/report-quality-evaluation-plan.md` for the
+  frozen result schema/hard-failure identifiers this suite's
+  `prediction` follows.
 - `runs/` — per-run detail artifacts. From `ragas_eval.py`
-  (`run_<id>.json` + `raw_<timestamp>.jsonl`), and, as of R7E.1, from
-  the `chat_relevance` suite (`chat_relevance_run_<run_id>.json`, one
-  per mock or live run, holding the full per-candidate debug record).
-  **Not tracked** (`.gitignore`d as of Phase 15) — reviewed locally;
-  growing without bound is expected, and isn't meant to accumulate in
-  git history the way the history CSVs above do.
+  (`run_<id>.json` + `raw_<timestamp>.jsonl`), from the `chat_relevance`
+  suite (`chat_relevance_run_<run_id>.json`, R7E.1), and, as of R6B,
+  from the `report_quality` suite (`report_quality_run_<run_id>.json`,
+  one per mock run, holding each fixture's full structural-check
+  prediction — `structural_integrity`, `informational_signals`,
+  `warnings` — plus the fixture-agreement evaluator's result). **Not
+  tracked** (`.gitignore`d as of Phase 15) — reviewed locally; growing
+  without bound is expected, and isn't meant to accumulate in git
+  history the way the history CSVs above do.
 - `archive/` — historical/manual before-after snapshots of the two
   history CSVs above, kept as comparison points for specific past
   experiments. **Tracked.** See `archive/README.md` for what each one

@@ -1,11 +1,26 @@
-# Report quality evaluation fixtures (R6A)
+# Report quality evaluation fixtures (R6A/R6B)
 
-Fixtures for the future `report_quality` eval suite (R6B onward). See
+Fixtures for the `report_quality` eval suite. See
 `specs/report-quality-evaluation-plan.md` for the full frozen design
 (result schema, hard-failure identifiers, informational signals, judge
-strategy, R6D/pairwise design). **This directory contains fixtures
-only — no evaluator or runner code exists yet.** `research_agent/`,
-`tests/`, and `eval_results/` are all untouched by R6A.
+strategy, R6D/pairwise design).
+
+**R6B (deterministic/mock, complete)**: `research_agent/evals/
+runners/run_report_quality.py` + `research_agent/evals/evaluators/
+report_quality.py` implement all 6 frozen hard-failure checks plus
+informational signals against these fixtures — offline, free,
+independent of R4, no OpenAI calls. Run it:
+
+```bash
+uv run python -m research_agent.evals.cli run --suite report_quality
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --tags security
+uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --subset 3
+```
+
+`--mode live` is not implemented yet — it fails cleanly (exit 2, no
+traceback, no CSV/detail side effects) until R6C adds the two bounded
+live judge tasks (claim/source + holistic). See `tests/
+test_evals_report_quality.py` for the harness's own test coverage.
 
 ## Layout
 

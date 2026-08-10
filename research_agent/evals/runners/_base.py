@@ -189,6 +189,7 @@ def run_suite(
     subset: int | None = None,
     tags: list[str] | None = None,
     skip_if: Callable[[Example], str | None] | None = None,
+    examples: list[Example] | None = None,
 ) -> SuiteResult:
     """Runs one suite end-to-end: load -> predict -> evaluate -> aggregate.
 
@@ -207,8 +208,20 @@ def run_suite(
     see run_chat_relevance.py's own skip_if). Skipped examples still
     appear in per_example, tagged `"skipped": True`, so a run's output
     always accounts for every loaded example.
+
+    R6B: `examples`, if given, is used directly instead of loading
+    `dataset_file` via `load_examples` -- lets a suite whose fixtures
+    don't fit the flat-JSONL shape (e.g. report_quality's manifest +
+    individual JSON fixture files, see run_report_quality.py's own
+    loader) reuse this exact predict -> evaluate -> aggregate loop
+    without forking it. `dataset_file` still doubles as the human-
+    readable label in the log line below either way; tag/subset
+    filtering for a caller passing `examples` is expected to already
+    have happened before this call, so `subset`/`tags` are simply
+    unused in that case (not re-applied here).
     """
-    examples = load_examples(dataset_file, subset=subset, tags=tags)
+    if examples is None:
+        examples = load_examples(dataset_file, subset=subset, tags=tags)
     logger.info("suite=%s mode=%s loaded %d examples from %s", suite, mode, len(examples), dataset_file)
 
     passed = 0
