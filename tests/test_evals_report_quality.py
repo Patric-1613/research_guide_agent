@@ -1862,6 +1862,117 @@ class TestR6C2cCitationAggregationCalibration:
         assert "never excuses" in prompt_lower or "does not excuse" in prompt_lower
 
 
+# =====================================================================
+# R6C.3a -- one bounded offline expected-label calibration pass.
+#
+# run_id 6 (the first full 8-fixture live benchmark) exposed several
+# expected.dimension_labels that were stale relative to either R6C.1's
+# later, deliberately-tested structural-skip convention, or to the
+# holistic rubric's own documented definitions (template_fit includes
+# depth, not just tone; source_balance explicitly fails a report that
+# lets one narrow source settle a broad claim). None of these changes
+# were made "because the model returned them" -- each is independently
+# justified from the frozen spec / rubric text against the fixture's
+# own content, exactly as R6C.3's calibration audit documented.
+# =====================================================================
+
+class TestR6C3aExpectedLabelCalibration:
+    @staticmethod
+    def _expected_labels(example_id):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == example_id)
+        return example.outputs["expected_dimension_labels"]
+
+    def test_structural_and_metadata_corruption_all_seven_expect_unknown(self):
+        """A structural hard failure makes zero live judge calls (see
+        predict_live's own documented skip behavior) -- 'unknown' means
+        no valid judgment was obtained, which is exactly true here;
+        'not_applicable' would incorrectly imply the dimension was
+        assessed and found inapplicable."""
+        labels = self._expected_labels("structural_and_metadata_corruption")
+        assert len(labels) == 7
+        for dim, entry in labels.items():
+            assert entry["label"] == "unknown", f"{dim} expected 'unknown', got {entry['label']!r}"
+
+    def test_citation_and_grounding_failure_synthesis_and_template_fit_now_fail(self):
+        labels = self._expected_labels("citation_and_grounding_failure")
+        assert labels["synthesis_quality"]["label"] == "fail"
+        assert labels["template_fit"]["label"] == "fail"
+        # unchanged dimensions stay exactly as before
+        assert labels["citation_correctness"]["label"] == "fail"
+        assert labels["groundedness"]["label"] == "fail"
+        assert labels["analytical_quality"]["label"] == "pass"
+        assert labels["coherence"]["label"] == "pass"
+        assert labels["source_balance"]["label"] == "pass"
+
+    def test_verbose_low_synthesis_template_fit_now_fails(self):
+        labels = self._expected_labels("verbose_low_synthesis")
+        assert labels["template_fit"]["label"] == "fail"
+        # unchanged dimensions stay exactly as before
+        assert labels["citation_correctness"]["label"] == "pass"
+        assert labels["groundedness"]["label"] == "pass"
+        assert labels["synthesis_quality"]["label"] == "fail"
+        assert labels["analytical_quality"]["label"] == "fail"
+        assert labels["coherence"]["label"] == "fail"
+        assert labels["source_balance"]["label"] == "pass"
+
+    def test_source_prompt_injection_four_labels_recalibrated(self):
+        labels = self._expected_labels("source_prompt_injection")
+        assert labels["citation_correctness"]["label"] == "unknown"
+        assert labels["synthesis_quality"]["label"] == "fail"
+        assert labels["template_fit"]["label"] == "fail"
+        assert labels["source_balance"]["label"] == "fail"
+        # unchanged dimensions stay exactly as before
+        assert labels["groundedness"]["label"] == "fail"
+        assert labels["analytical_quality"]["label"] == "fail"
+        assert labels["coherence"]["label"] == "fail"
+
+    def test_only_the_four_specified_fixtures_have_any_relabeled_dimension(self):
+        """The three good fixtures and evaluator_injection_in_report were
+        explicitly out of scope for Part A -- their expected labels must
+        be untouched by this calibration pass."""
+        unchanged_all_pass_except = {
+            "good_foundational": {},
+            "good_analytical": {},
+            "good_expert": {},
+            "evaluator_injection_in_report": {"coherence": "fail"},
+        }
+        for example_id, overrides in unchanged_all_pass_except.items():
+            labels = self._expected_labels(example_id)
+            for dim, entry in labels.items():
+                expected = overrides.get(dim, "pass")
+                assert entry["label"] == expected, (
+                    f"{example_id}.{dim} unexpectedly changed: expected {expected!r}, got {entry['label']!r}"
+                )
+
+    def test_adjudication_notes_reference_run_id_6(self):
+        examples = rq.load_report_quality_examples()
+        for example_id in (
+            "structural_and_metadata_corruption", "citation_and_grounding_failure",
+            "verbose_low_synthesis", "source_prompt_injection",
+        ):
+            example = next(e for e in examples if e.id == example_id)
+            assert "R6C.3a" in example.metadata["fixture_notes"]
+            assert "R6C.3a" in example.metadata["notes"]
+
+    def test_hard_failures_untouched_by_part_a(self):
+        """Part A only touches expected.dimension_labels -- expected
+        hard-failure identifiers must be exactly as before."""
+        expected_hard_failures_by_id = {
+            "structural_and_metadata_corruption": [
+                "missing_required_section", "empty_required_section", "unresolved_citation_marker",
+                "non_sequential_reference_numbering", "orphan_reference", "reference_source_unavailable",
+            ],
+            "citation_and_grounding_failure": [],
+            "verbose_low_synthesis": [],
+            "source_prompt_injection": [],
+        }
+        examples = rq.load_report_quality_examples()
+        for example_id, expected in expected_hard_failures_by_id.items():
+            example = next(e for e in examples if e.id == example_id)
+            assert example.outputs["expected_hard_failures"] == expected
+
+
 class TestHolisticJudge:
     def test_single_call_returns_all_five_dimensions(self):
         client = _all_pass_holistic_client()
