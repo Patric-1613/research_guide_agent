@@ -595,6 +595,29 @@ class TestR6C2bAdjudicatedGoodFixtures:
             assert section["reference_numbers"] == [1, 2, 3]
             assert "ChunkRank and LongMem each report an accuracy improvement [1]" in section["content"]
 
+    def test_good_foundational_longmem_latency_clause_has_no_unsupported_baseline(self):
+        """Run_id 5 (commit ff67113) found LongMem's latency clause
+        incorrectly attached 'than a single-hop baseline' -- LongMem's
+        abstract ties that baseline comparison only to its accuracy
+        clause ('improves accuracy over single-hop retrieval baselines'),
+        never to its latency clause ('adds noticeably higher inference
+        latency due to the memory compression step'). Only
+        good_foundational made this specific attribution error;
+        good_analytical already hedges it correctly ('without a
+        comparable baseline number') and good_expert never attaches a
+        baseline to latency at all -- neither needed a fix."""
+        for example_id in ("good_foundational", "good_analytical", "good_expert"):
+            report = self._report(example_id)
+            for section in report.values():
+                if not isinstance(section, dict) or "content" not in section:
+                    continue
+                assert "latency than a single-hop baseline" not in section["content"]
+
+        report = self._report("good_foundational")
+        for key in ("contradictions_open_debates", "limitations"):
+            content = report[key]["content"]
+            assert "LongMem's memory compression step adds noticeably higher latency [2]" in content
+
     def test_adjudicated_fixtures_still_have_zero_hard_failures(self):
         result = rq.run_experiment(mode="mock")
         for example_id in ("good_foundational", "good_analytical", "good_expert"):
