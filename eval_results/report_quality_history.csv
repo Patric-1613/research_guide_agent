@@ -1,3 +1,4 @@
 run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 1,2026-08-10T11:16:14.372722+00:00,9430013,report_quality,mock,8,8,0,1.0,,R6B deterministic baseline | mean_latency_ms=0.1
 2,2026-08-10T12:51:32.569122+00:00,cf60191,report_quality,live,1,0,1,0.5,,R6C.2 smoke | mean_latency_ms=35315.4
+3,2026-08-10T14:46:50.330328+00:00,bf8541d,report_quality,live,1,0,1,0.5,,R6C.2a smoke after claim-classification fix | mean_latency_ms=35395.8
