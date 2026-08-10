@@ -972,6 +972,80 @@ R6A's own "R6 controls no runtime behavior at all" decision requires.
 R4's own in-generation `evaluate_report` gate remains completely
 separate and untouched by any of R6C's work.
 
+## R6D.1 — pairwise refinement-effectiveness fixture schema (2026-08-11) — complete, schema/fixtures only
+
+R6C measures ONE report independently across its 7 frozen dimensions.
+R6D asks a different question: **does refinement actually help** — by
+comparing an unrefined draft against a bounded refined report, same
+topic/template/evidence, and measuring *direction* per dimension
+(`improved`/`unchanged`/`regressed`/`unknown`), never a single overall
+score or winner. **R6D.1 is schema/fixtures/loader only** — no live
+judges, no mock/live CLI suite registration, no pairwise aggregation,
+no call into `research_agent.report`'s generation/evaluation/revision
+functions, no result CSV. **No claim is made that refinement is
+effective** — that is exactly what a later R6D phase has to measure,
+not assume going in.
+
+**Pair schema** (`schema_version: "r6d1-v1"`, `eval_data/report_
+refinement/`): `draft_report`/`refined_report` reuse the real stored
+report-dict shape R6A/R6C already validated, with `selected_papers`/
+`approved_web_articles` shared once at the pair level (never
+duplicated per report). `expected.hard_failure_direction` plus a
+`dimension_directions` block giving each of R6C's 7 dimensions its own
+`{direction, rationale}` — and, deliberately, **no
+`overall_direction`, `overall_score`, `accept_refinement`, or `winner`
+field anywhere** (the loader actively rejects a fixture that adds
+one). See `eval_data/report_refinement/README.md` for the full schema
+and all 14 enforced pair invariants (unique/matching id, exact schema
+version, path containment, template agreement across the pair and
+both reports, canonical section order, structural validity linked to
+`hard_failure_direction`, complete non-empty per-dimension rationale,
+`revision_applied` matching real report equality/inequality, and no
+fixture-answer-key text leaking into report content).
+
+**7 fixtures**, a fresh, compact, two-paper synthetic evidence pool
+(SpanCite, DriftGuard, distinct from R6A/R6C's ChunkRank/LongMem/
+CiteGuard set) covering all three templates: `clear_grounding_
+improvement` (groundedness improved via an accurate restatement of an
+overclaim), `holistic_synthesis_improvement` (synthesis_quality/
+analytical_quality/coherence improved via genuine cross-source
+comparison, including a grouped `[1][2]` citation), `justified_no_
+revision` (revision_applied=false, byte-identical reports, all 7
+unchanged), `cosmetic_rewrite_tie` (revision_applied=true, reworded
+prose, all 7 unchanged — different wording is not automatically
+improvement), `citation_regression` (citation_correctness/groundedness
+regressed via a silent misattribution), `mixed_tradeoff`
+(synthesis_quality/coherence improved, groundedness regressed via an
+added overclaim — a genuine tradeoff, no winner field), and
+`structural_regression` (`hard_failure_direction=regressed`, all 7
+judge-dependent directions `unknown` — a stripped citation marker
+orphans the only reference, gating off fair comparison entirely, per
+R6C's own hard-failure convention).
+
+**Loader**: `research_agent/evals/report_refinement_inputs.py` —
+manifest+fixture loading, all 14 invariants, `check_structural_
+validity` (an independent copy of R6A/R6B's 6 hard-failure checks,
+never imports `run_report_quality.py`), `reports_are_equal`/`diff_
+report_sections` (deterministic equality/diff helpers for R6D.2), and
+the canonical `REQUIRED_DIMENSION_NAMES`/`VALID_DIRECTIONS`/`VALID_
+TEMPLATES` constants R6D.2 will reuse rather than redefine. Raises
+`ReportRefinementFixtureError`. Never mutates a loaded fixture dict —
+every field on a returned `RefinementPairExample` is a deep copy.
+
+**Validation**: `tests/test_evals_report_refinement.py` → 58 passed
+(manifest/path integrity, path-traversal rejection, schema-version/
+template-mismatch rejection, dimension completeness, direction/
+rationale validation, the `revision_applied` ↔ report-equality
+invariant in both directions, structural-regression declaration
+enforcement, canonical section ordering, no-mutation, per-fixture
+directional-intent pinning, and a direct no-OpenAI-import/no-network
+guarantee). Full backend suite → 1030 passed.
+
+**R6D.2 (deterministic/mock pair runner) is next** — actually running
+R6B's deterministic checks and/or R6C's live judges against both
+halves of a pair and computing real directions. Nothing in R6D.1 is
+wired into any CLI suite, `eval_results/`, or runtime behavior.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

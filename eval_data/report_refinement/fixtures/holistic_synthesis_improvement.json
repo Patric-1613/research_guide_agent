@@ -1,0 +1,343 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "holistic_synthesis_improvement",
+  "topic": "Comparing citation grounding and topic-drift filtering for RAG",
+  "template": "analytical",
+  "selected_papers": [
+    {
+      "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+      "authors": [
+        "R. Okonkwo",
+        "M. Delacroix"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "We propose SpanCite, a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted. On a long-document QA benchmark, SpanCite reduces the rate of unsupported claims in generated answers, at the cost of a small added latency overhead from the constrained decoding step. All experiments use English-language documents.",
+      "url": "https://papers.example.com/spancite-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "spancite-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/spancite-2024"
+      }
+    },
+    {
+      "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+      "authors": [
+        "S. Iyer"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "DriftGuard is a lightweight classifier that flags when a multi-turn conversation's retrieved passages have drifted from the conversation's original topic, filtering drifted passages out before they reach generation. On a multi-turn retrieval benchmark, DriftGuard improves retrieval precision over a baseline that re-retrieves without drift filtering. Evaluation is limited to English-language conversations.",
+      "url": "https://papers.example.com/driftguard-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "driftguard-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/driftguard-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [],
+  "draft_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "This review covers two techniques for improving retrieval-augmented generation: sentence-level citation grounding and multi-turn topic-drift filtering.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers exactly two papers: SpanCite, which grounds generated sentences to source spans, and DriftGuard, which filters drifted passages in multi-turn retrieval. No broader survey is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite constrains decoding so that each generated sentence is traceable to a source span [1]. DriftGuard filters out retrieved passages that have drifted from a conversation's topic before generation [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite operates at generation time, checking each sentence as it is produced [1]. DriftGuard operates at retrieval time, classifying passages before they reach the generator [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "SpanCite and DriftGuard do not contradict each other, since they address different points in the pipeline.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "Neither paper evaluates non-English text or reports results outside its own single benchmark [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "future_research_directions": {
+      "content": "Future work should evaluate non-English text and report results outside a single benchmark, for both SpanCite and DriftGuard [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "conclusion": {
+      "content": "This review covered SpanCite and DriftGuard as two techniques for improving retrieval-augmented generation.",
+      "reference_numbers": []
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      },
+      {
+        "number": 2,
+        "kind": "paper",
+        "paper_id": "driftguard-2024",
+        "url": null,
+        "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+        "formatted": "Iyer, S. (2024). DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval. arXiv preprint. https://papers.example.com/driftguard-2024",
+        "link_url": "https://papers.example.com/driftguard-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers two techniques for improving retrieval-augmented generation: sentence-level citation grounding and multi-turn topic-drift filtering.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "This review covers exactly two papers: SpanCite, which grounds generated sentences to source spans, and DriftGuard, which filters drifted passages in multi-turn retrieval. No broader survey is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite constrains decoding so that each generated sentence is traceable to a source span [1]. DriftGuard filters out retrieved passages that have drifted from a conversation's topic before generation [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite operates at generation time, checking each sentence as it is produced [1]. DriftGuard operates at retrieval time, classifying passages before they reach the generator [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "SpanCite and DriftGuard do not contradict each other, since they address different points in the pipeline.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "Neither paper evaluates non-English text or reports results outside its own single benchmark [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "Future work should evaluate non-English text and report results outside a single benchmark, for both SpanCite and DriftGuard [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "This review covered SpanCite and DriftGuard as two techniques for improving retrieval-augmented generation.",
+        "reference_numbers": []
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "This review covers two techniques for improving retrieval-augmented generation: sentence-level citation grounding and multi-turn topic-drift filtering.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers exactly two papers: SpanCite, which grounds generated sentences to source spans, and DriftGuard, which filters drifted passages in multi-turn retrieval. No broader survey is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be caught both after generation, by checking sentences (SpanCite), and before it, by checking passages (DriftGuard) [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite operates at generation time, checking each sentence as it is produced [1]. DriftGuard operates at retrieval time, classifying passages before they reach the generator [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "SpanCite and DriftGuard do not contradict each other, since they address different points in the pipeline.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "Neither paper evaluates non-English text or reports results outside its own single benchmark [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "future_research_directions": {
+      "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite checks sentences after, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "conclusion": {
+      "content": "This review covered SpanCite and DriftGuard as two techniques for improving retrieval-augmented generation.",
+      "reference_numbers": []
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      },
+      {
+        "number": 2,
+        "kind": "paper",
+        "paper_id": "driftguard-2024",
+        "url": null,
+        "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+        "formatted": "Iyer, S. (2024). DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval. arXiv preprint. https://papers.example.com/driftguard-2024",
+        "link_url": "https://papers.example.com/driftguard-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers two techniques for improving retrieval-augmented generation: sentence-level citation grounding and multi-turn topic-drift filtering.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "This review covers exactly two papers: SpanCite, which grounds generated sentences to source spans, and DriftGuard, which filters drifted passages in multi-turn retrieval. No broader survey is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be caught both after generation, by checking sentences (SpanCite), and before it, by checking passages (DriftGuard) [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite operates at generation time, checking each sentence as it is produced [1]. DriftGuard operates at retrieval time, classifying passages before they reach the generator [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "SpanCite and DriftGuard do not contradict each other, since they address different points in the pipeline.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "Neither paper evaluates non-English text or reports results outside its own single benchmark [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite checks sentences after, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "This review covered SpanCite and DriftGuard as two techniques for improving retrieval-augmented generation.",
+        "reference_numbers": []
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": true,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Draft's Thematic Findings is two isolated, parallel sentences (no cross-paper relation) and Future Research Directions restates Gap Analysis almost verbatim. Refined adds a genuine cross-source comparison (with a grouped [1][2] citation) and a distinct, concrete combination proposal -- both edits use only the same two sources' existing abstracts, no new claim beyond what SpanCite/DriftGuard already establish."
+  },
+  "expected": {
+    "hard_failure_direction": "unchanged",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unchanged",
+        "rationale": "Every citation in the refined thematic_findings/future_research_directions sentences (including the grouped [1][2] markers) genuinely, relevantly supports the specific half of the comparison it's attached to -- SpanCite's abstract for the after-generation sentence-check claim, DriftGuard's for the before-generation passage-filter claim -- so citation_correctness was, and remains, satisfied."
+      },
+      "groundedness": {
+        "direction": "unchanged",
+        "rationale": "The refined sentences add relational framing ('together they suggest...', 'a pipeline could plausibly run...') without adding a number, mechanism, or metric beyond what SpanCite's and DriftGuard's abstracts already establish; both versions' factual content is equally well-grounded."
+      },
+      "synthesis_quality": {
+        "direction": "improved",
+        "rationale": "The draft's Thematic Findings is two isolated, parallel sentences with no stated relation between the two methods; the refined version explicitly compares their pipeline stages and states what they collectively imply -- the difference between a listing and a synthesis."
+      },
+      "analytical_quality": {
+        "direction": "improved",
+        "rationale": "The draft's Future Research Directions restates Gap Analysis's non-English/single-benchmark point almost verbatim; the refined version keeps that point in Gap Analysis only and proposes a distinct, concrete combination experiment in Future Research Directions instead."
+      },
+      "template_fit": {
+        "direction": "unchanged",
+        "rationale": "Both versions match the analytical template's expected balance of explanation and cross-source synthesis in depth/tone; the refined version's improvement is in synthesis substance, which was already at an adequate depth either way."
+      },
+      "coherence": {
+        "direction": "improved",
+        "rationale": "The draft's Future Research Directions duplicating Gap Analysis is exactly the kind of cross-section repetition the coherence dimension penalizes; removing that duplication improves coherence independent of the synthesis_quality change."
+      },
+      "source_balance": {
+        "direction": "unchanged",
+        "rationale": "SpanCite and DriftGuard are cited a comparable number of times in both versions; the refined version's added citations reuse the same two sources more precisely, not a shift in which source dominates."
+      }
+    }
+  }
+}

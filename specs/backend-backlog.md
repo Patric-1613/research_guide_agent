@@ -1492,45 +1492,96 @@ invented:
   `d0c4982`, `ff67113` (R6C.2/2a/2b/2c); `2544e4e`, `f0eea0a`,
   `3a14d6f`, `193b27c` (R6C.3/R6C.3a).
 
-### R6D: paired refinement-effectiveness evaluation
-- **Goal**: measure whether `research_agent/report.py`'s existing
-  refinement/revision step (`revise_report`,
-  `refine_report_if_requested`) actually improves report quality — not
-  assumed, measured — by comparing paired versions of the same report.
-- **Why it matters**: R4's own revision flow never re-evaluates after
-  revising (`final_score` is `None` post-revision by design), so
-  today there is no answer to "did the revision help" anywhere in the
-  system. R6C gives R6D a real, calibrated (if still synthetic-
-  benchmark-only) judge to build this comparison on top of.
+### R6D.1: pairwise refinement-effectiveness fixture schema and fixtures
+- **Goal**: freeze the pair schema and build the first synthetic pair
+  fixtures R6D.2+ will run judges against — schema/fixtures/loader
+  only, no judge, no aggregation, no runtime call.
+- **Why it matters**: R6D's eventual purpose is measuring whether
+  `research_agent/report.py`'s refinement/revision step
+  (`revise_report`, `refine_report_if_requested`) actually improves
+  report quality — not assumed, measured. Before that measurement can
+  happen, the *shape* of a pair comparison and a reviewable set of
+  synthetic pairs need to exist, the same "design + fixtures before
+  code" sequencing R6A used for R6B/R6C.
+- **Decision/what shipped**:
+  - Pair schema (`schema_version: "r6d1-v1"`): `draft_report`/
+    `refined_report` reuse the real stored report-dict shape R6A/R6C
+    already validated; `selected_papers`/`approved_web_articles`
+    shared once at the pair level (loader rejects a report that embeds
+    its own copy); `expected.hard_failure_direction` plus a per-
+    dimension `dimension_directions` block (`{direction, rationale}`
+    for each of R6C's 7 frozen dimensions) — direction is one of
+    `improved`/`unchanged`/`regressed`/`unknown`. **No
+    `overall_direction`, `overall_score`, `accept_refinement`, or
+    `winner` field anywhere** — the loader actively rejects a fixture
+    that adds one; those are calibration decisions for a later phase.
+  - `research_agent/evals/report_refinement_inputs.py` — manifest+
+    fixture loader, `ReportRefinementFixtureError`, and 14 enforced
+    pair invariants: unique/matching id, exact schema version, strict
+    path containment, template agreement (pair + both reports),
+    shared-evidence-only (no per-report duplication), canonical
+    8-section order (checked directly, not assumed), structural
+    validity linked to `hard_failure_direction` (an independent copy
+    of R6A/R6B's 6 hard-failure checks — never imports R6C's own
+    `run_report_quality.py`), every reference resolving in the shared
+    evidence pool, complete non-empty per-dimension rationale,
+    `revision_applied` matching real report equality/inequality in
+    both directions, and no fixture rationale text leaking verbatim
+    into report content. Also exports `reports_are_equal`/`diff_
+    report_sections` (deterministic helpers) and the canonical
+    `REQUIRED_DIMENSION_NAMES`/`VALID_DIRECTIONS`/`VALID_TEMPLATES`
+    constants for R6D.2 to reuse. Never mutates a loaded fixture dict.
+  - 7 fixtures under `eval_data/report_refinement/`, a fresh two-paper
+    synthetic evidence pool (SpanCite, DriftGuard — distinct from
+    R6A/R6C's ChunkRank/LongMem/CiteGuard set): `clear_grounding_
+    improvement`, `holistic_synthesis_improvement`, `justified_no_
+    revision`, `cosmetic_rewrite_tie`, `citation_regression`,
+    `mixed_tradeoff`, `structural_regression` — covering all 3
+    templates, paper+web evidence, a grouped `[1][2]` citation, and
+    every direction value at least once. See `eval_data/report_
+    refinement/README.md` for the per-fixture intended-direction table.
+  - See `docs/evaluation.md`'s "R6D.1" section for the full narrative.
+- **Location**: `research_agent/evals/report_refinement_inputs.py`
+  (new), `eval_data/report_refinement/` (new: `README.md`,
+  `manifest.jsonl`, `fixtures/*.json` ×7), `tests/test_evals_report_
+  refinement.py` (new, 58 tests), `eval_data/README.md` / `docs/
+  evaluation.md` / `specs/report-quality-evaluation-plan.md` (updated).
+  **No changes to any CLI suite registration, `research_agent/report.py`,
+  `research_agent/evals/runners/run_report_quality.py`, `research_
+  agent/evals/report_quality_inputs.py`, `research_agent/evals/
+  judges/`, `eval_results/`, `pyproject.toml`, or `uv.lock`.**
+- **Explicitly NOT part of this checkpoint**: no live judge of any
+  kind, no mock/live CLI suite, no pairwise aggregation/scoring, no
+  blinded A/B ordering or swap-order logic, no citation-integrity-
+  preservation check against a real revision, no result CSV. **No
+  claim that refinement is effective** — that is what R6D.2+ has to
+  measure, not assume.
+- **Priority**: n/a — done (R6D.2 is next).
+- **Status**: Closed (2026-08-11).
+
+### R6D.2+: deterministic/mock pair runner, live pairwise judging, blinded A/B ordering
+- **Goal**: actually run judges against both halves of an R6D.1 pair
+  and compute real directions — starting with a deterministic/mock
+  runner over the 7 fixtures (mirroring R6B's own "deterministic
+  first, live later" sequencing), then live pairwise judging.
 - **Required design** (frozen in `specs/report-quality-evaluation-
-  plan.md` §8, not yet built):
-  - Paired comparison: an **unrefined draft** vs. a **bounded refined
-    report**, same topic/template/evidence — never comparing across
-    different topics, templates, or evidence sets.
-  - Both the deterministic (R6B) and live judge (R6C) dimensions
-    recorded for each half of the pair, not just one summary number.
-  - Blinded A/B labels (the judge sees `Report A`/`Report B`, never
-    `draft`/`revised`), swapped order with both calls always made
-    (never cached/short-circuited), stable seeded ordering per
-    fixture/pair id, per-dimension A/B/tie (never one collapsed global
-    winner), `positional_disagreement` reported as its own metric.
-  - Citation-integrity preservation across a revision checked
-    deterministically (`_restore_dropped_citations` covers papers;
-    `revise_report`'s own docstring states web citations are **not**
-    restored the same way — R6D verifies both documented behaviors
-    hold, rather than assuming either).
-  - At least one human-labelled longer-but-not-better pair, reserved
-    for R6E, to catch a judge that defaults to preferring length.
-  - **No claim that refinement helps until actually measured** — R6D's
-    entire purpose is answering that question with evidence, not
-    assuming the answer either way going in.
-- **Location (not yet touched)**: new pairwise fixture schema and
-  harness under `eval_data/report_quality/` and `research_agent/
-  evals/`, presumably a new runner alongside `run_report_quality.py`
-  — not scoped in detail yet.
-- **Priority**: next, immediately after R6C's freeze.
-- **Status**: Open. Not started — design frozen in `specs/
-  report-quality-evaluation-plan.md` §8, no code, no pairwise fixtures.
+  plan.md` §8, not yet built): blinded A/B labels (the judge sees
+  `Report A`/`Report B`, never `draft`/`revised`), swapped order with
+  both calls always made (never cached/short-circuited), stable seeded
+  ordering per fixture/pair id, per-dimension A/B/tie (never one
+  collapsed global winner), `positional_disagreement` reported as its
+  own metric, citation-integrity preservation across a revision
+  checked deterministically (`_restore_dropped_citations` covers
+  papers; `revise_report`'s own docstring states web citations are
+  **not** restored the same way — R6D verifies both documented
+  behaviors hold, rather than assuming either), at least one human-
+  labelled longer-but-not-better pair reserved for R6E.
+- **Location (not yet touched)**: presumably a new runner alongside
+  `research_agent/evals/runners/run_report_quality.py`, consuming
+  `research_agent/evals/report_refinement_inputs.py`'s loader — not
+  scoped in detail yet.
+- **Priority**: next, immediately after R6D.1.
+- **Status**: Open. Not started.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts
 - **Goal**: close the gap `eval_data/report_quality/fixtures/

@@ -1,0 +1,366 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "mixed_tradeoff",
+  "topic": "Grounding retrieval-augmented answers: research and production perspectives",
+  "template": "expert",
+  "selected_papers": [
+    {
+      "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+      "authors": [
+        "R. Okonkwo",
+        "M. Delacroix"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "We propose SpanCite, a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted. On a long-document QA benchmark, SpanCite reduces the rate of unsupported claims in generated answers, at the cost of a small added latency overhead from the constrained decoding step. All experiments use English-language documents.",
+      "url": "https://papers.example.com/spancite-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "spancite-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/spancite-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [
+    {
+      "title": "Why Citation-Level Grounding Is Becoming Standard in Production RAG",
+      "url": "https://example.com/blog/citation-grounding-2026",
+      "snippet": "Teams deploying retrieval-augmented systems in production increasingly report that sentence-level citation checks catch a meaningful share of ungrounded claims before they reach users, at a modest added latency cost.",
+      "published_date": "2026-02-03",
+      "source_domain": "example.com"
+    }
+  ],
+  "draft_report": {
+    "report_template": "expert",
+    "executive_summary": {
+      "content": "This review considers SpanCite's research result on sentence-level citation grounding alongside a practitioner report on citation-level grounding in production RAG systems [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "introduction_scope": {
+      "content": "Scope: one research paper (SpanCite) and one practitioner article on citation grounding in retrieval-augmented generation. No broader survey of grounding methods is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite constrains decoding so that each generated sentence stays traceable to a source span, reducing unsupported claims on a long-document QA benchmark [1]. Separately, a practitioner report describes production teams finding that sentence-level citation checks catch a meaningful share of ungrounded claims before they reach users [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite's mechanism is a decoding-time constraint checked at each sentence boundary [1]. The practitioner report does not describe a specific mechanism, only that citation checks are used in production [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "The practitioner report and SpanCite do not contradict each other; the practitioner report simply corroborates, at a production scale, the same general direction SpanCite's benchmark result points toward [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "gap_analysis": {
+      "content": "SpanCite's own evaluation is limited to English-language documents and does not report absolute latency; the practitioner report does not specify which systems or scale it is drawn from [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "future_research_directions": {
+      "content": "A concrete opportunity is measuring SpanCite's constrained-decoding latency in absolute terms, directly addressing the gap above [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "Research and production perspectives on citation-level grounding point in the same general direction, though neither source in this review directly measures the other's setting [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      },
+      {
+        "number": 2,
+        "kind": "web",
+        "paper_id": null,
+        "url": "https://example.com/blog/citation-grounding-2026",
+        "title": "Why Citation-Level Grounding Is Becoming Standard in Production RAG",
+        "formatted": "Why Citation-Level Grounding Is Becoming Standard in Production RAG. example.com. 2026-02-03. https://example.com/blog/citation-grounding-2026",
+        "link_url": "https://example.com/blog/citation-grounding-2026"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review considers SpanCite's research result on sentence-level citation grounding alongside a practitioner report on citation-level grounding in production RAG systems [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Scope: one research paper (SpanCite) and one practitioner article on citation grounding in retrieval-augmented generation. No broader survey of grounding methods is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite constrains decoding so that each generated sentence stays traceable to a source span, reducing unsupported claims on a long-document QA benchmark [1]. Separately, a practitioner report describes production teams finding that sentence-level citation checks catch a meaningful share of ungrounded claims before they reach users [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite's mechanism is a decoding-time constraint checked at each sentence boundary [1]. The practitioner report does not describe a specific mechanism, only that citation checks are used in production [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "The practitioner report and SpanCite do not contradict each other; the practitioner report simply corroborates, at a production scale, the same general direction SpanCite's benchmark result points toward [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's own evaluation is limited to English-language documents and does not report absolute latency; the practitioner report does not specify which systems or scale it is drawn from [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete opportunity is measuring SpanCite's constrained-decoding latency in absolute terms, directly addressing the gap above [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "Research and production perspectives on citation-level grounding point in the same general direction, though neither source in this review directly measures the other's setting [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "expert",
+    "executive_summary": {
+      "content": "This review considers SpanCite's research result on sentence-level citation grounding alongside a practitioner report on citation-level grounding in production RAG systems [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "introduction_scope": {
+      "content": "Scope: one research paper (SpanCite) and one practitioner article on citation grounding in retrieval-augmented generation. No broader survey of grounding methods is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite and the practitioner report describe the same underlying idea at two different scales: SpanCite shows, in a controlled benchmark, that constraining each generated sentence to a traceable source span reduces unsupported claims, while the practitioner report shows the same general approach -- sentence-level citation checks -- catching ungrounded claims in live production systems [1][2]. Read together, they establish that sentence-level grounding checks are now the industry-standard best practice for retrieval-augmented systems [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite's mechanism is a decoding-time constraint checked at each sentence boundary [1]. The practitioner report does not describe a specific mechanism, only that citation checks are used in production [2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "The practitioner report and SpanCite do not contradict each other; the practitioner report simply corroborates, at a production scale, the same general direction SpanCite's benchmark result points toward [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "gap_analysis": {
+      "content": "SpanCite's own evaluation is limited to English-language documents and does not report absolute latency; the practitioner report does not specify which systems or scale it is drawn from [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "future_research_directions": {
+      "content": "A concrete opportunity is measuring SpanCite's constrained-decoding latency in absolute terms, directly addressing the gap above [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "Research and production perspectives on citation-level grounding point in the same general direction, though neither source in this review directly measures the other's setting [1][2].",
+      "reference_numbers": [
+        1,
+        2
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      },
+      {
+        "number": 2,
+        "kind": "web",
+        "paper_id": null,
+        "url": "https://example.com/blog/citation-grounding-2026",
+        "title": "Why Citation-Level Grounding Is Becoming Standard in Production RAG",
+        "formatted": "Why Citation-Level Grounding Is Becoming Standard in Production RAG. example.com. 2026-02-03. https://example.com/blog/citation-grounding-2026",
+        "link_url": "https://example.com/blog/citation-grounding-2026"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review considers SpanCite's research result on sentence-level citation grounding alongside a practitioner report on citation-level grounding in production RAG systems [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Scope: one research paper (SpanCite) and one practitioner article on citation grounding in retrieval-augmented generation. No broader survey of grounding methods is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite and the practitioner report describe the same underlying idea at two different scales: SpanCite shows, in a controlled benchmark, that constraining each generated sentence to a traceable source span reduces unsupported claims, while the practitioner report shows the same general approach -- sentence-level citation checks -- catching ungrounded claims in live production systems [1][2]. Read together, they establish that sentence-level grounding checks are now the industry-standard best practice for retrieval-augmented systems [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite's mechanism is a decoding-time constraint checked at each sentence boundary [1]. The practitioner report does not describe a specific mechanism, only that citation checks are used in production [2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "The practitioner report and SpanCite do not contradict each other; the practitioner report simply corroborates, at a production scale, the same general direction SpanCite's benchmark result points toward [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's own evaluation is limited to English-language documents and does not report absolute latency; the practitioner report does not specify which systems or scale it is drawn from [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete opportunity is measuring SpanCite's constrained-decoding latency in absolute terms, directly addressing the gap above [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "Research and production perspectives on citation-level grounding point in the same general direction, though neither source in this review directly measures the other's setting [1][2].",
+        "reference_numbers": [
+          1,
+          2
+        ]
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": true,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Refined Thematic Findings genuinely relates SpanCite's benchmark result and the practitioner report's production observation as the same idea at two scales (a real synthesis improvement over the draft's 'Separately...' juxtaposition), but adds a second sentence claiming sentence-level grounding is 'now the industry-standard best practice' -- a claim neither source supports (the web snippet says teams 'increasingly report' catching claims, not that this is a standard practice). Demonstrates a genuine tradeoff: synthesis/coherence improve, groundedness regresses, with no overall winner field to collapse the two into one number."
+  },
+  "expected": {
+    "hard_failure_direction": "unchanged",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unchanged",
+        "rationale": "Both [1] and [2] remain genuinely, relevantly attached to the claims they are cited for in every sentence, including the new second sentence -- each source still contributes its own real finding; per r6c2-citation-aggregation-v2 a source is not required to single-handedly certify a claim that goes further than it does, only to relevantly contribute, which both still do."
+      },
+      "groundedness": {
+        "direction": "regressed",
+        "rationale": "The refined Thematic Findings' second sentence claims sentence-level grounding checks are 'now the industry-standard best practice' -- neither SpanCite's benchmark result nor the practitioner report's 'teams increasingly report' language establishes an industry-wide standard-practice claim; this is a genuine overclaim beyond what either attached source supports."
+      },
+      "synthesis_quality": {
+        "direction": "improved",
+        "rationale": "The draft's Thematic Findings uses 'Separately' and presents SpanCite's result and the practitioner report as two independent observations; the refined version explicitly relates them as the same idea observed at two different scales (research benchmark vs. production deployment), which is genuine thematic synthesis the draft did not attempt."
+      },
+      "analytical_quality": {
+        "direction": "unchanged",
+        "rationale": "Gap Analysis and Future Research Directions are byte-identical between versions; the diagnostic-vs-prescriptive structure is unaffected by the Thematic Findings rewrite."
+      },
+      "template_fit": {
+        "direction": "unchanged",
+        "rationale": "Depth and tone remain expert-appropriate in both versions; the added overclaim is a groundedness defect, not a depth/tone mismatch for the template."
+      },
+      "coherence": {
+        "direction": "improved",
+        "rationale": "The refined version explicitly connects the research and production observations into one coherent narrative thread, rather than leaving them as two juxtaposed but unrelated sentences joined only by 'Separately'."
+      },
+      "source_balance": {
+        "direction": "unchanged",
+        "rationale": "Both sources are cited together in the same sentences in both versions; the overclaim regression does not shift which source dominates or is skipped."
+      }
+    }
+  }
+}

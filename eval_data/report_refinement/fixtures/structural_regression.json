@@ -1,0 +1,280 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "structural_regression",
+  "topic": "Sentence-level citation grounding for long-document question answering",
+  "template": "analytical",
+  "selected_papers": [
+    {
+      "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+      "authors": [
+        "R. Okonkwo",
+        "M. Delacroix"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "We propose SpanCite, a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted. On a long-document QA benchmark, SpanCite reduces the rate of unsupported claims in generated answers, at the cost of a small added latency overhead from the constrained decoding step. All experiments use English-language documents.",
+      "url": "https://papers.example.com/spancite-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "spancite-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/spancite-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [],
+  "draft_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "This review covers SpanCite, a decoding-time method for keeping generated sentences traceable to their source passages in long-document question answering.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers exactly one paper, SpanCite, chosen for its narrow, well-specified mechanism: a per-sentence traceability constraint applied during decoding. No broader survey of grounding methods is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite's central finding is that constraining decoding to require sentence-level traceability reduces the rate of unsupported claims on a long-document QA benchmark [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "The constraint is checked at each sentence boundary: a candidate sentence must be traceable to a specific retrieved span before it is emitted, or generation is redirected [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "With only one paper in scope, there is no cross-paper contradiction to report.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's latency cost in absolute terms [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A concrete next step is measuring SpanCite's constrained-decoding latency in absolute terms, since the paper reports only that some added cost exists [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "SpanCite offers a focused, single-mechanism approach to reducing unsupported claims in long-document answers [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers SpanCite, a decoding-time method for keeping generated sentences traceable to their source passages in long-document question answering.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "This review covers exactly one paper, SpanCite, chosen for its narrow, well-specified mechanism: a per-sentence traceability constraint applied during decoding. No broader survey of grounding methods is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite's central finding is that constraining decoding to require sentence-level traceability reduces the rate of unsupported claims on a long-document QA benchmark [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "The constraint is checked at each sentence boundary: a candidate sentence must be traceable to a specific retrieved span before it is emitted, or generation is redirected [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "With only one paper in scope, there is no cross-paper contradiction to report.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's latency cost in absolute terms [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete next step is measuring SpanCite's constrained-decoding latency in absolute terms, since the paper reports only that some added cost exists [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite offers a focused, single-mechanism approach to reducing unsupported claims in long-document answers [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "analytical",
+    "executive_summary": {
+      "content": "This review covers SpanCite, a decoding-time method for keeping generated sentences traceable to their source passages in long-document question answering.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "This review covers exactly one paper, SpanCite, chosen for its narrow, well-specified mechanism: a per-sentence traceability constraint applied during decoding. No broader survey of grounding methods is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite's central finding is that constraining decoding to require sentence-level traceability reduces the rate of unsupported claims on a long-document QA benchmark.",
+      "reference_numbers": []
+    },
+    "methodology_landscape": {
+      "content": "The constraint is checked at each sentence boundary: a candidate sentence must be traceable to a specific retrieved span before it is emitted, or generation is redirected.",
+      "reference_numbers": []
+    },
+    "contradictions_open_debates": {
+      "content": "With only one paper in scope, there is no cross-paper contradiction to report.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's latency cost in absolute terms.",
+      "reference_numbers": []
+    },
+    "future_research_directions": {
+      "content": "A concrete next step is measuring SpanCite's constrained-decoding latency in absolute terms, since the paper reports only that some added cost exists.",
+      "reference_numbers": []
+    },
+    "conclusion": {
+      "content": "SpanCite offers a focused, single-mechanism approach to reducing unsupported claims in long-document answers.",
+      "reference_numbers": []
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers SpanCite, a decoding-time method for keeping generated sentences traceable to their source passages in long-document question answering.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "This review covers exactly one paper, SpanCite, chosen for its narrow, well-specified mechanism: a per-sentence traceability constraint applied during decoding. No broader survey of grounding methods is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite's central finding is that constraining decoding to require sentence-level traceability reduces the rate of unsupported claims on a long-document QA benchmark.",
+        "reference_numbers": []
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "The constraint is checked at each sentence boundary: a candidate sentence must be traceable to a specific retrieved span before it is emitted, or generation is redirected.",
+        "reference_numbers": []
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "With only one paper in scope, there is no cross-paper contradiction to report.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's latency cost in absolute terms.",
+        "reference_numbers": []
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete next step is measuring SpanCite's constrained-decoding latency in absolute terms, since the paper reports only that some added cost exists.",
+        "reference_numbers": []
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite offers a focused, single-mechanism approach to reducing unsupported claims in long-document answers.",
+        "reference_numbers": []
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": true,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Refined removes every inline '[1]' marker from the report's prose (a plausible over-eager copy-edit) while reference #1 (SpanCite) remains in the references list -- reference #1 becomes a true orphan (present in references, cited nowhere in visible prose), a deterministic hard failure (orphan_reference) that the draft did not have. Introduced deliberately to test the pair-invariant relationship between hard_failure_direction and each report's own structural validity."
+  },
+  "expected": {
+    "hard_failure_direction": "regressed",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on citation_correctness."
+      },
+      "groundedness": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on groundedness."
+      },
+      "synthesis_quality": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on synthesis_quality."
+      },
+      "analytical_quality": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on analytical_quality."
+      },
+      "template_fit": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on template_fit."
+      },
+      "coherence": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on coherence."
+      },
+      "source_balance": {
+        "direction": "unknown",
+        "rationale": "The refined report's orphan_reference hard failure (SpanCite's reference now appears nowhere in visible prose) gates off any live judge call for the refined side entirely, per R6C's own hard-failure convention (zero judge calls, all seven dimensions 'unknown', never 'not_applicable') -- there is no fair basis to compare draft vs. refined on source_balance."
+      }
+    }
+  }
+}

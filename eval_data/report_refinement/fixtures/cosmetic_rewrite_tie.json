@@ -1,0 +1,308 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "cosmetic_rewrite_tie",
+  "topic": "Sentence-level citation grounding for long-document question answering",
+  "template": "foundational",
+  "selected_papers": [
+    {
+      "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+      "authors": [
+        "R. Okonkwo",
+        "M. Delacroix"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "We propose SpanCite, a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted. On a long-document QA benchmark, SpanCite reduces the rate of unsupported claims in generated answers, at the cost of a small added latency overhead from the constrained decoding step. All experiments use English-language documents.",
+      "url": "https://papers.example.com/spancite-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "spancite-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/spancite-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [],
+  "draft_report": {
+    "report_template": "foundational",
+    "executive_summary": {
+      "content": "This review covers SpanCite, a method for keeping generated answers traceable to their sources in long documents [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "introduction_scope": {
+      "content": "Retrieval is the step where a system finds relevant passages in a document collection. Faithfulness means a generated answer's claims are actually backed by what was retrieved, not invented by the model. This review covers exactly one paper, SpanCite, on improving faithfulness through constrained decoding.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite constrains generation so that each sentence produced can be traced back to a specific passage in the source document, which improved faithfulness on a long-document QA benchmark [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite checks, at each sentence boundary, whether the sentence about to be generated can be tied to a specific retrieved span; if not, generation is redirected until a traceable sentence is produced [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "As the only paper reviewed, SpanCite has no contradicting or corroborating work in this set to compare against.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's own evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's absolute latency cost [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A natural next step is measuring SpanCite's constrained-decoding latency cost in absolute terms, since the paper reports only that a small cost exists, not its size [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "SpanCite's constrained decoding is a focused, single-mechanism approach to reducing unsupported claims in long-document answers [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers SpanCite, a method for keeping generated answers traceable to their sources in long documents [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Retrieval is the step where a system finds relevant passages in a document collection. Faithfulness means a generated answer's claims are actually backed by what was retrieved, not invented by the model. This review covers exactly one paper, SpanCite, on improving faithfulness through constrained decoding.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite constrains generation so that each sentence produced can be traced back to a specific passage in the source document, which improved faithfulness on a long-document QA benchmark [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite checks, at each sentence boundary, whether the sentence about to be generated can be tied to a specific retrieved span; if not, generation is redirected until a traceable sentence is produced [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "As the only paper reviewed, SpanCite has no contradicting or corroborating work in this set to compare against.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's own evaluation is limited to English-language documents, and its abstract does not report the constrained decoding step's absolute latency cost [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A natural next step is measuring SpanCite's constrained-decoding latency cost in absolute terms, since the paper reports only that a small cost exists, not its size [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite's constrained decoding is a focused, single-mechanism approach to reducing unsupported claims in long-document answers [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "foundational",
+    "executive_summary": {
+      "content": "This review examines SpanCite, an approach that keeps generated answers traceable to their source documents [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "introduction_scope": {
+      "content": "Retrieval refers to the step where a system searches a document collection for relevant passages. Faithfulness means that a generated answer's claims are genuinely supported by what was retrieved, rather than invented by the model. This review examines exactly one paper, SpanCite, on improving faithfulness via constrained decoding.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite constrains generation so every produced sentence can be traced back to a specific passage in the source document, an approach that improved faithfulness on a long-document QA benchmark [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite verifies, at each sentence boundary, whether the sentence about to be produced can be linked to a specific retrieved span; if it cannot, generation is redirected until a traceable sentence results [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "Since SpanCite is the only paper under review, there is no contradicting or corroborating work in this set to weigh it against.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's evaluation is confined to English-language documents, and its abstract does not state the constrained decoding step's latency cost in absolute terms [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A natural next step is quantifying SpanCite's constrained-decoding latency cost in absolute terms, since the paper only reports that some small cost exists, not its magnitude [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "SpanCite's constrained decoding offers a focused, single-mechanism way to reduce unsupported claims in long-document answers [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review examines SpanCite, an approach that keeps generated answers traceable to their source documents [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Retrieval refers to the step where a system searches a document collection for relevant passages. Faithfulness means that a generated answer's claims are genuinely supported by what was retrieved, rather than invented by the model. This review examines exactly one paper, SpanCite, on improving faithfulness via constrained decoding.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite constrains generation so every produced sentence can be traced back to a specific passage in the source document, an approach that improved faithfulness on a long-document QA benchmark [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite verifies, at each sentence boundary, whether the sentence about to be produced can be linked to a specific retrieved span; if it cannot, generation is redirected until a traceable sentence results [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "Since SpanCite is the only paper under review, there is no contradicting or corroborating work in this set to weigh it against.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's evaluation is confined to English-language documents, and its abstract does not state the constrained decoding step's latency cost in absolute terms [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A natural next step is quantifying SpanCite's constrained-decoding latency cost in absolute terms, since the paper only reports that some small cost exists, not its magnitude [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite's constrained decoding offers a focused, single-mechanism way to reduce unsupported claims in long-document answers [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": true,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Every section is reworded (synonym-level paraphrase) but no claim, citation, mechanism, number, or structural element changes. Demonstrates that 'different prose' is not automatically improvement -- all seven dimensions stay unchanged even though revision_applied=true and every section's content differs."
+  },
+  "expected": {
+    "hard_failure_direction": "unchanged",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unchanged",
+        "rationale": "The same single reference is cited for the same claims in both versions; only the wording around each citation changed, not what is being claimed or which source is attached."
+      },
+      "groundedness": {
+        "direction": "unchanged",
+        "rationale": "Every factual claim in the refined version is the same claim as the draft's, just reworded -- no fact, number, or mechanism was added, removed, or altered."
+      },
+      "synthesis_quality": {
+        "direction": "unchanged",
+        "rationale": "This is a single-paper review in both versions; no cross-source synthesis claim exists to change."
+      },
+      "analytical_quality": {
+        "direction": "unchanged",
+        "rationale": "Gap Analysis and Future Research Directions retain the same diagnostic-vs-prescriptive relationship; only their wording differs."
+      },
+      "template_fit": {
+        "direction": "unchanged",
+        "rationale": "Foundational-appropriate depth/tone (defining retrieval/faithfulness before use) is preserved verbatim in structure, only reworded."
+      },
+      "coherence": {
+        "direction": "unchanged",
+        "rationale": "Section order, logical flow, and absence of repetition/illegitimate content are identical between versions."
+      },
+      "source_balance": {
+        "direction": "unchanged",
+        "rationale": "The single source is cited the same number of times, for the same claims, in both versions."
+      }
+    }
+  }
+}

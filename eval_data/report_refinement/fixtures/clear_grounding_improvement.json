@@ -1,0 +1,300 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "clear_grounding_improvement",
+  "topic": "Sentence-level citation grounding for long-document question answering",
+  "template": "foundational",
+  "selected_papers": [
+    {
+      "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+      "authors": [
+        "R. Okonkwo",
+        "M. Delacroix"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "We propose SpanCite, a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted. On a long-document QA benchmark, SpanCite reduces the rate of unsupported claims in generated answers, at the cost of a small added latency overhead from the constrained decoding step. All experiments use English-language documents.",
+      "url": "https://papers.example.com/spancite-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "spancite-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/spancite-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [],
+  "draft_report": {
+    "report_template": "foundational",
+    "executive_summary": {
+      "content": "This review covers SpanCite, a method that constrains generation so each sentence in a long-document answer stays traceable to a specific source passage.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "Retrieval-augmented generation systems sometimes produce sentences that are not actually backed by any retrieved passage. This review covers exactly one paper on this problem, SpanCite, and does not attempt a broader survey of grounding methods.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite's central contribution is a decoding-time constraint that ties each generated sentence to a source span before it is emitted [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite works by checking, at each sentence boundary during decoding, whether a candidate sentence can be traced to a specific span in the retrieved documents; sentences that fail this check are regenerated [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "As the only paper in this review, SpanCite has no other method to be compared against or contradicted by.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's evaluation is limited to English-language documents, and the paper does not report how much the constrained decoding step slows generation in absolute terms [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A natural next step is testing SpanCite's constraint on non-English documents, since its current evaluation is English-only [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "SpanCite eliminates all unsupported claims in long-document question answering [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers SpanCite, a method that constrains generation so each sentence in a long-document answer stays traceable to a specific source passage.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Retrieval-augmented generation systems sometimes produce sentences that are not actually backed by any retrieved passage. This review covers exactly one paper on this problem, SpanCite, and does not attempt a broader survey of grounding methods.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite's central contribution is a decoding-time constraint that ties each generated sentence to a source span before it is emitted [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite works by checking, at each sentence boundary during decoding, whether a candidate sentence can be traced to a specific span in the retrieved documents; sentences that fail this check are regenerated [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "As the only paper in this review, SpanCite has no other method to be compared against or contradicted by.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's evaluation is limited to English-language documents, and the paper does not report how much the constrained decoding step slows generation in absolute terms [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A natural next step is testing SpanCite's constraint on non-English documents, since its current evaluation is English-only [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite eliminates all unsupported claims in long-document question answering [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "foundational",
+    "executive_summary": {
+      "content": "This review covers SpanCite, a method that constrains generation so each sentence in a long-document answer stays traceable to a specific source passage.",
+      "reference_numbers": []
+    },
+    "introduction_scope": {
+      "content": "Retrieval-augmented generation systems sometimes produce sentences that are not actually backed by any retrieved passage. This review covers exactly one paper on this problem, SpanCite, and does not attempt a broader survey of grounding methods.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "SpanCite's central contribution is a decoding-time constraint that ties each generated sentence to a source span before it is emitted [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "SpanCite works by checking, at each sentence boundary during decoding, whether a candidate sentence can be traced to a specific span in the retrieved documents; sentences that fail this check are regenerated [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "As the only paper in this review, SpanCite has no other method to be compared against or contradicted by.",
+      "reference_numbers": []
+    },
+    "gap_analysis": {
+      "content": "SpanCite's evaluation is limited to English-language documents, and the paper does not report how much the constrained decoding step slows generation in absolute terms [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A natural next step is testing SpanCite's constraint on non-English documents, since its current evaluation is English-only [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "SpanCite reduces the rate of unsupported claims in long-document question answering [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "spancite-2024",
+        "url": null,
+        "title": "SpanCite: Sentence-Level Citation Grounding for Long-Document QA",
+        "formatted": "Okonkwo, R., & Delacroix, M. (2024). SpanCite: Sentence-Level Citation Grounding for Long-Document QA. arXiv preprint. https://papers.example.com/spancite-2024",
+        "link_url": "https://papers.example.com/spancite-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "This review covers SpanCite, a method that constrains generation so each sentence in a long-document answer stays traceable to a specific source passage.",
+        "reference_numbers": []
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Retrieval-augmented generation systems sometimes produce sentences that are not actually backed by any retrieved passage. This review covers exactly one paper on this problem, SpanCite, and does not attempt a broader survey of grounding methods.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "SpanCite's central contribution is a decoding-time constraint that ties each generated sentence to a source span before it is emitted [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "SpanCite works by checking, at each sentence boundary during decoding, whether a candidate sentence can be traced to a specific span in the retrieved documents; sentences that fail this check are regenerated [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "As the only paper in this review, SpanCite has no other method to be compared against or contradicted by.",
+        "reference_numbers": []
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "SpanCite's evaluation is limited to English-language documents, and the paper does not report how much the constrained decoding step slows generation in absolute terms [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A natural next step is testing SpanCite's constraint on non-English documents, since its current evaluation is English-only [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "SpanCite reduces the rate of unsupported claims in long-document question answering [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": true,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Draft's Conclusion overclaims that SpanCite 'eliminates all' unsupported claims; SpanCite's own abstract only reports a reduction in the rate of unsupported claims. Refined corrects the claim using the same evidence and the same citation -- a clean, isolated groundedness fix with no other section touched."
+  },
+  "expected": {
+    "hard_failure_direction": "unchanged",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unchanged",
+        "rationale": "Reference [1] is attached to a claim about SpanCite in both versions and remains topically, relevantly attached either way -- under r6c2-citation-aggregation-v2 a source is not required to single-handedly certify a superlative it doesn't establish, only to relevantly contribute, which it does in both the draft and the refined claim."
+      },
+      "groundedness": {
+        "direction": "improved",
+        "rationale": "The draft's Conclusion claims SpanCite 'eliminates all' unsupported claims; SpanCite's abstract reports only a reduction in the rate of unsupported claims, a materially narrower finding. The refined Conclusion restates the same finding accurately, using the same evidence and citation, with nothing new added."
+      },
+      "synthesis_quality": {
+        "direction": "unchanged",
+        "rationale": "This is a single-paper review in both versions; no cross-source synthesis claim is made either way, so there is nothing for this dimension to move on."
+      },
+      "analytical_quality": {
+        "direction": "unchanged",
+        "rationale": "Gap Analysis and Future Research Directions are byte-identical between versions; the diagnostic-vs-prescriptive relationship between them is unaffected by the Conclusion edit."
+      },
+      "template_fit": {
+        "direction": "unchanged",
+        "rationale": "Foundational-appropriate framing (defining retrieval/faithfulness-adjacent ideas before using them) is identical in both versions; only one Conclusion sentence's precision changed."
+      },
+      "coherence": {
+        "direction": "unchanged",
+        "rationale": "No repeated sentences, illegitimate content, or structural change was introduced; the document reads as one coherent piece in both versions."
+      },
+      "source_balance": {
+        "direction": "unchanged",
+        "rationale": "The single source is cited the same number of times, in the same sections, in both versions."
+      }
+    }
+  }
+}

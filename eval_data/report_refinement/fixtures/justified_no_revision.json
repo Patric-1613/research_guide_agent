@@ -1,0 +1,315 @@
+{
+  "schema_version": "r6d1-v1",
+  "id": "justified_no_revision",
+  "topic": "Filtering topic drift in multi-turn retrieval",
+  "template": "expert",
+  "selected_papers": [
+    {
+      "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+      "authors": [
+        "S. Iyer"
+      ],
+      "year": 2024,
+      "venue": "arXiv preprint",
+      "abstract": "DriftGuard is a lightweight classifier that flags when a multi-turn conversation's retrieved passages have drifted from the conversation's original topic, filtering drifted passages out before they reach generation. On a multi-turn retrieval benchmark, DriftGuard improves retrieval precision over a baseline that re-retrieves without drift filtering. Evaluation is limited to English-language conversations.",
+      "url": "https://papers.example.com/driftguard-2024",
+      "doi": null,
+      "citation_count": null,
+      "source": "arxiv",
+      "paper_id": "driftguard-2024",
+      "source_urls": {
+        "arxiv": "https://papers.example.com/driftguard-2024"
+      }
+    }
+  ],
+  "approved_web_articles": [],
+  "draft_report": {
+    "report_template": "expert",
+    "executive_summary": {
+      "content": "DriftGuard addresses a specific failure mode in multi-turn retrieval-augmented generation: passages that were relevant to an earlier turn but have since drifted from the conversation's actual topic [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "introduction_scope": {
+      "content": "Scope: this review covers exactly one paper, DriftGuard, chosen for its narrow, well-specified intervention point -- filtering retrieved passages by topical relevance to the current turn before generation. No broader survey of multi-turn retrieval is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "DriftGuard's contribution is specifically at the passage-selection boundary: it does not change how passages are retrieved, only whether an already-retrieved passage is allowed through to generation [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "As a classifier applied after retrieval and before generation, DriftGuard is compositionally simple to reason about -- its own precision improvement is measured relative to a baseline that skips drift filtering entirely, not relative to a stronger retriever [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "With only one paper in scope, there is no cross-paper contradiction to surface; the more relevant open question is internal to DriftGuard itself -- the paper does not report how filtering precision changes as conversations grow longer, which its abstract does not address [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "gap_analysis": {
+      "content": "DriftGuard's evaluation is limited to English-language conversations, and the paper does not report results broken out by conversation length [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A concrete next step is re-running DriftGuard's own evaluation broken out by conversation length, to test whether its reported precision improvement holds as drift has more opportunities to accumulate [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "DriftGuard is best read as a narrow, compositionally simple intervention at one specific point in a multi-turn retrieval pipeline, with its own evaluation scope-limited to English and to un-stratified conversation lengths [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "driftguard-2024",
+        "url": null,
+        "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+        "formatted": "Iyer, S. (2024). DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval. arXiv preprint. https://papers.example.com/driftguard-2024",
+        "link_url": "https://papers.example.com/driftguard-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "DriftGuard addresses a specific failure mode in multi-turn retrieval-augmented generation: passages that were relevant to an earlier turn but have since drifted from the conversation's actual topic [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Scope: this review covers exactly one paper, DriftGuard, chosen for its narrow, well-specified intervention point -- filtering retrieved passages by topical relevance to the current turn before generation. No broader survey of multi-turn retrieval is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "DriftGuard's contribution is specifically at the passage-selection boundary: it does not change how passages are retrieved, only whether an already-retrieved passage is allowed through to generation [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "As a classifier applied after retrieval and before generation, DriftGuard is compositionally simple to reason about -- its own precision improvement is measured relative to a baseline that skips drift filtering entirely, not relative to a stronger retriever [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "With only one paper in scope, there is no cross-paper contradiction to surface; the more relevant open question is internal to DriftGuard itself -- the paper does not report how filtering precision changes as conversations grow longer, which its abstract does not address [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "DriftGuard's evaluation is limited to English-language conversations, and the paper does not report results broken out by conversation length [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete next step is re-running DriftGuard's own evaluation broken out by conversation length, to test whether its reported precision improvement holds as drift has more opportunities to accumulate [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "DriftGuard is best read as a narrow, compositionally simple intervention at one specific point in a multi-turn retrieval pipeline, with its own evaluation scope-limited to English and to un-stratified conversation lengths [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refined_report": {
+    "report_template": "expert",
+    "executive_summary": {
+      "content": "DriftGuard addresses a specific failure mode in multi-turn retrieval-augmented generation: passages that were relevant to an earlier turn but have since drifted from the conversation's actual topic [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "introduction_scope": {
+      "content": "Scope: this review covers exactly one paper, DriftGuard, chosen for its narrow, well-specified intervention point -- filtering retrieved passages by topical relevance to the current turn before generation. No broader survey of multi-turn retrieval is attempted.",
+      "reference_numbers": []
+    },
+    "thematic_findings": {
+      "content": "DriftGuard's contribution is specifically at the passage-selection boundary: it does not change how passages are retrieved, only whether an already-retrieved passage is allowed through to generation [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "methodology_landscape": {
+      "content": "As a classifier applied after retrieval and before generation, DriftGuard is compositionally simple to reason about -- its own precision improvement is measured relative to a baseline that skips drift filtering entirely, not relative to a stronger retriever [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "contradictions_open_debates": {
+      "content": "With only one paper in scope, there is no cross-paper contradiction to surface; the more relevant open question is internal to DriftGuard itself -- the paper does not report how filtering precision changes as conversations grow longer, which its abstract does not address [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "gap_analysis": {
+      "content": "DriftGuard's evaluation is limited to English-language conversations, and the paper does not report results broken out by conversation length [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "future_research_directions": {
+      "content": "A concrete next step is re-running DriftGuard's own evaluation broken out by conversation length, to test whether its reported precision improvement holds as drift has more opportunities to accumulate [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "conclusion": {
+      "content": "DriftGuard is best read as a narrow, compositionally simple intervention at one specific point in a multi-turn retrieval pipeline, with its own evaluation scope-limited to English and to un-stratified conversation lengths [1].",
+      "reference_numbers": [
+        1
+      ]
+    },
+    "skipped_papers": [],
+    "references": [
+      {
+        "number": 1,
+        "kind": "paper",
+        "paper_id": "driftguard-2024",
+        "url": null,
+        "title": "DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval",
+        "formatted": "Iyer, S. (2024). DriftGuard: Detecting Topic Drift in Multi-Turn Retrieval. arXiv preprint. https://papers.example.com/driftguard-2024",
+        "link_url": "https://papers.example.com/driftguard-2024"
+      }
+    ],
+    "sections": [
+      {
+        "key": "executive_summary",
+        "title": "Executive Summary",
+        "content": "DriftGuard addresses a specific failure mode in multi-turn retrieval-augmented generation: passages that were relevant to an earlier turn but have since drifted from the conversation's actual topic [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "introduction_scope",
+        "title": "Introduction & Scope",
+        "content": "Scope: this review covers exactly one paper, DriftGuard, chosen for its narrow, well-specified intervention point -- filtering retrieved passages by topical relevance to the current turn before generation. No broader survey of multi-turn retrieval is attempted.",
+        "reference_numbers": []
+      },
+      {
+        "key": "thematic_findings",
+        "title": "Thematic Findings",
+        "content": "DriftGuard's contribution is specifically at the passage-selection boundary: it does not change how passages are retrieved, only whether an already-retrieved passage is allowed through to generation [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "methodology_landscape",
+        "title": "Methodology Landscape",
+        "content": "As a classifier applied after retrieval and before generation, DriftGuard is compositionally simple to reason about -- its own precision improvement is measured relative to a baseline that skips drift filtering entirely, not relative to a stronger retriever [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "contradictions_open_debates",
+        "title": "Contradictions & Open Debates",
+        "content": "With only one paper in scope, there is no cross-paper contradiction to surface; the more relevant open question is internal to DriftGuard itself -- the paper does not report how filtering precision changes as conversations grow longer, which its abstract does not address [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "gap_analysis",
+        "title": "Gap Analysis",
+        "content": "DriftGuard's evaluation is limited to English-language conversations, and the paper does not report results broken out by conversation length [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "future_research_directions",
+        "title": "Future Research Directions",
+        "content": "A concrete next step is re-running DriftGuard's own evaluation broken out by conversation length, to test whether its reported precision improvement holds as drift has more opportunities to accumulate [1].",
+        "reference_numbers": [
+          1
+        ]
+      },
+      {
+        "key": "conclusion",
+        "title": "Conclusion",
+        "content": "DriftGuard is best read as a narrow, compositionally simple intervention at one specific point in a multi-turn retrieval pipeline, with its own evaluation scope-limited to English and to un-stratified conversation lengths [1].",
+        "reference_numbers": [
+          1
+        ]
+      }
+    ]
+  },
+  "refinement_context": {
+    "refinement_mode": "single",
+    "revision_applied": false,
+    "source_origin": "synthetic_handcrafted",
+    "notes": "Draft was already well-grounded, well-synthesized, and expert-appropriate; refinement was judged unnecessary and not applied. draft_report and refined_report are byte-identical by construction (invariant 12)."
+  },
+  "expected": {
+    "hard_failure_direction": "unchanged",
+    "dimension_directions": {
+      "citation_correctness": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for citation_correctness to have moved in either direction."
+      },
+      "groundedness": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for groundedness to have moved in either direction."
+      },
+      "synthesis_quality": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for synthesis_quality to have moved in either direction."
+      },
+      "analytical_quality": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for analytical_quality to have moved in either direction."
+      },
+      "template_fit": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for template_fit to have moved in either direction."
+      },
+      "coherence": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for coherence to have moved in either direction."
+      },
+      "source_balance": {
+        "direction": "unchanged",
+        "rationale": "draft_report and refined_report are byte-identical (revision_applied=false) -- there is no revision for source_balance to have moved in either direction."
+      }
+    }
+  }
+}
