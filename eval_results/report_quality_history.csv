@@ -3,3 +3,4 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 2,2026-08-10T12:51:32.569122+00:00,cf60191,report_quality,live,1,0,1,0.5,,R6C.2 smoke | mean_latency_ms=35315.4
 3,2026-08-10T14:46:50.330328+00:00,bf8541d,report_quality,live,1,0,1,0.5,,R6C.2a smoke after claim-classification fix | mean_latency_ms=35395.8
 4,2026-08-10T15:44:41.988948+00:00,d0c4982,report_quality,live,1,0,1,0.5,,R6C.2b adjudicated foundational validation | mean_latency_ms=38518.1
+5,2026-08-10T22:04:29.033528+00:00,ff67113,report_quality,live,1,0,1,0.5,,R6C.2c final foundational calibration | mean_latency_ms=31417.0
