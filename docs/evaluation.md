@@ -538,11 +538,9 @@ evidence, confirmed by a dedicated test
 (`test_predict_never_imports_openai`) and by the module itself having
 no such import to patch in the first place.
 
-**`--mode live` is intentionally not implemented yet.** Invoking it
-raises a clean `LiveModeSetupError` before any example is loaded or
-any file is written — no traceback, no fallback to mock, no CSV/detail
-side effects, exit code 2. Live judge dimensions (a bounded claim/
-source judge plus a holistic judge) are R6C's job, not R6B's.
+**As of R6C.2 (below), `--mode live` is implemented** — R6B's own scope
+stops at the deterministic checks above; the live judges are a
+separate, later addition, not part of what R6B itself validates.
 
 ### CLI commands
 
@@ -553,7 +551,6 @@ uv run python -m research_agent.evals.cli run --suite report_quality --mode mock
 uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --subset 3
 uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --tags security
 uv run python -m research_agent.evals.cli run --suite report_quality --mode mock --note "..."
-uv run python -m research_agent.evals.cli run --suite report_quality --mode live   # clean exit 2, not implemented
 ```
 
 ### Report structural status vs. evaluation-case correctness — read this carefully
@@ -619,6 +616,63 @@ Full backend suite at this checkpoint: **831 passed** (780 pre-R6A +
 See `specs/report-quality-evaluation-plan.md` for the frozen design
 this suite implements, and `eval_data/report_quality/README.md` for
 the fixture index and command reference.
+
+## R6C.2 — opt-in live report-quality judges (2026-08-10) — complete
+
+Adds two independent, opt-in live judges on top of R6C.1's deterministic
+preparation (`research_agent/evals/report_quality_inputs.py`) and R6B's
+structural gate — `research_agent/evals/judges/claim_source.py`
+(citation_correctness + groundedness, one bounded batched call per
+report) and `research_agent/evals/judges/holistic.py` (synthesis_
+quality/analytical_quality/template_fit/coherence/source_balance, one
+call per report). Wired into `research_agent/evals/runners/
+run_report_quality.py`'s `predict_live`; `--mode mock` is unaffected
+and stays the default.
+
+**CLI**:
+
+```bash
+uv run python -m research_agent.evals.cli run \
+  --suite report_quality --mode live --subset 1 --note "R6C.2 smoke"
+```
+
+**Model**: `REPORT_QUALITY_JUDGE_MODEL` (env-configurable, default
+`gpt-5.6-terra`) — deliberately a different model family from
+`research_agent.report.REPORT_MODEL` ("gpt-4.1", the production
+generator), never silently substituted. Two independent prompt-version
+constants (`claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION`,
+`holistic.HOLISTIC_JUDGE_PROMPT_VERSION`) are recorded in every live
+prediction's `judge_metadata`, alongside per-judge latency, token usage
+when the SDK exposes it, and errors. **No paid live evaluation has been
+run as part of implementing this** — the model id above has not been
+verified against real OpenAI availability; before a real `--mode live`
+run, confirm it resolves to an actual accessible model, since an
+invalid model surfaces as a per-example judge failure (recorded, not a
+crash) rather than the exit-2 setup failure missing credentials or an
+empty model string produce.
+
+**Failure/skip semantics**: a report that already failed R6B's
+structural gate makes zero judge calls and gets all 7 dimensions
+labeled `"unknown"` (never `"not_applicable"`). A claim/source judge
+failure degrades only `citation_correctness`/`groundedness` to
+`"unknown"` and still attempts the holistic judge; a holistic failure
+degrades only its own 5 dimensions and preserves whatever the claim
+judge found. Continuous `score` values anywhere are informational only
+— fixture agreement (`report_quality_dimension_agreement`, the second
+evaluator this phase registers) compares categorical `label`s
+exclusively, scoring `1.0` only when all 7 dimensions match a fixture's
+`expected_dimension_labels`, else `0.0` — never a fractional/partial
+score, and never altering a fixture's own expectation to force
+agreement.
+
+**Injection safety**: both judges consume ONLY what R6C.1 already
+prepared — blocked source text and redacted report-prose sentences
+never reach either prompt (proven directly, not just documented, by
+tests asserting the raw injected phrases from the fixture set are
+absent from both judges' built prompts).
+
+See `specs/report-quality-evaluation-plan.md` sections 9-10 for the
+original judge-separation design this implements.
 
 ## Related docs
 

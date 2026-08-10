@@ -1,6 +1,5 @@
-"""Runner for the report_quality suite -- deterministic/mock only (R6B).
-No live mode exists yet (R6C's job: two bounded live judge tasks, per
-specs/report-quality-evaluation-plan.md section 0 decision 4).
+"""Runner for the report_quality suite -- R6B's deterministic/mock
+checks plus R6C.2's opt-in live judges.
 
 R6A decision 1 (specs/report-quality-evaluation-plan.md): R6 is
 independent from R4 -- this module never calls research_agent.report's
@@ -27,19 +26,50 @@ _base.py::Example shape chat_relevance's load_examples produces, so
 run_suite's predict -> evaluate -> aggregate loop (runners/_base.py)
 can run it completely unmodified via that function's `examples=`
 parameter -- this module never forks that loop.
+
+R6C.2: `predict_live` layers two independent, opt-in live judges
+(research_agent/evals/judges/claim_source.py,
+research_agent/evals/judges/holistic.py) on top of R6C.1's own
+deterministic preparation (research_agent/evals/report_quality_
+inputs.py) -- this module orchestrates (which judges run, how their
+structured output maps onto the 7 frozen R6 dimensions) but never
+builds a prompt or calls the OpenAI SDK directly itself; that stays in
+the judges/ package. `predict()` (R6B, mock) is completely unchanged
+by any of this -- `predict_live` calls it internally for the
+structural baseline every prediction (mock or live) shares.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
+from openai import OpenAI, OpenAIError
+
+from research_agent.evals import report_quality_inputs
 from research_agent.evals.evaluators.report_quality import ALL_EVALUATORS
+from research_agent.evals.judges import claim_source, holistic
 from research_agent.evals.runners._base import EVAL_DATA_DIR, Example, LiveModeSetupError, SuiteResult, run_suite
 
 SUITE = "report_quality"
+
+# R6C.2: env-configurable so a deployment/operator can point at a
+# different model without a code change -- never silently substituted
+# at call time regardless of what's configured (see _build_live_client
+# below for the one pre-flight check this module performs: the
+# configured value must be non-empty). Deliberately a DIFFERENT model
+# family from research_agent.report.REPORT_MODEL ("gpt-4.1", the
+# production report generator) -- same reasoning R6A/R6C's own design
+# doc gives for judge independence: a judge sharing a model with the
+# thing it grades is not independent evidence against self-evaluation
+# bias. This module never imports research_agent.report at all (R6A
+# decision 1's own "independent from R4" boundary), so this constant is
+# an independently-chosen literal, not derived from or compared against
+# REPORT_MODEL in code.
+REPORT_QUALITY_JUDGE_MODEL = os.environ.get("REPORT_QUALITY_JUDGE_MODEL", "gpt-5.6-terra")
 
 REPORT_QUALITY_DIR = EVAL_DATA_DIR / "report_quality"
 MANIFEST_PATH = REPORT_QUALITY_DIR / "manifest.jsonl"
@@ -494,33 +524,270 @@ def predict(example: Example) -> dict[str, Any]:
     }
 
 
+# --- R6C.2: live judge orchestration --------------------------------------
+
+def _build_live_client() -> OpenAI:
+    """Same pre-flight-before-the-loop pattern run_chat_relevance.py's
+    own `_build_live_client` already proves live: fails BEFORE
+    run_suite's per-example loop even starts, so a bad setup never
+    burns a single paid call. Two checks, both raising the same
+    LiveModeSetupError cli.py's cmd_run already catches and turns into
+    a clean exit-2 line (no traceback, no CSV/detail side effects):
+
+    1. REPORT_QUALITY_JUDGE_MODEL must be non-empty -- an operator
+       accidentally exporting an empty env var is caught here, cheaply,
+       without needing a real API call to discover it.
+    2. OpenAI() client construction must succeed -- the same bare call
+       qa.py's own ask()/condense_question use, reading OPENAI_API_KEY
+       (or another SDK-recognized credential) from the environment.
+
+    A configured model that IS a non-empty string but genuinely
+    doesn't exist/isn't accessible can only be discovered by an actual
+    API call -- that failure surfaces later, per-example, as a
+    judge_metadata error (see predict_live below), not here. This
+    module never retries and never silently substitutes a different
+    model either way.
+    """
+    if not REPORT_QUALITY_JUDGE_MODEL or not REPORT_QUALITY_JUDGE_MODEL.strip():
+        raise LiveModeSetupError(
+            "REPORT_QUALITY_JUDGE_MODEL is empty -- set a real model id, or unset the environment "
+            "variable entirely to use the built-in default"
+        )
+    try:
+        return OpenAI()
+    except OpenAIError as exc:
+        raise LiveModeSetupError(
+            "live mode requires OpenAI credentials (OPENAI_API_KEY or another OpenAI-SDK-recognized "
+            f"credential) -- client construction failed: {exc}"
+        ) from exc
+
+
+def _skipped_judge_dimensions(reason: str) -> dict[str, dict[str, Any]]:
+    """R6C.1's own documented convention (report_quality_inputs.py's
+    SKIPPED_JUDGE_DIMENSION_LABEL docstring): when a report already
+    failed R6B's deterministic gate, every judge dimension is
+    "unknown" -- never "not_applicable". "not_applicable" means a
+    dimension genuinely doesn't apply to an otherwise-normal report;
+    "unknown" means no judgment was ever attempted, which is exactly
+    what a skip is."""
+    label = report_quality_inputs.SKIPPED_JUDGE_DIMENSION_LABEL
+    return {dim: {"label": label, "score": None, "reasons": [reason]} for dim in REQUIRED_DIMENSION_NAMES}
+
+
+def _aggregate_claim_source_dimensions(
+    claim_result: dict[str, Any], cited_claims: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Maps Judge 1's per-claim structured verdicts onto the 2 frozen
+    dimensions it owns -- a deterministic, PROVISIONAL, documented-as-
+    such aggregation rule (no calibration evidence exists yet to derive
+    a better one from; revisit at R6E per specs/
+    report-quality-evaluation-plan.md section 0 decision 2's own "no
+    invented weights" constraint -- this is an invented RULE, not a
+    weight, and is flagged as provisional for the same reason).
+
+    citation_correctness = aggregated from PER-SOURCE verdicts on
+    CITED claims only (does each individually-attached source support
+    what it's cited for) -- "fail" if any judged source verdict is
+    "does_not_support" or "partially_supports"; "insufficient_evidence"
+    source verdicts are excluded from the pass/fail determination
+    entirely (never invented as either a pass or a fail).
+
+    groundedness = aggregated from COLLECTIVE verdicts across BOTH
+    cited and uncited claims (does the claim's content, overall, hold
+    up against its available evidence -- this is what catches an
+    UNCITED fabricated claim, not just a miscited one) -- "fail" if any
+    judged collective verdict is "unsupported" or "partially_
+    supported"; same insufficient_evidence exclusion as above.
+
+    Never invents support: a claim/source pair with no usable evidence
+    contributes to NEITHER pass nor fail -- only to "not_applicable"
+    when literally nothing was judgeable at all.
+    """
+    if claim_result["error"] is not None:
+        reason = [f"claim/source judge failed: {claim_result['error']}"]
+        return {
+            "citation_correctness": {"label": "unknown", "score": None, "reasons": reason},
+            "groundedness": {"label": "unknown", "score": None, "reasons": reason},
+        }
+
+    verdicts = claim_result["verdicts"]
+    if not verdicts:
+        reason = ["no cited or uncited claims were sampled for this report"]
+        return {
+            "citation_correctness": {"label": "not_applicable", "score": None, "reasons": reason},
+            "groundedness": {"label": "not_applicable", "score": None, "reasons": reason},
+        }
+
+    cited_claim_ids = {c["claim_id"] for c in cited_claims}
+    source_verdict_values = [
+        sv["verdict"]
+        for claim_id in cited_claim_ids
+        for sv in verdicts.get(claim_id, {}).get("source_verdicts", [])
+    ]
+    judged_source_verdicts = [v for v in source_verdict_values if v != "insufficient_evidence"]
+    if not judged_source_verdicts:
+        citation_correctness = {
+            "label": "not_applicable", "score": None,
+            "reasons": ["no cited claim had a judgeable (non-insufficient-evidence) source verdict"],
+        }
+    else:
+        bad = sum(1 for v in judged_source_verdicts if v in ("does_not_support", "partially_supports"))
+        if bad:
+            citation_correctness = {
+                "label": "fail", "score": round(1 - bad / len(judged_source_verdicts), 4),
+                "reasons": [f"{bad}/{len(judged_source_verdicts)} judged source(s) did not fully support their attached claim"],
+            }
+        else:
+            citation_correctness = {
+                "label": "pass", "score": 1.0,
+                "reasons": ["every judged source fully supported its attached claim"],
+            }
+
+    collective_values = [v["collective_verdict"] for v in verdicts.values()]
+    judged_collective = [v for v in collective_values if v != "insufficient_evidence"]
+    if not judged_collective:
+        groundedness = {
+            "label": "not_applicable", "score": None,
+            "reasons": ["no claim had judgeable (non-insufficient-evidence) evidence"],
+        }
+    else:
+        bad = sum(1 for v in judged_collective if v in ("unsupported", "partially_supported"))
+        if bad:
+            groundedness = {
+                "label": "fail", "score": round(1 - bad / len(judged_collective), 4),
+                "reasons": [f"{bad}/{len(judged_collective)} judged claim(s) were not fully supported by their evidence"],
+            }
+        else:
+            groundedness = {
+                "label": "pass", "score": 1.0,
+                "reasons": ["every judged claim was fully supported by its evidence"],
+            }
+
+    return {"citation_correctness": citation_correctness, "groundedness": groundedness}
+
+
+def _holistic_dimensions_from_result(holistic_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if holistic_result["error"] is not None:
+        reason = [f"holistic judge failed: {holistic_result['error']}"]
+        return {
+            dim: {"label": "unknown", "score": None, "reasons": reason}
+            for dim in ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")
+        }
+    return holistic_result["dimensions"]
+
+
+def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
+    """Live-mode prediction (R6C.2). Always starts from `predict(example)`
+    -- R6B's own deterministic structural/informational result, byte-
+    identical to what mock mode computes for the exact same report,
+    since structural correctness does not depend on mode. Only
+    `judge_dimensions`/`judge_metadata`/`not_applicable` differ from a
+    mock prediction.
+
+    When the report already failed R6B's hard-failure gate: zero judge
+    calls, all 7 dimensions "unknown" (see _skipped_judge_dimensions),
+    `judge_metadata` records the skip reason and still carries model/
+    prompt-version identity even though nothing was called -- a reader
+    of the detail JSON should never have to guess which model/prompt
+    version WOULD have been used.
+
+    Otherwise: calls research_agent.evals.report_quality_inputs.
+    prepare_report_quality_judge_inputs for R6C.1's own bounded,
+    sanitized payload, then makes exactly one claim/source call
+    (judges/claim_source.py) and exactly one holistic call
+    (judges/holistic.py) -- both independent, both wrapped in their own
+    "never raises" contract, so one judge failing never suppresses the
+    other's result (see _aggregate_claim_source_dimensions/
+    _holistic_dimensions_from_result, each only degrading its OWN
+    dimensions to "unknown" on its own judge's failure).
+    """
+    base_prediction = predict(example)
+    payload = report_quality_inputs.prepare_report_quality_judge_inputs(example, base_prediction)
+
+    if payload["evaluation_status"] == report_quality_inputs.EVALUATION_STATUS_SKIPPED:
+        judge_dimensions = _skipped_judge_dimensions(
+            "structural hard failure present (see hard_failures) -- no live judge call was made",
+        )
+        judge_metadata = {
+            "model": REPORT_QUALITY_JUDGE_MODEL,
+            "claim_source_prompt_version": claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION,
+            "holistic_prompt_version": holistic.HOLISTIC_JUDGE_PROMPT_VERSION,
+            "claim_source_judge": None,
+            "holistic_judge": None,
+            "sampling_coverage": payload["sampling_coverage"],
+            "sanitization_counts": {"source_injection_findings": 0, "report_prose_injection_findings": 0},
+            "scores_are_informational": True,
+            "skip_reason": payload["skip_reason"],
+        }
+        return {**base_prediction, "judge_dimensions": judge_dimensions, "judge_metadata": judge_metadata, "not_applicable": []}
+
+    topic = example.inputs["topic"]
+    template = example.inputs["template"]
+
+    claim_result = claim_source.judge_claims(
+        topic, template, payload["selected_cited_claims"], payload["selected_uncited_candidates"],
+        payload["evidence_registry"], client, REPORT_QUALITY_JUDGE_MODEL,
+    )
+    holistic_result = holistic.judge_report(
+        topic, template, payload["sanitized_report_sections"], base_prediction["informational_signals"],
+        payload["sampling_coverage"], client, REPORT_QUALITY_JUDGE_MODEL,
+    )
+
+    judge_dimensions = {
+        **_aggregate_claim_source_dimensions(claim_result, payload["selected_cited_claims"]),
+        **_holistic_dimensions_from_result(holistic_result),
+    }
+    not_applicable = [dim for dim, v in judge_dimensions.items() if v["label"] == "not_applicable"]
+
+    judge_metadata = {
+        "model": REPORT_QUALITY_JUDGE_MODEL,
+        "claim_source_prompt_version": claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION,
+        "holistic_prompt_version": holistic.HOLISTIC_JUDGE_PROMPT_VERSION,
+        "claim_source_judge": {
+            "latency_ms": claim_result["latency_ms"], "error": claim_result["error"],
+            "claims_judged": claim_result["claims_judged"], "token_usage": claim_result["token_usage"],
+            "verdicts": claim_result["verdicts"],
+        },
+        "holistic_judge": {
+            "latency_ms": holistic_result["latency_ms"], "error": holistic_result["error"],
+            "token_usage": holistic_result["token_usage"],
+        },
+        "sampling_coverage": payload["sampling_coverage"],
+        "sanitization_counts": {
+            "source_injection_findings": len(payload["source_injection_findings"]),
+            "report_prose_injection_findings": len(payload["report_prose_injection_findings"]),
+        },
+        "scores_are_informational": True,
+    }
+
+    return {**base_prediction, "judge_dimensions": judge_dimensions, "judge_metadata": judge_metadata, "not_applicable": not_applicable}
+
+
 # --- run_experiment() -----------------------------------------------------
 
 def run_experiment(mode: str = "mock", subset: int | None = None, tags: list[str] | None = None) -> SuiteResult:
-    """R6B: `mode="mock"` (the default) is the only mode implemented --
-    deterministic, offline, free, calls no evaluator/prediction logic
-    that could touch a network. `mode="live"` raises LiveModeSetupError
-    immediately, before any example is loaded or any file is written --
-    the same clean, non-traceback, no-side-effect failure shape
-    chat_relevance's own missing-credentials path already established
-    (cli.py's cmd_run catches LiveModeSetupError and exits 2), reused
-    here for a different reason (not implemented yet, rather than
-    missing credentials). R6C is what will replace this raise with a
-    real live judge implementation."""
-    if mode == "live":
-        raise LiveModeSetupError(
-            "report_quality has no live mode yet -- R6B is deterministic/mock-only. "
-            "Live judge dimensions (bounded claim/source judge + holistic judge) are R6C's job."
-        )
-    if mode != "mock":
+    """`mode="mock"` (the default, unchanged from R6B): deterministic,
+    offline, free, calls no evaluator/prediction logic that could touch
+    a network. `mode="live"` (R6C.2): constructs a real OpenAI client
+    up front (`_build_live_client`, raising LiveModeSetupError -- exit
+    2, no traceback, no CSV/detail side effects -- before any example
+    is loaded if setup fails) and runs `predict_live` per example,
+    making up to two real judge calls per eligible report."""
+    evaluators = [
+        ("report_quality_hard_failure_agreement", ALL_EVALUATORS["report_quality_hard_failure_agreement"]),
+        ("report_quality_dimension_agreement", ALL_EVALUATORS["report_quality_dimension_agreement"]),
+    ]
+
+    if mode == "mock":
+        run_predict = predict
+    elif mode == "live":
+        client = _build_live_client()
+        run_predict = lambda example: predict_live(example, client)  # noqa: E731
+    else:
         raise ValueError(f"unknown report_quality mode {mode!r} -- expected 'mock' or 'live'")
 
     examples = load_report_quality_examples(subset=subset, tags=tags)
     return run_suite(
-        suite=SUITE,
-        dataset_file=str(MANIFEST_PATH),
-        predict=predict,
-        evaluators=[("report_quality_hard_failure_agreement", ALL_EVALUATORS["report_quality_hard_failure_agreement"])],
-        mode=mode,
-        examples=examples,
+        suite=SUITE, dataset_file=str(MANIFEST_PATH), predict=run_predict, evaluators=evaluators,
+        mode=mode, examples=examples,
     )

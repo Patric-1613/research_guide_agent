@@ -36,13 +36,26 @@ SUITES: dict[str, dict[str, Any]] = {
         "description": "Topic-aware web relevance red-team fixtures (R7A-R7C).",
         "module": "research_agent.evals.runners.run_chat_relevance",
         "results_csv": "chat_relevance_history.csv",
+        "live_warning": (
+            "mode=live calls the real OpenAI embeddings API, and may also call a real chat-completion "
+            "judge model for embedding gray-zone candidates -- both can incur cost."
+        ),
     },
     "report_quality": {
-        "description": "Deterministic report structural/citation checks against synthetic fixtures (R6B). No live mode yet (R6C).",
+        "description": (
+            "Deterministic report structural/citation checks against synthetic fixtures (R6B), plus "
+            "R6C.2's opt-in live claim/source and holistic judges."
+        ),
         "module": "research_agent.evals.runners.run_report_quality",
         "results_csv": "report_quality_history.csv",
+        "live_warning": (
+            "mode=live makes real OpenAI judge calls (one claim/source call plus one holistic call per "
+            "eligible report) and can incur cost."
+        ),
     },
 }
+
+_DEFAULT_LIVE_WARNING = "mode=live makes real OpenAI API calls and can incur cost."
 
 
 def _load_run_experiment(suite: str) -> Callable[..., SuiteResult]:
@@ -66,11 +79,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
 
     if args.mode == "live":
-        print(
-            "[eval] WARNING: mode=live calls the real OpenAI embeddings API, and may also call a "
-            "real chat-completion judge model for embedding gray-zone candidates -- both can incur cost.",
-            file=sys.stderr,
-        )
+        warning = SUITES[args.suite].get("live_warning", _DEFAULT_LIVE_WARNING)
+        print(f"[eval] WARNING: {warning}", file=sys.stderr)
 
     run_experiment = _load_run_experiment(args.suite)
     try:

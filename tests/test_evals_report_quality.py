@@ -1,14 +1,20 @@
-"""R6B: focused tests for the report_quality eval suite -- the manifest
-+ fixture-file loader, each of the 6 frozen deterministic hard-failure
-checks in isolation, citation-marker parsing precision, source-
-availability checks, informational signals, the fixture-agreement
-evaluator, and CLI/suite behavior (including the not-yet-implemented
-live mode's clean failure).
+"""R6B + R6C.2: focused tests for the report_quality eval suite.
 
-R6B is deterministic/mock-only -- nothing in this file ever needs to
-patch OpenAI (unlike test_evals_chat_relevance.py), since
-research_agent.evals.runners.run_report_quality never imports it at
-all; see test_predict_never_imports_openai below for the direct proof.
+R6B section: the manifest + fixture-file loader, each of the 6 frozen
+deterministic hard-failure checks in isolation, citation-marker parsing
+precision, source-availability checks, informational signals, the
+hard-failure-agreement evaluator, and mock-mode CLI/suite behavior.
+Mock mode never needs OpenAI -- see
+TestSuiteBehavior::test_mock_mode_never_needs_an_openai_client.
+
+R6C.2 section (near the end of this file): the claim/source and
+holistic live judges, predict_live's own aggregation/skip/failure-
+isolation orchestration, the dimension-agreement evaluator, and live-
+mode CLI behavior. Every live-mode test here either patches
+`research_agent.evals.runners.run_report_quality.OpenAI` (so no real
+client is ever constructed) or patches the judge functions directly --
+see TestNoLiveJudgeMakesARealCall for the direct no-real-call
+guarantee.
 """
 
 from __future__ import annotations
@@ -16,14 +22,17 @@ from __future__ import annotations
 import copy
 import csv
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
+from openai import OpenAIError
 
 from research_agent.evals import cli, report_quality_inputs as rqi
 from research_agent.evals.evaluators.report_quality import (
     ALL_EVALUATORS,
     report_quality_hard_failure_agreement,
 )
+from research_agent.evals.judges import claim_source, holistic
 from research_agent.evals.runners import run_report_quality as rq
 from research_agent.evals.runners._base import Example, LiveModeSetupError, append_result_csv, write_run_detail_json
 
@@ -419,7 +428,10 @@ class TestInformationalSignals:
         assert result["score"] == 1.0
 
     def test_informational_signals_never_appear_as_a_separate_scored_evaluator(self):
-        assert list(ALL_EVALUATORS) == ["report_quality_hard_failure_agreement"]
+        """R6C.2 adds a second evaluator (report_quality_dimension_
+        agreement) but informational_signals themselves are still never
+        scored by anything -- neither evaluator reads that key at all."""
+        assert set(ALL_EVALUATORS) == {"report_quality_hard_failure_agreement", "report_quality_dimension_agreement"}
 
 
 # --- Fixture-agreement evaluator ---------------------------------------------
@@ -473,13 +485,21 @@ class TestSuiteBehavior:
         assert entry["prediction"]["hard_failures"] != []
         assert entry["evaluator_results"]["report_quality_hard_failure_agreement"]["score"] == 1.0
 
-    def test_predict_never_imports_openai(self):
-        assert not hasattr(rq, "OpenAI")
-        assert "openai" not in dir(rq)
+    def test_mock_mode_never_needs_an_openai_client(self):
+        """R6C.2 legitimately imports OpenAI now (needed for live mode)
+        -- what must stay true is that MOCK mode never constructs or
+        calls one. `predict()` succeeds with no client argument at all,
+        and no example in a full mock run ever touches the network
+        (see TestNoLiveJudgeMakesARealCall for the live-mode-side
+        version of this guarantee)."""
+        examples = rq.load_report_quality_examples(subset=1)
+        prediction = rq.predict(examples[0])  # no client passed anywhere
+        assert prediction["judge_dimensions"] is None
 
-    def test_run_experiment_live_mode_raises_live_mode_setup_error(self):
-        with pytest.raises(LiveModeSetupError, match="no live mode"):
-            rq.run_experiment(mode="live")
+    def test_run_experiment_live_mode_without_credentials_raises_live_mode_setup_error(self):
+        with patch.object(rq, "OpenAI", side_effect=OpenAIError("no api key")):
+            with pytest.raises(LiveModeSetupError, match="credentials"):
+                rq.run_experiment(mode="live")
 
     def test_run_experiment_unknown_mode_is_a_clean_error(self):
         with pytest.raises(ValueError, match="mock.*live|live.*mock"):
@@ -528,14 +548,15 @@ class TestCli:
             rows = list(csv.DictReader(f))
         assert "R6B deterministic baseline" in rows[0]["note"]
 
-    def test_run_live_mode_exits_cleanly_with_no_artifacts(self, monkeypatch, tmp_path, capsys):
+    def test_run_live_mode_without_credentials_exits_cleanly_with_no_artifacts(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
-        exit_code = cli.main(["run", "--suite", "report_quality", "--mode", "live"])
+        with patch.object(rq, "OpenAI", side_effect=OpenAIError("no api key")):
+            exit_code = cli.main(["run", "--suite", "report_quality", "--mode", "live"])
 
         assert exit_code == 2
         err = capsys.readouterr().err
         assert "Traceback" not in err
-        assert "no live mode" in err
+        assert "credentials" in err
         assert list(tmp_path.iterdir()) == []  # no CSV, no runs/ dir -- nothing written
 
 
@@ -1037,3 +1058,574 @@ class TestNoNetworkImports:
     def test_report_quality_inputs_never_imports_openai(self):
         assert not hasattr(rqi, "OpenAI")
         assert "openai" not in dir(rqi)
+
+
+# =====================================================================
+# R6C.2 -- opt-in live claim/source and holistic judges
+#
+# Every test in this section either (a) calls the judge functions
+# directly against a MagicMock client (never a real OpenAI() instance,
+# never a real network call), or (b) patches claim_source.judge_claims/
+# holistic.judge_report at the function level to test predict_live's
+# own orchestration in isolation. No test in this file ever performs a
+# real API call -- see TestNoLiveJudgeMakesARealCall at the end.
+# =====================================================================
+
+def _fake_parse_response(parsed):
+    message = MagicMock(parsed=parsed, refusal=None)
+    return MagicMock(choices=[MagicMock(message=message)], usage=None)
+
+
+def _claim_verdict_kwargs(claim, verdict="supported", source_verdict="supports", reason="ok"):
+    return {
+        "claim_id": claim["claim_id"], "collective_verdict": verdict,
+        "collective_confidence": 0.9, "collective_reason": reason,
+        "source_verdicts": [
+            {"evidence_id": eid, "verdict": source_verdict, "reason": reason} for eid in claim["evidence_ids"]
+        ],
+    }
+
+
+def _fake_client_for_claims(cited, uncited, evidence_registry, verdict="supported", source_verdict="supports"):
+    all_claims = cited + uncited
+    schema = claim_source._build_schema([c["claim_id"] for c in all_claims], list(evidence_registry.keys()))
+    parsed = schema(verdicts=[_claim_verdict_kwargs(c, verdict, source_verdict) for c in all_claims])
+    client = MagicMock()
+    client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+    return client
+
+
+def _all_pass_holistic_client():
+    dim = {"label": "pass", "score": 0.9, "reasons": ["ok"]}
+    parsed = holistic._HolisticJudgmentOut(
+        synthesis_quality=dim, analytical_quality=dim, template_fit=dim, coherence=dim, source_balance=dim,
+    )
+    client = MagicMock()
+    client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+    return client
+
+
+class TestClaimSourceJudge:
+    def test_single_cited_claim_supported(self):
+        cited = [{"claim_id": "s:0:0", "claim_text": "x [1].", "evidence_ids": ["paper:p1"],
+                   "section_key": "s", "claim_kind": "cited", "reference_numbers": [1]}]
+        registry = {"paper:p1": {"kind": "paper", "reference_number": 1, "title": "P1", "text": "abstract", "status": "available"}}
+        client = _fake_client_for_claims(cited, [], registry)
+
+        result = claim_source.judge_claims("topic", "analytical", cited, [], registry, client, "fake-model")
+
+        assert result["error"] is None
+        assert client.chat.completions.parse.call_count == 1
+        assert result["verdicts"]["s:0:0"]["collective_verdict"] == "supported"
+        assert result["verdicts"]["s:0:0"]["source_verdicts"] == [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"}]
+
+    def test_grouped_citation_gets_collective_and_per_source_judgments(self):
+        cited = [{"claim_id": "s:0:0", "claim_text": "x [1][2].", "evidence_ids": ["paper:p1", "paper:p2"],
+                   "section_key": "s", "claim_kind": "cited", "reference_numbers": [1, 2]}]
+        registry = {
+            "paper:p1": {"kind": "paper", "reference_number": 1, "title": "P1", "text": "a1", "status": "available"},
+            "paper:p2": {"kind": "paper", "reference_number": 2, "title": "P2", "text": "a2", "status": "available"},
+        }
+        # One source genuinely supports, the other does not -- proves a
+        # single valid source is never accepted as proof for the group.
+        schema = claim_source._build_schema(["s:0:0"], list(registry.keys()))
+        parsed = schema(verdicts=[{
+            "claim_id": "s:0:0", "collective_verdict": "partially_supported",
+            "collective_confidence": 0.6, "collective_reason": "mixed",
+            "source_verdicts": [
+                {"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"},
+                {"evidence_id": "paper:p2", "verdict": "does_not_support", "reason": "unrelated"},
+            ],
+        }])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", cited, [], registry, client, "fake-model")
+
+        source_verdicts = {sv["evidence_id"]: sv["verdict"] for sv in result["verdicts"]["s:0:0"]["source_verdicts"]}
+        assert source_verdicts == {"paper:p1": "supports", "paper:p2": "does_not_support"}
+        assert result["verdicts"]["s:0:0"]["collective_verdict"] == "partially_supported"
+
+    def test_uncited_candidate_is_evaluated_with_no_source_verdicts_required(self):
+        uncited = [{"claim_id": "s:0:0", "claim_text": "An uncited factual claim.", "evidence_ids": [],
+                    "section_key": "s", "claim_kind": "uncited_candidate", "reference_numbers": [],
+                    "selection_reason": "..."}]
+        registry = {"paper:p1": {"kind": "paper", "reference_number": 1, "title": "P1", "text": "a1", "status": "available"}}
+        client = _fake_client_for_claims([], uncited, registry)
+
+        result = claim_source.judge_claims("topic", "analytical", [], uncited, registry, client, "fake-model")
+
+        assert result["error"] is None
+        assert result["verdicts"]["s:0:0"]["source_verdicts"] == []
+        assert client.chat.completions.parse.call_count == 1
+
+    def test_no_claims_makes_zero_calls(self):
+        client = MagicMock()
+        result = claim_source.judge_claims("topic", "analytical", [], [], {}, client, "fake-model")
+        assert result["error"] is None
+        assert result["verdicts"] == {}
+        assert client.chat.completions.parse.call_count == 0
+
+    def test_missing_claim_id_in_response_is_rejected(self):
+        cited = [
+            {"claim_id": "a", "claim_text": "x", "evidence_ids": [], "section_key": "s", "claim_kind": "cited", "reference_numbers": []},
+            {"claim_id": "b", "claim_text": "y", "evidence_ids": [], "section_key": "s", "claim_kind": "cited", "reference_numbers": []},
+        ]
+        schema = claim_source._build_schema(["a", "b"], ["paper:p1"])
+        parsed = schema(verdicts=[_claim_verdict_kwargs(cited[0])])  # "b" missing entirely
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", cited, [], {}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert "malformed" in result["error"]
+        assert result["verdicts"] == {}
+
+    def test_duplicate_claim_id_in_response_is_rejected(self):
+        claim = {"claim_id": "a", "claim_text": "x", "evidence_ids": [], "section_key": "s", "claim_kind": "cited", "reference_numbers": []}
+        schema = claim_source._build_schema(["a"], ["paper:p1"])
+        parsed = schema(verdicts=[_claim_verdict_kwargs(claim), _claim_verdict_kwargs(claim)])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", [claim], [], {}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert result["verdicts"] == {}
+
+    def test_incomplete_source_verdicts_for_a_grouped_claim_is_rejected(self):
+        """Two evidence ids attached, but the model only returns a
+        verdict for one -- must not be silently accepted as if the
+        unjudged source were implicitly fine."""
+        claim = {"claim_id": "a", "claim_text": "x [1][2].", "evidence_ids": ["paper:p1", "paper:p2"],
+                  "section_key": "s", "claim_kind": "cited", "reference_numbers": [1, 2]}
+        registry_keys = ["paper:p1", "paper:p2"]
+        schema = claim_source._build_schema(["a"], registry_keys)
+        parsed = schema(verdicts=[{
+            "claim_id": "a", "collective_verdict": "supported", "collective_confidence": 0.9,
+            "collective_reason": "ok", "source_verdicts": [{"evidence_id": "paper:p1", "verdict": "supports", "reason": "ok"}],
+        }])
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _fake_parse_response(parsed)
+
+        result = claim_source.judge_claims("topic", "analytical", [claim], [], {}, client, "fake-model")
+
+        assert result["error"] is not None
+        assert "paper:p2" in result["error"] or "malformed" in result["error"]
+
+    def test_unknown_evidence_id_is_rejected_by_the_schema_itself(self):
+        """A claim_id/evidence_id Literal-constrained schema structurally
+        cannot accept a value it was never offered -- pydantic itself
+        raises when construction is attempted."""
+        schema = claim_source._build_schema(["a"], ["paper:p1"])
+        with pytest.raises(Exception):
+            schema(verdicts=[{
+                "claim_id": "a", "collective_verdict": "supported", "collective_confidence": 0.9,
+                "collective_reason": "ok",
+                "source_verdicts": [{"evidence_id": "paper:UNKNOWN", "verdict": "supports", "reason": "ok"}],
+            }])
+
+    def test_judge_call_exception_is_recorded_never_raised(self):
+        claim = {"claim_id": "a", "claim_text": "x", "evidence_ids": [], "section_key": "s", "claim_kind": "cited", "reference_numbers": []}
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = RuntimeError("simulated API failure")
+
+        result = claim_source.judge_claims("topic", "analytical", [claim], [], {}, client, "fake-model")
+
+        assert result["error"] == "simulated API failure"
+        assert result["verdicts"] == {}
+
+    def test_blocked_source_text_never_enters_the_prompt(self):
+        registry = {
+            "paper:p1": {"kind": "paper", "reference_number": 1, "title": "Injected Paper",
+                         "text": "", "status": "blocked_untrusted_source"},
+        }
+        cited = [{"claim_id": "s:0:0", "claim_text": "claim [1].", "evidence_ids": ["paper:p1"],
+                   "section_key": "s", "claim_kind": "cited", "reference_numbers": [1]}]
+        messages = claim_source._build_messages("topic", "analytical", cited, [], registry)
+        prompt_text = json.dumps(messages)
+        assert "excluded from evaluation" in prompt_text
+        # The (already-cleared) text field is empty, so there is nothing
+        # sensitive to leak regardless -- confirmed the field itself:
+        assert registry["paper:p1"]["text"] == ""
+
+    def test_ordinary_academic_text_with_isolated_security_words_is_not_blocked(self):
+        """A source discussing 'system', 'prompt', or 'instructions' in
+        an ordinary academic sense (never flagged by R6C.1) must reach
+        the prompt normally, not be treated as untrusted."""
+        registry = {
+            "paper:p1": {"kind": "paper", "reference_number": 1, "title": "A Systems Paper",
+                         "text": "This system uses prompt engineering and clear instructions for annotators.",
+                         "status": "available"},
+        }
+        cited = [{"claim_id": "s:0:0", "claim_text": "claim [1].", "evidence_ids": ["paper:p1"],
+                   "section_key": "s", "claim_kind": "cited", "reference_numbers": [1]}]
+        messages = claim_source._build_messages("topic", "analytical", cited, [], registry)
+        prompt_text = json.dumps(messages)
+        assert "prompt engineering" in prompt_text
+        assert "excluded from evaluation" not in prompt_text
+
+
+class TestHolisticJudge:
+    def test_single_call_returns_all_five_dimensions(self):
+        client = _all_pass_holistic_client()
+        sections = {k: f"Content for {k}." for k in REQUIRED_SECTION_KEYS}
+        informational_signals = {"section_word_counts": {}, "citation_density_by_section": {},
+                                  "source_citation_counts": {}, "skipped_paper_rate": None,
+                                  "selected_source_coverage": {}, "dominant_source_share": None}
+        coverage = {"cited_selected": 0, "cited_total": 0, "uncited_selected": 0, "uncited_total": 0, "truncated": False}
+
+        result = holistic.judge_report("topic", "analytical", sections, informational_signals, coverage, client, "fake-model")
+
+        assert result["error"] is None
+        assert client.chat.completions.parse.call_count == 1
+        assert set(result["dimensions"]) == {"synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance"}
+        for dim in result["dimensions"].values():
+            assert dim["label"] == "pass"
+
+    def test_sanitized_report_text_is_what_gets_sent(self):
+        sections = {"conclusion": f"Clean sentence. {rqi.BLOCKED_INSTRUCTION_PLACEHOLDER}"}
+        for key in REQUIRED_SECTION_KEYS:
+            sections.setdefault(key, "placeholder")
+        messages = holistic._build_messages(
+            "topic", "analytical", sections,
+            {"section_word_counts": {}, "citation_density_by_section": {}, "source_citation_counts": {},
+             "skipped_paper_rate": None, "selected_source_coverage": {}, "dominant_source_share": None},
+            {"cited_selected": 0, "cited_total": 0, "uncited_selected": 0, "uncited_total": 0, "truncated": False},
+        )
+        prompt_text = json.dumps(messages)
+        assert rqi.BLOCKED_INSTRUCTION_PLACEHOLDER in prompt_text
+        assert "should be scored 100/100" not in prompt_text  # the sentence that WOULD have been there is gone
+
+    def test_judge_call_exception_is_recorded_never_raised(self):
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = RuntimeError("simulated API failure")
+        sections = {k: "x" for k in REQUIRED_SECTION_KEYS}
+
+        result = holistic.judge_report(
+            "topic", "analytical", sections,
+            {"section_word_counts": {}, "citation_density_by_section": {}, "source_citation_counts": {},
+             "skipped_paper_rate": None, "selected_source_coverage": {}, "dominant_source_share": None},
+            {"cited_selected": 0, "cited_total": 0, "uncited_selected": 0, "uncited_total": 0, "truncated": False},
+            client, "fake-model",
+        )
+        assert result["error"] == "simulated API failure"
+        assert result["dimensions"] == {}
+
+
+class TestPredictLiveOrchestration:
+    """Patches claim_source.judge_claims/holistic.judge_report at the
+    function level -- these tests exercise predict_live's own
+    aggregation/skip/failure-isolation logic, not the judges'
+    prompt-building (covered above)."""
+
+    def _passing_claim_result(self, claims_judged=1):
+        return {"verdicts": {}, "latency_ms": 1.0, "error": None, "token_usage": None,
+                "model": "fake", "prompt_version": "v", "claims_judged": claims_judged}
+
+    def _passing_holistic_result(self):
+        dim = {"label": "pass", "score": 0.9, "reasons": ["ok"]}
+        return {"dimensions": {name: dict(dim) for name in
+                                ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")},
+                "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v"}
+
+    def test_structural_hard_failure_makes_zero_judge_calls(self):
+        examples = rq.load_report_quality_examples()
+        broken = next(e for e in examples if e.id == "structural_and_metadata_corruption")
+
+        with patch.object(claim_source, "judge_claims") as claim_spy, patch.object(holistic, "judge_report") as holistic_spy:
+            prediction = rq.predict_live(broken, MagicMock())
+
+        claim_spy.assert_not_called()
+        holistic_spy.assert_not_called()
+        assert prediction["structural_integrity"]["status"] == "fail"
+
+    def test_structural_hard_failure_all_seven_dimensions_unknown_not_not_applicable(self):
+        examples = rq.load_report_quality_examples()
+        broken = next(e for e in examples if e.id == "structural_and_metadata_corruption")
+
+        prediction = rq.predict_live(broken, MagicMock())
+
+        assert len(prediction["judge_dimensions"]) == 7
+        for dim, value in prediction["judge_dimensions"].items():
+            assert value["label"] == "unknown", f"{dim} was {value['label']!r}, expected 'unknown'"
+            assert value["label"] != "not_applicable"
+
+    def test_exactly_one_claim_call_and_one_holistic_call_for_eligible_example(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "good_analytical")
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()) as claim_spy, \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()) as holistic_spy:
+            rq.predict_live(example, MagicMock())
+
+        assert claim_spy.call_count == 1
+        assert holistic_spy.call_count == 1
+
+    def test_claim_judge_failure_does_not_suppress_holistic_judge(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "good_analytical")
+        failing_claim_result = {"verdicts": {}, "latency_ms": 1.0, "error": "simulated failure",
+                                 "token_usage": None, "model": "fake", "prompt_version": "v", "claims_judged": 0}
+
+        with patch.object(claim_source, "judge_claims", return_value=failing_claim_result), \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()) as holistic_spy:
+            prediction = rq.predict_live(example, MagicMock())
+
+        assert holistic_spy.call_count == 1  # still attempted
+        assert prediction["judge_dimensions"]["citation_correctness"]["label"] == "unknown"
+        assert prediction["judge_dimensions"]["groundedness"]["label"] == "unknown"
+        assert "simulated failure" in prediction["judge_dimensions"]["citation_correctness"]["reasons"][0]
+        assert prediction["judge_dimensions"]["synthesis_quality"]["label"] == "pass"  # unaffected
+        assert prediction["judge_metadata"]["claim_source_judge"]["error"] == "simulated failure"
+
+    def test_holistic_judge_failure_does_not_erase_claim_judge_results(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "good_analytical")
+        failing_holistic_result = {"dimensions": {}, "latency_ms": 1.0, "error": "simulated failure",
+                                    "token_usage": None, "model": "fake", "prompt_version": "v"}
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()) as claim_spy, \
+             patch.object(holistic, "judge_report", return_value=failing_holistic_result):
+            prediction = rq.predict_live(example, MagicMock())
+
+        assert claim_spy.call_count == 1
+        for dim in ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance"):
+            assert prediction["judge_dimensions"][dim]["label"] == "unknown"
+            assert "simulated failure" in prediction["judge_dimensions"][dim]["reasons"][0]
+        assert prediction["judge_metadata"]["holistic_judge"]["error"] == "simulated failure"
+        # citation_correctness/groundedness are whatever the (successful) claim judge produced --
+        # here "not_applicable" since _passing_claim_result has no verdicts, but NOT "unknown".
+        assert prediction["judge_dimensions"]["citation_correctness"]["label"] != "unknown"
+
+    def test_missing_evidence_and_blocked_evidence_stay_distinguishable_in_aggregation(self):
+        cited = [
+            {"claim_id": "a", "evidence_ids": ["paper:missing"]},
+            {"claim_id": "b", "evidence_ids": ["paper:blocked"]},
+        ]
+        claim_result = {
+            "verdicts": {
+                "a": {"collective_verdict": "insufficient_evidence", "collective_confidence": 0.5,
+                      "collective_reason": "no text", "source_verdicts": [{"evidence_id": "paper:missing", "verdict": "insufficient_evidence", "reason": "no text"}]},
+                "b": {"collective_verdict": "insufficient_evidence", "collective_confidence": 0.5,
+                      "collective_reason": "blocked", "source_verdicts": [{"evidence_id": "paper:blocked", "verdict": "insufficient_evidence", "reason": "blocked"}]},
+            },
+            "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v", "claims_judged": 2,
+        }
+        dims = rq._aggregate_claim_source_dimensions(claim_result, cited)
+        # Neither missing nor blocked evidence ever gets treated as a pass OR a fail --
+        # both degrade to not_applicable since nothing judgeable was ever produced.
+        assert dims["citation_correctness"]["label"] == "not_applicable"
+        assert dims["groundedness"]["label"] == "not_applicable"
+
+    def test_truncated_sampling_coverage_is_surfaced_in_judge_metadata(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "good_foundational")  # known truncated, per R6C.1
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()), \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()):
+            prediction = rq.predict_live(example, MagicMock())
+
+        assert prediction["judge_metadata"]["sampling_coverage"]["truncated"] is True
+        assert prediction["judge_metadata"]["scores_are_informational"] is True
+
+    def test_model_and_prompt_versions_recorded_in_judge_metadata(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "good_analytical")
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()), \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()):
+            prediction = rq.predict_live(example, MagicMock())
+
+        assert prediction["judge_metadata"]["model"] == rq.REPORT_QUALITY_JUDGE_MODEL
+        assert prediction["judge_metadata"]["claim_source_prompt_version"] == claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION
+        assert prediction["judge_metadata"]["holistic_prompt_version"] == holistic.HOLISTIC_JUDGE_PROMPT_VERSION
+
+    def test_sanitization_counts_recorded(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "source_prompt_injection")
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()), \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()):
+            prediction = rq.predict_live(example, MagicMock())
+
+        assert prediction["judge_metadata"]["sanitization_counts"]["source_injection_findings"] == 2
+
+    def test_original_example_report_unaffected_by_predict_live(self):
+        examples = rq.load_report_quality_examples()
+        example = next(e for e in examples if e.id == "evaluator_injection_in_report")
+        snapshot = copy.deepcopy(example.inputs["generated_report"])
+
+        with patch.object(claim_source, "judge_claims", return_value=self._passing_claim_result()), \
+             patch.object(holistic, "judge_report", return_value=self._passing_holistic_result()):
+            rq.predict_live(example, MagicMock())
+
+        assert example.inputs["generated_report"] == snapshot
+
+
+class TestDimensionAgreementEvaluator:
+    def test_all_seven_match_scores_1(self):
+        expected = {"expected_dimension_labels": {
+            name: {"label": "pass"} for name in
+            ("citation_correctness", "groundedness", "synthesis_quality", "analytical_quality",
+             "template_fit", "coherence", "source_balance")
+        }}
+        prediction = {"judge_dimensions": {name: {"label": "pass"} for name in expected["expected_dimension_labels"]}}
+
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"](prediction, expected)
+        assert result["score"] == 1.0
+
+    def test_one_mismatch_scores_0(self):
+        expected = {"expected_dimension_labels": {
+            name: {"label": "pass"} for name in
+            ("citation_correctness", "groundedness", "synthesis_quality", "analytical_quality",
+             "template_fit", "coherence", "source_balance")
+        }}
+        prediction = {"judge_dimensions": {name: {"label": "pass"} for name in expected["expected_dimension_labels"]}}
+        prediction["judge_dimensions"]["coherence"] = {"label": "fail"}
+
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"](prediction, expected)
+        assert result["score"] == 0.0
+        assert "coherence" in result["comment"]
+        assert result["detail"]["coherence"]["match"] is False
+        assert result["detail"]["citation_correctness"]["match"] is True
+
+    def test_continuous_scores_never_control_the_evaluator_score(self):
+        """A judge that agrees on every LABEL but returns wildly
+        different continuous scores must still score 1.0 -- and a
+        judge that disagrees on labels but has similar continuous
+        scores must still score 0.0. Only labels are compared."""
+        expected = {"expected_dimension_labels": {
+            name: {"label": "pass"} for name in
+            ("citation_correctness", "groundedness", "synthesis_quality", "analytical_quality",
+             "template_fit", "coherence", "source_balance")
+        }}
+        prediction = {"judge_dimensions": {
+            name: {"label": "pass", "score": 0.01} for name in expected["expected_dimension_labels"]  # low score, same label
+        }}
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"](prediction, expected)
+        assert result["score"] == 1.0
+
+    def test_mock_mode_returns_none_never_a_score(self):
+        """judge_dimensions is None in every R6B mock prediction --
+        this evaluator must never fabricate a 0.0/1.0 from that."""
+        expected = {"expected_dimension_labels": {"citation_correctness": {"label": "pass"}}}
+        prediction = {"judge_dimensions": None}
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"](prediction, expected)
+        assert result["score"] is None
+
+    def test_no_expected_labels_returns_none(self):
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"]({"judge_dimensions": {}}, {})
+        assert result["score"] is None
+
+    def test_does_not_alter_fixture_expectations_to_force_agreement(self):
+        """A live judge disagreeing with a fixture is evaluation
+        evidence, not something this evaluator is allowed to smooth
+        over -- proven by confirming a genuine mismatch still scores 0,
+        never silently upgraded."""
+        expected = {"expected_dimension_labels": {"citation_correctness": {"label": "fail"}}}
+        prediction = {"judge_dimensions": {"citation_correctness": {"label": "pass"}}}
+        # Only citation_correctness supplied on both sides for this
+        # focused check; other 6 dims are None vs None -> also "match"
+        # (both missing), so the ONLY real signal here is this one.
+        result = ALL_EVALUATORS["report_quality_dimension_agreement"](prediction, expected)
+        assert result["detail"]["citation_correctness"] == {"expected": "fail", "actual": "pass", "match": False}
+
+
+class TestLiveModeCli:
+    def test_live_mode_requires_credentials_and_exits_cleanly(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        with patch.object(rq, "OpenAI", side_effect=OpenAIError("no api key")):
+            exit_code = cli.main(["run", "--suite", "report_quality", "--mode", "live"])
+
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "credentials" in err
+        assert "Traceback" not in err
+        assert list(tmp_path.iterdir()) == []  # no CSV/detail side effects
+
+    def test_live_mode_empty_model_env_var_exits_cleanly(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(rq, "REPORT_QUALITY_JUDGE_MODEL", "")
+        exit_code = cli.main(["run", "--suite", "report_quality", "--mode", "live"])
+
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "REPORT_QUALITY_JUDGE_MODEL" in err
+        assert "Traceback" not in err
+        assert list(tmp_path.iterdir()) == []
+
+    def test_live_mode_warning_mentions_judge_calls_and_cost(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        with patch.object(rq, "OpenAI", side_effect=OpenAIError("no api key")):
+            cli.main(["run", "--suite", "report_quality", "--mode", "live"])
+
+        err = capsys.readouterr().err
+        assert "judge" in err.lower()
+        assert "cost" in err.lower()
+
+    def test_live_mode_runs_end_to_end_with_mocked_client_and_writes_artifacts(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        passing_claim = {"verdicts": {}, "latency_ms": 1.0, "error": None, "token_usage": None,
+                          "model": "fake", "prompt_version": "v", "claims_judged": 0}
+        passing_holistic = {"dimensions": {name: {"label": "pass", "score": 0.9, "reasons": []} for name in
+                                            ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")},
+                             "latency_ms": 1.0, "error": None, "token_usage": None, "model": "fake", "prompt_version": "v"}
+
+        with patch.object(rq, "OpenAI", return_value=MagicMock()), \
+             patch.object(claim_source, "judge_claims", return_value=passing_claim), \
+             patch.object(holistic, "judge_report", return_value=passing_holistic):
+            exit_code = cli.main([
+                "run", "--suite", "report_quality", "--mode", "live", "--subset", "1", "--note", "R6C.2 smoke",
+            ])
+
+        # exit_code itself is 0/1 depending on whether this fixture's
+        # deliberately-incomplete mocked verdicts happen to agree with
+        # its expected_dimension_labels -- not the point of this test.
+        # No traceback either way is what "exits cleanly" means here.
+        assert exit_code in (0, 1)
+        out = capsys.readouterr().out
+        assert "mode=live" in out
+        csv_path = tmp_path / "report_quality_history.csv"
+        assert csv_path.exists()
+        with csv_path.open() as f:
+            rows = list(csv.DictReader(f))
+        assert "R6C.2 smoke" in rows[0]["note"]
+
+        detail_path = tmp_path / "runs" / "report_quality_run_1.json"
+        assert detail_path.exists()
+        detail = json.loads(detail_path.read_text())
+        entry = detail["per_example"][0]
+        assert entry["prediction"]["judge_metadata"]["model"] == rq.REPORT_QUALITY_JUDGE_MODEL
+        assert entry["prediction"]["judge_metadata"]["claim_source_prompt_version"] == claim_source.CLAIM_SOURCE_JUDGE_PROMPT_VERSION
+        assert entry["prediction"]["judge_metadata"]["holistic_prompt_version"] == holistic.HOLISTIC_JUDGE_PROMPT_VERSION
+
+
+class TestMockUnaffectedByR6C2:
+    def test_mock_suite_still_8_of_8_with_both_evaluators_registered(self):
+        result = rq.run_experiment(mode="mock")
+        assert result.total == 8
+        assert result.passed == 8
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_mock_predictions_never_touch_judge_dimensions(self):
+        examples = rq.load_report_quality_examples(subset=1)
+        prediction = rq.predict(examples[0])
+        assert prediction["judge_dimensions"] is None
+        assert prediction["judge_metadata"] is None
+
+
+class TestNoLiveJudgeMakesARealCall:
+    def test_run_report_quality_never_constructs_a_bare_openai_client_at_import_time(self):
+        # Sanity: OpenAI is imported (needed for live mode's type
+        # hints/_build_live_client), but never instantiated at module
+        # import time -- only inside _build_live_client, which every
+        # test above either never reaches or explicitly patches.
+        assert hasattr(rq, "OpenAI")
+
+    def test_all_judge_functions_require_an_explicit_client_argument(self):
+        import inspect
+        assert "client" in inspect.signature(claim_source.judge_claims).parameters
+        assert "client" in inspect.signature(holistic.judge_report).parameters
