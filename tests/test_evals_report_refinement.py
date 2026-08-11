@@ -164,12 +164,23 @@ class TestFixtureDirectionalIntent:
         return next(e for e in examples if e.id == fixture_id)
 
     def test_clear_grounding_improvement(self):
+        """R6D.3b: after run_id 5's calibrated live pass, human
+        adjudication against the frozen R6C rubric determined
+        analytical_quality/template_fit/coherence are legitimately
+        `improved` by the same Conclusion fix -- the original
+        expectation (all three `unchanged`) was too artificially
+        isolated, treating a one-sentence correction as incapable of
+        touching any dimension beyond citation_correctness/
+        groundedness."""
         e = self._example("clear_grounding_improvement")
         d = e.expected["dimension_directions"]
-        assert d["groundedness"]["direction"] == "improved"
         assert d["citation_correctness"]["direction"] == "improved"
-        for name in ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance"):
-            assert d[name]["direction"] == "unchanged"
+        assert d["groundedness"]["direction"] == "improved"
+        assert d["analytical_quality"]["direction"] == "improved"
+        assert d["template_fit"]["direction"] == "improved"
+        assert d["coherence"]["direction"] == "improved"
+        assert d["synthesis_quality"]["direction"] == "unchanged"
+        assert d["source_balance"]["direction"] == "unchanged"
         assert e.expected["hard_failure_direction"] == "unchanged"
 
     def test_holistic_synthesis_improvement(self):
@@ -1820,7 +1831,28 @@ class TestSemanticEvaluatorLive:
 
     def test_corrected_fixture_expects_citation_improvement(self):
         e = _load_example("clear_grounding_improvement")
-        assert e.outputs["expected_dimension_directions"]["citation_correctness"]["direction"] == "improved"
+        directions = e.outputs["expected_dimension_directions"]
+        assert directions["citation_correctness"]["direction"] == "improved"
+        assert directions["groundedness"]["direction"] == "improved"
+
+    def test_r6d3b_adjudicated_fixture_expects_three_cross_dimensional_improvements(self):
+        """R6D.3b: after run_id 5's calibrated live pass and human
+        adjudication against the frozen rubric, analytical_quality/
+        template_fit/coherence are expected `improved` (not `unchanged`
+        as originally authored) -- synthesis_quality/source_balance
+        remain `unchanged`, since nothing in the fixture bears on
+        cross-source synthesis or source distribution."""
+        e = _load_example("clear_grounding_improvement")
+        directions = e.outputs["expected_dimension_directions"]
+        assert directions["analytical_quality"]["direction"] == "improved"
+        assert directions["template_fit"]["direction"] == "improved"
+        assert directions["coherence"]["direction"] == "improved"
+        assert directions["synthesis_quality"]["direction"] == "unchanged"
+        assert directions["source_balance"]["direction"] == "unchanged"
+        # Every changed rationale documents this as human adjudication against a frozen
+        # rubric, never an automatic "match whatever the judge said" correction.
+        for dim in ("analytical_quality", "template_fit", "coherence"):
+            assert "adjudication" in directions[dim]["rationale"].lower()
 
     def test_one_mismatched_dimension_prevents_a_fully_passed_example(self):
         example = _load_example("clear_grounding_improvement")
@@ -2007,3 +2039,159 @@ class TestLiveDetailJson:
         assert "sk-" not in raw_text
         assert "api_key" not in raw_text
         assert "authorization" not in raw_text
+
+
+# =====================================================================
+# R6D.3b -- fixture adjudication only: after run_id 5's calibrated live
+# pass (commit acab474), human adjudication against the frozen R6C
+# rubric corrected clear_grounding_improvement's expected analytical_
+# quality/template_fit/coherence from unchanged to improved. No judge,
+# runner, or evaluator code changed in this checkpoint -- every test
+# below is either a pure fixture-content check (no mocking needed) or
+# reruns mock mode, which makes zero OpenAI/API calls.
+# =====================================================================
+
+class TestR6D3bAdjudication:
+    _UNTOUCHED_FIXTURE_SHA256 = {
+        "holistic_synthesis_improvement": "fac53aec6b498c4bfd2dcead3f8beb860dfeecc408f78b850fd8a996eea70dcf",
+        "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
+        "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
+        "citation_regression": "c6c2e3e4d69b9888d18adf2a15439a3c5d7e3f9caa05d22c5f9cc7668cb39706",
+        "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
+        "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
+    }
+
+    _CLEAR_GROUNDING_REPORT_BODY_SHA256 = {
+        "draft_report": "4da0d4ab9f8b5dab773a5205f0607bc951e632742e86b1d9e07f64941a0e4463",
+        "refined_report": "24afc301bc03ef512bdfd62a82bda1074484ddd39c723a435493558aed960521",
+        "selected_papers": "46939ab3d371c730f468839659288e53719782ece14acf0db0dce3f683c9c79e",
+        "approved_web_articles": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    }
+
+    def test_adjudicated_fixture_expects_the_seven_directions_from_run_id_5(self):
+        examples = rri.load_report_refinement_examples()
+        e = next(x for x in examples if x.id == "clear_grounding_improvement")
+        d = e.expected["dimension_directions"]
+        assert d["citation_correctness"]["direction"] == "improved"
+        assert d["groundedness"]["direction"] == "improved"
+        assert d["analytical_quality"]["direction"] == "improved"
+        assert d["template_fit"]["direction"] == "improved"
+        assert d["coherence"]["direction"] == "improved"
+        assert d["synthesis_quality"]["direction"] == "unchanged"
+        assert d["source_balance"]["direction"] == "unchanged"
+        assert e.expected["hard_failure_direction"] == "unchanged"
+
+    def test_report_prose_and_shared_evidence_are_byte_identical(self):
+        """No report body, paper, or web-article content changed during
+        this fixture-only adjudication -- only `expected.dimension_
+        directions` (3 entries) and an added `refinement_context.
+        adjudication_note` changed."""
+        import hashlib
+        import json as _json
+
+        examples = rri.load_report_refinement_examples()
+        e = next(x for x in examples if x.id == "clear_grounding_improvement")
+        for name, obj in (
+            ("draft_report", e.draft_report), ("refined_report", e.refined_report),
+            ("selected_papers", e.selected_papers), ("approved_web_articles", e.approved_web_articles),
+        ):
+            actual = hashlib.sha256(_json.dumps(obj, sort_keys=True).encode()).hexdigest()
+            assert actual == self._CLEAR_GROUNDING_REPORT_BODY_SHA256[name], f"{name} content changed"
+
+    def test_no_other_fixture_file_was_touched(self):
+        """Every OTHER fixture's file content is byte-identical to its
+        pre-R6D.3b hash -- this checkpoint modifies exactly one file."""
+        import hashlib
+
+        for fixture_id, expected_hash in self._UNTOUCHED_FIXTURE_SHA256.items():
+            path = rri.FIXTURES_DIR / f"{fixture_id}.json"
+            actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert actual_hash == expected_hash, f"{fixture_id}.json changed unexpectedly"
+
+    def test_no_other_fixture_expected_direction_changed(self):
+        """Re-asserts every other fixture's own expected directions
+        (already covered individually by TestFixtureDirectionalIntent)
+        as one explicit R6D.3b non-regression check."""
+        examples = {e.id: e for e in rri.load_report_refinement_examples()}
+
+        holistic = examples["holistic_synthesis_improvement"].expected["dimension_directions"]
+        assert holistic["synthesis_quality"]["direction"] == "improved"
+        assert holistic["analytical_quality"]["direction"] == "improved"
+        assert holistic["coherence"]["direction"] == "improved"
+        assert holistic["citation_correctness"]["direction"] == "unchanged"
+        assert holistic["groundedness"]["direction"] == "unchanged"
+
+        justified = examples["justified_no_revision"].expected["dimension_directions"]
+        assert all(entry["direction"] == "unchanged" for entry in justified.values())
+
+        cosmetic = examples["cosmetic_rewrite_tie"].expected["dimension_directions"]
+        assert all(entry["direction"] == "unchanged" for entry in cosmetic.values())
+
+        citation_reg = examples["citation_regression"].expected["dimension_directions"]
+        assert citation_reg["citation_correctness"]["direction"] == "regressed"
+        assert citation_reg["groundedness"]["direction"] == "regressed"
+        assert citation_reg["synthesis_quality"]["direction"] == "unchanged"
+
+        mixed = examples["mixed_tradeoff"].expected["dimension_directions"]
+        assert mixed["synthesis_quality"]["direction"] == "improved"
+        assert mixed["coherence"]["direction"] == "improved"
+        assert mixed["groundedness"]["direction"] == "regressed"
+
+        structural = examples["structural_regression"].expected["dimension_directions"]
+        assert all(entry["direction"] == "unknown" for entry in structural.values())
+        assert examples["structural_regression"].expected["hard_failure_direction"] == "regressed"
+
+    def test_adjudicated_fixture_still_satisfies_all_r6d1_invariants(self):
+        """The corrected fixture still passes the full loader
+        validation pipeline (all 14 R6D.1 invariants, including
+        invariant 14's no-expectation-leakage check against the three
+        new, longer rationale strings)."""
+        examples = rri.load_report_refinement_examples()  # raises ReportRefinementFixtureError on any violation
+        assert len(examples) == 7
+        e = next(x for x in examples if x.id == "clear_grounding_improvement")
+        assert e.draft_report["report_template"] == "foundational"
+        assert e.refined_report["report_template"] == "foundational"
+
+    def test_rationale_strings_never_leak_into_report_content(self):
+        examples = rri.load_report_refinement_examples()
+        e = next(x for x in examples if x.id == "clear_grounding_improvement")
+        rationales = [entry["rationale"] for entry in e.expected["dimension_directions"].values()]
+        for side_report in (e.draft_report, e.refined_report):
+            for key in rri.REQUIRED_SECTION_KEYS:
+                content = (side_report.get(key) or {}).get("content") or ""
+                for rationale in rationales:
+                    assert rationale not in content
+
+    def test_adjudication_is_documented_as_human_not_automatic(self):
+        """Part B's own explicit requirement: this is human adjudication
+        against a frozen rubric, never blind copying of a judge's
+        output -- must be recorded as such, not silently relabeled."""
+        examples = rri.load_report_refinement_examples()
+        e = next(x for x in examples if x.id == "clear_grounding_improvement")
+        assert "adjudication_note" in e.refinement_context
+        note = e.refinement_context["adjudication_note"].lower()
+        assert "human" in note
+        assert "frozen" in note
+
+    def test_mock_mode_still_seven_of_seven_after_adjudication(self):
+        with patch.object(claim_source, "judge_claims") as claim_spy, \
+             patch.object(refinement_holistic, "judge_refinement_holistic") as pairwise_spy, \
+             patch.object(holistic, "judge_report") as holistic_spy:
+            result = rrr.run_experiment(mode="mock")
+        claim_spy.assert_not_called()
+        pairwise_spy.assert_not_called()
+        holistic_spy.assert_not_called()
+        assert result.total == 7
+        assert result.passed == 7
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_no_judge_or_runner_code_changed_only_fixture_data(self):
+        """This checkpoint is fixture-adjudication only -- the live
+        prediction/evaluator functions this fixture feeds must be
+        exactly the R6D.3a functions, unmodified."""
+        assert hasattr(rrr, "compute_claim_change_inventory")
+        assert hasattr(rrr, "_citation_correctness_from_claims")
+        assert hasattr(rrr, "_groundedness_from_claims")
+        assert refinement_holistic.R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION == "r6d3a-pairwise-holistic-v1"
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"

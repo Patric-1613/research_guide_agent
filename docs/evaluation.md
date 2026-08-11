@@ -1444,6 +1444,54 @@ now agrees with its own corrected expectation before considering a
 broader paid live run, followed by **R6D.4** — evaluating real
 R4-generated draft/refined report pairs end-to-end.
 
+### R6D.3b — adjudicate the clear-grounding fixture after the calibrated live run (2026-08-11)
+
+Run_id 5 (`eval_results/report_refinement_history.csv`, commit
+`acab474`, note "R6D.3a changed-claim and pairwise calibration")
+validated the three-call architecture end-to-end against a real paid
+pair: 3 judge calls, no errors, 27.7s. Changed-claim judging correctly
+detected the intended fix — `citation_correctness` and `groundedness`
+both came back `improved`, matching the fixture's own expectation
+exactly. Pairwise holistic judging additionally found `analytical_
+quality`, `template_fit`, and `coherence` all `improved`, against a
+fixture that had originally expected all three `unchanged`.
+
+A human reviewer re-read the frozen R6C rubric definitions for those
+three dimensions against the actual draft/refined Conclusion text and
+determined the predicted directions were each independently defensible
+under the EXISTING, unmodified rubric — analytical_quality's own
+definition explicitly covers whether conclusions follow the cited
+evidence rather than overreaching; the Foundational template's own
+expectation explicitly requires evidence-grounded framing; coherence
+explicitly covers logical alignment between the Conclusion and the
+rest of the report, not merely absence of repetition. The fixture's
+original expectations were too artificially isolated, treating a
+one-sentence Conclusion fix as incapable of touching any dimension
+beyond citation_correctness/groundedness — one factual correction can
+legitimately improve several overlapping rubric dimensions at once.
+**This was human adjudication against a frozen rubric, never an
+automatic "match whatever the judge said" correction** — recorded
+explicitly in the fixture's own `refinement_context.adjudication_note`
+(`eval_data/report_refinement/fixtures/clear_grounding_improvement.
+json`). No judge prompt, schema, prompt version, runner, or evaluator
+code changed in this checkpoint — only this one fixture's `expected.
+dimension_directions` (3 entries) and its `refinement_context`.
+
+`clear_grounding_improvement` now expects: `citation_correctness`
+improved, `groundedness` improved, `analytical_quality` improved,
+`template_fit` improved, `coherence` improved, `synthesis_quality`
+unchanged, `source_balance` unchanged. Validated by `tests/test_evals_
+report_refinement.py`'s new `TestR6D3bAdjudication` class (185 passed,
+was 175) — no other fixture, report body, or shared evidence changed
+(hash-verified); mock mode remains `total=7 passed=7 failed=0
+average_score=1.000`. Full backend suite → 1157 passed. No real paid
+live call was made in this checkpoint.
+
+**One repeated live run of `clear_grounding_improvement` is still
+required** to assess stability (does the recalibrated pipeline agree
+with its own now-corrected expectation on a second independent run)
+before moving on to calibrate another fixture or attempting R6D.4.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

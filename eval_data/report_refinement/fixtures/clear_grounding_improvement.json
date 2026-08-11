@@ -262,7 +262,8 @@
     "refinement_mode": "single",
     "revision_applied": true,
     "source_origin": "synthetic_handcrafted",
-    "notes": "Draft's Conclusion overclaims that SpanCite 'eliminates all' unsupported claims; SpanCite's own abstract only reports a reduction in the rate of unsupported claims. Refined corrects the claim using the same evidence and the same citation -- a clean, isolated groundedness fix with no other section touched."
+    "notes": "Draft's Conclusion overclaims that SpanCite 'eliminates all' unsupported claims; SpanCite's own abstract only reports a reduction in the rate of unsupported claims. Refined corrects the claim using the same evidence and the same citation -- a clean, isolated groundedness fix with no other section touched.",
+    "adjudication_note": "R6D.3b (2026-08-11): after run_id 5's calibrated live pass (commit acab474) predicted analytical_quality/template_fit/coherence improved (this fixture originally expected all three unchanged), a human reviewer re-read the frozen R6C rubric definitions for those three dimensions against the actual draft/refined Conclusion text and determined the predicted directions were each independently defensible under the EXISTING, unmodified rubric -- not a case of relaxing the rubric or blindly copying the judge's output. This was human adjudication against a frozen definition, never an automatic 'match whatever the judge said' correction: the original expectations were too artificially isolated, treating a Conclusion-only edit as incapable of touching any dimension beyond citation_correctness/groundedness, when the frozen definitions for analytical_quality (conclusions following evidence), template_fit (evidence-grounded Foundational framing), and coherence (logical alignment across sections) all genuinely bear on the same one-sentence fix."
   },
   "expected": {
     "hard_failure_direction": "unchanged",
@@ -280,16 +281,16 @@
         "rationale": "This is a single-paper review in both versions; no cross-source synthesis claim is made either way, so there is nothing for this dimension to move on."
       },
       "analytical_quality": {
-        "direction": "unchanged",
-        "rationale": "Gap Analysis and Future Research Directions are byte-identical between versions; the diagnostic-vs-prescriptive relationship between them is unaffected by the Conclusion edit."
+        "direction": "improved",
+        "rationale": "R6D.3b human adjudication against the frozen analytical_quality definition (judges/holistic.py's own rubric: 'do conclusions follow from the cited evidence rather than overreaching'): correcting the unsupported absolute conclusion makes the report's conclusion follow the supplied evidence rather than overreaching, which is explicitly part of that frozen definition -- Gap Analysis and Future Research Directions being byte-identical does not exhaust this dimension's own scope."
       },
       "template_fit": {
-        "direction": "unchanged",
-        "rationale": "Foundational-appropriate framing (defining retrieval/faithfulness-adjacent ideas before using them) is identical in both versions; only one Conclusion sentence's precision changed."
+        "direction": "improved",
+        "rationale": "R6D.3b human adjudication against the frozen template_fit definition: the Foundational template's own expectation requires evidence-grounded framing rather than padded, unsupported claims. Replacing an absolute unsupported guarantee ('eliminates all') with the source-bounded finding ('reduces the rate of') improves that fit without changing reader depth, introducing new terminology, or adding padding."
       },
       "coherence": {
-        "direction": "unchanged",
-        "rationale": "No repeated sentences, illegitimate content, or structural change was introduced; the document reads as one coherent piece in both versions."
+        "direction": "improved",
+        "rationale": "R6D.3b human adjudication against the frozen coherence definition (which includes logical flow section to section, not merely absence of repetition): the corrected Conclusion now aligns with the evidence and the preceding discussion sections, removing the logical mismatch the draft's unsupported absolute claim created between the Conclusion and the rest of the report."
       },
       "source_balance": {
         "direction": "unchanged",
