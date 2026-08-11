@@ -307,3 +307,71 @@ files, and none of the explicitly forbidden fields (the A/B mapping,
 draft/refined identity, translated directions, R4 scores, report
 bodies, session identifiers, automated judge output) present in the
 blind-assessment file.
+
+## `report_refinement_real` suite (R6D.4d Part 3) — plumbing only, no live run yet
+
+`research_agent/evals/report_refinement_real_inputs.py` +
+`research_agent/evals/runners/run_report_refinement_real.py` reunite
+the 3 gitignored real capture artifacts above with the `-adjudication.
+json` files in `real_reviews/` into the exact `runners._base.Example`
+shape `run_report_refinement.py`'s own `predict`/`predict_live`
+already consume — reused completely unchanged; this suite adds no
+claim-comparison, pairwise-holistic-judging, direction-aggregation, or
+hard-failure logic of its own. A separate suite (`report_refinement_
+real`, not `report_refinement`) so the 3 real, individually-adjudicated
+pairs and the 7 synthetic fixtures never share a running history:
+`eval_results/report_refinement_real_history.csv` +
+`eval_results/runs/report_refinement_real_run_<id>.json`.
+
+Load order is always `real-foundational-01`, `real-analytical-01`,
+`real-expert-01` — fixed, never directory-listing order. Every capture
+is re-validated through `r6d4_capture.validate_r6d4_capture` and its
+current on-disk SHA-256 is checked against what its adjudication
+recorded before that pair is used at all: `real-foundational-01`/
+`real-expert-01` record `capture_sha256` directly; `real-analytical-01`
+instead records `blind_assessment_sha256`, since its capture hash was
+already bound once inside the blind-assessment file at blind-review
+time — the loader hops through that file (verifying its own hash
+first) rather than duplicating a second hash that would need to stay
+in sync. All of this — plus adjudication schema/pair_id/template/
+7-direction/hard-failure-direction validation, and a scan for forbidden
+embedded content reusing `r6d4_capture.find_forbidden_keys` directly —
+happens before `mode="live"` ever constructs an OpenAI client (a bad
+local file exits cleanly via the same `LiveModeSetupError` path a
+missing credential already uses, never a traceback).
+
+The adjudication's own `hard_failure_direction`/`dimension_directions`
+only ever land in `Example.outputs` (read by evaluators AFTER
+prediction) — never in `Example.inputs` (the only part of an `Example`
+`predict`/`predict_live` read), so a frozen label can never leak into a
+judge prompt. Reviewer provenance is kept in `Example.metadata` only,
+for the same reason.
+
+`--mode mock`: deterministic, offline, zero OpenAI calls, `dimension_
+directions` stays `None` — byte-identical mock behavior to the
+synthetic suite. `--mode live` (not yet run — this phase is plumbing
+and mock validation only): at most 5 real judge calls total across the
+3 pairs under current pair content — 1 claim/source call each for the
+2 byte-identical pairs (real-foundational-01, real-expert-01), reused
+for the refined side; 2 claim/source calls + 1 pairwise holistic call
+for the 1 changed pair (real-analytical-01). The resulting score is
+**exact agreement with these 3 frozen adjudication labels — never a
+report-quality or refinement-benefit measurement**; three pairs is far
+too small a sample for that claim regardless of the score.
+
+```
+uv run python -m research_agent.evals.cli run \
+    --suite report_refinement_real --mode mock \
+    --note "R6D.4 real-capture plumbing check"
+
+# not yet run -- makes real, billable calls (bounded at 5, see above):
+uv run --env-file .env python -m research_agent.evals.cli run \
+    --suite report_refinement_real --mode live \
+    --note "R6D.4 bounded real R4 refinement evaluation"
+```
+
+Tests: `tests/test_evals_report_refinement_real.py`, 30 passed —
+against synthetic-but-schema-valid tmp_path fixtures for every
+rejection/adapter-shape/isolation case, plus one test guarded to run
+only when the real, gitignored capture files are present locally. No
+test calls a real API.

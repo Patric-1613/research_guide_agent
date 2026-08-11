@@ -97,6 +97,22 @@ SUITES: dict[str, dict[str, Any]] = {
             "can incur cost."
         ),
     },
+    "report_refinement_real": {
+        "description": (
+            "Evaluates exactly 3 frozen real R4-generated draft/refined pairs (R6D.4) against their "
+            "already-frozen human/deterministic adjudications -- never the 7 synthetic report_refinement "
+            "fixtures, and a separate result history. Score is exact agreement with frozen labels, not "
+            "report quality or refinement benefit."
+        ),
+        "module": "research_agent.evals.runners.run_report_refinement_real",
+        "results_csv": "report_refinement_real_history.csv",
+        "live_warning": (
+            "mode=live makes real OpenAI judge calls -- at most 5 total across the 3 frozen pairs under "
+            "current pair content (1 claim/source call for each of the 2 byte-identical pairs, reused for "
+            "the refined side; 2 claim/source calls + 1 pairwise holistic call for the 1 changed pair) -- "
+            "never another overall/pairwise winner call -- and can incur cost."
+        ),
+    },
 }
 
 _DEFAULT_LIVE_WARNING = "mode=live makes real OpenAI API calls and can incur cost."

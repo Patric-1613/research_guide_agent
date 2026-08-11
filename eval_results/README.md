@@ -76,6 +76,21 @@ policy — this file is a short local index.
   evaluation.md`'s "R6D.2"/"R6D.3" sections and `eval_data/report_
   refinement/README.md` for the pair schema this suite's `prediction`
   follows.
+- `report_refinement_real_history.csv` — current running log, appended
+  to by every `uv run python -m research_agent.evals.cli run --suite
+  report_refinement_real` run (R6D.4d Part 3). Evaluates exactly the 3
+  frozen real R4 capture pairs in `captures/` below against their own
+  frozen adjudications in `eval_data/report_refinement/real_reviews/`
+  — reuses `report_refinement`'s own `predict`/`predict_live` and
+  evaluators unchanged, and is kept in a separate history/detail-file
+  series so 3 real, individually-adjudicated pairs are never pooled
+  with the 7 synthetic fixtures above. `average_score` here is exact
+  agreement with the frozen adjudication labels, never a report-quality
+  or refinement-benefit measurement. **Tracked**, same conventions as
+  the other suite logs above. See `eval_data/report_refinement/
+  README.md`'s own "`report_refinement_real` suite" section for the
+  loader's hash-binding/validation behavior and the live-mode call
+  bound.
 - `runs/` — per-run detail artifacts. From `ragas_eval.py`
   (`run_<id>.json` + `raw_<timestamp>.jsonl`), from the `chat_relevance`
   suite (`chat_relevance_run_<run_id>.json`, R7E.1), from the
