@@ -90,6 +90,7 @@ from langgraph.graph import END, START, StateGraph
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
+import research_agent.telemetry as telemetry
 from research_agent.embeddings import (
     CACHE_DB_PATH,
     _embed_texts,
@@ -267,7 +268,9 @@ def condense_question(history: list[dict], question: str, client: OpenAI, model:
     langfuse = get_client()
     langfuse.update_current_generation(input=messages, model=model)
 
-    response = client.chat.completions.create(model=model, messages=messages)
+    with telemetry.timed_child_call("condense_question", "openai", model=model) as call:
+        response = client.chat.completions.create(model=model, messages=messages)
+        call.set_usage(response.usage)
     condensed = (response.choices[0].message.content or "").strip() or question
     if condensed != question:
         logger.info("Condensed follow-up %r -> standalone query %r", question, condensed)
@@ -668,7 +671,9 @@ def _generate_answer(messages: list[dict], schema: type[BaseModel], client: Open
     langfuse = get_client()
     langfuse.update_current_generation(input=messages, model=model)
 
-    response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+    with telemetry.timed_child_call("generate_answer", "openai", model=model) as call:
+        response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused to answer")
@@ -1099,7 +1104,9 @@ def _judge_direct_web_relevance(
         try:
             messages = _build_direct_relevance_messages(topic, query, to_judge)
             schema = _build_direct_relevance_schema([c.url for c in to_judge])
-            response = client.chat.completions.parse(model=CONDENSE_MODEL, messages=messages, response_format=schema)
+            with telemetry.timed_child_call("direct_relevance_judge", "openai", model=CONDENSE_MODEL) as call:
+                response = client.chat.completions.parse(model=CONDENSE_MODEL, messages=messages, response_format=schema)
+                call.set_usage(response.usage)
             parsed = response.choices[0].message.parsed
             if parsed is None:
                 raise ValueError("judge response had no parsed content")

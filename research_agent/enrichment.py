@@ -42,6 +42,7 @@ from pathlib import Path
 
 import requests
 
+import research_agent.telemetry as telemetry
 from research_agent.config import get_settings
 from research_agent.schema import Paper
 
@@ -129,21 +130,25 @@ def _fetch_unpaywall_abstract(doi: str) -> str | None:
         )
         return None
 
-    try:
-        response = requests.get(
-            _UNPAYWALL_URL.format(doi=doi),
-            params={"email": email},
-            timeout=_REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        logger.info("Unpaywall lookup failed for DOI %r: %s", doi, exc)
-        return None
+    with telemetry.timed_child_call("enrichment_unpaywall", "unpaywall") as call:
+        try:
+            response = requests.get(
+                _UNPAYWALL_URL.format(doi=doi),
+                params={"email": email},
+                timeout=_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.info("Unpaywall lookup failed for DOI %r: %s", doi, exc)
+            call.outcome, call.error_type = "error", type(exc).__name__
+            return None
 
-    if response.status_code == 429:
-        logger.info("Unpaywall rate-limited enrichment lookup for DOI %r — skipping, best-effort only", doi)
-        return None
-    if response.status_code != 200:
-        return None
+        if response.status_code == 429:
+            logger.info("Unpaywall rate-limited enrichment lookup for DOI %r — skipping, best-effort only", doi)
+            call.outcome, call.error_type = "error", "RateLimited"
+            return None
+        if response.status_code != 200:
+            call.outcome, call.error_type = "error", "HTTPError"
+            return None
 
     try:
         data = response.json()
@@ -160,21 +165,25 @@ def _fetch_crossref_abstract(doi: str) -> str | None:
     in its metadata even when Semantic Scholar has none — this is the more
     likely of the two sources to actually recover something.
     """
-    try:
-        response = requests.get(
-            _CROSSREF_URL.format(doi=doi),
-            headers={"User-Agent": f"research-agent-enrichment (mailto:{_crossref_contact()})"},
-            timeout=_REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        logger.info("CrossRef lookup failed for DOI %r: %s", doi, exc)
-        return None
+    with telemetry.timed_child_call("enrichment_crossref", "crossref") as call:
+        try:
+            response = requests.get(
+                _CROSSREF_URL.format(doi=doi),
+                headers={"User-Agent": f"research-agent-enrichment (mailto:{_crossref_contact()})"},
+                timeout=_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.info("CrossRef lookup failed for DOI %r: %s", doi, exc)
+            call.outcome, call.error_type = "error", type(exc).__name__
+            return None
 
-    if response.status_code == 429:
-        logger.info("CrossRef rate-limited enrichment lookup for DOI %r — skipping, best-effort only", doi)
-        return None
-    if response.status_code != 200:
-        return None
+        if response.status_code == 429:
+            logger.info("CrossRef rate-limited enrichment lookup for DOI %r — skipping, best-effort only", doi)
+            call.outcome, call.error_type = "error", "RateLimited"
+            return None
+        if response.status_code != 200:
+            call.outcome, call.error_type = "error", "HTTPError"
+            return None
 
     try:
         data = response.json()

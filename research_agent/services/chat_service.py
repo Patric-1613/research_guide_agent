@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import ChatResponse, ChatTurn, CitedPaperOut, CitedWebArticleOut
 from research_agent.api_app.serializers import _web_articles_from_saved
 from research_agent.qa import ChatSession
@@ -17,7 +18,8 @@ def answer_search_chat(db: sqlite3.Connection, search_id: int, question: str, hi
     papers = api.get_papers_by_ids(saved.paper_ids, collection=api._state["collection"])
     web_articles = _web_articles_from_saved(saved)
     session = ChatSession(papers=papers, web_articles=web_articles, history=[turn.model_dump() for turn in history])
-    result = api.ask(session, question, client=api._state["client"])
+    with telemetry.paid_action("search_chat", subject_type="search", subject_id=str(search_id)):
+        result = api.ask(session, question, client=api._state["client"])
 
     return ChatResponse(
         answer=result["answer"],

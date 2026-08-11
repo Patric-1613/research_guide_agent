@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import SearchRequest, SearchResponse
 from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out
 from research_agent.config import get_settings
@@ -13,6 +14,15 @@ from research_agent.storage import save_search
 
 
 def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
+    with telemetry.paid_action("search"):
+        return _run_search(db, req)
+
+
+def _run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
+    # search_id (attached to the action below via telemetry.set_action_
+    # subject) doesn't exist until save_search() returns near the very end
+    # of this function -- the action itself has to open before that,
+    # since it needs to wrap the search/embedding work that happens first.
     s2_key = get_settings().semantic_scholar_api_key
 
     if req.use_query_expansion:
@@ -80,6 +90,7 @@ def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
         db, req.topic, paper_ids, scores,
         web_articles=[a.to_dict() for a in web_articles],
     )
+    telemetry.set_action_subject("search", str(search_id))
 
     return SearchResponse(
         search_id=search_id, topic=req.topic, created_at=created_at,

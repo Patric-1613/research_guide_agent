@@ -43,6 +43,7 @@ from urllib.parse import urlparse
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+import research_agent.telemetry as telemetry
 from research_agent import qa
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
@@ -160,7 +161,9 @@ def _classify_offer_response(offer_description: str, message: str, client: OpenA
             ),
         },
     ]
-    response = client.chat.completions.parse(model=model, messages=messages, response_format=_OfferResponseIntent)
+    with telemetry.timed_child_call("classify_offer_response", "openai", model=model) as call:
+        response = client.chat.completions.parse(model=model, messages=messages, response_format=_OfferResponseIntent)
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         # Same reasoning as qa.py's own refusal handling: a classifier that

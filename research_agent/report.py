@@ -46,6 +46,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
+import research_agent.telemetry as telemetry
 from research_agent.citations import format_apa_citation, format_web_citation
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper, WebArticle
@@ -973,6 +974,7 @@ def derive_sections_from_legacy_report(report: dict) -> list[dict]:
 def _generate_report_sections(
     topic: str, papers: list[Paper], web_articles: list[WebArticle], schema: type[BaseModel],
     client: OpenAI, model: str = REPORT_MODEL, system_prompt: str = SYSTEM_PROMPT,
+    telemetry_call_type: str = "report_generation",
 ) -> BaseModel:
     paper_listing = "\n\n".join(
         f"paper_id: {p.paper_id}\ntitle: {p.title}\nabstract: {p.abstract or '(no abstract available)'}"
@@ -994,7 +996,9 @@ def _generate_report_sections(
     langfuse = get_client()
     langfuse.update_current_generation(input=messages, model=model)
 
-    response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+    with telemetry.timed_child_call(telemetry_call_type, "openai", model=model) as call:
+        response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused")
@@ -1360,6 +1364,7 @@ def _regenerate_report_sections_with_sources(
     client = client or OpenAI()
     parsed = _generate_report_sections(
         session.topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt,
+        telemetry_call_type="report_regeneration",
     )
 
     referenced_ids: set[str] = set()
@@ -1741,7 +1746,9 @@ def _evaluate_report_llm(
     langfuse = get_client()
     langfuse.update_current_generation(input=messages, model=model)
 
-    response = client.chat.completions.parse(model=model, messages=messages, response_format=ReportEvaluation)
+    with telemetry.timed_child_call("report_evaluation", "openai", model=model) as call:
+        response = client.chat.completions.parse(model=model, messages=messages, response_format=ReportEvaluation)
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused")
@@ -1860,6 +1867,7 @@ def revise_report(
 
     parsed = _generate_report_sections(
         topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt,
+        telemetry_call_type="report_revision",
     )
 
     referenced_ids: set[str] = set()

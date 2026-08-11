@@ -24,6 +24,7 @@ import chromadb
 from langfuse import get_client, observe
 from openai import OpenAI
 
+import research_agent.telemetry as telemetry
 from research_agent.schema import Paper
 from research_agent.tracing import ranked_paper_metadata
 
@@ -96,13 +97,23 @@ def get_chroma_collection(persist_dir: Path = CHROMA_PERSIST_DIR):
 
 
 def _embed_texts(client: OpenAI, texts: list[str]) -> tuple[list[list[float]], int]:
-    """Batch-embed texts via the OpenAI API. Returns (vectors, total_tokens_billed)."""
+    """Batch-embed texts via the OpenAI API. Returns (vectors, total_tokens_billed).
+
+    This is the actual `client.embeddings.create` boundary -- the ONE place
+    in the codebase that makes a real embeddings SDK call. Every caller
+    (embed_and_index_papers below, qa.py's own `_embed_with_cache`) already
+    pre-filters to cache misses before reaching here, so every iteration of
+    the loop below is a genuine billed request, never a cache hit -- one
+    telemetry child-call record per batch, matching that 1:1.
+    """
     vectors: list[list[float]] = []
     total_tokens = 0
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         batch = texts[i : i + EMBED_BATCH_SIZE]
-        response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
-        batch_tokens = response.usage.total_tokens
+        with telemetry.timed_child_call("embeddings_create", "openai", model=EMBEDDING_MODEL) as call:
+            response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
+            batch_tokens = response.usage.total_tokens
+            call.total_tokens = batch_tokens
         total_tokens += batch_tokens
         # The API does not guarantee response.data is returned in the same
         # order as the input batch — each item carries its own `index` field

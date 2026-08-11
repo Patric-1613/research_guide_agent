@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import ReportOut
 from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import load_curation_session, save_curation_session
@@ -42,17 +43,22 @@ def get_or_create_report(
     if session is None:
         raise ServiceError(404, "session_id not found")
     if session.report is None:
-        try:
-            report = api.generate_report_for_session(
-                session, client=api._state["client"], report_template=report_template or "analytical",
+        # Fresh-generation branch only -- a cache hit (session.report
+        # already exists) never enters this block at all, so it creates no
+        # paid_actions row, matching /summarize's own cache-then-generate
+        # telemetry posture.
+        with telemetry.paid_action("report_generate", subject_type="session", subject_id=session_id):
+            try:
+                report = api.generate_report_for_session(
+                    session, client=api._state["client"], report_template=report_template or "analytical",
+                )
+            except ValueError as exc:
+                raise ServiceError(400, str(exc)) from exc
+            report = api.refine_report_if_requested(
+                report, session.topic, session.selected_papers, [],
+                report.get("report_template", "analytical"),
+                refinement_mode=refinement_mode, client=api._state["client"],
             )
-        except ValueError as exc:
-            raise ServiceError(400, str(exc)) from exc
-        report = api.refine_report_if_requested(
-            report, session.topic, session.selected_papers, [],
-            report.get("report_template", "analytical"),
-            refinement_mode=refinement_mode, client=api._state["client"],
-        )
         api.append_report_version(session, report, api.GENERATION_REASON_INITIAL)
         # curation-refinement-and-auto-offer Phase 6f-3: keeps the
         # auto-offer's staleness check accurate even when a report is
@@ -96,18 +102,19 @@ def regenerate_report(
     session = load_curation_session(session_id, cp)
     if session is None:
         raise ServiceError(404, "session_id not found")
-    try:
-        report = api.regenerate_report_with_new_sources(
-            session, client=api._state["client"], report_template=report_template,
+    with telemetry.paid_action("report_regenerate", subject_type="session", subject_id=session_id):
+        try:
+            report = api.regenerate_report_with_new_sources(
+                session, client=api._state["client"], report_template=report_template,
+            )
+        except ValueError as exc:
+            raise ServiceError(400, str(exc)) from exc
+        web_articles = [a for a in session.web_articles_added if a.url not in session.revoked_web_article_urls]
+        report = api.refine_report_if_requested(
+            report, session.topic, session.selected_papers, web_articles,
+            report.get("report_template", "analytical"),
+            refinement_mode=refinement_mode, client=api._state["client"],
         )
-    except ValueError as exc:
-        raise ServiceError(400, str(exc)) from exc
-    web_articles = [a for a in session.web_articles_added if a.url not in session.revoked_web_article_urls]
-    report = api.refine_report_if_requested(
-        report, session.topic, session.selected_papers, web_articles,
-        report.get("report_template", "analytical"),
-        refinement_mode=refinement_mode, client=api._state["client"],
-    )
     api.append_report_version(session, report, api.GENERATION_REASON_REGENERATE)
     session.report_covered_web_article_count = len(session.web_articles_added)
     save_curation_session(session, session_id, cp)

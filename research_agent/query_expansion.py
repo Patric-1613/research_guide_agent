@@ -32,6 +32,7 @@ from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+import research_agent.telemetry as telemetry
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
 from research_agent.ingestion import (
@@ -177,12 +178,14 @@ def suggest_related_titles(
     )
 
     try:
-        response = client.chat.completions.parse(
-            model=TITLE_SUGGESTION_MODEL,
-            temperature=TITLE_SUGGESTION_TEMPERATURE,
-            messages=messages,
-            response_format=_TitleSuggestions,
-        )
+        with telemetry.timed_child_call("suggest_related_titles", "openai", model=TITLE_SUGGESTION_MODEL) as call:
+            response = client.chat.completions.parse(
+                model=TITLE_SUGGESTION_MODEL,
+                temperature=TITLE_SUGGESTION_TEMPERATURE,
+                messages=messages,
+                response_format=_TitleSuggestions,
+            )
+            call.set_usage(response.usage)
     except Exception:
         logger.warning("suggest_related_titles: LLM call failed for topic %r", topic, exc_info=True)
         langfuse.update_current_generation(output={"titles": []}, level="WARNING", status_message="LLM call failed")
@@ -292,12 +295,14 @@ def canonicalize_topic(topic: str, client: OpenAI | None = None) -> str:
     )
 
     try:
-        response = client.chat.completions.parse(
-            model=CANONICALIZE_TOPIC_MODEL,
-            temperature=CANONICALIZE_TOPIC_TEMPERATURE,
-            messages=messages,
-            response_format=_CanonicalTopic,
-        )
+        with telemetry.timed_child_call("canonicalize_topic", "openai", model=CANONICALIZE_TOPIC_MODEL) as call:
+            response = client.chat.completions.parse(
+                model=CANONICALIZE_TOPIC_MODEL,
+                temperature=CANONICALIZE_TOPIC_TEMPERATURE,
+                messages=messages,
+                response_format=_CanonicalTopic,
+            )
+            call.set_usage(response.usage)
     except Exception:
         logger.warning("canonicalize_topic: LLM call failed for topic %r", topic, exc_info=True)
         langfuse.update_current_generation(output={"canonical_topic": topic}, level="WARNING", status_message="LLM call failed")

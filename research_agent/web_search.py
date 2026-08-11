@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
+import research_agent.telemetry as telemetry
 from research_agent.config import get_settings
 from research_agent.schema import WebArticle
 
@@ -58,14 +59,16 @@ def search_web(query: str, max_results: int = 4) -> list[WebArticle]:
         return []
 
     try:
-        tool = TavilySearch(max_results=max_results, topic="general")
-        response = tool.invoke({"query": query})
+        with telemetry.timed_child_call("web_search", "tavily"):
+            tool = TavilySearch(max_results=max_results, topic="general")
+            response = tool.invoke({"query": query})
     except Exception as exc:
         # Tavily/httpx raise a mix of exception types across failure modes
         # (bad key, rate limit, network error) rather than one common base
         # class worth enumerating — this is a best-effort supplementary
         # corpus, so any failure here degrades to "no web results" rather
-        # than breaking the whole search.
+        # than breaking the whole search. timed_child_call already recorded
+        # outcome=error/error_type=<class name> before re-raising.
         logger.warning("Tavily search failed for query %r: %s", query, exc)
         return []
 

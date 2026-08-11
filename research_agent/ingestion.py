@@ -19,6 +19,7 @@ import arxiv
 import requests
 from langfuse import get_client, observe
 
+import research_agent.telemetry as telemetry
 from research_agent.schema import Paper
 from research_agent.tracing import paper_metadata
 
@@ -180,26 +181,29 @@ def search_arxiv(query: str, max_results: int = 20) -> list[Paper]:
     )
 
     papers: list[Paper] = []
-    try:
-        for result in client.results(search):
-            papers.append(
-                Paper(
-                    title=result.title.strip(),
-                    authors=[a.name for a in result.authors],
-                    year=result.published.year if result.published else None,
-                    venue=_clean_venue(result.journal_ref) or "arXiv preprint",
-                    abstract=_clean_abstract(result.summary),
-                    url=result.entry_id,
-                    doi=result.doi,
-                    citation_count=None,  # arXiv doesn't track citations
-                    source="arxiv",
-                    paper_id=result.get_short_id(),
+    with telemetry.timed_child_call("search_arxiv", "arxiv") as call:
+        try:
+            for result in client.results(search):
+                papers.append(
+                    Paper(
+                        title=result.title.strip(),
+                        authors=[a.name for a in result.authors],
+                        year=result.published.year if result.published else None,
+                        venue=_clean_venue(result.journal_ref) or "arXiv preprint",
+                        abstract=_clean_abstract(result.summary),
+                        url=result.entry_id,
+                        doi=result.doi,
+                        citation_count=None,  # arXiv doesn't track citations
+                        source="arxiv",
+                        paper_id=result.get_short_id(),
+                    )
                 )
-            )
-    except arxiv.ArxivError as exc:
-        logger.warning("arXiv search failed for query %r: %s", query, exc)
-    except requests.RequestException as exc:
-        logger.warning("Network error during arXiv search for query %r: %s", query, exc)
+        except arxiv.ArxivError as exc:
+            logger.warning("arXiv search failed for query %r: %s", query, exc)
+            call.outcome, call.error_type = "error", type(exc).__name__
+        except requests.RequestException as exc:
+            logger.warning("Network error during arXiv search for query %r: %s", query, exc)
+            call.outcome, call.error_type = "error", type(exc).__name__
 
     if not papers:
         logger.info("search_arxiv: no results for query %r", query)
@@ -242,6 +246,13 @@ def search_semantic_scholar(
     response = None
     already_counted_this_call = False
     for attempt in range(1, max_retries + 1):
+        # One child-call record per real HTTP attempt (not one per logical
+        # search) — "separately observable retries/attempts where the code
+        # controls them" per the M1.2 spec: a search that retried 3 times
+        # before succeeding shows as 3 distinct child calls, the same way
+        # get_rate_limited_call_count() already rolls up "how many attempts
+        # hit rate-limiting" for Langfuse, just at the telemetry layer too.
+        attempt_started = time.monotonic()
         try:
             response = requests.get(
                 _S2_SEARCH_URL, params=params, headers=headers, timeout=15
@@ -250,6 +261,11 @@ def search_semantic_scholar(
             logger.warning(
                 "Network error during Semantic Scholar search for query %r (attempt %d/%d): %s",
                 query, attempt, max_retries, exc,
+            )
+            telemetry.record_child_call(
+                "search_semantic_scholar", "semantic_scholar",
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+                outcome="error", error_type=type(exc).__name__,
             )
             if attempt == max_retries:
                 get_client().update_current_span(output={"count": 0, "papers": []})
@@ -282,6 +298,16 @@ def search_semantic_scholar(
                 if tracker is not None:
                     tracker[0] += 1
                 already_counted_this_call = True
+            # This attempt's own child-call record: a real HTTP response WAS
+            # received (not a transport failure, this is a known, code-
+            # controlled retry condition) — "RateLimited" is a fixed,
+            # content-free label for that condition, not an exception's
+            # message text.
+            telemetry.record_child_call(
+                "search_semantic_scholar", "semantic_scholar",
+                latency_ms=(time.monotonic() - attempt_started) * 1000,
+                outcome="error", error_type="RateLimited",
+            )
             if attempt == max_retries:
                 logger.warning("Giving up on Semantic Scholar search for query %r", query)
                 get_client().update_current_span(output={"count": 0, "papers": []})
@@ -290,6 +316,10 @@ def search_semantic_scholar(
             backoff *= 2
             continue
 
+        telemetry.record_child_call(
+            "search_semantic_scholar", "semantic_scholar",
+            latency_ms=(time.monotonic() - attempt_started) * 1000, outcome="success",
+        )
         break
 
     if response is None or response.status_code != 200:
@@ -397,28 +427,32 @@ def search_openalex(query: str, max_results: int = 20, mailto: str | None = None
 
     get_client().update_current_span(input={"query": query, "max_results": max_results})
 
-    try:
-        response = requests.get(_OPENALEX_SEARCH_URL, params=params, timeout=15)
-    except requests.RequestException as exc:
-        logger.warning("Network error during OpenAlex search for query %r: %s", query, exc)
-        get_client().update_current_span(output={"count": 0, "papers": []})
-        return []
+    with telemetry.timed_child_call("search_openalex", "openalex") as call:
+        try:
+            response = requests.get(_OPENALEX_SEARCH_URL, params=params, timeout=15)
+        except requests.RequestException as exc:
+            logger.warning("Network error during OpenAlex search for query %r: %s", query, exc)
+            call.outcome, call.error_type = "error", type(exc).__name__
+            get_client().update_current_span(output={"count": 0, "papers": []})
+            return []
 
-    if response.status_code != 200:
-        logger.warning(
-            "OpenAlex search failed for query %r: status=%s", query, response.status_code
-        )
-        get_client().update_current_span(output={"count": 0, "papers": []})
-        return []
+        if response.status_code != 200:
+            logger.warning(
+                "OpenAlex search failed for query %r: status=%s", query, response.status_code
+            )
+            call.outcome, call.error_type = "error", "HTTPError"
+            get_client().update_current_span(output={"count": 0, "papers": []})
+            return []
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        logger.warning(
-            "OpenAlex returned a malformed/empty response body for query %r: %s", query, exc,
-        )
-        get_client().update_current_span(output={"count": 0, "papers": []})
-        return []
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            logger.warning(
+                "OpenAlex returned a malformed/empty response body for query %r: %s", query, exc,
+            )
+            call.outcome, call.error_type = "error", type(exc).__name__
+            get_client().update_current_span(output={"count": 0, "papers": []})
+            return []
 
     papers: list[Paper] = []
     for item in payload.get("results", []) or []:

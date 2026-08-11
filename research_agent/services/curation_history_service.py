@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import CurationSelectFromHistoryRequest, CurationSelectFromHistoryResponse, CurationTurnResponse
 from research_agent.api_app.serializers import _turn_result_to_response
 from research_agent.curation_loop import start_curation_turn
@@ -58,5 +59,9 @@ def reopen_curation(session_id: str, cp) -> CurationTurnResponse:
         raise ServiceError(400, str(exc)) from exc
 
     target_count = session.target_count
-    result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
+    # Same conditional-refill reasoning as curation_core_service.py's own
+    # submit_picks -- reopening only actually refills when the pool is
+    # exhausted; discard_if_empty=True keeps the common case row-free.
+    with telemetry.paid_action("curation_refill", subject_type="session", subject_id=session_id, discard_if_empty=True):
+        result = start_curation_turn(session_id, cp, _session_to_dict(session), config=_curation_config())
     return _turn_result_to_response(session_id, target_count, result)

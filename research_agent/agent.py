@@ -29,6 +29,7 @@ from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from openai import OpenAI
 
+import research_agent.telemetry as telemetry
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
@@ -480,17 +481,38 @@ def run_research_agent(
         # several messages can land in a single step, so we diff against
         # what we've already seen rather than assume the last message is the
         # only new one.
-        seen = 0
-        for step in agent.stream(
-            {"messages": [{"role": "user", "content": topic}]},
-            stream_mode="values",
-            config={"callbacks": [langfuse_handler]},
-        ):
-            messages = step["messages"]
-            for message in messages[seen:]:
-                if on_step:
-                    on_step(message)
-            seen = len(messages)
+        # Usage Protection M1.2: the top-level "search" action (opened by
+        # search_service.py, well outside this function) still needs SOME
+        # record that the agent's own internal LLM decision loop ran, even
+        # though its individual turns are not, and are not attempted to be,
+        # individually metered here -- reconstructing per-turn token counts
+        # from inside a LangChain agent.stream() loop would require hooking
+        # the CallbackHandler's own internal accounting, real extra work
+        # this phase deliberately doesn't take on. Exact agent-loop token
+        # accounting remains Langfuse's job (langfuse_handler above already
+        # traces every underlying LLM call with real usage) -- this one
+        # opaque, truthfully-null-tokened record exists only so a reader of
+        # this action's own child_calls_json sees "an unmetered agent loop
+        # ran here" instead of the loop being invisible. Tool calls the
+        # agent itself makes that reach an already-instrumented function
+        # (search_arxiv/search_semantic_scholar/search_web, all called
+        # synchronously within this same call stack -- no thread/task
+        # boundary crossed, so the active ContextVar action is still the
+        # same one) DO still record their own real child calls normally,
+        # alongside this one. Does not touch the agent's own prompt, tools,
+        # or tool-selection behavior in any way.
+        with telemetry.timed_child_call("agent_loop_unmetered", "openai", model=AGENT_MODEL):
+            seen = 0
+            for step in agent.stream(
+                {"messages": [{"role": "user", "content": topic}]},
+                stream_mode="values",
+                config={"callbacks": [langfuse_handler]},
+            ):
+                messages = step["messages"]
+                for message in messages[seen:]:
+                    if on_step:
+                        on_step(message)
+                seen = len(messages)
 
         rate_limited_calls = get_rate_limited_call_count()
         if rate_limited_calls:

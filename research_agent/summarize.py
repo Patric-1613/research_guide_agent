@@ -49,6 +49,7 @@ from langfuse import get_client, observe
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
+import research_agent.telemetry as telemetry
 from research_agent.citations import (
     CitationStyle,
     format_apa_citation,
@@ -127,7 +128,9 @@ def _generate_theme_summary(
     langfuse = get_client()
     langfuse.update_current_generation(input=messages, model=model)
 
-    response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+    with telemetry.timed_child_call("generate_theme_summary", "openai", model=model) as call:
+        response = client.chat.completions.parse(model=model, messages=messages, response_format=schema)
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         langfuse.update_current_generation(output=None, level="WARNING", status_message="Model refused")
@@ -293,14 +296,16 @@ def generate_web_summary(
     user_message = f"Research topic: {topic}\n\nWeb articles:\n\n{listing}"
 
     client = client or OpenAI()
-    response = client.chat.completions.parse(
-        model=model,
-        messages=[
-            {"role": "system", "content": WEB_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        response_format=schema,
-    )
+    with telemetry.timed_child_call("generate_web_summary", "openai", model=model) as call:
+        response = client.chat.completions.parse(
+            model=model,
+            messages=[
+                {"role": "system", "content": WEB_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            response_format=schema,
+        )
+        call.set_usage(response.usage)
     parsed = response.choices[0].message.parsed
     if parsed is None:
         raise RuntimeError(f"Model refused to produce a web summary: {response.choices[0].message.refusal}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import (
     ChatTurn,
     CitedPaperOut,
@@ -23,10 +24,15 @@ def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> Curat
     session = load_curation_session(session_id, cp)
     if session is None:
         raise ServiceError(404, "session_id not found")
-    try:
-        result = api.chat_turn(session, req.message, client=api._state["client"])
-    except ValueError as exc:
-        raise ServiceError(400, str(exc)) from exc
+    # A single "curation_chat" action covers the whole turn, including any
+    # nested second ask (web-offer accept) or report-regeneration
+    # (report-update-offer accept) chat_turn() triggers internally -- "first
+    # active action wins" means neither ever opens its own top-level row.
+    with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+        try:
+            result = api.chat_turn(session, req.message, client=api._state["client"])
+        except ValueError as exc:
+            raise ServiceError(400, str(exc)) from exc
     save_curation_session(session, session_id, cp)
 
     return CurationChatResponse(
@@ -87,12 +93,13 @@ def add_curation_chat_exchanges_to_report(
     newly_approved_urls = api.cited_web_article_urls_for_exchanges(session, eligible_ids)
     approved_web_articles = api.resolve_approved_web_articles_for_regeneration(session, newly_approved_urls)
 
-    try:
-        new_report = api.regenerate_report_with_approved_web_sources(
-            session, approved_web_articles, client=api._state["client"],
-        )
-    except ValueError as exc:
-        raise ServiceError(400, str(exc)) from exc
+    with telemetry.paid_action("report_regenerate", subject_type="session", subject_id=session_id):
+        try:
+            new_report = api.regenerate_report_with_approved_web_sources(
+                session, approved_web_articles, client=api._state["client"],
+            )
+        except ValueError as exc:
+            raise ServiceError(400, str(exc)) from exc
 
     # report-quality Phase R3: appended as a new version (generation_
     # reason=api.GENERATION_REASON_CHAT_ADD_TO_REPORT), not assigned to
@@ -122,12 +129,13 @@ def edit_curation_chat_exchange(session_id: str, req: CurationChatEditRequest, c
     if session is None:
         raise ServiceError(404, "session_id not found")
 
-    try:
-        result, report_possibly_stale = api.edit_chat_exchange(
-            session, req.exchange_id, req.question, client=api._state["client"],
-        )
-    except ValueError as exc:
-        raise ServiceError(400, str(exc)) from exc
+    with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+        try:
+            result, report_possibly_stale = api.edit_chat_exchange(
+                session, req.exchange_id, req.question, client=api._state["client"],
+            )
+        except ValueError as exc:
+            raise ServiceError(400, str(exc)) from exc
     save_curation_session(session, session_id, cp)
 
     return CurationChatEditResponse(

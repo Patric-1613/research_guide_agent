@@ -369,7 +369,7 @@ class TestNoForbiddenContentFields:
         kinds = {p.kind for p in sig.parameters.values()}
         assert inspect.Parameter.VAR_KEYWORD not in kinds
         assert inspect.Parameter.VAR_POSITIONAL not in kinds
-        assert set(sig.parameters) == {"action_type", "subject_type", "subject_id"}
+        assert set(sig.parameters) == {"action_type", "subject_type", "subject_id", "discard_if_empty"}
 
     def test_no_field_named_after_a_forbidden_content_category(self):
         forbidden_substrings = ("prompt", "message", "text", "url", "query", "header", "api_key", "abstract")

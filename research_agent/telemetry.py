@@ -261,7 +261,21 @@ def _sum_nullable(values: list[int | None]) -> int | None:
     return sum(known) if known else None
 
 
-def _finalize_and_persist(collector: "_ActionCollector", outcome: ActionOutcome) -> None:
+def _finalize_and_persist(collector: "_ActionCollector", outcome: ActionOutcome, discard_if_empty: bool) -> None:
+    if discard_if_empty and outcome == "success" and not collector.child_calls:
+        # M1.2: the "only when a real refill/attempt actually happened"
+        # requirement for actions like curation_refill -- rather than the
+        # SERVICE layer duplicating curation_loop.py's own refill-routing
+        # decision (session.remaining()==0 or force_refill) to predict in
+        # advance whether to open an action at all, `paid_action` is opened
+        # unconditionally and simply discards itself here if nothing
+        # billable ended up happening. This can never drift out of sync
+        # with the real routing logic the way a duplicated prediction
+        # could. An action that ERRORED with zero child calls is still
+        # recorded (something genuinely went wrong, discarding would hide
+        # that) -- only a clean, empty success is ever discarded.
+        return
+
     def _build_and_write() -> None:
         # Deliberately INSIDE the closure _safe() below wraps -- not run
         # eagerly before it -- so a JSON-serialization failure (a future
@@ -292,10 +306,21 @@ def _finalize_and_persist(collector: "_ActionCollector", outcome: ActionOutcome)
 @contextmanager
 def paid_action(
     action_type: str, *, subject_type: SubjectType | None = None, subject_id: str | None = None,
+    discard_if_empty: bool = False,
 ) -> Iterator[None]:
     """Opens one semantic paid-action record for the duration of the
     `with` block, correlated to whatever HTTP request is currently
     active (`get_current_request_id()`) if any.
+
+    `discard_if_empty` (M1.2): when `True`, a clean run that recorded
+    ZERO child calls is not persisted at all -- for an action type like
+    `curation_refill` that only conditionally does real work (`/picks`/
+    `/reopen` only refill sometimes), this is what lets the SAME
+    `with paid_action("curation_refill", ..., discard_if_empty=True):`
+    wrap every call unconditionally while still producing no row at all
+    on the common, no-refill path -- see `_finalize_and_persist`'s own
+    docstring for why this beats duplicating curation_loop.py's own
+    refill-routing decision in the service layer.
 
     **First active action wins.** If a `paid_action` is already open on
     this task/thread (a nested call -- e.g. a service function that
@@ -344,7 +369,101 @@ def paid_action(
         raise
     finally:
         _action_var.reset(token)
-        _finalize_and_persist(collector, outcome)
+        _finalize_and_persist(collector, outcome, discard_if_empty)
+
+
+def set_action_subject(subject_type: SubjectType, subject_id: str) -> None:
+    """M1.2: lets the CURRENTLY active action's `subject_type`/`subject_id`
+    be attached after the fact -- specifically for `/search`, whose
+    `search_id` doesn't exist until `storage.save_search()` returns near
+    the very end of the action, well after `paid_action("search")` must
+    already be open (it needs to wrap the search/embedding work that
+    happens before that point too). A no-op with no active action (same
+    posture as `record_child_call`) -- never raises, never invents an
+    action. Deliberately NOT a storage redesign: this only ever mutates
+    the in-memory collector `paid_action` already holds for the
+    duration of its own `with` block; nothing about `search_id`'s own
+    persistence in `storage.py` changes."""
+    collector = _action_var.get()
+    if collector is None:
+        return
+    collector.subject_type = subject_type
+    collector.subject_id = subject_id
+
+
+@contextmanager
+def timed_child_call(call_type: str, provider: str, *, model: str | None = None) -> Iterator["_ChildCallRecorder"]:
+    """M1.2: the minimal extension the M1 architecture audit anticipated
+    -- every real call site below follows the exact same shape (time
+    it, record success with whatever usage info is available, record
+    error with the exception's class name on failure, always re-raise)
+    and repeating that try/except/timing by hand at ~20 call sites is
+    exactly the "repeated, error-prone" case worth a small shared
+    helper for, not a reason to change `record_child_call`'s own typed,
+    content-free contract.
+
+    Usage:
+        with telemetry.timed_child_call("condense_question", "openai", model=model) as call:
+            response = client.chat.completions.create(...)
+            call.set_usage(response.usage)  # or set call.input_tokens/... directly
+
+    On success, calls `record_child_call(..., outcome="success")` with
+    whatever fields the caller set on `call` inside the block. On ANY
+    exception, calls it with `outcome="error", error_type=type(exc).
+    __name__` instead -- then ALWAYS re-raises the original exception
+    unchanged, exactly once, so an existing caller's own try/except
+    (e.g. `web_search.py::search_web`'s degrade-to-`[]` on any Tavily
+    failure) keeps working completely unmodified; this helper never
+    swallows or substitutes an exception, it only observes one on the
+    way past.
+    """
+    call = _ChildCallRecorder(call_type=call_type, provider=provider, model=model)
+    start = time.monotonic()
+    try:
+        yield call
+    except Exception as exc:
+        call.outcome = "error"
+        call.error_type = type(exc).__name__
+        raise
+    finally:
+        latency_ms = (time.monotonic() - start) * 1000
+        record_child_call(
+            call_type=call.call_type, provider=call.provider, model=call.model,
+            input_tokens=call.input_tokens, output_tokens=call.output_tokens, total_tokens=call.total_tokens,
+            cache_hit=call.cache_hit, latency_ms=latency_ms, outcome=call.outcome, error_type=call.error_type,
+        )
+
+
+@dataclass
+class _ChildCallRecorder:
+    """The mutable, in-progress record `timed_child_call` yields --
+    never itself the persisted shape (that's still exactly the plain
+    dict `record_child_call` builds); a caller sets fields on this
+    inside the `with` block, and `timed_child_call`'s own `finally`
+    reads them once at the end."""
+
+    call_type: str
+    provider: str
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cache_hit: bool | None = None
+    outcome: str = "success"
+    error_type: str | None = None
+
+    def set_usage(self, usage: Any) -> None:
+        """Convenience for the extremely common
+        `response.usage.{prompt_tokens,completion_tokens,total_tokens}`
+        shape every OpenAI chat/parse call in this codebase already
+        reads by hand -- a no-op (leaves every token field `None`, never
+        fabricates `0`) when `usage` is `None`, matching every existing
+        call site's own `if usage is not None:` guard."""
+        if usage is None:
+            return
+        self.input_tokens = getattr(usage, "prompt_tokens", None)
+        self.output_tokens = getattr(usage, "completion_tokens", None)
+        self.total_tokens = getattr(usage, "total_tokens", None)
 
 
 def record_child_call(
