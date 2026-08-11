@@ -289,8 +289,8 @@
         "rationale": "R6D.3b human adjudication against the frozen template_fit definition: the Foundational template's own expectation requires evidence-grounded framing rather than padded, unsupported claims. Replacing an absolute unsupported guarantee ('eliminates all') with the source-bounded finding ('reduces the rate of') improves that fit without changing reader depth, introducing new terminology, or adding padding."
       },
       "coherence": {
-        "direction": "improved",
-        "rationale": "R6D.3b human adjudication against the frozen coherence definition (which includes logical flow section to section, not merely absence of repetition): the corrected Conclusion now aligns with the evidence and the preceding discussion sections, removing the logical mismatch the draft's unsupported absolute claim created between the Conclusion and the rest of the report."
+        "direction": "unchanged",
+        "rationale": "R6D.3c rubric-boundary clarification (not automatic label copying): the correction improves factual support and analytical precision, but does not change document flow, structure, repetition, transitions, or resolve an explicit contradiction between report sections; those other improvements are already captured by citation_correctness, groundedness, analytical_quality, and template_fit. Run 5 (coherence=improved, confidence=0.72) and run 6 (coherence=unchanged, confidence=0.98) disagreed on exactly this boundary; run 6's higher-confidence result and this rubric re-read both point to unchanged."
       },
       "source_balance": {
         "direction": "unchanged",

@@ -1491,6 +1491,69 @@ live call was made in this checkpoint.
 required** to assess stability (does the recalibrated pipeline agree
 with its own now-corrected expectation on a second independent run)
 before moving on to calibrate another fixture or attempting R6D.4.
+**That repeated run (run_id 6) disagreed on exactly one dimension —
+coherence — see "R6D.3c" immediately below; `coherence` is corrected
+back to `unchanged` there, everything else this section describes
+stands unchanged.**
+
+### R6D.3c — clarify the coherence boundary in paired refinement evaluation (2026-08-11)
+
+Run 6 (`eval_results/report_refinement_history.csv` run_id 6, commit
+`09a09ad`, note "R6D.3b clear-grounding stability check") was the
+repeated stability run R6D.3b's own closing note called for. It
+matched six of the seven dimensions run 5 produced — `citation_
+correctness`, `groundedness`, `synthesis_quality`, `analytical_
+quality`, `template_fit`, `source_balance` were all stable across both
+runs. **`coherence` was the one unstable boundary**: run 5 returned
+`improved` at confidence 0.72; run 6 returned `unchanged` at
+confidence 0.98.
+
+Human adjudication against the frozen rubric (not automatic label
+copying) concluded the boundary should be assigned **conservatively to
+`unchanged` for this fixture**: the Conclusion edit corrects factual
+overreach, and that effect is already fully owned by `groundedness`
+(is the claim supported), `citation_correctness` (does its citation
+support it), `analytical_quality` (do conclusions follow evidence
+rather than overreach), and `template_fit` (does Foundational framing
+stay evidence-grounded). For this specific fixture the edit changes
+none of coherence's own proper territory — section ordering, document
+structure, repetition, transitions, logical progression between
+sections, an explicit contradiction between two report statements, or
+illegitimate placeholder/injection content.
+
+`judges/refinement_holistic.py`'s `coherence` prompt bullet was
+clarified accordingly (prompt version bumped `r6d3a-pairwise-
+holistic-v1` → `r6d3c-pairwise-holistic-v2`, the ONLY prompt text
+touched — the other four dimension bullets, schema, sanitization,
+failure policy, and 3-call bound are all byte-identical to R6D.3a):
+factual correction alone is not automatically a coherence improvement;
+coherence only moves when the edit itself affects internal document
+consistency or reading flow (fixing/introducing a contradiction
+between sections, repairing/breaking logical progression, adding/
+removing material repetition, adding/removing illegitimate content, or
+repairing/breaking a transition) — never "improved" or "regressed"
+just because the underlying claim became more or less factually
+accurate.
+
+**This is the final calibration allowed for `clear_grounding_
+improvement`.** Validated by `tests/test_evals_report_refinement.py`'s
+new `TestR6D3cCoherenceBoundary` class (202 passed, was 185) — the
+fixture's other six directions are unchanged from R6D.3b, no other
+fixture or report content changed, and coherence's pass-through
+mechanism is proven to still support all three non-`unchanged`
+directions (a mocked "fixes a contradiction" response still returns
+`improved`; a mocked "introduces repetition" response still returns
+`regressed`) — this clarification narrows WHEN coherence moves, it
+does not force it to always be `unchanged`. Full backend suite → 1174
+passed. No real paid live call was made in this checkpoint.
+
+**One final paid stability run of `clear_grounding_improvement` may
+still be performed** (separately from this implementation) to confirm
+the clarified prompt now agrees with the corrected expectation. Per
+the project's own stopping rule: if coherence still varies after that
+run, this fixture and this prompt boundary will NOT be tuned again —
+any further disagreement gets documented as a residual judge-stability
+limitation, and work moves on to calibrating the next fixture instead.
 
 ## Related docs
 

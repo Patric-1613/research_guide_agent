@@ -1756,7 +1756,17 @@ invented:
   `clear_grounding_improvement` live (same single-pair scope as run_id
   3) to confirm the recalibrated pipeline now agrees with its own
   corrected expectation, then R6D.4.
-- **Status**: Closed (2026-08-11).
+- **Status**: Closed (2026-08-11). Followed by R6D.3b (fixture
+  adjudication of `clear_grounding_improvement`'s analytical_quality/
+  template_fit/coherence, run_id 5) and R6D.3c (coherence-boundary
+  clarification after run_id 6's own stability check disagreed with
+  run_id 5 on exactly `coherence`; prompt version bumped to
+  `r6d3c-pairwise-holistic-v2`, `coherence` reverted to `unchanged`)
+  — see `docs/evaluation.md`'s "R6D.3b"/"R6D.3c" sections for the full
+  record. **R6D.3c is the final calibration allowed for this fixture**;
+  one more paid stability run may still confirm it, after which any
+  remaining disagreement is documented as a residual judge-stability
+  limitation rather than tuned further. Both closed (2026-08-11).
 
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4

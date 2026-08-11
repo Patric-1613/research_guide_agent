@@ -30,6 +30,23 @@ both reports together and is asked to judge ONLY the effect of the
 actual edit does not have this failure mode: unchanged content is
 trivially recognized as unchanged by the same call that is already
 looking at both versions at once.
+
+R6D.3c (`r6d3a-pairwise-holistic-v1` -> `r6d3c-pairwise-holistic-v2`):
+`clear_grounding_improvement`'s own two live runs (run_id 5: coherence
+`improved`, confidence 0.72; run_id 6: coherence `unchanged`,
+confidence 0.98) disagreed on exactly one boundary -- whether a purely
+FACTUAL correction (an overclaim becoming accurate) is, on its own,
+also a coherence change. Human adjudication against the frozen rubric
+concluded it is not: factual support/precision is already owned by
+groundedness/analytical_quality; coherence is reserved for internal
+document consistency/reading flow specifically (contradictions between
+sections, broken/repaired logical progression, repetition, illegitimate
+content, transitions/organization). The `coherence` dimension bullet in
+`_SYSTEM_PROMPT` below was clarified accordingly -- see `docs/
+evaluation.md`'s "R6D.3c" section for the full rationale and the
+project's stopping rule (this is the final calibration pass for this
+one fixture; further disagreement after one more live rerun gets
+documented as a residual judge-stability limitation, not tuned again).
 """
 
 from __future__ import annotations
@@ -40,7 +57,7 @@ from typing import Any, Literal
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION = "r6d3a-pairwise-holistic-v1"
+R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION = "r6d3c-pairwise-holistic-v2"
 
 _DIMENSION_NAMES = ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")
 
@@ -78,7 +95,7 @@ For each of the five dimensions below, judge ONLY THE EFFECT OF THE ACTUAL CHANG
 - synthesis_quality: did the change affect whether the report synthesizes across sources by theme, versus merely summarizing one source at a time in isolation?
 - analytical_quality: did the change affect whether the Gap Analysis and Future Research Directions sections are meaningfully distinct (diagnostic vs. prescriptive), or whether conclusions follow from the cited evidence rather than overreaching?
 - template_fit: did the change affect how well the report's depth/tone matches its stated template ({template} -- {template_expectation})?
-- coherence: did the change affect whether the report reads as one coherent document -- introducing or removing repeated sentences/ideas, illegitimate content (including any "[BLOCKED_UNTRUSTED_INSTRUCTION]" placeholder), or broken logical flow?
+- coherence: did the change affect INTERNAL DOCUMENT CONSISTENCY OR READING FLOW specifically -- never merely whether a claim became more factually accurate. A factual correction alone (a claim becoming better-supported, more precise, or less overreaching) is NOT automatically a coherence improvement -- that effect belongs primarily to groundedness/analytical_quality, which already own it. Only return a direction other than "unchanged" here when the edit itself: fixes or introduces an explicit contradiction between two report sections/statements; repairs or breaks logical progression from section to section; removes or adds material repetition of sentences/ideas; removes or adds illegitimate content (including any "[BLOCKED_UNTRUSTED_INSTRUCTION]" placeholder); or repairs or breaks a transition/organizational structure. If none of those coherence-specific effects occurred -- even when the same edit clearly improved factual accuracy elsewhere -- return "unchanged" for coherence.
 - source_balance: did the change affect how reasonably the report represents its selected sources, given their citation frequency/coverage?
 
 For each dimension, return:
