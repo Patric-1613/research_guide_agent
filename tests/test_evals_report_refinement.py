@@ -187,13 +187,16 @@ class TestFixtureDirectionalIntent:
         assert e.expected["hard_failure_direction"] == "unchanged"
 
     def test_holistic_synthesis_improvement(self):
+        """R6D final adjudication (run 9): groundedness moved unchanged
+        -> improved -- see `TestR6DHolisticSynthesisFinalization`."""
         e = self._example("holistic_synthesis_improvement")
         d = e.expected["dimension_directions"]
         assert d["synthesis_quality"]["direction"] == "improved"
         assert d["analytical_quality"]["direction"] == "improved"
+        assert d["template_fit"]["direction"] == "improved"
         assert d["coherence"]["direction"] == "improved"
         assert d["citation_correctness"]["direction"] == "unchanged"
-        assert d["groundedness"]["direction"] == "unchanged"
+        assert d["groundedness"]["direction"] == "improved"
 
     def test_justified_no_revision(self):
         e = self._example("justified_no_revision")
@@ -2130,12 +2133,15 @@ class TestR6D3bAdjudication:
         as one explicit R6D.3b non-regression check."""
         examples = {e.id: e for e in rri.load_report_refinement_examples()}
 
+        # holistic_synthesis_improvement's own directions as of its R6D finalization
+        # (run 9) -- groundedness moved unchanged -> improved there; see
+        # `TestR6DHolisticSynthesisFinalization` for the dedicated coverage.
         holistic = examples["holistic_synthesis_improvement"].expected["dimension_directions"]
         assert holistic["synthesis_quality"]["direction"] == "improved"
         assert holistic["analytical_quality"]["direction"] == "improved"
         assert holistic["coherence"]["direction"] == "improved"
         assert holistic["citation_correctness"]["direction"] == "unchanged"
-        assert holistic["groundedness"]["direction"] == "unchanged"
+        assert holistic["groundedness"]["direction"] == "improved"
 
         justified = examples["justified_no_revision"].expected["dimension_directions"]
         assert all(entry["direction"] == "unchanged" for entry in justified.values())
@@ -2477,19 +2483,22 @@ class TestR6DHolisticSynthesisFixtureCorrection:
             for key in rri.REQUIRED_SECTION_KEYS:
                 assert report[key]["content"] == sections_by_key[key], f"{key} desynchronized"
 
-    def test_spancite_correctly_described_as_decoding_time_before_emission(self):
+    def test_spancite_correctly_described_as_decoding_time(self):
+        """R6D final wording (run 9): Thematic Findings names SpanCite's
+        intervention as sentence traceability DURING DECODING -- the
+        Future Research Directions wording ("sentence emission during
+        decoding") is untouched from the run-8 correction."""
         e = self._example()
         refined_thematic = e.refined_report["thematic_findings"]["content"]
         refined_future = e.refined_report["future_research_directions"]["content"]
         assert "during decoding" in refined_thematic
-        assert "before emission" in refined_thematic
-        assert "during decoding" in refined_future
+        assert "sentence emission during decoding" in refined_future
 
     def test_driftguard_correctly_described_as_filtering_before_generation(self):
         e = self._example()
         refined_thematic = e.refined_report["thematic_findings"]["content"]
         refined_future = e.refined_report["future_research_directions"]["content"]
-        assert "filtering drifted passages" in refined_thematic
+        assert "topic-drift filtering before generation" in refined_thematic
         assert "DriftGuard filters passages before generation" in refined_future
 
     def test_combined_pipeline_remains_explicitly_untested(self):
@@ -2528,11 +2537,13 @@ class TestR6DHolisticSynthesisFixtureCorrection:
         assert d["template_fit"]["direction"] == "improved"
 
     def test_all_other_expected_directions_remain_exactly_as_frozen(self):
+        """As of the run-9 finalization, groundedness moved unchanged ->
+        improved (see `TestR6DHolisticSynthesisFinalization`); the other
+        five remain exactly as they were after the run-8 correction."""
         e = self._example()
         d = e.expected["dimension_directions"]
         assert e.expected["hard_failure_direction"] == "unchanged"
         assert d["citation_correctness"]["direction"] == "unchanged"
-        assert d["groundedness"]["direction"] == "unchanged"
         assert d["synthesis_quality"]["direction"] == "improved"
         assert d["analytical_quality"]["direction"] == "improved"
         assert d["coherence"]["direction"] == "improved"
@@ -2562,13 +2573,12 @@ class TestR6DHolisticSynthesisFixtureCorrection:
                 for rationale in rationales:
                     assert rationale not in content
 
-    def test_correction_is_documented_as_evidence_fix_not_answer_key_tuning(self):
+    def test_correction_is_documented_as_evidence_fix(self):
         e = self._example()
         assert "adjudication_note" in e.refinement_context
         note = e.refinement_context["adjudication_note"].lower()
-        assert "fixture-evidence correction" in note
-        assert "not answer-key tuning" in note
-        assert "run_id 8" in note or "run 8" in note
+        assert "fixture-evidence" in note
+        assert "run 8" in note or "run_id 8" in note
 
     def test_mock_report_refinement_still_seven_of_seven(self):
         with patch.object(claim_source, "judge_claims") as claim_spy, \
@@ -2585,3 +2595,168 @@ class TestR6DHolisticSynthesisFixtureCorrection:
         assert refinement_holistic.R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION == "r6d3c-pairwise-holistic-v2"
         assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
         assert hasattr(rrr, "compute_claim_change_inventory")
+
+
+# =====================================================================
+# R6D holistic-synthesis fixture FINALIZATION (after live run 9). This
+# closes `holistic_synthesis_improvement` -- no further live run is
+# performed for this fixture. Fixture-only change: the Thematic
+# Findings "grounding failures" umbrella sentence was narrowed to name
+# the two intervention points precisely, and groundedness was
+# adjudicated `unchanged -> improved`. No judge, runner, or evaluator
+# code changed. Every test below is either a pure fixture-content check
+# (no mocking needed) or reruns mock mode, which makes zero OpenAI/API
+# calls.
+# =====================================================================
+
+class TestR6DHolisticSynthesisFinalization:
+    _DRAFT_REPORT_SHA256 = "05fde65c97f5181439d7f7a3cd029de3688149e232924c665ca0078bd16ed4d8"
+    _FUTURE_RESEARCH_DIRECTIONS_CONTENT = (
+        "Beyond extending both methods to non-English text, a more specific opportunity is combining "
+        "them: since DriftGuard filters passages before generation and SpanCite constrains sentence "
+        "emission during decoding, a pipeline could plausibly run DriftGuard first and SpanCite second, "
+        "though neither paper tests this combination [1][2]."
+    )
+
+    @staticmethod
+    def _example():
+        examples = rri.load_report_refinement_examples()
+        return next(x for x in examples if x.id == "holistic_synthesis_improvement")
+
+    def test_broad_grounding_failures_umbrella_sentence_is_gone(self):
+        e = self._example()
+        for report in (e.draft_report, e.refined_report):
+            for key in rri.REQUIRED_SECTION_KEYS:
+                content = (report.get(key) or {}).get("content") or ""
+                assert "grounding failures can be" not in content
+                assert "grounding failures can be caught" not in content
+                assert "grounding failures can be addressed" not in content
+
+    def test_corrected_wording_present_in_every_synchronized_copy(self):
+        e = self._example()
+        expected_thematic = (
+            "Read together, they identify two distinct intervention points in the "
+            "retrieval-generation pipeline: sentence traceability during decoding (SpanCite) "
+            "and topic-drift filtering before generation (DriftGuard) [1][2]."
+        )
+        assert expected_thematic in e.refined_report["thematic_findings"]["content"]
+        sections_by_key = {s["key"]: s["content"] for s in e.refined_report["sections"]}
+        assert expected_thematic in sections_by_key["thematic_findings"]
+        assert e.refined_report["thematic_findings"]["content"] == sections_by_key["thematic_findings"]
+
+    def test_spancite_remains_decoding_time_sentence_traceability(self):
+        e = self._example()
+        content = e.refined_report["thematic_findings"]["content"]
+        assert "sentence traceability during decoding (SpanCite)" in content
+
+    def test_driftguard_remains_pre_generation_topic_drift_filtering(self):
+        e = self._example()
+        content = e.refined_report["thematic_findings"]["content"]
+        assert "topic-drift filtering before generation (DriftGuard)" in content
+        # DriftGuard's own intervention is never described as sentence-level grounding.
+        driftguard_clause_start = content.index("topic-drift filtering")
+        assert "sentence" not in content[driftguard_clause_start:driftguard_clause_start + len("topic-drift filtering before generation (DriftGuard)")]
+
+    def test_grouped_citation_unchanged(self):
+        e = self._example()
+        content = e.refined_report["thematic_findings"]["content"]
+        assert content.rstrip(".").endswith("[1][2]")
+        assert e.refined_report["thematic_findings"]["reference_numbers"] == [1, 2]
+
+    def test_future_research_directions_unchanged_from_commit_70d70d5(self):
+        e = self._example()
+        assert e.refined_report["future_research_directions"]["content"] == self._FUTURE_RESEARCH_DIRECTIONS_CONTENT
+        sections_by_key = {s["key"]: s["content"] for s in e.refined_report["sections"]}
+        assert sections_by_key["future_research_directions"] == self._FUTURE_RESEARCH_DIRECTIONS_CONTENT
+
+    def test_evidence_references_and_draft_report_byte_identical(self):
+        import hashlib
+        import json as _json
+
+        e = self._example()
+        actual_draft_hash = hashlib.sha256(_json.dumps(e.draft_report, sort_keys=True).encode()).hexdigest()
+        assert actual_draft_hash == self._DRAFT_REPORT_SHA256
+        for name, expected_hash in (
+            ("selected_papers", "dca65d1b9676316899cc90aad4bc846cd191e5288c41280b0be8f3dda849a521"),
+            ("approved_web_articles", "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"),
+        ):
+            obj = getattr(e, name)
+            actual = hashlib.sha256(_json.dumps(obj, sort_keys=True).encode()).hexdigest()
+            assert actual == expected_hash, f"{name} content changed"
+
+    def test_only_groundedness_expectation_changed_this_checkpoint(self):
+        e = self._example()
+        d = e.expected["dimension_directions"]
+        assert d["groundedness"]["direction"] == "improved"
+        assert "run_id 9" in d["groundedness"]["rationale"] or "run 9" in d["groundedness"]["rationale"]
+
+    def test_every_other_expected_direction_remains_exactly_as_frozen(self):
+        e = self._example()
+        d = e.expected["dimension_directions"]
+        assert e.expected["hard_failure_direction"] == "unchanged"
+        assert d["citation_correctness"]["direction"] == "unchanged"
+        assert d["synthesis_quality"]["direction"] == "improved"
+        assert d["analytical_quality"]["direction"] == "improved"
+        assert d["template_fit"]["direction"] == "improved"
+        assert d["source_balance"]["direction"] == "unchanged"
+
+    def test_coherence_remains_expected_improved(self):
+        e = self._example()
+        assert e.expected["dimension_directions"]["coherence"]["direction"] == "improved"
+        # The coherence RATIONALE itself is untouched by this checkpoint -- it must
+        # never be rewritten merely to echo run 9's contrary judge result.
+        rationale = e.expected["dimension_directions"]["coherence"]["rationale"]
+        assert "cross-section repetition" in rationale
+        assert "Gap Analysis" in rationale
+        assert "regressed" not in rationale.lower()
+
+    def test_adjudication_note_records_residual_coherence_ambiguity_and_closure(self):
+        e = self._example()
+        note = e.refinement_context["adjudication_note"]
+        note_lower = note.lower()
+        assert "coherence" in note_lower
+        assert "regressed" in note_lower  # records run 9's own contrary result
+        assert "residual" in note_lower and "ambiguity" in note_lower
+        assert "closed" in note_lower
+        assert "run 9" in note_lower or "run_id 9" in note_lower
+        assert "run 8" in note_lower or "run_id 8" in note_lower
+
+    def test_no_other_fixture_changed(self):
+        import hashlib
+
+        other_fixture_hashes = {
+            "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
+            "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
+            "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
+            "citation_regression": "c6c2e3e4d69b9888d18adf2a15439a3c5d7e3f9caa05d22c5f9cc7668cb39706",
+            "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
+            "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
+        }
+        for fixture_id, expected_hash in other_fixture_hashes.items():
+            path = rri.FIXTURES_DIR / f"{fixture_id}.json"
+            actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert actual_hash == expected_hash, f"{fixture_id}.json changed unexpectedly"
+
+    def test_fixture_still_satisfies_all_r6d1_invariants(self):
+        examples = rri.load_report_refinement_examples()  # raises ReportRefinementFixtureError on any violation
+        assert len(examples) == 7
+
+    def test_mock_report_refinement_still_seven_of_seven(self):
+        with patch.object(claim_source, "judge_claims") as claim_spy, \
+             patch.object(refinement_holistic, "judge_refinement_holistic") as pairwise_spy, \
+             patch.object(holistic, "judge_report") as holistic_spy:
+            result = rrr.run_experiment(mode="mock")
+        claim_spy.assert_not_called()
+        pairwise_spy.assert_not_called()
+        holistic_spy.assert_not_called()
+        assert result.total == 7
+        assert result.passed == 7
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_no_judge_or_runner_code_changed(self):
+        assert refinement_holistic.R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION == "r6d3c-pairwise-holistic-v2"
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
+        assert hasattr(rrr, "compute_claim_change_inventory")
+        assert hasattr(rrr, "_citation_correctness_from_claims")
+        assert hasattr(rrr, "_groundedness_from_claims")

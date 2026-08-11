@@ -1806,6 +1806,24 @@ invented:
   validation, run 8" section for the full record. One corrected live
   rerun remains; **R6D as a whole is still not closed.**
 
+  **`holistic_synthesis_improvement` closed (2026-08-11)**: run_id 9
+  (commit `70d70d5`, "R6D corrected holistic-synthesis validation")
+  confirmed `synthesis_quality`/`analytical_quality`/`template_fit` are
+  stable (6/7). One further evidence-language defect was found and
+  corrected (a broad "grounding failures" umbrella statement narrowed
+  to name SpanCite's/DriftGuard's two distinct, evidence-established
+  intervention points); `groundedness` separately adjudicated
+  `unchanged → improved`. `coherence` disagreed with the live run
+  (predicted `regressed`, expected `improved`) and is recorded as a
+  documented residual rubric-ambiguity limitation, NOT corrected again
+  — the coherence rationale itself was deliberately left untouched.
+  **No judge or runner code changed. `holistic_synthesis_improvement`
+  is now CLOSED — no further live run will be performed for this
+  fixture.** See `docs/evaluation.md`'s "R6D closure —
+  `holistic_synthesis_improvement` is closed" section for the full
+  record. Next: the two no-change controls, `justified_no_revision`
+  and `cosmetic_rewrite_tie`. **R6D as a whole is still not closed.**
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs

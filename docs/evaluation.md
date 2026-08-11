@@ -1687,6 +1687,63 @@ expectation. Per the same stopping rule already established for
 gets analyzed on its own merits (evidence defect vs. genuine rubric
 ambiguity) rather than automatically changing the fixture again.
 
+### R6D closure — `holistic_synthesis_improvement` is closed (2026-08-11)
+
+The corrected rerun (`eval_results/report_refinement_history.csv`
+run_id 9, commit `70d70d5`, note "R6D corrected holistic-synthesis
+validation") validated `synthesis_quality`, `analytical_quality`, and
+`template_fit` as stable, correctly-detected improvements: 3 judge
+calls, no errors, 42.5s, 6/7 semantic agreement.
+
+Applying the same read-only-adjudication-first stopping rule once
+more: one further evidence-language defect was found and corrected.
+The refined Thematic Findings' broad "grounding failures can be
+addressed at two stages" umbrella statement overstated what the two
+papers' abstracts jointly establish — SpanCite addresses sentence-
+level source grounding specifically; DriftGuard addresses retrieval
+topic drift and retrieval precision, not grounding. The sentence was
+narrowed to name the two intervention points precisely (sentence
+traceability during decoding for SpanCite, topic-drift filtering
+before generation for DriftGuard), preserving the grouped `[1][2]`
+citation and introducing no new mechanism, metric, or evidence.
+Separately, `groundedness` was adjudicated `unchanged → improved`: the
+draft's changed Future Research Directions claim rests on an
+insufficiently established "outside a single benchmark" premise the
+supplied abstracts don't establish; the refined version drops that
+premise and explicitly qualifies its combined-pipeline proposal as
+untested by either paper — the refined report's changed claims are
+better grounded than the draft's.
+
+**`coherence` disagreed with the live run** (predicted `regressed`;
+expected `improved`) and is recorded as a **documented residual
+rubric-ambiguity limitation, not corrected again**: the pairwise
+judge's own reasoning treated the corrected two-stage comparison as
+new cross-section topical overlap with Methodology Landscape, while
+the human-adjudicated expectation rests on a different, real,
+verifiable effect — the refinement removes Future Research
+Directions' near-verbatim duplication of Gap Analysis, which the
+judge's stated reasoning never addressed. The `coherence` rationale
+itself was deliberately left untouched (not rewritten to match the
+judge's contrary result) — only `refinement_context.adjudication_note`
+was updated to record the disagreement.
+
+**`holistic_synthesis_improvement` is now closed — no further live
+run will be performed for this fixture.** No judge, runner, or
+evaluator code changed at any point across its three-run calibration
+arc (runs 8 and 9). Validated by `tests/test_evals_report_refinement.
+py`'s new `TestR6DHolisticSynthesisFinalization` class (232 passed,
+was 217) — evidence, references, and the draft report stayed byte-
+identical; Future Research Directions is confirmed unchanged from
+commit `70d70d5`; no other fixture changed; mock mode remains
+`total=7 passed=7 failed=0 average_score=1.000`. Full backend suite →
+1204 passed. No real paid live call was made in this checkpoint.
+
+**Next checkpoint**: the two no-change controls, `justified_no_
+revision` and `cosmetic_rewrite_tie` — both expect all 7 dimensions
+`unchanged`, testing whether the live pipeline correctly recognizes
+"nothing meaningful changed" rather than fabricating a direction.
+**This does not close R6D as a whole.**
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why
