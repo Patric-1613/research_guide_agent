@@ -7,3 +7,4 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 6,2026-08-11T10:11:07.940907+00:00,09a09ad,report_refinement,live,1,0,1,0.9285,,R6D.3b clear-grounding stability check | mean_latency_ms=24672.4
 7,2026-08-11T10:22:53.144292+00:00,398e5a1,report_refinement,live,1,0,1,0.9285,,R6D.3c final clear-grounding stability run | mean_latency_ms=25860.6
 8,2026-08-11T10:38:11.956783+00:00,71cffbe,report_refinement,live,1,0,1,0.7857,analytical_quality,R6D holistic-synthesis live validation | mean_latency_ms=39389.9
+9,2026-08-11T10:50:54.752264+00:00,70d70d5,report_refinement,live,1,0,1,0.8572,analytical_quality,R6D corrected holistic-synthesis validation | mean_latency_ms=42493.6
