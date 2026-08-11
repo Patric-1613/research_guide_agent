@@ -1926,6 +1926,79 @@ real R4-generated draft/refined pairs (not synthetic fixtures), the
 first point at which this project can make an actual, evidence-backed
 claim about whether production refinement improves report quality.
 
+### R6D.4a — developer-only capture helper (2026-08-11) — complete, unused so far
+
+`research_agent/evals/r6d4_capture.py` (new module): `capture_real_
+refinement_pair(session, client, *, report_template, pair_id, source_
+session_ref, ...)` runs the exact real production "Generate" path
+(`report.generate_report_for_session` then `report.refine_report_if_
+requested`, `refinement_mode="single"`, `web_articles=[]` — the same
+literal empty list `get_or_create_report`'s own initial-generation
+call hardcodes, never `session.web_articles_added`) and returns a
+complete, unlabelled `r6d4-capture-v1` artifact dict, entirely in
+memory. **This phase writes no file and captures no real report** —
+only mocked-client tests exist so far; R6D.4b is what wires this
+helper into an actual CLI capture command with atomic artifact
+writing.
+
+**Pre-refinement drafts remain intentionally absent from production
+persistence** — this was confirmed, not merely assumed, by source
+inspection (see the R6D.4 planning turn): `session.report`/`report_
+versions` only ever store the FINAL, post-refinement report; `refine_
+report_if_requested` mutates its own `draft` argument in place on the
+no-revision branch (`final = draft; final["refinement"] = {...}`) and
+discards the original `draft` object entirely on the revision branch.
+`capture_real_refinement_pair` handles both branches correctly by
+deep-copying (and JSON-native-stripping — see below) the draft
+*before* it is ever handed to refinement, never after.
+
+**Capture is eval-only and in-memory** — no production code, API
+schema, or route was touched; `research_agent.report.append_report_
+version`/`research_agent.curation_session.save_curation_session` are
+never imported or called (proved structurally via AST inspection, not
+just "wasn't called this one time"); `session.report`/`report_
+versions`/`active_report_version_id` are never assigned to.
+
+**Capture artifacts are unlabelled by construction** — no `expected`
+block, no `overall_direction`/`overall_score`/`winner`/`accept_
+refinement` field exists anywhere in the schema, and the validator
+(`validate_r6d4_capture`) actively rejects an artifact that has one.
+**If human labels are ever collected for a captured pair, they must be
+written and frozen BEFORE that pair's own R6D live evaluation ever
+runs** — never derived from, or corrected to match, a live judge's own
+output; doing otherwise would be exactly the post-hoc answer-key bias
+the R6D.4 planning turn's own correction called out. This is a
+stricter rule than R6D.1's synthetic fixtures ever needed to state
+explicitly (a synthetic fixture's `expected` block is authored from
+scratch, with no live run to be biased BY, until R6D.3's own
+calibration turns each one into a two-way conversation between a human
+adjudicator and one specific live result) — for a real pair, the
+timing itself is now a hard constraint, not just good practice.
+
+A raw production report body is not JSON-native (`generate_report`'s
+own return shape nests real `Paper`/`WebArticle` dataclass instances
+per section, and in `skipped_papers`) — `capture_real_refinement_pair`
+strips per-section `cited_papers`/`cited_web_articles` entirely
+(matching R6D.1's own established "never read by any evaluation code"
+convention exactly) and the 3 legacy `findings`/`limitations`/`future_
+scope` keys entirely (same convention), while converting `skipped_
+papers` to plain `.to_dict()` form (its own length, not any field of
+an individual entry, is a real informational signal `run_report_
+quality.py` reads).
+
+Tests: `tests/test_evals_r6d4_capture.py`, 54 passed, all against
+mocked `client.chat.completions.parse` (never a real network call);
+`test_report.py` + this file together → 190 passed (non-regression);
+`report_refinement` + this file together → 308 passed; full backend
+suite → 1280 passed.
+
+**Next phase: R6D.4b** — a CLI capture command wired to this helper,
+with atomic artifact-file writing and schema validation on write (no
+paid call from R6D.4b itself is required to build the CLI plumbing;
+capturing real pairs is R6D.4c). **This does not mark R6D.4 or R6
+complete** — no real report has been captured yet, and no live
+evaluation of a real pair has happened under this new schema.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

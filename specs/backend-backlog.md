@@ -1909,29 +1909,70 @@ invented:
   small set of real R4-generated draft/refined pairs.
 
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
-- **Goal**: run R6D.3a's live paired evaluation against *real* R4
-  output (actual `generate_report`/`revise_report` draft/refined pairs
-  from real or realistic topics), not R6D.1's 7 synthetic fixtures —
-  the first point at which this project can make an actual, evidence-
-  backed claim about whether refinement improves report quality.
-- **Why it matters**: R6D.1-R6D.3a validate that the *measurement*
-  machinery works correctly against hand-authored fixtures with known
-  answers and mocked judges, calibrated against exactly one real paid
-  pair's own evidence (run_id 3). None of that is evidence about real
-  R4 behavior at scale. A small, deliberately bounded rerun of just
-  `clear_grounding_improvement` (confirming R6D.3a's fix against the
-  same pair that exposed the original problem) should happen before a
-  broader paid live run, and as a natural precursor to R6D.4's own
-  larger run.
-- **Required design (not yet scoped in detail)**: where real
-  draft/refined pairs come from (a fixed small topic set run through
-  the real R4 pipeline, captured once and frozen, vs. a live pipeline
-  call per eval run), and whether the original §8 blinded-A/B design
-  should still be built as a complementary check once real data exists
-  to justify the added complexity.
-- **Location (not yet touched)**.
-- **Priority**: next, after the small `clear_grounding_improvement`-only rerun.
-- **Status**: Open. Not started.
+- **Goal**: run R6D's live paired evaluation against *real* R4 output
+  (actual `generate_report_for_session`/`refine_report_if_requested`
+  draft/refined pairs from real or realistic topics), not R6D.1's 7
+  synthetic fixtures — the first point at which this project can make
+  an actual, evidence-backed claim about whether refinement improves
+  report quality.
+- **Why it matters**: R6D's full synthetic-fixture stage (R6D.1-R6D.3c,
+  closed 2026-08-11 — see that section above) validates that the
+  *measurement* machinery works correctly against hand-authored
+  fixtures with known, human-adjudicated answers. None of that is
+  evidence about real R4 behavior at scale.
+- **Status**: Open. Not started as a whole — **R6D.4a (capture helper)
+  is complete**, see below. No real report has been captured yet.
+
+#### R6D.4a: developer-only capture helper — complete (2026-08-11)
+- **Goal**: an in-memory, eval-only helper that captures a genuine R4
+  draft/refined pair using the exact real production generation path,
+  without touching production persistence.
+- **What shipped**: `research_agent/evals/r6d4_capture.py` —
+  `capture_real_refinement_pair(session, client, *, report_template,
+  pair_id, source_session_ref, ...)` calls `report.generate_report_
+  for_session` then `report.refine_report_if_requested` (`refinement_
+  mode="single"`, `web_articles=[]` — the same literal empty list
+  `get_or_create_report`'s own initial-generation call hardcodes, never
+  `session.web_articles_added`) and returns a complete, **unlabelled**
+  `r6d4-capture-v1` artifact dict. Deep-copies (and JSON-native-strips
+  — see below) the draft BEFORE it is ever handed to refinement, since
+  `refine_report_if_requested` mutates its own `draft` argument in
+  place on the no-revision branch. A separate `validate_r6d4_capture`
+  pure validator checks schema version, template validity, revision-
+  applied/body-equality consistency, canonical section shape, evidence-
+  reference resolution, absence of any `refinement`/`expected`/
+  `winner`/`accept_refinement` key, and a recursive forbidden-key scan
+  (`session_id`/`chat_history`/`turn_history`/`pending_web_offer`/
+  `pending_report_update`/`api_key`/`openai_api_key`) — kept completely
+  separate from `report_refinement_inputs.py`'s own frozen `r6d1-v1`
+  synthetic loader (proved via AST inspection that neither module
+  imports the other).
+- **No production/API/session change**: no schema, route, or service
+  function touched; `append_report_version`/`save_curation_session` are
+  never imported (not just "never called this time" — structurally
+  impossible); `session.report`/`report_versions`/`active_report_
+  version_id` are never assigned to.
+- **Unlabelled by construction, on purpose**: no `expected` block, no
+  overall-winner/composite field, matching the same "no overall score,
+  weighted composite, or winner field" requirement R6D.1's own schema
+  already enforces. **If human labels are ever collected for a
+  captured pair, they must be frozen BEFORE that pair's own R6D live
+  evaluation runs** — never assigned or corrected after seeing live
+  judge output, which would be post-hoc answer-key bias.
+- **Tests**: `tests/test_evals_r6d4_capture.py`, 54 passed, all against
+  a mocked client (no real network call, no real report captured, no
+  file written). `test_report.py` + this file → 190 passed
+  (non-regression). Full backend suite → 1280 passed.
+- **Location**: `research_agent/evals/r6d4_capture.py` (new),
+  `tests/test_evals_r6d4_capture.py` (new), `docs/evaluation.md` /
+  `specs/backend-backlog.md` (updated). No other file touched.
+- **Priority**: next, **R6D.4b** — CLI capture command + atomic
+  artifact-file writing/validation (still no paid call required to
+  build); then **R6D.4c** — capture a maximum of 3 real pairs (the
+  first phase that spends real R4 calls).
+- **Status**: Closed (2026-08-11). **Does not close R6D.4 or R6D or R6
+  as a whole** — no real report has been captured, and no live
+  evaluation of a real pair has happened under this schema yet.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts
 - **Goal**: close the gap `eval_data/report_quality/fixtures/
