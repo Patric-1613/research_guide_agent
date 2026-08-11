@@ -1555,6 +1555,84 @@ run, this fixture and this prompt boundary will NOT be tuned again —
 any further disagreement gets documented as a residual judge-stability
 limitation, and work moves on to calibrating the next fixture instead.
 
+### R6D closure — `clear_grounding_improvement` calibration is closed (2026-08-11)
+
+The final stability run (`eval_results/report_refinement_history.csv`
+run_id 7, commit `398e5a1`, note "R6D.3c final clear-grounding
+stability run") confirmed the coherence clarification and finished at
+**6/7 semantic-direction agreement**: structural direction, citation_
+correctness, groundedness, synthesis_quality, analytical_quality,
+coherence, and source_balance all matched their expectation; only
+`template_fit` disagreed (predicted `unchanged` at confidence 0.62,
+expected `improved`). 3 judge calls, no errors, 25.9s. **Calibration
+of this fixture is now closed — `template_fit`'s expected direction
+and the pairwise judge's `template_fit` prompt text are NOT changed
+again in response to this run.**
+
+**Final implementation behavior** (unchanged since R6D.3a/R6D.3c, both
+still true): `citation_correctness`/`groundedness` direction is
+derived from changed-claim comparison only (never whole-report
+subtraction, never verdict variation on a claim unit that did not
+change); the 5 holistic dimensions come from ONE R6D-only pairwise
+call (`judges/refinement_holistic.py`, `judge_refinement_holistic`,
+prompt version `r6d3c-pairwise-holistic-v2`) that sees both reports
+together, never two independent standalone holistic calls; a normal,
+structurally valid, non-identical pair costs a maximum of 3 judge
+calls (1 claim/source call per side + 1 pairwise holistic call); no
+independent-holistic-score subtraction (`HOLISTIC_DIRECTION_MIN_
+DELTA`) exists anywhere in the live pair path.
+
+**Live evidence across the full calibration arc** (all against this
+one fixture, `clear_grounding_improvement`):
+- **run_id 3** (R6D.3, commit `4aae124`) — two independent per-side
+  whole-report judgments exposed independent-call sampling noise: an
+  UNCHANGED claim's own verdict flipped between the draft and refined
+  calls, and two independent holistic calls disagreed on content that
+  never changed at all. Only 1/7 semantic agreement.
+- **run_id 5** (R6D.3a, commit `acab474`) — validated changed-claim
+  comparison and the 3-call architecture end-to-end: `citation_
+  correctness`/`groundedness` both came back `improved`, correctly
+  tracking the one claim that actually changed.
+- **run_id 6** (R6D.3b's own stability check, commit `09a09ad`) —
+  exposed the coherence boundary: `coherence` disagreed with run 5
+  (improved, confidence 0.72 vs. unchanged, confidence 0.98).
+- **run_id 7** (R6D.3c's own stability check, commit `398e5a1`) —
+  validated the coherence clarification (`coherence` now matches,
+  `unchanged`) and finished at 6/7, with `template_fit` the one
+  remaining disagreement.
+
+**Accepted residual limitation**: `template_fit`'s predicted direction
+was not perfectly stable across the calibration runs (`improved` on
+runs 5 and 6, `unchanged` at confidence 0.62 on run 7). This is
+recorded as genuine judge/rubric ambiguity at this dimension's own
+boundary — not a reproducible implementation defect — and is
+deliberately NOT treated as a reason for further fixture-specific
+prompt tuning. **Exact 7/7 agreement on one hand-authored synthetic
+fixture was never the bar for this evaluation machinery being
+useful**; 6/7 with one documented, bounded residual uncertainty is the
+closing state for this fixture.
+
+**Explicit non-claim**: this synthetic fixture's calibration says
+nothing about whether PRODUCTION R4 refinement improves real reports —
+it only demonstrates that the live measurement machinery (changed-
+claim comparison + pairwise holistic judging) behaves sensibly and
+reproducibly against one hand-authored pair with a known, human-
+adjudicated answer. **R6D.4 (real R4-generated draft/refined pairs)
+remains necessary** before any claim about production refinement
+quality can be made.
+
+**Next fixture**: `holistic_synthesis_improvement` — purpose: verify
+genuine cross-source synthesis, analytical distinction, and coherence
+improvement (a different rubric-boundary shape than `clear_grounding_
+improvement`'s single-claim factual correction).
+
+**Stopping rule going forward**: a future fixture disagreement gets
+read-only human adjudication against the frozen rubric first; code
+(judge prompt, runner, or evaluator) is changed ONLY for a reproducible
+implementation defect, never to chase perfect agreement on one
+fixture. Prompts and answer keys are not repeatedly tuned in response
+to ordinary LLM judge variance.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

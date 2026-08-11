@@ -1768,6 +1768,26 @@ invented:
   remaining disagreement is documented as a residual judge-stability
   limitation rather than tuned further. Both closed (2026-08-11).
 
+  **R6D closure (2026-08-11)**: run_id 7 (commit `398e5a1`, "R6D.3c
+  final clear-grounding stability run") confirmed the coherence
+  clarification and finished at 6/7 semantic-direction agreement —
+  `template_fit` was the one remaining disagreement (`improved` on
+  runs 5/6, `unchanged` at confidence 0.62 on run 7). **`clear_
+  grounding_improvement`'s calibration is now CLOSED — `template_fit`
+  is NOT tuned again.** This is accepted as residual judge/rubric
+  ambiguity, documented rather than repeatedly chased; exact 7/7
+  agreement on one hand-authored fixture was never the bar for this
+  machinery being useful. See `docs/evaluation.md`'s "R6D closure"
+  section for the full record, including the explicit non-claim that
+  this synthetic-fixture calibration says nothing about whether
+  production R4 refinement improves real reports (R6D.4 remains
+  necessary for that). **This does NOT close R6D as a whole** — only
+  this one fixture's calibration. Next: calibrate `holistic_synthesis_
+  improvement` (cross-source synthesis, analytical distinction,
+  coherence improvement) under the same stopping rule — read-only
+  adjudication first, code changed only for a reproducible
+  implementation defect, never to force perfect agreement.
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs
