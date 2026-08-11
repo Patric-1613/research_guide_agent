@@ -1845,6 +1845,34 @@ invented:
   `structural_regression` (misleading semantic approval of a
   structurally invalid refinement). **R6D remains open.**
 
+  **R6D regression controls, run 11 (2026-08-11)**: run_id 11 (commit
+  `921838b`, tags `regression`, "R6D regression controls validation")
+  ran both regression control fixtures: 1/2 passed. `structural_
+  regression` matched exactly as frozen (`hard_failure_direction=
+  regressed`, all 7 semantic dimensions `unknown`, semantic judging and
+  the pairwise holistic call both correctly skipped) — **structural
+  hard-failure gating works exactly as designed**: a structurally
+  invalid refined report never receives a misleading semantic verdict.
+  `citation_regression` matched `citation_correctness`/`groundedness`
+  but all 5 holistic dimensions came back `regressed` where the
+  fixture originally expected `unchanged` (5/7). Read-only adjudication
+  against the frozen rubric found the judge was right: the same
+  misattribution (DriftGuard's finding wrongly reattributed to
+  SpanCite) necessarily also damages `synthesis_quality` (lost
+  cross-source contrast), `analytical_quality` (a false attribution),
+  `template_fit` (the Analytical template's cross-source framing
+  collapses), `coherence` (the refined Thematic Findings now
+  contradicts the unchanged Methodology Landscape section), and
+  `source_balance` (Thematic Findings' representation shifts to
+  SpanCite-centred). **All 7 dimensions now expected `regressed`** —
+  report prose/evidence/references/citation markers deliberately left
+  untouched, only expectations corrected. **No judge or runner code
+  changed.** Both regression-control fixtures are now CLOSED. See
+  `docs/evaluation.md`'s "R6D regression controls, run 11" section.
+  Next and final synthetic fixture: `mixed_tradeoff`. **R6D and R6
+  remain open — production refinement is not proven effective by any
+  synthetic-fixture checkpoint; that remains R6D.4's job.**
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs

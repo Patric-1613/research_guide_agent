@@ -1785,6 +1785,68 @@ damage introduced by an apparently smoother revision) and
 receiving misleading semantic approval). **R6D remains open — nothing
 here claims production refinement is proven effective.**
 
+### R6D regression controls, run 11 (2026-08-11) — 1/2, one adjudicated correction
+
+Run_id 11 (`eval_results/report_refinement_history.csv`, commit
+`921838b`, tags `regression`, note "R6D regression controls
+validation") ran both regression control fixtures: total=2, passed=1,
+failed=1, mean latency 23.4s.
+
+- **`structural_regression`** matched exactly as frozen:
+  `hard_failure_direction=regressed` (refined report has an
+  `orphan_reference` hard failure), all 7 semantic directions
+  correctly `unknown` (refined semantic judging and the pairwise
+  holistic call were both skipped — `judge_call_count=1`, just the
+  structurally clean draft side), 7/7 agreement, no errors. **This
+  confirms structural hard-failure gating works exactly as designed**:
+  a structurally invalid refined report is never semantically judged,
+  and never receives a misleadingly specific semantic verdict.
+- **`citation_regression`** matched `hard_failure_direction`,
+  `citation_correctness`, and `groundedness` (all as originally
+  expected), but all 5 holistic dimensions came back `regressed` where
+  the fixture originally expected all 5 `unchanged` (5/7 total).
+
+Read-only human adjudication against the frozen rubric (applying the
+same stopping rule as `clear_grounding_improvement`/`holistic_
+synthesis_improvement`) found the judge was right: the fixture's
+original expectations scoped the damage too narrowly to the citation
+defect alone. The SAME misattribution (DriftGuard's retrieval-
+precision finding wrongly reattributed to SpanCite, with DriftGuard
+dropped from the claim) necessarily also removes DriftGuard's role
+from the section's cross-source comparison — a real, independently
+judgeable regression in `synthesis_quality` (lost contrast),
+`analytical_quality` (a false attribution, not just a citation
+defect), `template_fit` (the Analytical template's cross-source
+framing collapses to a single-source account), `coherence` (the
+refined Thematic Findings now contradicts the unchanged Methodology
+Landscape section about which paper does what), and `source_balance`
+(Thematic Findings' own representation shifts from balanced to
+SpanCite-centred). **All 7 dimensions are now expected `regressed`**
+for this fixture — **report prose, evidence, references, and citation
+markers were deliberately left untouched**; only the fixture's
+expected directions and rationales were corrected. **No judge or
+runner change was required** — the live pipeline detected a real
+effect the original fixture author simply hadn't scoped broadly
+enough. No rerun is planned for this fixture.
+
+**Both regression-control fixtures are now closed.** Validated by
+`tests/test_evals_report_refinement.py`'s new
+`TestR6DRegressionControlsAdjudication` class (243 passed, was 232) —
+report prose, evidence,
+references, and citation markers confirmed byte-identical; the five
+updated rationales confirmed distinct and dimension-specific (not five
+copies of the same citation explanation); `structural_regression`
+confirmed unaffected; no other fixture changed; mock mode remains
+`total=7 passed=7 failed=0 average_score=1.000`. Full backend suite →
+1215 passed. No real paid live call was made in this checkpoint.
+
+**Next and final synthetic fixture**: `mixed_tradeoff` — the last of
+R6D.1's 7 hand-authored fixtures with a genuine tradeoff (improvement
+on some dimensions, regression on others, no invented overall
+winner). **R6D and R6 as a whole remain open** — nothing here or in
+any prior synthetic-fixture checkpoint proves production R4 refinement
+is effective; that remains R6D.4's job, against real R4 output pairs.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

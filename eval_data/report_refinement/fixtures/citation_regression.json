@@ -327,7 +327,8 @@
     "refinement_mode": "single",
     "revision_applied": true,
     "source_origin": "synthetic_handcrafted",
-    "notes": "Refined Thematic Findings reads more smoothly (one flowing pair of sentences instead of two separate ones) but silently reattributes DriftGuard's own finding (multi-turn retrieval-precision improvement via drift filtering) to reference [1] (SpanCite) instead of [2] (DriftGuard), and drops [2] from this claim entirely. Every other section is untouched, and [2] remains genuinely cited 4 times elsewhere, so this is a localized citation defect, not a report-wide one."
+    "notes": "Refined Thematic Findings reads more smoothly (one flowing pair of sentences instead of two separate ones) but silently reattributes DriftGuard's own finding (multi-turn retrieval-precision improvement via drift filtering) to reference [1] (SpanCite) instead of [2] (DriftGuard), and drops [2] from this claim entirely. Every other section is untouched, and [2] remains genuinely cited 4 times elsewhere, so this is a localized citation defect, not a report-wide one.",
+    "adjudication_note": "R6D regression-controls checkpoint (run_id 11, 2026-08-11, commit 921838b): the live pairwise holistic judge returned all five holistic dimensions regressed, where this fixture originally expected all five unchanged (only citation_correctness/groundedness were originally expected to regress). Read-only human adjudication against the frozen rubric definitions found the judge was right and the fixture's original expectations were too narrowly scoped to the citation defect alone: the SAME misattribution that damages citation_correctness/groundedness also necessarily removes DriftGuard's own role from the Thematic Findings comparison, which is a real, independently-judgeable regression in synthesis_quality (lost cross-source contrast), analytical_quality (DriftGuard's finding wrongly attributed to SpanCite), template_fit (an Analytical-template account losing its cross-source relational framing), coherence (the refined Thematic Findings now contradicts the unchanged Methodology Landscape section about which paper does what), and source_balance (Thematic Findings' own representation of the two sources shifts from balanced to SpanCite-centred). Expected directions were corrected against these frozen rubric definitions, not copied automatically from the judge's raw output. Report prose, evidence, references, and citation markers were deliberately left unchanged -- this is an expectation correction only. No rerun will be performed for this fixture."
   },
   "expected": {
     "hard_failure_direction": "unchanged",
@@ -341,24 +342,24 @@
         "rationale": "Because the misattributed sentence's only attached source ([1], SpanCite) does not establish the claim it is used for, and DriftGuard's own citation [2] is dropped from this specific claim entirely, the claim as a whole is no longer grounded in its attached evidence."
       },
       "synthesis_quality": {
-        "direction": "unchanged",
-        "rationale": "Methodology Landscape and the other comparative sections are untouched; the report still relates the two methods by pipeline stage exactly as before -- the regression is isolated to one claim's citation, not the report's comparative structure."
+        "direction": "regressed",
+        "rationale": "R6D regression-controls adjudication (run_id 11, 2026-08-11): the draft presents one supported role per paper in Thematic Findings (SpanCite for source-grounded generation, DriftGuard for retrieval-precision drift filtering) -- a genuine cross-source contrast. The refined version replaces that contrast with two claims centred on SpanCite alone, removing DriftGuard's own role from the comparison entirely. This is a real loss of cross-source synthesis in the section the dimension actually judges, not merely a citation-level defect."
       },
       "analytical_quality": {
-        "direction": "unchanged",
-        "rationale": "Gap Analysis and Future Research Directions are byte-identical between versions -- the diagnostic/prescriptive distinction is unaffected."
+        "direction": "regressed",
+        "rationale": "R6D regression-controls adjudication (run_id 11, 2026-08-11): the refinement assigns DriftGuard's own retrieval-stage topic-drift finding to SpanCite, damaging the report's evidence-based comparison between the two methods -- an analytical error, not merely a citation-formatting one. Gap Analysis and Future Research Directions being byte-identical does not exhaust this dimension's own scope, which also covers whether the report's claims about the evidence are analytically sound."
       },
       "template_fit": {
-        "direction": "unchanged",
-        "rationale": "Depth and tone are unaffected by a single misattributed citation; the analytical-template balance of explanation and synthesis is the same in both versions."
+        "direction": "regressed",
+        "rationale": "R6D regression-controls adjudication (run_id 11, 2026-08-11): the Analytical template explicitly expects cross-source relationships and relational analysis, not a single-source-centred account. The refinement collapses the draft's genuine two-paper comparison into a misleading SpanCite-centred narrative that omits DriftGuard's own contribution -- a real regression in Analytical-template fit, not merely unaffected depth/tone."
       },
       "coherence": {
-        "direction": "unchanged",
-        "rationale": "No repeated sentences or illegitimate content were introduced; the document still reads as one coherent document even though one claim's citation is now wrong."
+        "direction": "regressed",
+        "rationale": "R6D regression-controls adjudication (run_id 11, 2026-08-11): the refined Thematic Findings now states that SpanCite performs topic-drift filtering, while the unchanged Methodology Landscape section correctly assigns retrieval-time drift filtering to DriftGuard -- an explicit contradiction between two report sections about which paper does what. This is exactly the kind of internal document inconsistency the coherence dimension is reserved for, not a mere citation-correctness issue."
       },
       "source_balance": {
-        "direction": "unchanged",
-        "rationale": "Reference [2] (DriftGuard) is still cited 4 times elsewhere in the refined report (Methodology Landscape, Contradictions & Open Debates, Gap Analysis, Future Research Directions, Conclusion), so raw citation distribution is not meaningfully different -- the defect is a wrong attribution on one claim, not an imbalance in how sources are represented overall."
+        "direction": "regressed",
+        "rationale": "R6D regression-controls adjudication (run_id 11, 2026-08-11): the draft gives one thematic claim to each source (SpanCite once, DriftGuard once) in Thematic Findings; the refinement cites SpanCite for both remaining claims there and removes DriftGuard from Thematic Findings entirely, even though DriftGuard remains cited elsewhere in the report. Within the section that actually represents the two sources' thematic contributions, representation shifted from balanced to SpanCite-centred -- a real source-balance regression, not merely an unchanged raw citation count report-wide."
       }
     }
   }

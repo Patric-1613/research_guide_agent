@@ -212,11 +212,16 @@ class TestFixtureDirectionalIntent:
         assert all(entry["direction"] == "unchanged" for entry in e.expected["dimension_directions"].values())
 
     def test_citation_regression(self):
+        """R6D regression-controls adjudication (run 11): the same
+        misattribution that damages citation_correctness/groundedness
+        also removes DriftGuard's own role from Thematic Findings --
+        all 7 dimensions are now expected to regress, not just the two
+        originally scoped to the citation defect alone."""
         e = self._example("citation_regression")
         d = e.expected["dimension_directions"]
-        assert d["citation_correctness"]["direction"] == "regressed"
-        assert d["groundedness"]["direction"] == "regressed"
-        assert d["synthesis_quality"]["direction"] == "unchanged"
+        assert e.expected["hard_failure_direction"] == "unchanged"
+        for dim in rri.REQUIRED_DIMENSION_NAMES:
+            assert d[dim]["direction"] == "regressed", f"{dim} was {d[dim]['direction']!r}"
 
     def test_mixed_tradeoff_has_no_overall_winner(self):
         e = self._example("mixed_tradeoff")
@@ -2062,17 +2067,17 @@ class TestLiveDetailJson:
 # =====================================================================
 
 class TestR6D3bAdjudication:
-    # `holistic_synthesis_improvement` is deliberately excluded here -- it was
-    # untouched AT THE TIME of R6D.3b/R6D.3c (both checkpoints only ever
-    # touched `clear_grounding_improvement`), but a LATER, separately
-    # sanctioned checkpoint (the R6D holistic-synthesis fixture correction,
-    # see `TestR6DHolisticSynthesisFixtureCorrection`) legitimately corrects
-    # it -- pinning its hash here forever would turn a real, intentional,
-    # documented fixture correction into a permanent test failure.
+    # `holistic_synthesis_improvement` and `citation_regression` are deliberately
+    # excluded here -- both were untouched AT THE TIME of R6D.3b/R6D.3c (which
+    # only ever touched `clear_grounding_improvement`), but LATER, separately
+    # sanctioned checkpoints (the R6D holistic-synthesis fixture correction, see
+    # `TestR6DHolisticSynthesisFixtureCorrection`; the R6D regression-controls
+    # adjudication, see `TestR6DRegressionControlsAdjudication`) legitimately
+    # correct them -- pinning their hashes here forever would turn a real,
+    # intentional, documented fixture correction into a permanent test failure.
     _UNTOUCHED_FIXTURE_SHA256 = {
         "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
         "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-        "citation_regression": "c6c2e3e4d69b9888d18adf2a15439a3c5d7e3f9caa05d22c5f9cc7668cb39706",
         "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
         "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
     }
@@ -2149,10 +2154,11 @@ class TestR6D3bAdjudication:
         cosmetic = examples["cosmetic_rewrite_tie"].expected["dimension_directions"]
         assert all(entry["direction"] == "unchanged" for entry in cosmetic.values())
 
+        # citation_regression's own directions as of its R6D adjudication (run 11) --
+        # all 7 dimensions regressed; see `TestR6DRegressionControlsAdjudication`.
         citation_reg = examples["citation_regression"].expected["dimension_directions"]
-        assert citation_reg["citation_correctness"]["direction"] == "regressed"
-        assert citation_reg["groundedness"]["direction"] == "regressed"
-        assert citation_reg["synthesis_quality"]["direction"] == "unchanged"
+        for dim in rri.REQUIRED_DIMENSION_NAMES:
+            assert citation_reg[dim]["direction"] == "regressed", f"{dim} was {citation_reg[dim]['direction']!r}"
 
         mixed = examples["mixed_tradeoff"].expected["dimension_directions"]
         assert mixed["synthesis_quality"]["direction"] == "improved"
@@ -2444,11 +2450,13 @@ class TestR6D3cCoherenceBoundary:
 # =====================================================================
 
 class TestR6DHolisticSynthesisFixtureCorrection:
+    # `citation_regression` deliberately excluded -- untouched AT THE TIME of
+    # this checkpoint, but later legitimately corrected by the R6D regression-
+    # controls adjudication (see `TestR6DRegressionControlsAdjudication`).
     _OTHER_FIXTURE_SHA256 = {
         "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
         "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
         "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-        "citation_regression": "c6c2e3e4d69b9888d18adf2a15439a3c5d7e3f9caa05d22c5f9cc7668cb39706",
         "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
         "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
     }
@@ -2724,11 +2732,13 @@ class TestR6DHolisticSynthesisFinalization:
     def test_no_other_fixture_changed(self):
         import hashlib
 
+        # `citation_regression` deliberately excluded -- untouched AT THE TIME of
+        # this checkpoint, but later legitimately corrected by the R6D
+        # regression-controls adjudication (see `TestR6DRegressionControlsAdjudication`).
         other_fixture_hashes = {
             "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
             "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
             "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-            "citation_regression": "c6c2e3e4d69b9888d18adf2a15439a3c5d7e3f9caa05d22c5f9cc7668cb39706",
             "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
             "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
         }
@@ -2740,6 +2750,140 @@ class TestR6DHolisticSynthesisFinalization:
     def test_fixture_still_satisfies_all_r6d1_invariants(self):
         examples = rri.load_report_refinement_examples()  # raises ReportRefinementFixtureError on any violation
         assert len(examples) == 7
+
+    def test_mock_report_refinement_still_seven_of_seven(self):
+        with patch.object(claim_source, "judge_claims") as claim_spy, \
+             patch.object(refinement_holistic, "judge_refinement_holistic") as pairwise_spy, \
+             patch.object(holistic, "judge_report") as holistic_spy:
+            result = rrr.run_experiment(mode="mock")
+        claim_spy.assert_not_called()
+        pairwise_spy.assert_not_called()
+        holistic_spy.assert_not_called()
+        assert result.total == 7
+        assert result.passed == 7
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_no_judge_or_runner_code_changed(self):
+        assert refinement_holistic.R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION == "r6d3c-pairwise-holistic-v2"
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
+        assert hasattr(rrr, "compute_claim_change_inventory")
+        assert hasattr(rrr, "_citation_correctness_from_claims")
+        assert hasattr(rrr, "_groundedness_from_claims")
+
+
+# =====================================================================
+# R6D regression-controls adjudication (after live run 11). Human
+# adjudication against the frozen rubric found that citation_
+# regression's single misattributed citation legitimately damages all
+# 7 dimensions, not just citation_correctness/groundedness -- the
+# report prose itself was NOT touched, only the fixture's own expected
+# directions/rationales. `structural_regression` is confirmed
+# untouched. No judge, runner, or evaluator code changed. Every test
+# below is either a pure fixture-content check (no mocking needed) or
+# reruns mock mode, which makes zero OpenAI/API calls.
+# =====================================================================
+
+class TestR6DRegressionControlsAdjudication:
+    _CITATION_REGRESSION_EVIDENCE_SHA256 = {
+        "draft_report": "ab0485a224b5c39362b19041f39fa1045aa781cbe761f6733cc49a5d637f5902",
+        "refined_report": "3c10d75d17664b0c0ebafc614149f8e9156bba7d1291d4b5952c55f4be83e6ff",
+        "selected_papers": "dca65d1b9676316899cc90aad4bc846cd191e5288c41280b0be8f3dda849a521",
+        "approved_web_articles": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    }
+
+    @staticmethod
+    def _example(fixture_id="citation_regression"):
+        examples = rri.load_report_refinement_examples()
+        return next(x for x in examples if x.id == fixture_id)
+
+    def test_all_seven_semantic_dimensions_expected_regressed(self):
+        e = self._example()
+        d = e.expected["dimension_directions"]
+        for dim in rri.REQUIRED_DIMENSION_NAMES:
+            assert d[dim]["direction"] == "regressed", f"{dim} was {d[dim]['direction']!r}"
+
+    def test_hard_failure_direction_remains_unchanged(self):
+        e = self._example()
+        assert e.expected["hard_failure_direction"] == "unchanged"
+
+    def test_report_prose_evidence_references_and_markers_byte_identical(self):
+        import hashlib
+        import json as _json
+
+        e = self._example()
+        for name, expected_hash in self._CITATION_REGRESSION_EVIDENCE_SHA256.items():
+            obj = getattr(e, name)
+            actual = hashlib.sha256(_json.dumps(obj, sort_keys=True).encode()).hexdigest()
+            assert actual == expected_hash, f"{name} content changed"
+        # Citation markers/reference numbers specifically -- the misattribution
+        # itself (already present before this checkpoint) is untouched.
+        assert e.refined_report["thematic_findings"]["reference_numbers"] == [1]
+        assert e.draft_report["thematic_findings"]["reference_numbers"] == [1, 2]
+        for report in (e.draft_report, e.refined_report):
+            numbers = sorted(r["number"] for r in report["references"])
+            assert numbers == [1, 2]
+
+    def test_five_updated_rationales_describe_distinct_dimension_specific_effects(self):
+        """Each of the 5 newly-regressed rationales must describe ITS
+        OWN dimension's effect, not five copies of the same citation
+        explanation -- a lazy correction would just restate 'the
+        citation is wrong' five times."""
+        e = self._example()
+        d = e.expected["dimension_directions"]
+        assert "cross-source contrast" in d["synthesis_quality"]["rationale"] or "cross-source" in d["synthesis_quality"]["rationale"]
+        assert "assign" in d["analytical_quality"]["rationale"].lower()
+        assert "Analytical template" in d["template_fit"]["rationale"] or "analytical" in d["template_fit"]["rationale"].lower()
+        assert "Methodology Landscape" in d["coherence"]["rationale"]
+        assert "SpanCite-centred" in d["source_balance"]["rationale"] or "SpanCite" in d["source_balance"]["rationale"]
+        # No two of the five share an identical rationale string.
+        rationales = [d[dim]["rationale"] for dim in
+                      ("synthesis_quality", "analytical_quality", "template_fit", "coherence", "source_balance")]
+        assert len(set(rationales)) == 5
+
+    def test_adjudication_note_documents_run_11_and_closure(self):
+        e = self._example()
+        assert "adjudication_note" in e.refinement_context
+        note = e.refinement_context["adjudication_note"].lower()
+        assert "run_id 11" in note or "run 11" in note
+        assert "frozen rubric" in note or "frozen" in note
+        assert "prose" in note
+
+    def test_no_other_fixture_changed(self):
+        import hashlib
+
+        other_fixture_hashes = {
+            "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
+            "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
+            "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
+            "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
+            "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
+        }
+        for fixture_id, expected_hash in other_fixture_hashes.items():
+            path = rri.FIXTURES_DIR / f"{fixture_id}.json"
+            actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert actual_hash == expected_hash, f"{fixture_id}.json changed unexpectedly"
+
+    def test_structural_regression_unaffected(self):
+        e = self._example("structural_regression")
+        assert e.expected["hard_failure_direction"] == "regressed"
+        assert all(entry["direction"] == "unknown" for entry in e.expected["dimension_directions"].values())
+
+    def test_fixture_still_satisfies_all_r6d1_invariants(self):
+        examples = rri.load_report_refinement_examples()  # raises ReportRefinementFixtureError on any violation
+        assert len(examples) == 7
+        e = next(x for x in examples if x.id == "citation_regression")
+        assert e.draft_report["report_template"] == "analytical"
+        assert e.refined_report["report_template"] == "analytical"
+
+    def test_rationale_strings_never_leak_into_report_content(self):
+        e = self._example()
+        rationales = [entry["rationale"] for entry in e.expected["dimension_directions"].values()]
+        for side_report in (e.draft_report, e.refined_report):
+            for key in rri.REQUIRED_SECTION_KEYS:
+                content = (side_report.get(key) or {}).get("content") or ""
+                for rationale in rationales:
+                    assert rationale not in content
 
     def test_mock_report_refinement_still_seven_of_seven(self):
         with patch.object(claim_source, "judge_claims") as claim_spy, \
