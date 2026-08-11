@@ -767,6 +767,70 @@ def _holistic_dimensions_from_result(holistic_result: dict[str, Any]) -> dict[st
     return holistic_result["dimensions"]
 
 
+def prepare_and_judge_claims_only(example: Example, client: OpenAI) -> dict[str, Any]:
+    """R6D.3a: the smallest reusable extraction of `predict_live`'s own
+    claim/source step, WITHOUT the standalone holistic call --
+    identified as the smallest reusable extraction needed so
+    `run_report_refinement.py` can run R6C's real claim/source judging
+    path per side without also invoking `holistic.judge_report` (R6D.3a
+    replaces two independent standalone holistic calls with its own
+    single pairwise call, `judges/refinement_holistic.py`).
+
+    `predict_live` below calls this SAME function internally for its
+    own claim/source step -- report_quality's live behavior, prompt
+    versions, and aggregation are completely unchanged by this
+    extraction; only the code path is now shared rather than
+    duplicated (see `tests/test_evals_report_quality.py`'s existing
+    `predict_live` tests, which patch `claim_source.judge_claims`/
+    `holistic.judge_report` at the module level and are unaffected by
+    this refactor -- proving `predict_live`'s own return value stays
+    byte-identical).
+
+    Returns:
+    ```
+    {
+      "base_prediction": dict,          # predict(example)'s own return value, verbatim.
+      "payload": dict,                  # prepare_report_quality_judge_inputs's own return value, verbatim.
+      "claim_result": dict | None,      # judge_claims's own return value; None only when skipped.
+      "claim_source_dimensions": dict,  # {"citation_correctness": {...}, "groundedness": {...}}.
+      "call_made": bool,                # True only when judge_claims actually issued a real API call.
+    }
+    ```
+    Never raises -- `judge_claims`'s own "never raises" contract is
+    preserved; a judge failure is recorded in `claim_result["error"]`,
+    never an exception here.
+    """
+    base_prediction = predict(example)
+    payload = report_quality_inputs.prepare_report_quality_judge_inputs(example, base_prediction)
+
+    if payload["evaluation_status"] == report_quality_inputs.EVALUATION_STATUS_SKIPPED:
+        skip_reason = ["structural hard failure present -- no live judge call was made"]
+        return {
+            "base_prediction": base_prediction,
+            "payload": payload,
+            "claim_result": None,
+            "claim_source_dimensions": {
+                "citation_correctness": {"label": report_quality_inputs.SKIPPED_JUDGE_DIMENSION_LABEL, "score": None, "reasons": skip_reason},
+                "groundedness": {"label": report_quality_inputs.SKIPPED_JUDGE_DIMENSION_LABEL, "score": None, "reasons": skip_reason},
+            },
+            "call_made": False,
+        }
+
+    topic = example.inputs["topic"]
+    template = example.inputs["template"]
+    claim_result = claim_source.judge_claims(
+        topic, template, payload["selected_cited_claims"], payload["selected_uncited_candidates"],
+        payload["evidence_registry"], client, REPORT_QUALITY_JUDGE_MODEL,
+    )
+    claim_source_dimensions = _aggregate_claim_source_dimensions(claim_result, payload["selected_cited_claims"])
+    call_made = bool(payload["selected_cited_claims"] or payload["selected_uncited_candidates"])
+
+    return {
+        "base_prediction": base_prediction, "payload": payload, "claim_result": claim_result,
+        "claim_source_dimensions": claim_source_dimensions, "call_made": call_made,
+    }
+
+
 def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     """Live-mode prediction (R6C.2). Always starts from `predict(example)`
     -- R6B's own deterministic structural/informational result, byte-
@@ -782,18 +846,19 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
     of the detail JSON should never have to guess which model/prompt
     version WOULD have been used.
 
-    Otherwise: calls research_agent.evals.report_quality_inputs.
-    prepare_report_quality_judge_inputs for R6C.1's own bounded,
-    sanitized payload, then makes exactly one claim/source call
-    (judges/claim_source.py) and exactly one holistic call
-    (judges/holistic.py) -- both independent, both wrapped in their own
-    "never raises" contract, so one judge failing never suppresses the
-    other's result (see _aggregate_claim_source_dimensions/
-    _holistic_dimensions_from_result, each only degrading its OWN
-    dimensions to "unknown" on its own judge's failure).
+    Otherwise: the claim/source step is delegated to `prepare_and_
+    judge_claims_only` above (R6D.3a extraction, same call, same
+    result -- this function's own behavior is unchanged), then makes
+    exactly one holistic call (judges/holistic.py) -- both independent,
+    both wrapped in their own "never raises" contract, so one judge
+    failing never suppresses the other's result (see
+    _aggregate_claim_source_dimensions/_holistic_dimensions_from_result,
+    each only degrading its OWN dimensions to "unknown" on its own
+    judge's failure).
     """
-    base_prediction = predict(example)
-    payload = report_quality_inputs.prepare_report_quality_judge_inputs(example, base_prediction)
+    claim_bundle = prepare_and_judge_claims_only(example, client)
+    base_prediction = claim_bundle["base_prediction"]
+    payload = claim_bundle["payload"]
 
     if payload["evaluation_status"] == report_quality_inputs.EVALUATION_STATUS_SKIPPED:
         judge_dimensions = _skipped_judge_dimensions(
@@ -815,18 +880,15 @@ def predict_live(example: Example, client: OpenAI) -> dict[str, Any]:
 
     topic = example.inputs["topic"]
     template = example.inputs["template"]
+    claim_result = claim_bundle["claim_result"]
 
-    claim_result = claim_source.judge_claims(
-        topic, template, payload["selected_cited_claims"], payload["selected_uncited_candidates"],
-        payload["evidence_registry"], client, REPORT_QUALITY_JUDGE_MODEL,
-    )
     holistic_result = holistic.judge_report(
         topic, template, payload["sanitized_report_sections"], base_prediction["informational_signals"],
         payload["sampling_coverage"], client, REPORT_QUALITY_JUDGE_MODEL,
     )
 
     judge_dimensions = {
-        **_aggregate_claim_source_dimensions(claim_result, payload["selected_cited_claims"]),
+        **claim_bundle["claim_source_dimensions"],
         **_holistic_dimensions_from_result(holistic_result),
     }
     not_applicable = [dim for dim, v in judge_dimensions.items() if v["label"] == "not_applicable"]

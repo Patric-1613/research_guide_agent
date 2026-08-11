@@ -1152,7 +1152,17 @@ guarantee). `report_quality` + `report_refinement` together → 291
 passed. Full backend suite → 1071 passed. **These counts predate
 R6D.3, see below for R6D.3's own totals.**
 
-## R6D.3 — live paired semantic judging (2026-08-11) — complete
+## R6D.3 — live paired semantic judging (2026-08-11) — complete, superseded by R6D.3a
+
+**R6D.3's own first paid live pair (run_id 3, `eval_results/report_
+refinement_history.csv`, commit `4aae124`) surfaced two real
+calibration problems in the design below — see "R6D.3a" immediately
+after this section for the fix and the full run_id 3 evidence.** This
+section is kept as the historical record of what R6D.3 actually
+shipped and why it needed correcting; the live code path it describes
+(`_dimension_direction`'s score-delta rules, two independent per-side
+judge calls including a standalone holistic call each) no longer
+exists in `run_report_refinement.py` as of R6D.3a.
 
 Adds an opt-in `--mode live` path to `report_refinement`, reusing
 R6C's existing per-report live-evaluation entry point
@@ -1255,6 +1265,184 @@ real pairs, real judge calls, human-reviewed) to sanity-check the
 0.10 holistic threshold and the aggregation behavior against real
 model output, followed by **R6D.4** — evaluating real R4-generated
 draft/refined report pairs (not synthetic fixtures) end-to-end.
+
+## R6D.3a — calibrate refinement evaluation around changed claims and paired holistic judgment (2026-08-11) — complete
+
+**Why**: R6D.3's own first paid live pair (run_id 3, `eval_results/
+report_refinement_history.csv`, commit `4aae124`,
+`clear_grounding_improvement`, 4 judge calls, 35.6s) produced only
+1/7 semantic-direction agreement despite the intended correction
+(Conclusion: "SpanCite eliminates all unsupported claims" →
+does_not_support/unsupported, confidence 0.99 → "SpanCite reduces the
+rate of unsupported claims" → supports/supported, confidence 0.99)
+being judged correctly at the CLAIM level on both sides. Two real
+problems, both traced directly to run_id 3's own raw judge output:
+
+1. **Independent whole-report subtraction was the wrong granularity.**
+   R6C's whole-report groundedness aggregation is strict by design
+   (any `partially_supported`/`unsupported` claim fails the whole
+   dimension) — correct for judging ONE report, but it means a
+   genuine, isolated fix can be invisible at the whole-report label:
+   run_id 3's groundedness stayed `fail → fail` because an UNCHANGED
+   `gap_analysis` claim's own collective verdict flipped between the
+   two independent claim/source calls (`supported` on the draft call
+   → `partially_supported` on the refined call) — pure LLM sampling
+   variance on content that never changed, not a real regression, and
+   it happened to land right where it could mask the real fix.
+   citation_correctness DID move (`fail → pass`, correctly reflecting
+   the one claim that actually changed), which is what first exposed
+   that whole-report groundedness aggregation and per-claim reality
+   had diverged.
+2. **Two independent standalone holistic calls, over content most of
+   which never changed, are two independently sampled judgments.**
+   Run_id 3's two calls disagreed on content that was 100%
+   byte-identical between draft and refined: synthesis_quality and
+   source_balance flipped `not_applicable → pass`; analytical_quality
+   moved 0.95 → 0.80; coherence moved 0.78 → 0.91. A `fail`-labelled
+   dimension (analytical_quality) carried a 0.95 score, proving these
+   per-call scores are not stable, comparable cross-call quality
+   measurements — R6D.3's own `HOLISTIC_DIRECTION_MIN_DELTA = 0.10`
+   subtraction rule was measuring sampling noise, not a real
+   direction, on unchanged content.
+
+**The fix, both parts required together** (`research_agent/evals/
+runners/run_report_refinement.py`):
+
+- **Changed-claim comparison** for `citation_correctness`/
+  `groundedness`. `compute_claim_change_inventory` matches R6C.1's own
+  REAL prepared claim units (`selected_cited_claims`/`selected_
+  uncited_candidates` — exactly what the claim/source judge actually
+  saw) between draft and refined by `claim_id`, classifying each as
+  `unchanged`/`changed`/`added`/`removed`. "Unchanged" requires EXACT
+  equality of `claim_text`, `claim_kind`, `reference_numbers`, and
+  `evidence_ids` — never fuzzy text similarity, never an LLM call.
+  Direction is then derived ONLY from claim units that actually
+  changed (`_claim_status_direction`, `_aggregate_claim_directions`):
+  a `fail → pass`/`pass → fail` per-claim status transition is
+  `improved`/`regressed`; same status is `unchanged`; either side
+  `unknown` is `unknown`; both `not_applicable` is `unchanged`;
+  exactly one `not_applicable` is `unknown`. Verdict variation on a
+  claim unit that did NOT change (run_id 3's `gap_analysis` claim) is
+  structurally excluded from the comparison — it can never move the
+  direction, regardless of which way it happens to vary. An
+  added/removed CITED claim is `unknown` (never invented as an
+  improvement or regression just because a citation appeared or
+  disappeared); an added/removed claim whose only available verdict is
+  `not_a_verifiable_claim` is excluded entirely, matching R6C's own
+  "framing prose is neither pass, fail, nor unknown" convention.
+  Aggregation across multiple changed claims: any `unknown`, or both
+  `improved` and `regressed` present, → `unknown`; otherwise the one
+  non-`unchanged` direction present (if any) wins. R6C's strict
+  groundedness policy is preserved exactly — `partially_supported`
+  remains a failure state; this phase deliberately does NOT introduce
+  severity/materiality scoring.
+- **One pairwise holistic call** (`research_agent/evals/judges/
+  refinement_holistic.py`, new module, prompt version
+  `R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION = "r6d3a-pairwise-holistic-v1"`
+  — independent of, and never touching, `judges/holistic.py`'s own
+  `HOLISTIC_JUDGE_PROMPT_VERSION`) replaces two independent standalone
+  holistic calls for the same 5 dimensions (synthesis_quality,
+  analytical_quality, template_fit, coherence, source_balance). The
+  call receives BOTH reports' `sanitized_report_sections` (the exact
+  same sanitized copy R6C.1's own preparation already produces — never
+  a second, independent sanitization pass) side-by-side, plus a
+  deterministic, **ID-only** changed-claim/section summary (never raw
+  claim or report TEXT outside the sanitized report blocks, so the
+  summary itself can never become a second, unsanitized injection
+  channel), and returns `{"direction": "improved"|"unchanged"|
+  "regressed"|"unknown", "confidence": 0.0-1.0, "reason": "..."}` per
+  dimension — direction only, never an absolute per-report score,
+  never an overall winner, never an accept/reject recommendation. A
+  call that sees both reports together and is asked to judge only the
+  EFFECT of the actual edit cannot mistake unchanged content for a
+  changed direction the way two independent calls demonstrably did in
+  run_id 3.
+
+**Cost bound dropped from 4 to 3** for a normal, structurally valid,
+non-identical pair: 1 claim/source call (draft) + 1 claim/source call
+(refined) + 1 pairwise holistic call — no standalone holistic call is
+ever made in this path. **Identical-pair optimization tightened
+further**: for a `revision_applied=false` pair with byte-identical
+reports, the pairwise holistic judge is never called at all (byte-
+identical content trivially implies `unchanged` on all 5 holistic
+dimensions without needing to ask) — maximum cost drops to 1 call
+(down from R6D.3's 2). A structurally invalid side is still never
+judged (R6C's own hard-failure skip gating, unchanged); when either
+side is structurally invalid, all 7 dimensions are `unknown` and no
+pairwise call is attempted — `structural_regression` remains frozen at
+all-7-unknown exactly as before.
+
+**Extraction from `run_report_quality.py`** (Part B's "smallest
+reusable extraction" requirement): `prepare_and_judge_claims_only`
+factors `predict_live`'s own claim/source step out into its own
+function, WITHOUT the standalone holistic call — `predict_live` itself
+now calls this same function internally for its own claim/source step,
+so `report_quality`'s live behavior, prompt versions
+(`CLAIM_SOURCE_JUDGE_PROMPT_VERSION`, `HOLISTIC_JUDGE_PROMPT_VERSION`,
+`CITATION_AGGREGATION_POLICY_VERSION`), and aggregation are completely
+unchanged — proved by `tests/test_evals_report_quality.py`'s full,
+UNMODIFIED existing test suite (192 tests) continuing to pass
+byte-for-byte against the refactored code, and by 3 dedicated
+cross-check tests in `test_evals_report_refinement.py`'s own
+`TestExistingSuitesUnaffectedByR6D3a` class.
+
+**Failure isolation** (orthogonal, as before): a claim/source judge
+failure on either side leaves `citation_correctness`/`groundedness`
+`unknown` for the whole pair while the pairwise holistic call still
+runs normally (independent failure); a pairwise holistic failure
+leaves its 5 dimensions `unknown` while `citation_correctness`/
+`groundedness` remain available from the claim/source judges; an
+unexpected exception on one side's claim/source evaluation is caught
+and recorded per-side without crashing the whole suite run.
+
+**Fixture correction** (`eval_data/report_refinement/fixtures/clear_
+grounding_improvement.json`, the only fixture touched): `expected.
+dimension_directions.citation_correctness.direction` changed from
+`unchanged` to `improved`, with a rationale explaining the actual
+frozen-policy mechanics (draft's attached source `does_not_support`s
+the "eliminates all" overclaim; refined's identical source `supports`
+the accurate "reduces the rate of" claim) — no other expected
+direction, report prose, or evidence changed.
+
+**Evaluators unchanged** (Part G): both `report_refinement_hard_
+failure_direction_agreement` and `report_refinement_semantic_
+direction_agreement` needed zero code changes — `dimension_directions`
+keeps the same 7-key, 4-value shape the evaluator already reads,
+`"unknown"` still never a wildcard, the CLI's aggregate score is still
+expectation agreement, never a report-quality measurement.
+
+**Validation**: `tests/test_evals_report_refinement.py` → 175 passed
+(was 144 under R6D.3), including changed-claim detection by exact
+prepared-input equality, per-claim direction rules A–D-equivalent,
+citation/groundedness aggregation over changed/added/removed claims,
+end-to-end runs against the real corrected `clear_grounding_
+improvement` fixture (including a direct reproduction of run_id 3's
+"byte-identical claim ignored despite different mocked verdicts"
+scenario), the 3-call normal-pair bound and 1-call identical-pair
+bound, pairwise-holistic pass-through/failure-isolation/malformed-
+response safety, and injection isolation (blocked source/report-prose
+instructions absent from the pairwise prompt; benign academic
+"system"/"prompt"/"instructions" usage intact; the changed-claim
+summary proven ID-only, never raw claim text). `report_quality` +
+`report_refinement` together → 367 passed. Full backend suite → 1147
+passed. Mock CLI re-run for non-regression (`eval_results/report_
+refinement_history.csv` run_id 4, commit `84b75d8`, note "R6D.3a mock
+non-regression"): `total=7 passed=7 failed=0 average_score=1.000`. No
+real paid live call was made anywhere in R6D.3a's implementation or
+validation.
+
+**Still no conclusion that production refinement improves report
+quality** — R6D.3a only recalibrates the live *measurement* machinery
+against one real paid pair's evidence plus synthetic fixtures with
+mocked judges; the 0.10 holistic-score-delta approach is fully removed
+from the live pair path (superseded by the pairwise judge's own direct
+direction output), and `citation_correctness`/`groundedness` remain
+categorical-only, never score-derived. **Next checkpoint**: rerun
+ONLY `clear_grounding_improvement` live (the same deliberately small,
+single-pair scope run_id 3 used) to confirm the recalibrated pipeline
+now agrees with its own corrected expectation before considering a
+broader paid live run, followed by **R6D.4** — evaluating real
+R4-generated draft/refined report pairs end-to-end.
 
 ## Related docs
 

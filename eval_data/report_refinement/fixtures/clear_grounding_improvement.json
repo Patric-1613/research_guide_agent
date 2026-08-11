@@ -268,8 +268,8 @@
     "hard_failure_direction": "unchanged",
     "dimension_directions": {
       "citation_correctness": {
-        "direction": "unchanged",
-        "rationale": "Reference [1] is attached to a claim about SpanCite in both versions and remains topically, relevantly attached either way -- under r6c2-citation-aggregation-v2 a source is not required to single-handedly certify a superlative it doesn't establish, only to relevantly contribute, which it does in both the draft and the refined claim."
+        "direction": "improved",
+        "rationale": "The draft's Conclusion claim ('SpanCite eliminates all unsupported claims') is a superlative its one attached source does not establish, so under r6c2-citation-aggregation-v2 that source's per-claim verdict is does_not_support -- a real citation defect. The refined Conclusion ('SpanCite reduces the rate of unsupported claims') is exactly what the same source states, so the same source's per-claim verdict becomes supports. This is a fail-to-pass transition on the one claim unit that actually changed, under R6D.3a's changed-claim-only citation_correctness derivation -- a genuine improvement, not a wash."
       },
       "groundedness": {
         "direction": "improved",

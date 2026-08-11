@@ -1677,31 +1677,110 @@ invented:
   `research_agent/evals/report_quality_inputs.py`, `research_agent/
   evals/report_refinement_inputs.py`, any existing fixture, R6C's
   prompts or aggregation rules, or the production R4 refinement loop.**
-- **Priority**: n/a — done (R6D.4 is next).
+- **Priority**: n/a — done (R6D.3a is next).
+- **Status**: Closed (2026-08-11). Superseded by R6D.3a immediately
+  below — R6D.3's own first paid live pair (run_id 3) surfaced real
+  calibration problems in this checkpoint's design.
+
+### R6D.3a: calibrate refinement evaluation around changed claims and paired holistic judgment
+- **Goal**: fix two calibration problems R6D.3's own first paid live
+  pair (run_id 3, `clear_grounding_improvement`, commit `4aae124`, 4
+  judge calls, 35.6s, only 1/7 semantic-direction agreement) exposed:
+  independent whole-report groundedness aggregation can hide a real,
+  isolated fix behind unrelated judge-call sampling noise, and two
+  independent standalone holistic calls are two independently sampled
+  judgments that can (and did) disagree over content that never
+  changed at all.
+- **Fix, both required together**: (1) derive `citation_correctness`/
+  `groundedness` direction from ONLY the claim units that actually
+  changed between draft and refined (matched by `claim_id`, exact
+  field equality on `claim_text`/`claim_kind`/`reference_numbers`/
+  `evidence_ids` — never fuzzy similarity, never an LLM); (2) replace
+  two independent standalone holistic calls with one pairwise call
+  (`research_agent/evals/judges/refinement_holistic.py`, new prompt
+  version `r6d3a-pairwise-holistic-v1`, independent of `judges/
+  holistic.py`'s own `HOLISTIC_JUDGE_PROMPT_VERSION`) that sees both
+  reports together and returns direction only (`improved`/`unchanged`/
+  `regressed`/`unknown` + confidence + bounded reason) — never an
+  absolute score, never a winner, never an accept/reject decision.
+- **Cost bound dropped from 4 to 3** for a normal pair (1 claim/source
+  call per side + 1 pairwise holistic call); identical-pair
+  optimization tightened to 1 call (pairwise holistic is skipped
+  entirely for byte-identical reports, not just deep-copied).
+  `HOLISTIC_DIRECTION_MIN_DELTA`'s 0.10 score-subtraction rule is fully
+  removed from the live pair path — superseded by the pairwise judge's
+  own direct direction output, not merely deprecated in place.
+- **Extraction**: `run_report_quality.prepare_and_judge_claims_only`
+  factors `predict_live`'s claim/source step out (no standalone
+  holistic call), reused directly by `report_refinement`'s own live
+  path; `predict_live` itself calls this same function internally, and
+  `report_quality`'s own full, UNMODIFIED test suite (192 tests)
+  continues to pass byte-for-byte, proving equivalence.
+- **Fixture correction**: `clear_grounding_improvement`'s `expected.
+  dimension_directions.citation_correctness.direction` changed
+  `unchanged` → `improved` (the draft's attached source genuinely
+  `does_not_support`s the "eliminates all" overclaim; the refined
+  claim's identical source genuinely `supports`s the accurate
+  restatement — a real fail→pass transition on the one claim that
+  changed, under the new changed-claim-only derivation). No other
+  fixture, expected direction, report prose, or evidence touched.
+- **Tests**: `tests/test_evals_report_refinement.py` → 175 passed (was
+  144). `report_quality` + `report_refinement` together → 367 passed.
+  Full backend suite → 1147 passed. No real paid live call made
+  anywhere in implementation or validation. Mock non-regression re-run:
+  `total=7 passed=7 failed=0 average_score=1.000` (run_id 4, commit
+  `84b75d8`, note "R6D.3a mock non-regression").
+- **Location**: `research_agent/evals/runners/run_report_quality.py`
+  (extraction, `predict_live` refactored but behavior-equivalent),
+  `research_agent/evals/runners/run_report_refinement.py` (rewritten
+  live path), `research_agent/evals/judges/refinement_holistic.py`
+  (new), `research_agent/evals/cli.py` (`live_warning` text updated to
+  the 3-call bound), `eval_data/report_refinement/fixtures/clear_
+  grounding_improvement.json` (citation_correctness expectation
+  corrected), `tests/test_evals_report_refinement.py` (+31 tests net),
+  `docs/evaluation.md` / `eval_data/report_refinement/README.md`
+  (updated). **No changes to `research_agent/report.py`, `research_
+  agent/evals/judges/claim_source.py`, `research_agent/evals/judges/
+  holistic.py`'s own prompt/version, `research_agent/evals/report_
+  quality_inputs.py`, `research_agent/evals/report_refinement_
+  inputs.py`, any OTHER fixture, `CLAIM_SOURCE_JUDGE_PROMPT_VERSION`,
+  `HOLISTIC_JUDGE_PROMPT_VERSION`, `CITATION_AGGREGATION_POLICY_
+  VERSION`, `report_quality`'s own CLI output/behavior, or the
+  production R4 refinement loop.**
+- **Explicitly NOT part of this checkpoint**: no extra refinement
+  round, no change to R4's production report generation/refinement, no
+  new rubric dimension, no threshold calibration beyond removing the
+  old provisional 0.10 delta, no paid live evaluation run, no overall
+  winner/acceptance decision.
+- **Priority**: n/a — done. Next: a deliberately small rerun of ONLY
+  `clear_grounding_improvement` live (same single-pair scope as run_id
+  3) to confirm the recalibrated pipeline now agrees with its own
+  corrected expectation, then R6D.4.
 - **Status**: Closed (2026-08-11).
 
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
-- **Goal**: run R6D.3's live paired evaluation against *real* R4
+- **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs
   from real or realistic topics), not R6D.1's 7 synthetic fixtures —
   the first point at which this project can make an actual, evidence-
   backed claim about whether refinement improves report quality.
-- **Why it matters**: R6D.1-R6D.3 validate that the *measurement*
+- **Why it matters**: R6D.1-R6D.3a validate that the *measurement*
   machinery works correctly against hand-authored fixtures with known
-  answers and mocked judges. None of that is evidence about real R4
-  behavior. A small, deliberately bounded paid live run (a handful of
-  real pairs, real judge calls, human-reviewed) should happen first,
-  both to sanity-check the 0.10 holistic threshold against real model
-  output and as a natural precursor to R6D.4's own larger run.
+  answers and mocked judges, calibrated against exactly one real paid
+  pair's own evidence (run_id 3). None of that is evidence about real
+  R4 behavior at scale. A small, deliberately bounded rerun of just
+  `clear_grounding_improvement` (confirming R6D.3a's fix against the
+  same pair that exposed the original problem) should happen before a
+  broader paid live run, and as a natural precursor to R6D.4's own
+  larger run.
 - **Required design (not yet scoped in detail)**: where real
   draft/refined pairs come from (a fixed small topic set run through
   the real R4 pipeline, captured once and frozen, vs. a live pipeline
-  call per eval run), whether/how to revisit `HOLISTIC_DIRECTION_MIN_
-  DELTA` once real score distributions exist, and whether the original
-  §8 blinded-A/B design should still be built as a complementary check
-  once real data exists to justify the added complexity.
+  call per eval run), and whether the original §8 blinded-A/B design
+  should still be built as a complementary check once real data exists
+  to justify the added complexity.
 - **Location (not yet touched)**.
-- **Priority**: next, after a small paid live validation of R6D.3.
+- **Priority**: next, after the small `clear_grounding_improvement`-only rerun.
 - **Status**: Open. Not started.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts

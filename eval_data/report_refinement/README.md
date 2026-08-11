@@ -1,17 +1,21 @@
-# Report refinement-effectiveness pair fixtures (R6D.1 + R6D.2 + R6D.3)
+# Report refinement-effectiveness pair fixtures (R6D.1 + R6D.2 + R6D.3 + R6D.3a)
 
 Fixtures for the `report_refinement` benchmark. **R6D.1** (schema/
 fixtures/loader), **R6D.2** (deterministic/mock pair runner + CLI
-registration), and **R6D.3** (opt-in live semantic pair judging) are
-all complete — see `docs/evaluation.md`'s "R6D.1"/"R6D.2"/"R6D.3"
+registration), **R6D.3** (opt-in live semantic pair judging), and
+**R6D.3a** (changed-claim + pairwise-holistic recalibration) are all
+complete — see `docs/evaluation.md`'s "R6D.1"/"R6D.2"/"R6D.3"/"R6D.3a"
 sections. There is still no call into `research_agent.report`'s
 generation/evaluation/revision functions anywhere — R6D measures
 whether R4's existing "refine once" step already changed a report's
 structural and semantic state; it never performs or simulates a
 refinement itself. **No claim is made here that refinement actually
 improves report quality** — that requires real R4 output, which is
-R6D.4's job (not started). R6D.3 only proves the live *measurement*
-path works end-to-end against synthetic fixtures with mocked judges.
+R6D.4's job (not started). R6D.3/R6D.3a only prove the live
+*measurement* path works end-to-end, first against synthetic fixtures
+with mocked judges, and now also calibrated against one real paid
+pair's own evidence (run_id 3 — see `docs/evaluation.md`'s "R6D.3a"
+section for the full story).
 
 R6C is frozen at tag `r6c-report-quality-evaluation` and evaluates one
 report independently across 7 dimensions (`citation_correctness`,
@@ -43,18 +47,27 @@ mode** — `dimension_directions` is always `null`, never inferred from
 informational signals and never copied from a fixture's own
 `expected.dimension_directions`. Zero OpenAI calls.
 
-`--mode live` (R6D.3) runs each side through R6C's existing live
-prediction path (`run_report_quality.predict_live()`, reused directly)
-independently, then derives per-dimension direction in Python — **up
-to 4 real judge calls per pair** (one claim/source + one holistic,
-per side), fewer when the identical-input optimization applies for a
-`revision_applied=false` pair with byte-identical reports. Missing
-credentials exit 2 immediately, no CSV row, no detail JSON, never a
-silent fallback to mock. See `docs/evaluation.md`'s "R6D.3" section
-for the full direction-derivation rules and the provisional 0.10
-holistic-score threshold. See `research_agent/evals/runners/run_
-report_refinement.py` and `research_agent/evals/evaluators/report_
-refinement.py`.
+`--mode live` (R6D.3a, superseding R6D.3's own first design — see
+`docs/evaluation.md`'s "R6D.3a" section for why) runs each side's
+claim/source judgment independently (`run_report_quality.prepare_and_
+judge_claims_only()`, reused directly, no standalone holistic call per
+side), derives `citation_correctness`/`groundedness` direction from
+ONLY the claim units that actually changed between draft and refined
+(exact `claim_id` + field-equality matching — never fuzzy text
+similarity, never an LLM), and derives the other 5 dimensions from a
+SINGLE pairwise holistic call (`research_agent/evals/judges/
+refinement_holistic.py`) that sees both reports together — **up to 3
+real judge calls per pair** (one claim/source call per side, plus one
+pairwise holistic call), dropping to 1 call when the identical-input
+optimization applies for a `revision_applied=false` pair with
+byte-identical reports (the pairwise holistic call is skipped entirely
+in that case). Missing credentials exit 2 immediately, no CSV row, no
+detail JSON, never a silent fallback to mock. See `docs/evaluation.md`'s
+"R6D.3a" section for the full changed-claim comparison rules, the
+pairwise holistic judge's schema, and the run_id 3 evidence that
+motivated this recalibration. See `research_agent/evals/runners/run_
+report_refinement.py`, `research_agent/evals/judges/refinement_
+holistic.py`, and `research_agent/evals/evaluators/report_refinement.py`.
 
 ## Layout
 
@@ -173,7 +186,7 @@ run_report_quality.py` during R6C).
 
 | id | template | tags | intended direction |
 |---|---|---|---|
-| `clear_grounding_improvement` | foundational | `groundedness`, `improvement` | Draft overclaims "eliminates all" unsupported claims; refined restates the same finding accurately with the same citation. **groundedness improved**, everything else unchanged. |
+| `clear_grounding_improvement` | foundational | `groundedness`, `improvement` | Draft overclaims "eliminates all" unsupported claims; refined restates the same finding accurately with the same citation. **groundedness improved, citation_correctness improved** (R6D.3a: the one changed claim's attached source flips `does_not_support` → `supports`), everything else unchanged. |
 | `holistic_synthesis_improvement` | analytical | `synthesis_quality`, `analytical_quality`, `coherence`, `improvement` | Draft is a paper-by-paper listing with a near-duplicate Gap Analysis/Future Research Directions pair; refined adds genuine cross-source comparison (grouped `[1][2]` citation) and a distinct, concrete proposal. **synthesis_quality, analytical_quality, coherence improved**; citation/groundedness unchanged. |
 | `justified_no_revision` | expert | `tie`, `no_revision` | `revision_applied=false`; `draft_report`/`refined_report` are byte-identical. **All 7 directions unchanged.** |
 | `cosmetic_rewrite_tie` | foundational | `tie`, `cosmetic` | `revision_applied=true`; every section is reworded, no claim/citation/structure changes. **All 7 directions unchanged** — demonstrates that different prose is not automatically improvement. |
