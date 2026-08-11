@@ -2271,6 +2271,85 @@ invented:
 - **Priority**: n/a — done (decision recorded).
 - **Status**: Closed (2026-08-08). Implementation: see R7D entry above.
 
+### Usage Protection M1: production usage telemetry foundation — complete, observe-only, M1.3 skipped
+- **Goal**: before any rate limit/quota can be designed, know what the
+  app's own production paid/external calls actually look like — one
+  privacy-safe record per user-visible action, with real (or honestly
+  nullable) token/call counts, and zero behavior change to anything it
+  observes.
+- **Why it matters**: every prior usage-cost discipline in this project
+  (embedding caches, the direct-relevance judge cache, the R6C/R6D
+  bounded-call-count design) was reasoned about by hand, per call site,
+  with no aggregate, cross-request record of what a real session
+  actually costs. A later limits phase (M2) needs that record — or an
+  honest "not enough data yet" — rather than inventing numbers.
+- **M1.1 — request/action telemetry foundation** (`research_agent/
+  telemetry.py`, new; `research_agent/api_app/app.py` updated): a pure
+  ASGI `RequestTelemetryMiddleware` (never `BaseHTTPMiddleware` — see
+  `docs/architecture.md`'s own "Usage Protection M1" section for why
+  that matters for a future streaming endpoint) records one
+  `http_requests` row per request (route TEMPLATE, method, status,
+  outcome, latency, `X-Request-ID` correlation) in a new, dedicated
+  `data/usage_telemetry.sqlite`. A `contextvars.ContextVar`-based
+  `paid_action(...)`/`record_child_call(...)` pair — the same mechanism
+  `ingestion.py`'s own `_rate_limit_tracker` already proved works across
+  this project's sync call chains — lets nested work attach to one
+  active action ("first active action wins") rather than duplicate top-
+  level rows. Fail-open throughout: a telemetry write/serialization
+  failure is logged and swallowed, never allowed to change a real
+  request's own result. Tests: 32 passed. Full backend suite: 1389
+  passed.
+- **M1.2 — instrumentation of production call sites** (15 domain/
+  service files): wired `paid_action(...)` into the 8 frozen action
+  types (`search`, `summarize`, `search_chat`, `curation_start`,
+  `curation_refill`, `curation_chat`, `report_generate`, `report_
+  regenerate`) at their exact service-layer boundaries, and `timed_
+  child_call(...)` into every production `client.chat.completions.*`/
+  `client.embeddings.create`/Tavily/arXiv/Semantic Scholar/OpenAlex/
+  Unpaywall/CrossRef call site outside `research_agent/evals/**` and
+  `agent.py`'s own internal LangChain tool-loop (one opaque, null-
+  tokened `agent_loop_unmetered` record marks that the loop ran at all
+  — exact per-turn agent tokens remain Langfuse's job, not reconstructed
+  here). Closed four confirmed usage-capture gaps that predated M1
+  entirely (report evaluation, offer classification, direct-relevance
+  judging, non-substantive-classification embeddings — none recorded
+  usage anywhere before this phase, not even in Langfuse). A cache hit
+  (embeddings, direct-relevance judge) never produces a child-call
+  record at all, rather than a `cache_hit=True` placeholder that could
+  read as a real call. `discard_if_empty=True` (added to `paid_action`)
+  lets `curation_refill` wrap every `/picks`/`/reopen` call
+  unconditionally while still producing no row on the common no-refill
+  path, without the service layer duplicating `curation_loop.py`'s own
+  refill-routing decision. An AST-based coverage guard test fails if a
+  new production external/model call site is ever added without an
+  instrumentation decision. Tests: 90 focused (`test_telemetry.py` +
+  `test_telemetry_instrumentation.py`). Full backend suite: **1446
+  passed**. No test touches the real `data/usage_telemetry.sqlite`,
+  confirmed directly every run.
+- **M1.3 (admin/read API over the telemetry data) — deliberately
+  skipped.** Nothing in the current product needs an HTTP-exposed read
+  path over `usage_telemetry.sqlite` yet; a later M2 enforcement phase
+  can query the SQLite file directly. Revisit only if M2's own design
+  turns out to need one.
+- **Explicitly not built**: rate limiting, 429s, quotas, an admin
+  dashboard, authentication, billing, context summarization, streaming
+  — M1 is observe-only in full; no production decision or limit depends
+  on this data yet.
+- **Location**: `research_agent/telemetry.py` (new), `research_agent/
+  api_app/app.py`, 15 instrumented domain/service files (`agent.py`,
+  `curation_chat.py`, `embeddings.py`, `enrichment.py`, `ingestion.py`,
+  `qa.py`, `query_expansion.py`, `report.py`, `summarize.py`, `web_
+  search.py`, and 6 `services/*.py` files), `tests/test_telemetry.py`
+  (new), `tests/test_telemetry_instrumentation.py` (new). See `docs/
+  architecture.md`'s "Usage Protection M1" section for the full
+  narrative.
+- **Priority**: next, **M2** — usage limits/admission control, designed
+  against this data (or an honest "not enough data yet" if the real
+  local `usage_telemetry.sqlite` doesn't have enough genuine
+  application traffic in it).
+- **Status**: Closed (2026-08-11). Commits: `649c5e5` (M1.1), `01b948a`
+  (M1.2).
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]

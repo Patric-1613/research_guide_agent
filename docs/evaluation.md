@@ -2240,11 +2240,16 @@ any objective reason to deviate from it.
 R6C live judges, R6D synthetic + real paired refinement evaluation, in
 full). Not proof that refinement universally improves or harms report
 quality. No further R6 calibration or live reruns are planned.
-Targeted-section refinement design, a human-approval workflow, a
-broader human-labelled real dataset (only if product needs justify
-it), and production latency/cost observability are real, useful future
-work — tracked in `specs/backend-backlog.md`, explicitly **outside**
-R6's own scope.
+Targeted-section refinement design, a human-approval workflow, and a
+broader human-labelled real dataset (only if product needs justify it)
+remain real, useful future work — tracked in `specs/backend-
+backlog.md`, explicitly **outside** R6's own scope. Production latency/
+cost observability, named here as a future item, has since had its raw
+data-collection foundation actually built as **Usage Protection M1**
+(`research_agent/telemetry.py`, complete, observe-only, 2026-08-11) —
+see `docs/architecture.md`'s "Usage Protection M1" section; a
+dashboard/reporting layer on top of it is still not built, and M1 is
+its own initiative, not part of R6.
 
 ## Related docs
 
