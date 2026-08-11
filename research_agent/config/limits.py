@@ -49,8 +49,9 @@ class UsagePolicy:
     global_paid_action_limit: int
     global_paid_action_window_minutes: int
 
-    # --- Read by research_agent/leases.py (M2.1), not yet wired into any route ---
+    # --- Read by research_agent/leases.py (M2.1), wired into routes in M2.2A ---
     max_concurrent_expensive_actions_per_session: int
+    expensive_action_lease_ttl_seconds: int
 
     # --- Enforced in M2.1, directly in agent.py's create_agent()/stream() ---
     agent_model_call_limit_per_run: int
@@ -93,6 +94,21 @@ def get_usage_policy() -> UsagePolicy:
         max_concurrent_expensive_actions_per_session=_positive_int(
             "USAGE_MAX_CONCURRENT_EXPENSIVE_ACTIONS_PER_SESSION", 1
         ),
+        # M2.2A: a crash-recovery ceiling, not a request timeout -- the TTL
+        # a lease survives for if the worker holding it dies without
+        # releasing it (process kill, uncaught interpreter-level crash).
+        # Deliberately NOT derived from provider_timeout_seconds above (60s):
+        # that bounds one provider call, but a guarded action (e.g. report
+        # generation's draft -> evaluate -> revise refinement loop, or the
+        # standalone agent's up-to-10-model-call run) is several provider
+        # calls in sequence, so a single provider timeout would expire the
+        # lease out from under a still-healthy, still-working request. 900s
+        # (15 minutes) is a provisional judgment call sized for the slowest
+        # realistic guarded workflow (multi-pass report refinement) with
+        # real headroom, not a calibrated figure -- revisit once real
+        # latency telemetry exists, same as every other provisional value
+        # in this module.
+        expensive_action_lease_ttl_seconds=_positive_int("USAGE_EXPENSIVE_ACTION_LEASE_TTL_SECONDS", 900),
         # 10 / 10 / 15 (M2.1, reaffirmed unchanged in M2.1b): configurable
         # PROVISIONAL safeguards, not calibrated or permanent values. Chosen
         # after inspecting agent.py's topology alone -- build_tools()

@@ -20,7 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
 
+import research_agent.admission as admission
 import research_agent.api as api
+import research_agent.leases as leases
 import research_agent.telemetry as telemetry
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import get_db_connection
@@ -86,8 +88,16 @@ def _client():
         # init_usage_db() — redirected here for the same reason api.init_db
         # is redirected just above, so this file's tests never create or
         # touch the real data/usage_telemetry.sqlite.
+        # Usage Protection M2.2A: admission.py/leases.py each import
+        # USAGE_DB_PATH by value (independent module attribute, the same
+        # M2.1b-confirmed gap) -- now that /search and /chat are guarded,
+        # both must be redirected too or those endpoints' admission checks
+        # would read the real database through this file's TestClient calls.
+        usage_db_path = Path(tmp) / "usage_telemetry.sqlite"
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
-             patch.object(telemetry, "USAGE_DB_PATH", Path(tmp) / "usage_telemetry.sqlite"), \
+             patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
@@ -623,6 +633,90 @@ def test_chat_history_rejects_unknown_role():
             "history": [{"role": "system", "content": "not user or assistant"}],
         })
     assert resp.status_code == 422
+
+
+# =====================================================================
+# Usage Protection M2.2A: HTTP-level guard wiring for /search and /chat.
+# Both actions have NO stable subject at admission time (search_id
+# doesn't exist until the run finishes) -- see research_agent/
+# usage_guard.py -- so only the coarse global window applies; neither
+# acquires a lease. tests/test_curation_api.py covers the session-scoped
+# hourly/daily + lease path (curation endpoints).
+# =====================================================================
+
+@contextmanager
+def _client_with_usage_db():
+    """Same isolation/mocking as _client() above, but also yields the
+    per-test usage_telemetry.sqlite path, needed here to seed the global
+    window directly instead of making 20 real round-trip HTTP calls."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.sqlite"
+        usage_db_path = Path(tmp) / "usage_telemetry.sqlite"
+        with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(api, "search_web", return_value=[]), \
+             patch.object(api, "OpenAI", return_value=MagicMock()):
+            api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
+            try:
+                with TestClient(api.app) as client:
+                    yield client, usage_db_path
+            finally:
+                api.app.dependency_overrides.clear()
+
+
+def _exhaust_global_window(usage_db_path) -> None:
+    from datetime import datetime, timezone
+
+    from research_agent.config import get_usage_policy
+
+    policy = get_usage_policy()
+    now = datetime.now(timezone.utc).isoformat()
+    for i in range(policy.global_paid_action_limit):
+        telemetry._write_paid_action(
+            action_id=f"seed-global-{i}-{os.urandom(4).hex()}",
+            action_type="search", request_id=None, subject_type=None, subject_id=None,
+            outcome="success", started_at=now, ended_at=now, latency_ms=1.0,
+            input_tokens=None, output_tokens=None, total_tokens=None, total_call_count=1,
+            child_calls_json="[]", path=usage_db_path,
+        )
+
+
+def test_search_is_guarded_by_the_global_window():
+    with _client_with_usage_db() as (client, usage_db_path):
+        _exhaust_global_window(usage_db_path)
+        with patch.object(api, "run_research_agent") as mock_agent:
+            resp = client.post("/search", json={"topic": "test topic"})
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["reason_code"] == "global_window_limit_reached"
+        assert "Retry-After" in resp.headers
+        mock_agent.assert_not_called()  # rejected before any paid work
+
+
+def test_search_proceeds_normally_when_under_the_global_window():
+    papers = [_paper("p1", "Paper One")]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=[])
+    with _client_with_usage_db() as (client, usage_db_path), \
+         patch.object(api, "run_research_agent", return_value=fake_session):
+        resp = client.post("/search", json={"topic": "test topic"})
+    assert resp.status_code == 200
+
+
+def test_search_admission_storage_failure_returns_503():
+    with _client_with_usage_db() as (client, usage_db_path), \
+         patch.object(admission, "USAGE_DB_PATH", usage_db_path.parent / "does" / "not" / "exist" / "usage.sqlite"):
+        with patch.object(api, "run_research_agent") as mock_agent:
+            resp = client.post("/search", json={"topic": "test topic"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["reason_code"] == "usage_protection_unavailable"
+    # No exception text, path, or SQL leaked into the response.
+    body_text = resp.text
+    assert "sqlite3" not in body_text
+    assert "Traceback" not in body_text
+    mock_agent.assert_not_called()
 
 
 if __name__ == "__main__":

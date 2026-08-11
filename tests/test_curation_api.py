@@ -31,8 +31,11 @@ import io
 import os
 import sys
 import tempfile
+import threading
+import uuid
 import zipfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -41,7 +44,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from docx import Document as DocxDocument
 from fastapi.testclient import TestClient
 
+import research_agent.admission as admission
 import research_agent.api as api
+import research_agent.leases as leases
 import research_agent.telemetry as telemetry
 from research_agent.qa import sqlite_checkpointer
 from research_agent.schema import Paper, WebArticle
@@ -91,10 +96,23 @@ def _client():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
+        usage_db_path = Path(tmp) / "usage_telemetry.sqlite"
         # Usage Protection M1.1: same redirect as test_api.py's own _client()
         # — lifespan() now also calls telemetry.init_usage_db().
+        # Usage Protection M2.2A: research_agent/admission.py and
+        # research_agent/leases.py each do `from research_agent.telemetry
+        # import USAGE_DB_PATH` -- a by-value import creating their own,
+        # independent module attribute (the same M2.1b-confirmed gap) --
+        # so patching only telemetry.USAGE_DB_PATH does NOT redirect the
+        # guard's own admission/lease queries, which now run for real on
+        # every guarded endpoint this file exercises through TestClient.
+        # All three must be patched or a guarded request here would read
+        # (and, for a lease-acquiring endpoint, write) the real
+        # data/usage_telemetry.sqlite.
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
-             patch.object(telemetry, "USAGE_DB_PATH", Path(tmp) / "usage_telemetry.sqlite"), \
+             patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()), \
              patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
@@ -2422,6 +2440,214 @@ def test_curation_report_endpoint_sets_report_covered_web_article_count():
             client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
 
     assert seen["count"] == 0  # no web articles were ever added
+
+
+# =====================================================================
+# Usage Protection M2.2A Part E: HTTP-level workflow-placement tests --
+# proves the guard (research_agent/usage_guard.py) is actually wired
+# into the real routes (not just unit-tested against the service
+# layer), and that the cache-hit/no-op boundaries stay exactly where
+# they were before the guard existed.
+# =====================================================================
+
+@contextmanager
+def _client_with_usage_db():
+    """Same isolation/mocking as _client() above, but also yields the
+    per-test usage_telemetry.sqlite path so a test can seed budget-
+    exhaustion state directly rather than making 20-30 real round-trip
+    HTTP calls just to trip a limit. A separate helper (not a changed
+    _client() signature) so the other call sites in this file that
+    already use `with _client() as client:` stay untouched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.sqlite"
+        cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
+        usage_db_path = Path(tmp) / "usage_telemetry.sqlite"
+        with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(api, "search_web", return_value=[]), \
+             patch.object(api, "OpenAI", return_value=MagicMock()), \
+             patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
+            api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
+            api.app.dependency_overrides[api.get_curation_checkpointer] = _make_test_checkpointer_override(cp_db_path)
+            try:
+                with TestClient(api.app) as client:
+                    yield client, usage_db_path
+            finally:
+                api.app.dependency_overrides.clear()
+
+
+def _exhaust_session_hourly_budget(usage_db_path, session_id: str) -> None:
+    """Seeds enough completed paid_actions rows for this session, all
+    inside the last hour, to trip the per-session hourly admission
+    check -- independent of the global window's own (lower) limit, so
+    each test can reason about ONE specific rejection reason."""
+    from research_agent.config import get_usage_policy
+
+    policy = get_usage_policy()
+    now = datetime.now(timezone.utc).isoformat()
+    for i in range(policy.max_paid_actions_per_session_per_hour):
+        telemetry._write_paid_action(
+            action_id=f"seed-{session_id}-{i}-{uuid.uuid4().hex}",
+            action_type="curation_chat", request_id=None, subject_type="session", subject_id=session_id,
+            outcome="success", started_at=now, ended_at=now, latency_ms=1.0,
+            input_tokens=None, output_tokens=None, total_tokens=None, total_call_count=1,
+            child_calls_json="[]", path=usage_db_path,
+        )
+
+
+def test_report_cache_hit_bypasses_admission_and_lease():
+    """A cache hit must succeed even when this session's own hourly
+    budget is already exhausted -- exhausting the budget only after the
+    first (real) generation, so the SECOND (cached) call is the one
+    actually being tested against an exhausted budget."""
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        fake_report = {
+            "findings": {"content": "f", "cited_papers": []},
+            "limitations": {"content": "l", "cited_papers": []},
+            "future_scope": {"content": "fs", "cited_papers": []},
+            "skipped_papers": [],
+        }
+        with patch.object(api, "generate_report_for_session", return_value=fake_report) as mock_gen:
+            first = client.post(f"/curation/{session_id}/report")
+            assert first.status_code == 200
+
+            _exhaust_session_hourly_budget(usage_db_path, session_id)
+
+            second = client.post(f"/curation/{session_id}/report")
+        assert second.status_code == 200
+        mock_gen.assert_called_once()  # the cache hit never re-generated
+
+
+def test_fresh_report_generation_is_guarded():
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        _exhaust_session_hourly_budget(usage_db_path, session_id)
+
+        with patch.object(api, "generate_report_for_session") as mock_gen:
+            resp = client.post(f"/curation/{session_id}/report")
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["reason_code"] == "session_hourly_limit_reached"
+        assert "Retry-After" in resp.headers
+        assert int(resp.headers["Retry-After"]) > 0
+        mock_gen.assert_not_called()  # rejected before any paid work
+
+
+def test_report_regeneration_is_guarded():
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        with patch.object(api, "generate_report_for_session", return_value={
+            "findings": {"content": "f", "cited_papers": []}, "limitations": {"content": "l", "cited_papers": []},
+            "future_scope": {"content": "fs", "cited_papers": []}, "skipped_papers": [],
+        }):
+            client.post(f"/curation/{session_id}/report")
+
+        _exhaust_session_hourly_budget(usage_db_path, session_id)
+
+        with patch.object(api, "regenerate_report_with_new_sources") as mock_regen:
+            resp = client.post(f"/curation/{session_id}/report/regenerate")
+
+        assert resp.status_code == 429
+        mock_regen.assert_not_called()
+
+
+def test_chat_model_call_is_guarded():
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        _exhaust_session_hourly_budget(usage_db_path, session_id)
+
+        with patch.object(api, "chat_turn") as mock_chat:
+            resp = client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["reason_code"] == "session_hourly_limit_reached"
+        mock_chat.assert_not_called()
+
+
+def test_no_paid_work_endpoint_remains_unguarded():
+    """delete-exchanges makes no model/search call -- it must keep
+    working normally even when this session's budget is exhausted."""
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": "ex-1"})
+            session.chat_history.append({"role": "assistant", "content": "ok", "exchange_id": "ex-1"})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            client.post(f"/curation/{session_id}/chat", json={"message": "hi"})
+
+        _exhaust_session_hourly_budget(usage_db_path, session_id)
+
+        resp = client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["ex-1"]})
+        assert resp.status_code == 200
+
+
+def test_two_concurrent_chat_requests_same_session_yield_one_200_and_one_409():
+    """Real concurrent HTTP requests (threads hitting the SAME
+    TestClient/session), not sequential calls."""
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+
+        release_event = threading.Event()
+        entered_event = threading.Event()
+
+        def _blocking_chat_turn(session, message, client=None, **kwargs):
+            entered_event.set()
+            release_event.wait(timeout=5)
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": "ok"})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        results = {}
+
+        def _first_request():
+            with patch.object(api, "chat_turn", side_effect=_blocking_chat_turn):
+                results["first"] = client.post(f"/curation/{session_id}/chat", json={"message": "one"})
+
+        t = threading.Thread(target=_first_request)
+        t.start()
+        assert entered_event.wait(timeout=5)  # first request now holds the lease
+
+        second = client.post(f"/curation/{session_id}/chat", json={"message": "two"})
+        results["second"] = second
+
+        release_event.set()
+        t.join(timeout=5)
+
+        assert results["first"].status_code == 200
+        assert results["second"].status_code == 409
+        assert results["second"].json()["detail"]["reason_code"] == "action_in_progress"
+
+
+def test_nested_paid_action_remains_exactly_one_top_level_row():
+    """report_generate's own child work (draft LLM call) attaches as a
+    child call under the SAME single top-level row the guard opened --
+    no duplicate row from the guard's own composition."""
+    import sqlite3
+
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        with patch.object(api, "generate_report_for_session", return_value={
+            "findings": {"content": "f", "cited_papers": []}, "limitations": {"content": "l", "cited_papers": []},
+            "future_scope": {"content": "fs", "cited_papers": []}, "skipped_papers": [],
+        }):
+            resp = client.post(f"/curation/{session_id}/report")
+        assert resp.status_code == 200
+
+        conn = sqlite3.connect(usage_db_path)
+        try:
+            rows = conn.execute(
+                "SELECT action_type, subject_id FROM paid_actions WHERE action_type = 'report_generate'"
+            ).fetchall()
+        finally:
+            conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ("report_generate", session_id)
 
 
 if __name__ == "__main__":

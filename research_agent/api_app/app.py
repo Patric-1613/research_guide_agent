@@ -17,12 +17,37 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import research_agent.api as api
 from research_agent.config import get_settings
 from research_agent.telemetry import RequestTelemetryMiddleware, init_usage_db
+from research_agent.usage_guard import GUARD_REASON_HTTP_STATUS, GUARD_REASON_MESSAGE, UsageGuardRejection
+
+
+async def _handle_usage_guard_rejection(request: Request, exc: UsageGuardRejection) -> JSONResponse:
+    """Usage Protection M2.2A: the ONE centralized mapping from a
+    UsageGuardRejection (research_agent/usage_guard.py) to an HTTP
+    response, registered once here rather than repeated as a try/except
+    in every router that uses the guard -- ServiceError's own
+    per-router try/except (see every routers/*.py file) stays exactly
+    as it was; this is a second, independent exception type with its
+    own centralized handler, not a replacement for that convention.
+
+    Body carries only a stable, machine-readable reason_code and a
+    generic, user-safe message -- never exception text, a filesystem
+    path, SQL, or any request content. Retry-After is set whenever the
+    rejection carries a meaningful positive retry_after_seconds
+    (budget rejections always have one; a lease conflict has one only
+    when the current holder's expiry was itself retrievable)."""
+    status_code = GUARD_REASON_HTTP_STATUS[exc.reason_code]
+    body = {"reason_code": exc.reason_code, "message": GUARD_REASON_MESSAGE[exc.reason_code]}
+    headers = {}
+    if exc.retry_after_seconds is not None:
+        headers["Retry-After"] = str(exc.retry_after_seconds)
+    return JSONResponse(status_code=status_code, content={"detail": body}, headers=headers)
 
 
 @asynccontextmanager
@@ -64,6 +89,10 @@ def create_app() -> FastAPI:
     # behavior, request/response bodies, or any header other than adding
     # X-Request-ID to the real response.
     app.add_middleware(RequestTelemetryMiddleware)
+
+    # Usage Protection M2.2A: one centralized handler for every guarded
+    # route's rejection, instead of a try/except in each router.
+    app.add_exception_handler(UsageGuardRejection, _handle_usage_guard_rejection)
 
     from research_agent.api_app.routers.health import router as health_router
 

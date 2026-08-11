@@ -32,7 +32,9 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import research_agent.admission as admission
 import research_agent.api as api
+import research_agent.leases as leases
 import research_agent.telemetry as telemetry
 from research_agent import embeddings as embeddings_module
 from research_agent import enrichment as enrichment_module
@@ -145,8 +147,15 @@ def _api_client(usage_db_path: Path):
     fixture path so rows land where the test can read them back."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
+        # Usage Protection M2.2A: admission.py/leases.py each import
+        # USAGE_DB_PATH by value (independent module attribute) -- both
+        # must be redirected alongside telemetry.USAGE_DB_PATH or a
+        # guarded endpoint's admission/lease checks would reach the real
+        # database through this file's own TestClient calls.
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
              patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
@@ -167,6 +176,8 @@ def _curation_client(usage_db_path: Path):
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
              patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()), \
              patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):

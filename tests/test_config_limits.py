@@ -30,6 +30,7 @@ def test_defaults_match_the_provisional_spec():
         global_paid_action_limit=20,
         global_paid_action_window_minutes=10,
         max_concurrent_expensive_actions_per_session=1,
+        expensive_action_lease_ttl_seconds=900,
         agent_model_call_limit_per_run=10,
         agent_tool_call_limit_per_run=10,
         agent_recursion_limit=15,

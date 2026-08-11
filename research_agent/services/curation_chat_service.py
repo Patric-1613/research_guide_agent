@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import research_agent.api as api
-import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import (
     ChatTurn,
     CitedPaperOut,
@@ -18,6 +17,7 @@ from research_agent.api_app.schemas import (
 from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
+from research_agent.usage_guard import guard_paid_action
 
 
 def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> CurationChatResponse:
@@ -28,7 +28,11 @@ def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> Curat
     # nested second ask (web-offer accept) or report-regeneration
     # (report-update-offer accept) chat_turn() triggers internally -- "first
     # active action wins" means neither ever opens its own top-level row.
-    with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+    # Usage Protection M2.2A: session-scoped, so full hourly/daily/global
+    # admission plus the shared expensive-action lease -- this single
+    # guard covers the nested web-offer/report-update-offer work too,
+    # since those never open their own top-level paid_action.
+    with guard_paid_action("curation_chat", subject=("session", session_id), use_lease=True):
         try:
             result = api.chat_turn(session, req.message, client=api._state["client"])
         except ValueError as exc:
@@ -93,7 +97,10 @@ def add_curation_chat_exchanges_to_report(
     newly_approved_urls = api.cited_web_article_urls_for_exchanges(session, eligible_ids)
     approved_web_articles = api.resolve_approved_web_articles_for_regeneration(session, newly_approved_urls)
 
-    with telemetry.paid_action("report_regenerate", subject_type="session", subject_id=session_id):
+    # Usage Protection M2.2A: chat-triggered report update -- a separate
+    # top-level guarded action from curation_chat above (a distinct HTTP
+    # endpoint, not nested inside a chat turn), same lease group.
+    with guard_paid_action("report_regenerate", subject=("session", session_id), use_lease=True):
         try:
             new_report = api.regenerate_report_with_approved_web_sources(
                 session, approved_web_articles, client=api._state["client"],
@@ -129,7 +136,9 @@ def edit_curation_chat_exchange(session_id: str, req: CurationChatEditRequest, c
     if session is None:
         raise ServiceError(404, "session_id not found")
 
-    with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+    # Usage Protection M2.2A: edit-and-rerun -- re-invokes the model for a
+    # single exchange, same guard shape as answer_curation_chat above.
+    with guard_paid_action("curation_chat", subject=("session", session_id), use_lease=True):
         try:
             result, report_possibly_stale = api.edit_chat_exchange(
                 session, req.exchange_id, req.question, client=api._state["client"],

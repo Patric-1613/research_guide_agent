@@ -11,10 +11,16 @@ from research_agent.schema import WebArticle
 from research_agent.services.errors import ServiceError
 from research_agent.services.search_helpers import _filtered_candidate_count, _merge_web_articles, _server_side_rerank
 from research_agent.storage import save_search
+from research_agent.usage_guard import guard_paid_action
 
 
 def run_search(db: sqlite3.Connection, req: SearchRequest) -> SearchResponse:
-    with telemetry.paid_action("search"):
+    # Usage Protection M2.2A: no subject is available yet at this point --
+    # search_id (attached via telemetry.set_action_subject) doesn't exist
+    # until _run_search's own save_search() call succeeds -- so this gets
+    # only the coarse global admission check, no per-subject hourly/daily
+    # check and no lease (both need a subject to scope to).
+    with guard_paid_action("search"):
         return _run_search(db, req)
 
 

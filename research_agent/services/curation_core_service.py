@@ -12,14 +12,17 @@ from research_agent.curation_session import _session_to_dict
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.services.curation_helpers import _curation_config
 from research_agent.services.errors import ServiceError
+from research_agent.usage_guard import guard_paid_action
 
 
 def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
     # session_id (attached below via telemetry.set_action_subject) doesn't
     # exist until it's minted a few lines down -- the action has to open
     # before that, since it needs to wrap the candidate-pool/ranking/
-    # canonicalization work that happens first.
-    with telemetry.paid_action("curation_start"):
+    # canonicalization work that happens first. Usage Protection M2.2A:
+    # same reasoning as search_service.run_search -- no subject yet, so
+    # only the coarse global admission check applies, no lease.
+    with guard_paid_action("curation_start"):
         client = api._state["client"]
         settings = get_settings()
         deduped = api.build_candidate_pool(

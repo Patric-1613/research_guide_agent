@@ -54,10 +54,13 @@ logger = logging.getLogger(__name__)
 # group and a session may hold exactly one lease at a time.
 EXPENSIVE_ACTION_GROUP = "expensive_action"
 
-# Provisional: long enough to cover a slow paid action (multi-tool agent
-# run, report generation), short enough that a crashed/killed worker
-# doesn't block a session for long. Not derived from real latency
-# telemetry yet.
+# Low-level module default, used only by a direct call that doesn't pass
+# ttl_seconds explicitly (e.g. a test). M2.2A's production call path
+# (research_agent/usage_guard.py) always passes the centralized,
+# policy-level default instead (UsagePolicy.expensive_action_lease_ttl_
+# seconds, research_agent/config/limits.py) so there is one real source
+# of truth for the production TTL. Provisional either way -- not derived
+# from real latency telemetry.
 DEFAULT_LEASE_TTL_SECONDS = 300
 
 ReasonCode = Literal["ok", "lease_held", "storage_unavailable"]
@@ -119,8 +122,14 @@ def acquire_lease(
             (lease_id, subject_type, subject_id, action_group, token, acquired_at, expires_at),
         )
         conn.commit()
+        # expires_at fetched here regardless of which side wins: on
+        # rejection (M2.2A) this is the CURRENT holder's own expiry, which
+        # a caller needs to compute a meaningful Retry-After for a 409 --
+        # "conflicts must include enough safe operational data to
+        # calculate Retry-After" -- itself still just a timestamp, never
+        # any content about what the other holder is doing.
         row = conn.execute(
-            "SELECT lease_token FROM action_leases "
+            "SELECT lease_token, expires_at FROM action_leases "
             "WHERE subject_type = ? AND subject_id = ? AND action_group = ?",
             (subject_type, subject_id, action_group),
         ).fetchone()
@@ -133,7 +142,8 @@ def acquire_lease(
 
     if row is not None and row[0] == token:
         return LeaseDecision(acquired=True, reason_code="ok", token=token, expires_at=expires_at)
-    return LeaseDecision(acquired=False, reason_code="lease_held")
+    existing_expires_at = row[1] if row is not None else None
+    return LeaseDecision(acquired=False, reason_code="lease_held", expires_at=existing_expires_at)
 
 
 def release_lease(

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import research_agent.api as api
-import research_agent.telemetry as telemetry
 from research_agent.api_app.schemas import ReportOut
 from research_agent.api_app.serializers import _report_to_out
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
+from research_agent.usage_guard import guard_paid_action
 
 
 def get_or_create_report(
@@ -46,8 +46,10 @@ def get_or_create_report(
         # Fresh-generation branch only -- a cache hit (session.report
         # already exists) never enters this block at all, so it creates no
         # paid_actions row, matching /summarize's own cache-then-generate
-        # telemetry posture.
-        with telemetry.paid_action("report_generate", subject_type="session", subject_id=session_id):
+        # telemetry posture. Usage Protection M2.2A: for the same reason,
+        # a cache hit never reaches the guard either -- it bypasses
+        # admission and the lease entirely, not just telemetry.
+        with guard_paid_action("report_generate", subject=("session", session_id), use_lease=True):
             try:
                 report = api.generate_report_for_session(
                     session, client=api._state["client"], report_template=report_template or "analytical",
@@ -102,7 +104,9 @@ def regenerate_report(
     session = load_curation_session(session_id, cp)
     if session is None:
         raise ServiceError(404, "session_id not found")
-    with telemetry.paid_action("report_regenerate", subject_type="session", subject_id=session_id):
+    # Usage Protection M2.2A: whole-pool regeneration always does real
+    # paid work (no cache branch), so this is unconditionally guarded.
+    with guard_paid_action("report_regenerate", subject=("session", session_id), use_lease=True):
         try:
             report = api.regenerate_report_with_new_sources(
                 session, client=api._state["client"], report_template=report_template,
