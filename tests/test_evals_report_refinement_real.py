@@ -489,3 +489,83 @@ class TestCliRegistration:
         assert len(rows) == 1
         assert "test note" in rows[0]["note"]
         assert rows[0]["suite"] == "report_refinement_real"
+
+
+# --- R6 final closure: real-analytical-01's structural adjudication correction --
+
+class TestStructuralAdjudicationCorrection:
+    """`real-analytical-01-adjudication.json`'s `hard_failure_direction`
+    was corrected from `unchanged` to `regressed` after live run_id 2
+    (`eval_results/report_refinement_real_history.csv`) surfaced a
+    genuine, independently-verifiable deterministic finding the
+    original adjudication missed: the refined report carries orphan
+    references the draft does not. This proves the corrected label
+    matches what R6B's own deterministic checker (`run_report_quality.
+    predict`, the exact function `run_report_refinement.predict`/
+    `predict_live` already call) independently finds against the real
+    capture bodies -- a mechanical check, never a re-judgment."""
+
+    @pytest.mark.skipif(
+        not _REAL_CAPTURES_PRESENT,
+        reason="eval_results/captures/*.json is gitignored and not present in this environment",
+    )
+    def test_corrected_hard_failure_direction_matches_deterministic_inspection(self):
+        capture = json.loads((rrri.CAPTURES_DIR / "real-analytical-01.json").read_text())
+        selected_papers = capture["selected_papers"]
+        approved_web_articles = capture["approved_web_articles"]
+
+        def hard_failures_for(report):
+            example = rrr.Example(
+                id="__check__",
+                inputs={
+                    "generated_report": report, "selected_papers": selected_papers,
+                    "approved_web_articles": approved_web_articles,
+                },
+                outputs={}, metadata={},
+            )
+            return rq.predict(example)["hard_failures"]
+
+        draft_hard_failures = hard_failures_for(capture["draft_report"])
+        refined_hard_failures = hard_failures_for(capture["refined_report"])
+        assert "orphan_reference" not in draft_hard_failures
+        assert "orphan_reference" in refined_hard_failures
+
+        independently_derived_direction = rrr._hard_failure_direction(draft_hard_failures, refined_hard_failures)
+        assert independently_derived_direction == "regressed"
+
+        adjudication = json.loads((rrri.REAL_REVIEWS_DIR / "real-analytical-01-adjudication.json").read_text())
+        assert adjudication["hard_failure_direction"] == independently_derived_direction
+
+    def test_semantic_dimension_directions_remain_byte_identical_after_correction(self):
+        adjudication = json.loads((rrri.REAL_REVIEWS_DIR / "real-analytical-01-adjudication.json").read_text())
+        assert adjudication["dimension_directions"] == {
+            "citation_correctness": "regressed",
+            "groundedness": "unchanged",
+            "synthesis_quality": "improved",
+            "analytical_quality": "unchanged",
+            "template_fit": "improved",
+            "coherence": "regressed",
+            "source_balance": "unchanged",
+        }
+
+    def test_correction_note_present_and_original_adjudicated_at_preserved(self):
+        adjudication = json.loads((rrri.REAL_REVIEWS_DIR / "real-analytical-01-adjudication.json").read_text())
+        assert adjudication["adjudicated_at"] == "2026-08-11T14:28:47.023778+00:00"
+        assert "corrected_at" in adjudication
+        assert "orphan" in adjudication["hard_failure_correction_note"].lower()
+
+    def test_loader_still_accepts_the_corrected_adjudication(self, tmp_path, monkeypatch):
+        """The corrected file must still validate against the loader's
+        own adjudication schema checks -- the correction adds a note
+        field and flips one already-valid direction value, nothing that
+        should ever fail schema validation."""
+        _, reviews_dir = _write_valid_trio(tmp_path, monkeypatch)
+        adjudication_path = reviews_dir / "real-foundational-01-adjudication.json"
+        adjudication = json.loads(adjudication_path.read_text())
+        adjudication["hard_failure_direction"] = "regressed"
+        adjudication["hard_failure_correction_note"] = "synthetic test of the same correction shape"
+        adjudication["corrected_at"] = "2026-08-11T16:05:00+00:00"
+        adjudication_path.write_text(json.dumps(adjudication))
+        examples = rrri.load_real_refinement_examples()
+        example = next(e for e in examples if e.id == "real-foundational-01")
+        assert example.outputs["expected_hard_failure_direction"] == "regressed"

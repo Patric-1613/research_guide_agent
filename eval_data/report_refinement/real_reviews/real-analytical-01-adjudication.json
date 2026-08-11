@@ -14,7 +14,7 @@
     "coherence": "regressed",
     "source_balance": "unchanged"
   },
-  "hard_failure_direction": "unchanged",
+  "hard_failure_direction": "regressed",
   "reviewer_provenance": {
     "reviewer_type": "ai_assisted_human_confirmed",
     "assistant_role": "blind comparative recommendation",
@@ -22,5 +22,7 @@
     "note": "This is not independent human ground truth."
   },
   "translation_note": "Translation from blind A/B labels to improved/regressed/unchanged/unknown was purely mechanical (A_better/B_better -> improved/regressed depending on which label the mapping says was 'refined'; unchanged -> unchanged; uncertain -> unknown), applied only AFTER the blind assessment above was frozen and committed (see part_a_commit) and the A/B mapping was read for the first time. No dimension value was re-judged, reconsidered, or adjusted during translation.",
-  "adjudicated_at": "2026-08-11T14:28:47.023778+00:00"
+  "hard_failure_correction_note": "Originally recorded as 'unchanged' -- an omission, not a judgment call: the blind assessment above never independently re-ran R6B's own deterministic structural checker, it only carried forward the implicit assumption that a real revision changes semantic quality but not structural validity. R6D.4d's live run_id 2 (eval_results/report_refinement_real_history.csv, 2026-08-11T14:50:30Z) surfaced a genuine, independently-verifiable deterministic finding that assumption missed: run_report_quality.predict() reports zero orphan references for draft_report and exactly two -- reference #9 ('HORNET: High-speed Onion Routing at the Network Layer') and reference #10 ('The Galactic Chemical Evolution of phosphorus observed with IGRINS') -- for refined_report, neither ever cited by a bracketed marker anywhere in refined_report's own rendered prose despite being listed in its references. This is an objective, mechanically-reproducible fact about the report bodies themselves (re-verified directly against research_agent.evals.runners.run_report_quality.predict() at correction time, independent of any judge model, any blind reviewer, and any semantic dimension above), not a re-judgment of report quality -- so only hard_failure_direction is corrected here; all seven semantic dimension_directions above are untouched. run_id 2's own CSV row and detail JSON remain the frozen historical record of what was actually measured against the label in force at that time and are not rewritten or rerun.",
+  "adjudicated_at": "2026-08-11T14:28:47.023778+00:00",
+  "corrected_at": "2026-08-11T16:05:00+00:00"
 }
