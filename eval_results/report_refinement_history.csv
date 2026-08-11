@@ -4,3 +4,4 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 3,2026-08-11T00:27:57.907740+00:00,4aae124,report_refinement,live,1,0,1,0.5715,,R6D.3 first live pair smoke | mean_latency_ms=35610.7
 4,2026-08-11T09:46:37.057350+00:00,84b75d8,report_refinement,mock,7,7,0,1.0,,R6D.3a mock non-regression | mean_latency_ms=0.1
 5,2026-08-11T09:58:34.905776+00:00,acab474,report_refinement,live,1,0,1,0.7857,,R6D.3a changed-claim and pairwise calibration | mean_latency_ms=27724.4
+6,2026-08-11T10:11:07.940907+00:00,09a09ad,report_refinement,live,1,0,1,0.9285,,R6D.3b clear-grounding stability check | mean_latency_ms=24672.4
