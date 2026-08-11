@@ -1,0 +1,109 @@
+"""Usage Protection M2.1: the centralized usage-policy configuration.
+
+This module defines every threshold M2 will eventually enforce. **M2.1
+itself enforces none of them** except the two that are wired directly
+into the standalone agent in `research_agent/agent.py`
+(`agent_model_call_limit_per_run`, `agent_tool_call_limit_per_run`,
+`agent_recursion_limit`) and the ones the new admission/lease modules
+(`research_agent/admission.py`, `research_agent/leases.py`) read to
+evaluate — but not yet apply from any route — a decision. Request-body,
+text-length, paper-count, chat-turn, and provider-fan-out limits are
+defined here so their names and values are settled, but no code path
+reads them yet; wiring them into routes is M2.2.
+
+Every default below is **provisional**: a conservative starting point
+chosen by inspecting the current agent topology (four tools, a handful
+of search/rerank turns per run) and this project's existing test
+conventions, not a value calibrated against real production telemetry.
+Once M1's telemetry has real traffic to look at, these should be
+revisited. Treat every number here as configurable and disposable, not
+as an industry-standard fact.
+
+Same conventions as `research_agent/config/settings.py`: a frozen
+dataclass plus an uncached `get_usage_policy()` that re-reads
+`os.environ` on every call, so tests using
+`unittest.mock.patch.dict(os.environ, ...)` work without needing a
+cache-invalidation mechanism.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class UsagePolicy:
+    # --- Defined but NOT enforced in M2.1 (M2.2 applies these to routes) ---
+    max_text_length: int
+    max_picked_ids_per_mutation: int
+    max_selected_papers_per_session: int
+    max_request_body_bytes: int
+    max_chat_turns_per_session: int
+    provider_timeout_seconds: int
+    provider_fan_out_limit: int
+
+    # --- Read by research_agent/admission.py (M2.1), not yet applied by any route ---
+    max_paid_actions_per_session_per_hour: int
+    max_paid_actions_per_session_per_day: int
+    global_paid_action_limit: int
+    global_paid_action_window_minutes: int
+
+    # --- Read by research_agent/leases.py (M2.1), not yet wired into any route ---
+    max_concurrent_expensive_actions_per_session: int
+
+    # --- Enforced in M2.1, directly in agent.py's create_agent()/stream() ---
+    agent_model_call_limit_per_run: int
+    agent_tool_call_limit_per_run: int
+    agent_recursion_limit: int
+
+
+def _positive_int(name: str, default: int) -> int:
+    """Reads an env var as a positive int, or falls back to `default`.
+    Every threshold in this module must be a positive integer -- zero or
+    negative would mean "always reject"/"no budget", which is never
+    what an operator setting this env var actually wants; they should
+    unset it (falls back to the provisional default) rather than being
+    able to silently misconfigure a policy field into a footgun."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a valid integer") from None
+    if value <= 0:
+        raise ValueError(f"{name}={raw!r} must be a positive integer")
+    return value
+
+
+def get_usage_policy() -> UsagePolicy:
+    return UsagePolicy(
+        max_text_length=_positive_int("USAGE_MAX_TEXT_LENGTH", 2_000),
+        max_picked_ids_per_mutation=_positive_int("USAGE_MAX_PICKED_IDS_PER_MUTATION", 30),
+        max_selected_papers_per_session=_positive_int("USAGE_MAX_SELECTED_PAPERS_PER_SESSION", 60),
+        max_request_body_bytes=_positive_int("USAGE_MAX_REQUEST_BODY_BYTES", 64 * 1024),
+        max_chat_turns_per_session=_positive_int("USAGE_MAX_CHAT_TURNS_PER_SESSION", 100),
+        provider_timeout_seconds=_positive_int("USAGE_PROVIDER_TIMEOUT_SECONDS", 60),
+        provider_fan_out_limit=_positive_int("USAGE_PROVIDER_FAN_OUT_LIMIT", 20),
+        max_paid_actions_per_session_per_hour=_positive_int("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", 30),
+        max_paid_actions_per_session_per_day=_positive_int("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_DAY", 150),
+        global_paid_action_limit=_positive_int("USAGE_GLOBAL_PAID_ACTION_LIMIT", 20),
+        global_paid_action_window_minutes=_positive_int("USAGE_GLOBAL_PAID_ACTION_WINDOW_MINUTES", 10),
+        max_concurrent_expensive_actions_per_session=_positive_int(
+            "USAGE_MAX_CONCURRENT_EXPENSIVE_ACTIONS_PER_SESSION", 1
+        ),
+        # Conservative defaults chosen after inspecting agent.py's topology:
+        # build_tools() exposes 4 tools (arxiv/semantic_scholar/rerank/web
+        # search) and a typical run alternates a handful of model turns
+        # with (possibly parallel) tool calls before producing a final
+        # answer. 10/10 gives real headroom for a normal multi-tool
+        # research turn while still bounding a runaway loop; revisit once
+        # real run-length telemetry exists.
+        agent_model_call_limit_per_run=_positive_int("USAGE_AGENT_MODEL_CALL_LIMIT_PER_RUN", 10),
+        agent_tool_call_limit_per_run=_positive_int("USAGE_AGENT_TOOL_CALL_LIMIT_PER_RUN", 10),
+        # Matches the task-specified default exactly; also passed as
+        # LangGraph's own `recursion_limit` graph configuration (not
+        # middleware) at the `agent.stream(...)` call site.
+        agent_recursion_limit=_positive_int("USAGE_AGENT_RECURSION_LIMIT", 15),
+    )

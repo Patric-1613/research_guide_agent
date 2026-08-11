@@ -74,7 +74,10 @@ class TestSchema:
         conn = sqlite3.connect(fresh_path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            assert {"http_requests", "paid_actions"} <= tables
+            # action_leases: added in Usage Protection M2.1 Part C -- see
+            # research_agent/leases.py for the acquire/release logic that
+            # reads and writes this table.
+            assert {"http_requests", "paid_actions", "action_leases"} <= tables
             indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
             assert {
                 "idx_http_requests_started_at", "idx_paid_actions_request_id",

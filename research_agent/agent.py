@@ -24,12 +24,14 @@ import threading
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.tools import tool
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from openai import OpenAI
 
 import research_agent.telemetry as telemetry
+from research_agent.config import get_usage_policy
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
@@ -443,7 +445,41 @@ def run_research_agent(
         s2_api_key=s2_api_key, doi_required=doi_required, min_citation_count=min_citation_count, topic=topic,
     )
     tools = build_tools(session)
-    agent = create_agent(AGENT_MODEL, tools=tools, system_prompt=_build_system_prompt(top_k, web_max_results))
+
+    # Usage Protection M2.1 Part D: bounds ONLY this standalone create_agent
+    # loop -- the custom qa.py/report.py graphs are untouched and get their
+    # own protection in a later phase. Both limits and the recursion_limit
+    # below come from the shared, provisional UsagePolicy (research_agent/
+    # config/limits.py); nothing here is a locally reimplemented counter.
+    policy = get_usage_policy()
+    agent = create_agent(
+        AGENT_MODEL,
+        tools=tools,
+        system_prompt=_build_system_prompt(top_k, web_max_results),
+        middleware=[
+            # exit_behavior="end": once the run-level model-call budget is
+            # exhausted, the graph jumps straight to END on its own --
+            # ModelCallLimitMiddleware's own documented behavior for this
+            # mode, with no known interaction with this agent's tool-calling
+            # pattern, so the graceful/automatic exit is safe to take here.
+            ModelCallLimitMiddleware(run_limit=policy.agent_model_call_limit_per_run, exit_behavior="end"),
+            # exit_behavior="continue" (the library default), deliberately
+            # NOT "end": this agent's own streaming loop above documents
+            # that the model commonly issues multiple parallel tool calls
+            # in a single turn (e.g. searching arXiv and Semantic Scholar
+            # at once). ToolCallLimitMiddleware's "end" mode raises
+            # NotImplementedError whenever a tool-call batch still has
+            # other pending calls when the limit is hit -- a real,
+            # confirmed collision with that pattern, verified by
+            # inspecting the installed middleware's docstring before this
+            # change. "continue" blocks only the calls that exceed the
+            # budget (returning a rejection ToolMessage for each) and lets
+            # the run proceed -- overall run length is still bounded by
+            # ModelCallLimitMiddleware's run_limit above and the explicit
+            # recursion_limit passed to agent.stream() below.
+            ToolCallLimitMiddleware(run_limit=policy.agent_tool_call_limit_per_run, exit_behavior="continue"),
+        ],
+    )
 
     # Langfuse's native LangChain/LangGraph integration: passing this handler
     # via config traces the whole run (tool calls, the underlying LLM
@@ -506,7 +542,15 @@ def run_research_agent(
             for step in agent.stream(
                 {"messages": [{"role": "user", "content": topic}]},
                 stream_mode="values",
-                config={"callbacks": [langfuse_handler]},
+                # recursion_limit is LangGraph's own graph-configuration
+                # field (a top-level RunnableConfig key, confirmed via
+                # typing.get_type_hints against the installed langgraph
+                # version -- not nested under "configurable", and not
+                # middleware). It is the hard backstop under the two
+                # middleware limits above: even if a future change made
+                # both call-limit middleware ineffective, the graph itself
+                # still cannot exceed this many steps.
+                config={"callbacks": [langfuse_handler], "recursion_limit": policy.agent_recursion_limit},
             ):
                 messages = step["messages"]
                 for message in messages[seen:]:

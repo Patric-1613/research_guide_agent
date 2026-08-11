@@ -158,6 +158,29 @@ def init_usage_db(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paid_actions_request_id ON paid_actions (request_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paid_actions_action_type ON paid_actions (action_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paid_actions_started_at ON paid_actions (started_at)")
+    # Usage Protection M2.1 Part C: a dedicated concurrency-lease table --
+    # deliberately NOT derived from paid_actions, which only gains a row at
+    # action *completion* (see _finalize_and_persist below) and therefore
+    # cannot represent an in-flight action. The UNIQUE constraint is what
+    # makes acquisition atomic: research_agent/leases.py acquires a lease
+    # with a single INSERT ... ON CONFLICT ... DO UPDATE ... WHERE statement
+    # that only replaces a row whose expires_at has already passed, so two
+    # concurrent acquirers can never both believe they hold the same
+    # (subject_type, subject_id, action_group) lease.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS action_leases (
+            lease_id TEXT PRIMARY KEY,
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            action_group TEXT NOT NULL,
+            lease_token TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            UNIQUE (subject_type, subject_id, action_group)
+        )
+        """
+    )
     conn.commit()
     return conn
 
