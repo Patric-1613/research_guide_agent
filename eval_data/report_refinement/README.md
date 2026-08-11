@@ -247,7 +247,63 @@ examples = rri.load_report_refinement_examples(subset=2)
 ## What R6D.4 is (not built here)
 
 R6D.1-R6D.3 evaluate only these 7 synthetic, hand-authored pair
-fixtures. R6D.4 (not started) is responsible for running this same
-live evaluation path against *real* R4-generated draft/refined report
-pairs, to actually answer whether refinement improves report quality
-in practice — see `specs/backend-backlog.md`'s R6D entry.
+fixtures. R6D.4 (`research_agent/evals/r6d4_capture.py` + `research_
+agent/evals/cli.py`'s `capture-refinement`/`validate-refinement-
+capture` commands) runs this same measurement approach against *real*
+R4-generated draft/refined report pairs, to actually answer whether
+refinement improves report quality in practice — see `specs/
+backend-backlog.md`'s R6D entry and `docs/evaluation.md`'s "R6D.4a"-
+"R6D.4d" sections. Real capture artifacts themselves live in the
+gitignored `eval_results/captures/`, never here — this directory stays
+exclusively the 7 frozen, labelled synthetic fixtures.
+
+## `real_reviews/` — human adjudication of real R4 capture pairs (R6D.4d)
+
+Tracked, separate from the 7 synthetic fixtures above (never loaded by
+`report_refinement_inputs.py`'s own `r6d1-v1` loader, and that loader
+never imports anything from here) — compact provenance records for the
+real capture pairs `eval_results/captures/` produces, kept intentionally
+small (no report bodies, no session identifiers).
+
+Two schemas, both JSON:
+
+- **`<pair_id>-blind-assessment.json`** (`schema_version: "r6d4-review-
+  v1"`) — a human's (or AI-assisted-human's) per-dimension judgment,
+  made BLIND: the reviewer only ever saw "Report A"/"Report B", never
+  which one was the draft or the refined report, never any R4 score or
+  automated judge output. Directions use the blind vocabulary
+  (`A_better`/`B_better`/`unchanged`/`uncertain`) — never `improved`/
+  `regressed`, since those imply an orientation (better than WHAT) the
+  reviewer never had. Carries `capture_sha256`/`blind_packet_sha256`
+  (so a later reader can confirm which exact capture/packet content was
+  actually reviewed) and an explicit `reviewer_provenance` block
+  (`reviewer_type`, who owns the final decision, and — critically — a
+  note that AI-assisted review is not independent human ground truth).
+  Written and committed BEFORE the A/B mapping is ever read, so the
+  recorded judgment cannot have been influenced by knowing which report
+  was which.
+- **`<pair_id>-adjudication.json`** (`schema_version: "r6d4-
+  adjudication-v1"`) — the same 7 dimensions, translated into R6D's own
+  `improved`/`regressed`/`unchanged`/`unknown` vocabulary. For a pair
+  with a real blind assessment, this translation is purely mechanical
+  (`A_better`→`improved`/`regressed` depending on which label the
+  now-revealed mapping says was the refined report; `unchanged`→
+  `unchanged`; `uncertain`→`unknown`) and happens only after the blind
+  assessment above is already frozen and committed — never the reverse.
+  For a pair whose `draft_report`/`refined_report` are byte-identical
+  (no revision occurred), no blind review is needed at all: all 7
+  directions are `unchanged` by construction, and `reviewer_provenance.
+  reviewer_type` reads `"deterministic_exact_equality"`, explicitly
+  distinguishing "mechanically unchanged because nothing differs" from
+  a real human quality judgment.
+
+Neither schema is registered with, validated by, or loadable through
+`report_refinement_inputs.py`'s own synthetic-fixture pipeline — a
+one-off validation script (not a permanent test framework) checks each
+new file at creation time: all 7 dimensions present exactly once,
+only the schema's own allowed direction values used, confidences in
+`[0, 1]`, recorded hashes matching the actual current capture/packet
+files, and none of the explicitly forbidden fields (the A/B mapping,
+draft/refined identity, translated directions, R4 scores, report
+bodies, session identifiers, automated judge output) present in the
+blind-assessment file.

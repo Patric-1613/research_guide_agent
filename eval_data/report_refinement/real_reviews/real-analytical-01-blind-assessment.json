@@ -1,0 +1,50 @@
+{
+  "schema_version": "r6d4-review-v1",
+  "pair_id": "real-analytical-01",
+  "capture_sha256": "081d5216fd95d879c2f3dbebd3f8cca584f76972de11314c13e4dbbb54dc90f7",
+  "blind_packet_sha256": "5891f9dd2542967e50dbe0b87c6e59f1607d6e219b4ab8b80920e3ff194e2727",
+  "reviewer_provenance": {
+    "reviewer_type": "ai_assisted_human_confirmed",
+    "assistant_role": "blind comparative recommendation",
+    "final_decision_owner": "user",
+    "note": "This is not independent human ground truth."
+  },
+  "dimension_assessments": {
+    "citation_correctness": {
+      "direction": "B_better",
+      "confidence": 0.75,
+      "rationale": "Both contain citation-assignment errors, but A's are more pervasive, including incorrect CNN and excluded-paper markers."
+    },
+    "groundedness": {
+      "direction": "unchanged",
+      "confidence": 0.55,
+      "rationale": "Both are generally evidence-bounded but make similarly broad transferability/operational claims."
+    },
+    "synthesis_quality": {
+      "direction": "A_better",
+      "confidence": 0.75,
+      "rationale": "A more consistently relates evidence across detection, risk, monitoring, and ecological-modeling themes."
+    },
+    "analytical_quality": {
+      "direction": "unchanged",
+      "confidence": 0.65,
+      "rationale": "Both adequately distinguish diagnostic gaps from prescriptive future research."
+    },
+    "template_fit": {
+      "direction": "A_better",
+      "confidence": 0.8,
+      "rationale": "A provides greater cross-source depth appropriate to the Analytical template."
+    },
+    "coherence": {
+      "direction": "B_better",
+      "confidence": 0.8,
+      "rationale": "B is more concise and avoids A's repeated exclusion discussion."
+    },
+    "source_balance": {
+      "direction": "unchanged",
+      "confidence": 0.75,
+      "rationale": "Both reasonably emphasize direct hornet/risk evidence and use bee/ant evidence as secondary analogues."
+    }
+  },
+  "reviewed_at": "2026-08-11T14:27:07.752892+00:00"
+}
