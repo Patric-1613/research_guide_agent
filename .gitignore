@@ -23,3 +23,9 @@ frontend.zip
 # meant to accumulate in git history the way eval_results/history.csv's
 # one-row-per-run log does. See docs/evaluation.md.
 eval_results/runs/
+# R6D.4b: real R4-generated draft/refined pair capture artifacts
+# (unlabelled r6d4-capture-v1 JSON files, `research_agent.evals.cli
+# capture-refinement`'s own output) — a temporary, local working area,
+# never auto-tracked, separate from eval_data/report_refinement/'s
+# tracked synthetic fixtures. See docs/evaluation.md's "R6D.4b" section.
+eval_results/captures/

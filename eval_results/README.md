@@ -102,3 +102,15 @@ policy — this file is a short local index.
   history CSVs above, kept as comparison points for specific past
   experiments. **Tracked.** See `archive/README.md` for what each one
   captures.
+- `captures/` — R6D.4b's own output: real R4-generated draft/refined
+  report pairs (`research_agent.evals.cli capture-refinement`), one
+  unlabelled `r6d4-capture-v1` JSON file per `--pair-id`. **Not
+  tracked** (`.gitignore`d) — a temporary, local working area, separate
+  from `eval_data/report_refinement/`'s tracked, labelled synthetic
+  fixtures and from `runs/` above. Every file here is unlabelled by
+  construction (no `expected` block, no `overall_score`/`winner`/
+  `accept_refinement` field) until a separate, later human-adjudication
+  step assigns expectations -- which must always happen BEFORE that
+  pair's own R6D live evaluation runs, never after, to avoid post-hoc
+  answer-key bias. See `docs/evaluation.md`'s "R6D.4a"/"R6D.4b"
+  sections.

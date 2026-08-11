@@ -1999,6 +1999,93 @@ capturing real pairs is R6D.4c). **This does not mark R6D.4 or R6
 complete** — no real report has been captured yet, and no live
 evaluation of a real pair has happened under this new schema.
 
+### R6D.4b — guarded CLI for capture/validate (2026-08-11) — complete, no real pair captured
+
+Two new `research_agent/evals/cli.py` commands, built directly on top
+of R6D.4a's helper:
+
+```bash
+uv run --env-file .env python -m research_agent.evals.cli capture-refinement \
+    --session-id <local-session-id> --pair-id real-foundational-01 \
+    --template foundational --allow-paid-calls
+uv run python -m research_agent.evals.cli validate-refinement-capture \
+    --path eval_results/captures/real-foundational-01.json
+```
+
+**Capture requires explicit paid-call acknowledgement**:
+`capture-refinement` without `--allow-paid-calls` exits 2 with zero
+side effects of any kind — no session loaded, no `OpenAI()`
+constructed, no directory or file created, matching this suite's own
+established `--mode live` guard convention exactly. With the flag, a
+warning prints before any real work starts (2 real R4 calls minimum, a
+3rd if R4 decides to revise, zero R6D judge calls).
+
+**Capture and evaluation are separate steps, on purpose** — this
+command never invokes any R6D judge (`claim_source.judge_claims`,
+`refinement_holistic.judge_refinement_holistic`); evaluating a
+captured pair is still `run --suite report_refinement --mode live`,
+pointed at the captured artifact in a later phase. Re-running
+`validate-refinement-capture` — or re-running evaluation later — never
+regenerates the report; only `capture-refinement` itself ever makes a
+generation call.
+
+**Captures are unlabelled and gitignored**: `eval_results/captures/`
+(new `.gitignore` entry) is a temporary, local working area, separate
+from `eval_data/report_refinement/`'s tracked synthetic fixtures and
+from `eval_results/runs/`'s judge-detail files — nothing under it is
+tracked or committed automatically. Every written artifact is the
+same unlabelled `r6d4-capture-v1` shape R6D.4a already established (no
+`expected` block, no `overall_score`/`winner`/`accept_refinement`
+field); `validate-refinement-capture` never mutates the file it reads,
+and correctly rejects a synthetic `r6d1-v1` fixture as the wrong
+schema rather than silently treating it as a real capture.
+
+**Atomic, no-overwrite writing**: the complete in-memory artifact is
+validated first; the output directory is created only after a
+successful capture; the artifact is serialized to JSON, then written
+to a temp file in the same directory, flushed+fsynced, and
+`os.replace`d into the final path — a reader only ever sees the
+complete previous state or the complete new artifact, never a partial
+one, and the temp file is removed on any failure. An existing
+destination file is refused outright (exit 2, byte-identical file left
+in place, checked *before* `OpenAI()` is even constructed) — no
+`--force` option exists in this chunk.
+
+**Session handling stays strictly read-only**: the session is loaded
+through the exact same `research_agent.qa.sqlite_checkpointer` +
+`research_agent.curation_session.load_curation_session` pair
+production's own FastAPI dependency (`get_curation_checkpointer`) is
+built from — no second SQLite interpretation. The same 3 preconditions
+`get_or_create_report` itself enforces are checked explicitly (session
+exists, `stage == "synthesize"`, non-empty `selected_papers`), each
+failure exiting 2 without ever echoing the raw `--session-id` value
+back in any printed message. No replacement session is ever selected
+automatically. `append_report_version`/`save_curation_session` are
+never called (nor, in R6D.4a's own module, even importable) — the
+loaded session is provably unchanged before/after a capture run.
+
+**Privacy**: `source_session_ref` defaults to `--pair-id` (or an
+explicit, separately-opaque `--source-session-ref` value) — the raw
+`--session-id` never appears anywhere in the written artifact or in
+normal stdout/stderr output, proven directly in tests (byte-scanned
+artifact file, captured stdout/stderr).
+
+Tests: `tests/test_evals_r6d4_cli.py`, 43 passed, every one against a
+mocked `OpenAI` client and a mocked checkpointer/session loader (never
+a real network call, never a real session, never a real report
+captured). `test_evals_r6d4_capture.py` + this file → 97 passed;
+`test_report.py` + both r6d4 files → 233 passed; `report_refinement` +
+this file → 297 passed; full backend suite → **1323 passed**.
+
+**Next phase: R6D.4c** begins with a **read-only candidate-session
+inventory** — enumerating locally available completed sessions per
+template without generating anything — followed by **precommitting
+exactly three template slots** (one Foundational, one Analytical, one
+Expert) *before* any paid capture call is made, matching the R6D.4
+planning turn's own "selected before seeing evaluator outcomes"
+requirement. **This does not mark R6D.4 complete** — still no real
+report has been captured.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

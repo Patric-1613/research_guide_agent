@@ -1974,6 +1974,44 @@ invented:
   as a whole** — no real report has been captured, and no live
   evaluation of a real pair has happened under this schema yet.
 
+#### R6D.4b: guarded CLI for capture/validate — complete (2026-08-11)
+- **Goal**: an explicit, guarded CLI over R6D.4a's capture helper — a
+  session-loading `capture-refinement` command and a read-only
+  `validate-refinement-capture` command.
+- **What shipped**: two new commands in `research_agent/evals/cli.py`.
+  `capture-refinement` requires an explicit `--allow-paid-calls` flag
+  (zero side effects without it — no session load, no `OpenAI()`, no
+  file); loads the requested session read-only through the exact same
+  `research_agent.qa.sqlite_checkpointer`/`research_agent.curation_
+  session.load_curation_session` pair production's own FastAPI
+  dependency is built from (no second SQLite interpretation); enforces
+  the same 3 preconditions `get_or_create_report` itself does (session
+  exists, `stage=="synthesize"`, non-empty `selected_papers`), never
+  echoing the raw `--session-id` in any output; refuses to overwrite an
+  existing destination file (checked before `OpenAI()` construction, no
+  `--force` in this chunk); writes the artifact atomically (serialize
+  → temp file in the same directory → flush+fsync → `os.replace`, temp
+  file removed on any failure). `validate-refinement-capture` makes
+  zero OpenAI calls, loads no session, writes nothing, and rejects a
+  synthetic `r6d1-v1` fixture as the wrong schema rather than silently
+  treating it as a real capture.
+- **Captures are gitignored**: `eval_results/captures/` added to
+  `.gitignore` — a temporary, local working area, separate from
+  `eval_data/report_refinement/`'s tracked synthetic fixtures and
+  `eval_results/runs/`'s judge-detail files.
+- **Tests**: `tests/test_evals_r6d4_cli.py`, 43 passed, all mocked (no
+  real network call, no real session, no real report captured).
+  Combined with R6D.4a's own tests → 97 passed. Full backend suite →
+  1323 passed.
+- **Location**: `research_agent/evals/cli.py` (updated), `tests/
+  test_evals_r6d4_cli.py` (new), `.gitignore` / `docs/evaluation.md` /
+  `specs/backend-backlog.md` / `eval_results/README.md` (updated).
+- **Priority**: next, **R6D.4c** — read-only candidate-session
+  inventory, then precommit exactly 3 template slots (Foundational/
+  Analytical/Expert) BEFORE any paid capture call.
+- **Status**: Closed (2026-08-11). **Does not close R6D.4** — no real
+  report has been captured under this CLI yet.
+
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts
 - **Goal**: close the gap `eval_data/report_quality/fixtures/
   source_prompt_injection.json` (R6A) demonstrates — report generation
