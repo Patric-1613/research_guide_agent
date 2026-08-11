@@ -182,7 +182,7 @@
       "reference_numbers": []
     },
     "thematic_findings": {
-      "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be caught both after generation, by checking sentences (SpanCite), and before it, by checking passages (DriftGuard) [1][2].",
+      "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be addressed at two stages: during decoding, by constraining each sentence before emission (SpanCite), and before generation, by filtering drifted passages (DriftGuard) [1][2].",
       "reference_numbers": [
         1,
         2
@@ -207,7 +207,7 @@
       ]
     },
     "future_research_directions": {
-      "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite checks sentences after, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
+      "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite constrains sentence emission during decoding, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
       "reference_numbers": [
         1,
         2
@@ -254,7 +254,7 @@
       {
         "key": "thematic_findings",
         "title": "Thematic Findings",
-        "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be caught both after generation, by checking sentences (SpanCite), and before it, by checking passages (DriftGuard) [1][2].",
+        "content": "SpanCite and DriftGuard address different failure points in retrieval-augmented generation: SpanCite ensures each generated sentence stays traceable to its source span after retrieval [1], while DriftGuard filters out passages that have already drifted from the conversation's topic before generation ever begins [2]. Read together, they suggest that grounding failures can be addressed at two stages: during decoding, by constraining each sentence before emission (SpanCite), and before generation, by filtering drifted passages (DriftGuard) [1][2].",
         "reference_numbers": [
           1,
           2
@@ -287,7 +287,7 @@
       {
         "key": "future_research_directions",
         "title": "Future Research Directions",
-        "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite checks sentences after, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
+        "content": "Beyond extending both methods to non-English text, a more specific opportunity is combining them: since DriftGuard filters passages before generation and SpanCite constrains sentence emission during decoding, a pipeline could plausibly run DriftGuard first and SpanCite second, though neither paper tests this combination [1][2].",
         "reference_numbers": [
           1,
           2
@@ -305,14 +305,15 @@
     "refinement_mode": "single",
     "revision_applied": true,
     "source_origin": "synthetic_handcrafted",
-    "notes": "Draft's Thematic Findings is two isolated, parallel sentences (no cross-paper relation) and Future Research Directions restates Gap Analysis almost verbatim. Refined adds a genuine cross-source comparison (with a grouped [1][2] citation) and a distinct, concrete combination proposal -- both edits use only the same two sources' existing abstracts, no new claim beyond what SpanCite/DriftGuard already establish."
+    "notes": "Draft's Thematic Findings is two isolated, parallel sentences (no cross-paper relation) and Future Research Directions restates Gap Analysis almost verbatim. Refined adds a genuine cross-source comparison (with a grouped [1][2] citation) and a distinct, concrete combination proposal -- both edits use only the same two sources' existing abstracts, no new claim beyond what SpanCite/DriftGuard already establish.",
+    "adjudication_note": "R6D holistic-synthesis live validation (run_id 8, 2026-08-11, commit 71cffbe) exposed a real fixture-evidence defect, not a judge false positive: the refined Thematic Findings/Future Research Directions prose incorrectly described SpanCite as checking sentences 'after generation' / 'after retrieval', contradicting both SpanCite's own abstract ('a decoding-time constraint that requires each generated sentence to be traceable to a specific source span before it is emitted') and this same fixture's own unchanged Methodology Landscape section ('SpanCite operates at generation time, checking each sentence as it is produced'). The groundedness and coherence regressions the judge reported were legitimate detections of this contradiction. The prose was corrected against the frozen SpanCite abstract to say SpanCite constrains sentence emission during decoding, before emission -- this is a fixture-evidence correction, not answer-key tuning: the intended synthesis/analytical/coherence-improvement test this fixture exists to exercise is unchanged, only the erroneous timing description was fixed."
   },
   "expected": {
     "hard_failure_direction": "unchanged",
     "dimension_directions": {
       "citation_correctness": {
         "direction": "unchanged",
-        "rationale": "Every citation in the refined thematic_findings/future_research_directions sentences (including the grouped [1][2] markers) genuinely, relevantly supports the specific half of the comparison it's attached to -- SpanCite's abstract for the after-generation sentence-check claim, DriftGuard's for the before-generation passage-filter claim -- so citation_correctness was, and remains, satisfied."
+        "rationale": "Every citation in the refined thematic_findings/future_research_directions sentences (including the grouped [1][2] markers) genuinely, relevantly supports the specific half of the comparison it's attached to -- SpanCite's abstract for its decoding-time, before-emission sentence constraint, DriftGuard's for its before-generation passage-filter claim -- so citation_correctness was, and remains, satisfied."
       },
       "groundedness": {
         "direction": "unchanged",
@@ -327,8 +328,8 @@
         "rationale": "The draft's Future Research Directions restates Gap Analysis's non-English/single-benchmark point almost verbatim; the refined version keeps that point in Gap Analysis only and proposes a distinct, concrete combination experiment in Future Research Directions instead."
       },
       "template_fit": {
-        "direction": "unchanged",
-        "rationale": "Both versions match the analytical template's expected balance of explanation and cross-source synthesis in depth/tone; the refined version's improvement is in synthesis substance, which was already at an adequate depth either way."
+        "direction": "improved",
+        "rationale": "R6D human adjudication against the frozen template_fit definition (run_id 8, 2026-08-11): the Analytical template explicitly expects cross-source synthesis and relational analysis, not merely a paper-by-paper listing at adequate depth. The draft lists the two papers separately with no stated relation; the refined report compares their pipeline stages and proposes a bounded combined experiment. That is a genuine improvement in Analytical-template fit specifically, not merely extra length or cosmetic rewriting."
       },
       "coherence": {
         "direction": "improved",

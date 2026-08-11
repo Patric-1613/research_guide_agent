@@ -1633,6 +1633,60 @@ implementation defect, never to chase perfect agreement on one
 fixture. Prompts and answer keys are not repeatedly tuned in response
 to ordinary LLM judge variance.
 
+### R6D — `holistic_synthesis_improvement` live validation, run 8 (2026-08-11)
+
+Run_id 8 (`eval_results/report_refinement_history.csv`, commit
+`71cffbe`, note "R6D holistic-synthesis live validation") ran the
+next fixture the stopping rule above named: 3 judge calls, no errors,
+39.4s, 5/7 semantic agreement (`groundedness` and `template_fit`
+expected `unchanged` but predicted `regressed`/`improved`; `coherence`
+expected `improved` but predicted `regressed`).
+
+Applying the same read-only-adjudication-first stopping rule: the
+`groundedness`/`coherence` regressions were investigated against the
+fixture's OWN evidence first, before assuming judge error. **They were
+a real fixture-evidence defect, not a false positive** — the refined
+Thematic Findings/Future Research Directions prose incorrectly
+described SpanCite as checking sentences "after generation"/"after
+retrieval", directly contradicting both SpanCite's own abstract ("a
+decoding-time constraint that requires each generated sentence to be
+traceable to a specific source span before it is emitted") and this
+same fixture's own UNCHANGED Methodology Landscape section ("SpanCite
+operates at generation time, checking each sentence as it is
+produced"). The evaluator correctly detected this internal
+contradiction; the fixture, not the judge, was wrong. The prose was
+corrected against the frozen SpanCite abstract (SpanCite constrains
+sentence emission during decoding, before emission) while preserving
+the fixture's intended test exactly: the genuine cross-source
+comparison, the grouped `[1][2]` citations, the two-pipeline-stage
+distinction, the "neither paper tests this combination" qualifier, and
+all source identities/reference numbers.
+
+Separately, `template_fit` was adjudicated `unchanged → improved`
+against the frozen Analytical-template definition: that template
+explicitly expects cross-source synthesis and relational analysis, not
+merely a paper-by-paper listing at adequate depth — the refined
+report's genuine comparison of the two papers' pipeline stages and its
+bounded combined-experiment proposal is a real improvement in
+Analytical-template fit, not cosmetic rewriting or added length.
+
+**No judge or runner logic changed** — this is a fixture-only
+correction, exactly like `clear_grounding_improvement`'s own R6D.3b
+adjudication. Validated by `tests/test_evals_report_refinement.py`'s
+new `TestR6DHolisticSynthesisFixtureCorrection` class (217 passed, was
+202) — citation markers/references, the draft report, and both
+papers' evidence stayed byte-identical; no other fixture changed; mock
+mode remains `total=7 passed=7 failed=0 average_score=1.000`. Full
+backend suite → 1189 passed. No real paid live call was made in this
+checkpoint.
+
+**One corrected live rerun of `holistic_synthesis_improvement`
+remains** to confirm the fixed prose now agrees with its own
+expectation. Per the same stopping rule already established for
+`clear_grounding_improvement`: further disagreement after that rerun
+gets analyzed on its own merits (evidence defect vs. genuine rubric
+ambiguity) rather than automatically changing the fixture again.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

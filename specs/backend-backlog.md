@@ -1788,6 +1788,24 @@ invented:
   adjudication first, code changed only for a reproducible
   implementation defect, never to force perfect agreement.
 
+  **`holistic_synthesis_improvement` fixture correction (2026-08-11)**:
+  run_id 8 (commit `71cffbe`, "R6D holistic-synthesis live validation")
+  found `groundedness`/`coherence` regressions and a `template_fit`
+  disagreement (5/7). Read-only adjudication against the fixture's own
+  evidence (applying the stopping rule established above) found the
+  `groundedness`/`coherence` regressions were a REAL fixture-evidence
+  defect, not a judge false positive: the refined prose incorrectly
+  described SpanCite as checking sentences "after generation", directly
+  contradicting both SpanCite's own abstract (decoding-time, before-
+  emission) and this fixture's own unchanged Methodology section.
+  Corrected against the frozen abstract; `template_fit` separately
+  adjudicated `unchanged → improved` against the frozen Analytical-
+  template definition. **No judge or runner code changed** — fixture-
+  only, same pattern as `clear_grounding_improvement`'s own R6D.3b. See
+  `docs/evaluation.md`'s "R6D — `holistic_synthesis_improvement` live
+  validation, run 8" section for the full record. One corrected live
+  rerun remains; **R6D as a whole is still not closed.**
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs
