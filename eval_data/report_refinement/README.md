@@ -1,21 +1,28 @@
-# Report refinement-effectiveness pair fixtures (R6D.1 + R6D.2 + R6D.3 + R6D.3a)
+# Report refinement-effectiveness pair fixtures (R6D.1–R6D.3c synthetic stage: CLOSED)
 
 Fixtures for the `report_refinement` benchmark. **R6D.1** (schema/
 fixtures/loader), **R6D.2** (deterministic/mock pair runner + CLI
-registration), **R6D.3** (opt-in live semantic pair judging), and
-**R6D.3a** (changed-claim + pairwise-holistic recalibration) are all
-complete — see `docs/evaluation.md`'s "R6D.1"/"R6D.2"/"R6D.3"/"R6D.3a"
-sections. There is still no call into `research_agent.report`'s
-generation/evaluation/revision functions anywhere — R6D measures
-whether R4's existing "refine once" step already changed a report's
-structural and semantic state; it never performs or simulates a
-refinement itself. **No claim is made here that refinement actually
-improves report quality** — that requires real R4 output, which is
-R6D.4's job (not started). R6D.3/R6D.3a only prove the live
-*measurement* path works end-to-end, first against synthetic fixtures
-with mocked judges, and now also calibrated against one real paid
-pair's own evidence (run_id 3 — see `docs/evaluation.md`'s "R6D.3a"
-section for the full story).
+registration), and **R6D.3/R6D.3a-c** (opt-in live semantic pair
+judging, changed-claim + pairwise-holistic recalibration) are all
+complete — see `docs/evaluation.md`'s "R6D.1"/"R6D.2"/"R6D.3"/
+"R6D.3a" sections. There is still no call into `research_agent.
+report`'s generation/evaluation/revision functions anywhere — R6D
+measures whether R4's existing "refine once" step already changed a
+report's structural and semantic state; it never performs or
+simulates a refinement itself. **No claim is made here that
+refinement actually improves report quality** — that requires real R4
+output, which is R6D.4's job (not started).
+
+**As of 2026-08-11, all 7 of R6D.1's synthetic pair fixtures have been
+exercised live and adjudicated at least once, and R6D's synthetic-
+fixture calibration stage is now CLOSED** — see `docs/evaluation.md`'s
+"R6D synthetic-fixture stage: closed" section for the full record and
+the per-fixture table of what each one validates. This closure proves
+the live *measurement* machinery (changed-claim comparison + pairwise
+holistic judging) behaves sensibly and reproducibly against hand-
+authored pairs with known, human-adjudicated answers. **It does not
+prove production R4 refinement is effective** — that remains R6D.4's
+job, against real R4 output pairs with no answer key.
 
 R6C is frozen at tag `r6c-report-quality-evaluation` and evaluates one
 report independently across 7 dimensions (`citation_correctness`,
@@ -191,7 +198,7 @@ run_report_quality.py` during R6C).
 | `justified_no_revision` | expert | `tie`, `no_revision` | `revision_applied=false`; `draft_report`/`refined_report` are byte-identical. **All 7 directions unchanged.** |
 | `cosmetic_rewrite_tie` | foundational | `tie`, `cosmetic` | `revision_applied=true`; every section is reworded, no claim/citation/structure changes. **All 7 directions unchanged** — demonstrates that different prose is not automatically improvement. |
 | `citation_regression` | analytical | `citation_correctness`, `groundedness`, `regression` | Refined prose reads more smoothly but silently misattributes one paper's finding to the other paper's reference number. **citation_correctness and groundedness regressed**, the rest unchanged. |
-| `mixed_tradeoff` | expert | `synthesis_quality`, `coherence`, `groundedness`, `tradeoff` | Refined genuinely improves cross-source synthesis (paper + web evidence combined into one narrative) but adds an unsupported "now the industry-standard best practice" overclaim. **synthesis_quality and coherence improved, groundedness regressed** — a real tradeoff, with no winner field to collapse it into one number. |
+| `mixed_tradeoff` | expert | `synthesis_quality`, `coherence`, `groundedness`, `tradeoff` | Refined genuinely improves cross-source synthesis (paper + web evidence combined into one narrative) but adds an unsupported "now the industry-standard best practice" overclaim. **Live-adjudicated closed (R6D, run 12, see `docs/evaluation.md`'s "R6D synthetic-fixture stage: closed" section)**: expects `synthesis_quality`/`template_fit` improved, `citation_correctness`/`groundedness`/`analytical_quality`/`coherence` regressed, `source_balance` unchanged — the same overclaim damages four dimensions at once while genuinely improving two others. No winner field collapses it into one number. |
 | `structural_regression` | analytical | `structural_integrity`, `hard_failure`, `regression` | Refined strips every inline citation marker, orphaning the only reference. **`hard_failure_direction=regressed`**; all 7 judge-dependent dimensions **`unknown`** (structural gating prevents a fair comparison on the broken side, matching R6C's own hard-failure-gate convention). |
 
 Between them, the 7 fixtures cover all three templates (foundational

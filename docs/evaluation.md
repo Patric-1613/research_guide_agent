@@ -1847,6 +1847,85 @@ winner). **R6D and R6 as a whole remain open** — nothing here or in
 any prior synthetic-fixture checkpoint proves production R4 refinement
 is effective; that remains R6D.4's job, against real R4 output pairs.
 
+### R6D synthetic-fixture stage: closed (2026-08-11)
+
+Run_id 12 (`eval_results/report_refinement_history.csv`, commit
+`e2b1b38`, tags `tradeoff`, note "R6D mixed-tradeoff validation") ran
+the last of the 7 synthetic fixtures: 3 judge calls, no errors, 73.3s.
+`hard_failure_direction` and `groundedness`/`synthesis_quality`/
+`source_balance` matched as originally expected; `citation_
+correctness`, `analytical_quality`, and `coherence` disagreed (5/7).
+
+Read-only human adjudication against the frozen rubric (the same
+posture applied throughout R6D.3b/R6D.3c/the holistic-synthesis and
+regression checkpoints) confirmed this fixture is a genuine, deliberate
+multidimensional trade-off, and that the original expectations scoped
+its damage too narrowly. The refined report's added claim — "sentence-
+level grounding checks are now the industry-standard best practice" —
+is not established by either attached source (SpanCite reports one
+controlled benchmark; the practitioner article reports only increasing
+adoption, materially weaker than an industry-standard claim). That
+SAME overclaim simultaneously damages four frozen dimensions:
+`citation_correctness` (neither source establishes it), `groundedness`
+(the claim itself is unsupported — already correctly expected),
+`analytical_quality` (limited evidence converted into an industry-wide
+conclusion), and `coherence` (the conclusion contradicts the report's
+own stated narrow two-source scope and Gap Analysis discussion). At
+the same time, the SAME refinement genuinely improves two other
+dimensions: `synthesis_quality` (a real controlled-vs-production
+comparison, correctly already expected) and `template_fit` (that same
+relational comparison better matches the Expert template's own
+expectation of cross-source depth). `source_balance` stays unchanged —
+both sources remain comparably represented throughout. **This is a
+genuine trade-off with deliberately no overall winner, accept/reject
+field, or composite score anywhere in the fixture.**
+
+**This closes R6D's synthetic-fixture calibration stage.** All 7
+hand-authored pairs have now been exercised live and adjudicated at
+least once:
+
+| fixture | validates |
+|---|---|
+| `clear_grounding_improvement` | changed-claim citation/groundedness comparison on a single-claim factual fix |
+| `holistic_synthesis_improvement` | pairwise-judged synthesis/analytical/template-fit improvement, evidence-language correction |
+| `justified_no_revision` | exact byte-identical-input reuse (1-call cost optimization, pairwise holistic skipped) |
+| `cosmetic_rewrite_tie` | cosmetic rewriting is never rewarded as semantic improvement |
+| `citation_regression` | citation/grounding damage correctly detected, and correctly recognized as cross-dimensional, not isolated |
+| `structural_regression` | structural hard-failure gating: a structurally invalid refined report is never semantically judged |
+| `mixed_tradeoff` | a genuine multidimensional trade-off with no invented overall winner |
+
+**Accepted limitations, carried forward rather than re-litigated**:
+some holistic dimensions have genuinely overlapping boundaries (the
+`clear_grounding_improvement`/`citation_regression`/`mixed_tradeoff`
+adjudications all found ONE edit legitimately touching multiple frozen
+dimensions at once — this is a property of the rubric, not a bug to
+fix); `template_fit`/`coherence` judgments showed real instability
+across repeated live runs on the same fixture (`clear_grounding_
+improvement`'s own R6D.3c stability check, `template_fit` never
+reached full stability and was accepted as residual judge/rubric
+ambiguity rather than tuned indefinitely); every synthetic fixture that
+disagreed with a live run required evidence-backed human adjudication,
+never automatic label-copying; live latency ranged materially across
+runs (16.4s for the cheapest identical-pair case up to 73.3s for this
+mixed-tradeoff run) with no latency SLO established yet. **None of
+this synthetic-fixture agreement is proof that production R4
+refinement helps** — every fixture here is hand-authored with a known,
+adjudicated answer; real R4 output has no such answer key.
+
+Validated by `tests/test_evals_report_refinement.py`'s new
+`TestR6DSyntheticStageClosure` class (254 passed, was 243) — report
+prose, evidence, references, and citation markers confirmed byte-
+identical; no overall-winner/composite field exists anywhere in the
+fixture; no other fixture changed; mock mode remains `total=7
+passed=7 failed=0 average_score=1.000`. Full backend suite → 1226
+passed. No real paid live call was made in this checkpoint.
+
+**R6D remains open. R6 remains open. No production refinement decision
+has been made.** Next: **R6D.4** — evaluate a deliberately small set of
+real R4-generated draft/refined pairs (not synthetic fixtures), the
+first point at which this project can make an actual, evidence-backed
+claim about whether production refinement improves report quality.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

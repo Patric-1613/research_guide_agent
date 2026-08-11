@@ -328,14 +328,15 @@
     "refinement_mode": "single",
     "revision_applied": true,
     "source_origin": "synthetic_handcrafted",
-    "notes": "Refined Thematic Findings genuinely relates SpanCite's benchmark result and the practitioner report's production observation as the same idea at two scales (a real synthesis improvement over the draft's 'Separately...' juxtaposition), but adds a second sentence claiming sentence-level grounding is 'now the industry-standard best practice' -- a claim neither source supports (the web snippet says teams 'increasingly report' catching claims, not that this is a standard practice). Demonstrates a genuine tradeoff: synthesis/coherence improve, groundedness regresses, with no overall winner field to collapse the two into one number."
+    "notes": "Refined Thematic Findings genuinely relates SpanCite's benchmark result and the practitioner report's production observation as the same idea at two scales (a real synthesis improvement over the draft's 'Separately...' juxtaposition), but adds a second sentence claiming sentence-level grounding is 'now the industry-standard best practice' -- a claim neither source supports (the web snippet says teams 'increasingly report' catching claims, not that this is a standard practice). Demonstrates a genuine tradeoff: synthesis/coherence improve, groundedness regresses, with no overall winner field to collapse the two into one number.",
+    "adjudication_note": "R6D synthetic-stage closure (run_id 12, 2026-08-11, commit e2b1b38): the live pairwise holistic judge confirmed a genuine mixed trade-off, correcting three dimensions this fixture originally scoped too narrowly. synthesis_quality and template_fit improved -- the refinement's controlled-vs-production comparison is a real relational improvement that also better fits the Expert template's own expectation of cross-source relational depth. citation_correctness, groundedness, analytical_quality, and coherence all regressed -- the same unsupported 'industry-standard best practice' overclaim is simultaneously a citation defect (neither attached source establishes it), a groundedness defect (the claim itself is unsupported), an analytical overreach (limited evidence converted into an industry-wide conclusion), and an internal-consistency defect (the conclusion conflicts with the report's own stated narrow two-source scope and Gap Analysis discussion). source_balance stays unchanged -- both sources remain comparably represented throughout. No overall_direction, overall_score, winner, or accept_refinement field is introduced anywhere in this fixture; this is deliberately a genuine, uncollapsed multidimensional trade-off. This closes R6D's synthetic-fixture calibration stage -- all 7 hand-authored pairs have now been exercised live and adjudicated. No rerun will be performed for this fixture."
   },
   "expected": {
     "hard_failure_direction": "unchanged",
     "dimension_directions": {
       "citation_correctness": {
-        "direction": "unchanged",
-        "rationale": "Both [1] and [2] remain genuinely, relevantly attached to the claims they are cited for in every sentence, including the new second sentence -- each source still contributes its own real finding; per r6c2-citation-aggregation-v2 a source is not required to single-handedly certify a claim that goes further than it does, only to relevantly contribute, which both still do."
+        "direction": "regressed",
+        "rationale": "R6D synthetic-stage adjudication (run_id 12, 2026-08-11): neither attached source establishes the refined second sentence's claim that sentence-level grounding checks are 'now the industry-standard best practice'. SpanCite [1] supplies one controlled benchmark result, not an industry-wide practice claim; the web source [2] reports only that adoption is increasing ('teams increasingly report'), which is materially weaker than establishing an industry-standard best practice. Both sources are cited for a claim that outruns what either actually establishes -- a real citation defect, not merely relevant attachment."
       },
       "groundedness": {
         "direction": "regressed",
@@ -346,16 +347,16 @@
         "rationale": "The draft's Thematic Findings uses 'Separately' and presents SpanCite's result and the practitioner report as two independent observations; the refined version explicitly relates them as the same idea observed at two different scales (research benchmark vs. production deployment), which is genuine thematic synthesis the draft did not attempt."
       },
       "analytical_quality": {
-        "direction": "unchanged",
-        "rationale": "Gap Analysis and Future Research Directions are byte-identical between versions; the diagnostic-vs-prescriptive structure is unaffected by the Thematic Findings rewrite."
+        "direction": "regressed",
+        "rationale": "R6D synthetic-stage adjudication (run_id 12, 2026-08-11): the refinement turns limited benchmark/practitioner evidence into an unjustified industry-wide conclusion -- a real analytical overreach, not merely a citation-formatting defect. Gap Analysis and Future Research Directions being byte-identical does not exhaust this dimension's own scope, which also covers whether the report's own conclusions follow soundly from its evidence rather than overreaching."
       },
       "template_fit": {
-        "direction": "unchanged",
-        "rationale": "Depth and tone remain expert-appropriate in both versions; the added overclaim is a groundedness defect, not a depth/tone mismatch for the template."
+        "direction": "improved",
+        "rationale": "R6D synthetic-stage adjudication (run_id 12, 2026-08-11): the new controlled-vs-production comparison ('the same underlying idea at two different scales') is denser and more relational than the draft's isolated source summaries, matching the Expert template's own expectation of emphasizing cross-source relationships and methodological nuance better than the draft does. This is a genuine depth/relational-framing improvement, independent of the separate overclaim groundedness defect in the same sentence."
       },
       "coherence": {
-        "direction": "improved",
-        "rationale": "The refined version explicitly connects the research and production observations into one coherent narrative thread, rather than leaving them as two juxtaposed but unrelated sentences joined only by 'Separately'."
+        "direction": "regressed",
+        "rationale": "R6D synthetic-stage adjudication (run_id 12, 2026-08-11): the unsupported 'industry-standard best practice' conclusion conflicts with the report's own stated narrow evidence base (Introduction & Scope's 'one research paper... and one practitioner article... no broader survey is attempted') and its own Gap Analysis discussion of each source's limited scope -- an internal inconsistency between the Thematic Findings conclusion and what the rest of the report itself establishes. This internal contradiction outweighs the local sentence-to-sentence flow improvement from connecting the two observations into one narrative thread."
       },
       "source_balance": {
         "direction": "unchanged",

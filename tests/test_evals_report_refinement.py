@@ -224,10 +224,16 @@ class TestFixtureDirectionalIntent:
             assert d[dim]["direction"] == "regressed", f"{dim} was {d[dim]['direction']!r}"
 
     def test_mixed_tradeoff_has_no_overall_winner(self):
+        """R6D synthetic-stage closure (run 12): coherence moved
+        improved -> regressed -- the unsupported industry-standard
+        overclaim's internal-consistency damage outweighs the local
+        flow improvement from connecting the two source observations.
+        See `TestR6DSyntheticStageClosure` for the full 7-dimension
+        adjudication."""
         e = self._example("mixed_tradeoff")
         d = e.expected["dimension_directions"]
         assert d["synthesis_quality"]["direction"] == "improved"
-        assert d["coherence"]["direction"] == "improved"
+        assert d["coherence"]["direction"] == "regressed"
         assert d["groundedness"]["direction"] == "regressed"
         assert "overall_direction" not in e.expected
         assert "overall_score" not in e.expected
@@ -2067,18 +2073,19 @@ class TestLiveDetailJson:
 # =====================================================================
 
 class TestR6D3bAdjudication:
-    # `holistic_synthesis_improvement` and `citation_regression` are deliberately
-    # excluded here -- both were untouched AT THE TIME of R6D.3b/R6D.3c (which
-    # only ever touched `clear_grounding_improvement`), but LATER, separately
-    # sanctioned checkpoints (the R6D holistic-synthesis fixture correction, see
-    # `TestR6DHolisticSynthesisFixtureCorrection`; the R6D regression-controls
-    # adjudication, see `TestR6DRegressionControlsAdjudication`) legitimately
-    # correct them -- pinning their hashes here forever would turn a real,
-    # intentional, documented fixture correction into a permanent test failure.
+    # `holistic_synthesis_improvement`, `citation_regression`, and `mixed_
+    # tradeoff` are deliberately excluded here -- all three were untouched AT
+    # THE TIME of R6D.3b/R6D.3c (which only ever touched `clear_grounding_
+    # improvement`), but LATER, separately sanctioned checkpoints (the R6D
+    # holistic-synthesis fixture correction, see `TestR6DHolisticSynthesis
+    # FixtureCorrection`; the R6D regression-controls adjudication, see
+    # `TestR6DRegressionControlsAdjudication`; the R6D synthetic-stage closure,
+    # see `TestR6DSyntheticStageClosure`) legitimately correct them -- pinning
+    # their hashes here forever would turn a real, intentional, documented
+    # fixture correction into a permanent test failure.
     _UNTOUCHED_FIXTURE_SHA256 = {
         "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
         "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-        "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
         "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
     }
 
@@ -2160,10 +2167,16 @@ class TestR6D3bAdjudication:
         for dim in rri.REQUIRED_DIMENSION_NAMES:
             assert citation_reg[dim]["direction"] == "regressed", f"{dim} was {citation_reg[dim]['direction']!r}"
 
+        # mixed_tradeoff's own directions as of its R6D synthetic-stage closure
+        # (run 12) -- see `TestR6DSyntheticStageClosure`.
         mixed = examples["mixed_tradeoff"].expected["dimension_directions"]
         assert mixed["synthesis_quality"]["direction"] == "improved"
-        assert mixed["coherence"]["direction"] == "improved"
+        assert mixed["template_fit"]["direction"] == "improved"
+        assert mixed["coherence"]["direction"] == "regressed"
         assert mixed["groundedness"]["direction"] == "regressed"
+        assert mixed["citation_correctness"]["direction"] == "regressed"
+        assert mixed["analytical_quality"]["direction"] == "regressed"
+        assert mixed["source_balance"]["direction"] == "unchanged"
 
         structural = examples["structural_regression"].expected["dimension_directions"]
         assert all(entry["direction"] == "unknown" for entry in structural.values())
@@ -2450,14 +2463,15 @@ class TestR6D3cCoherenceBoundary:
 # =====================================================================
 
 class TestR6DHolisticSynthesisFixtureCorrection:
-    # `citation_regression` deliberately excluded -- untouched AT THE TIME of
-    # this checkpoint, but later legitimately corrected by the R6D regression-
-    # controls adjudication (see `TestR6DRegressionControlsAdjudication`).
+    # `citation_regression`/`mixed_tradeoff` deliberately excluded -- both were
+    # untouched AT THE TIME of this checkpoint, but later legitimately
+    # corrected by the R6D regression-controls adjudication (see
+    # `TestR6DRegressionControlsAdjudication`) and R6D synthetic-stage closure
+    # (see `TestR6DSyntheticStageClosure`) respectively.
     _OTHER_FIXTURE_SHA256 = {
         "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
         "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
         "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-        "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
         "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
     }
 
@@ -2732,14 +2746,15 @@ class TestR6DHolisticSynthesisFinalization:
     def test_no_other_fixture_changed(self):
         import hashlib
 
-        # `citation_regression` deliberately excluded -- untouched AT THE TIME of
-        # this checkpoint, but later legitimately corrected by the R6D
-        # regression-controls adjudication (see `TestR6DRegressionControlsAdjudication`).
+        # `citation_regression`/`mixed_tradeoff` deliberately excluded -- both
+        # were untouched AT THE TIME of this checkpoint, but later legitimately
+        # corrected by the R6D regression-controls adjudication (see
+        # `TestR6DRegressionControlsAdjudication`) and R6D synthetic-stage
+        # closure (see `TestR6DSyntheticStageClosure`) respectively.
         other_fixture_hashes = {
             "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
             "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
             "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-            "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
             "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
         }
         for fixture_id, expected_hash in other_fixture_hashes.items():
@@ -2852,11 +2867,13 @@ class TestR6DRegressionControlsAdjudication:
     def test_no_other_fixture_changed(self):
         import hashlib
 
+        # `mixed_tradeoff` deliberately excluded -- untouched AT THE TIME of
+        # this checkpoint, but later legitimately corrected by the R6D
+        # synthetic-stage closure (see `TestR6DSyntheticStageClosure`).
         other_fixture_hashes = {
             "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
             "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
             "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
-            "mixed_tradeoff": "151662a271f95667b55a77088d734e379ed1251f42b6720ca57d30b2524d5253",
             "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
         }
         for fixture_id, expected_hash in other_fixture_hashes.items():
@@ -2904,3 +2921,145 @@ class TestR6DRegressionControlsAdjudication:
         assert hasattr(rrr, "compute_claim_change_inventory")
         assert hasattr(rrr, "_citation_correctness_from_claims")
         assert hasattr(rrr, "_groundedness_from_claims")
+
+
+# =====================================================================
+# R6D synthetic-stage closure (after live run 12). Human adjudication
+# against the frozen rubric found `mixed_tradeoff` is a genuine
+# multidimensional trade-off: synthesis_quality/template_fit improved,
+# citation_correctness/groundedness/analytical_quality/coherence all
+# regressed (one unsupported "industry-standard best practice"
+# overclaim damages four different frozen dimensions at once),
+# source_balance unchanged. This closes R6D's synthetic-fixture
+# calibration stage -- all 7 hand-authored pairs have now been
+# exercised live. No judge, runner, or evaluator code changed; the
+# report prose itself was NOT touched, only the fixture's own expected
+# directions/rationales. Every test below is either a pure fixture-
+# content check (no mocking needed) or reruns mock mode, which makes
+# zero OpenAI/API calls.
+# =====================================================================
+
+class TestR6DSyntheticStageClosure:
+    _MIXED_TRADEOFF_EVIDENCE_SHA256 = {
+        "draft_report": "a6d06fd76cffb8cce695108b52c3f7b666cbd842a8ddcf9c0a560ace688e0878",
+        "refined_report": "3554020dc08cdbc16fc1b7a6bbff055fa2dd766cc1dc31295fd45015181c5b1c",
+        "selected_papers": "46939ab3d371c730f468839659288e53719782ece14acf0db0dce3f683c9c79e",
+        "approved_web_articles": "72b6857d4af1965b3c803cbd7e1f29b7b8a0a4ce7e791440fa487792dd578f05",
+    }
+
+    @staticmethod
+    def _example(fixture_id="mixed_tradeoff"):
+        examples = rri.load_report_refinement_examples()
+        return next(x for x in examples if x.id == fixture_id)
+
+    def test_mixed_tradeoff_expects_all_seven_directions(self):
+        e = self._example()
+        d = e.expected["dimension_directions"]
+        assert d["citation_correctness"]["direction"] == "regressed"
+        assert d["groundedness"]["direction"] == "regressed"
+        assert d["synthesis_quality"]["direction"] == "improved"
+        assert d["analytical_quality"]["direction"] == "regressed"
+        assert d["template_fit"]["direction"] == "improved"
+        assert d["coherence"]["direction"] == "regressed"
+        assert d["source_balance"]["direction"] == "unchanged"
+
+    def test_hard_failure_direction_remains_unchanged(self):
+        e = self._example()
+        assert e.expected["hard_failure_direction"] == "unchanged"
+
+    def test_no_overall_winner_or_composite_field_exists(self):
+        e = self._example()
+        assert "overall_direction" not in e.expected
+        assert "overall_score" not in e.expected
+        assert "winner" not in e.expected
+        assert "accept_refinement" not in e.expected
+        assert "overall_direction" not in e.refinement_context
+        assert "winner" not in e.refinement_context
+        assert "accept_refinement" not in e.refinement_context
+
+    def test_report_prose_evidence_references_and_markers_byte_identical(self):
+        import hashlib
+        import json as _json
+
+        e = self._example()
+        for name, expected_hash in self._MIXED_TRADEOFF_EVIDENCE_SHA256.items():
+            obj = getattr(e, name)
+            actual = hashlib.sha256(_json.dumps(obj, sort_keys=True).encode()).hexdigest()
+            assert actual == expected_hash, f"{name} content changed"
+        for report in (e.draft_report, e.refined_report):
+            numbers = sorted(r["number"] for r in report["references"])
+            assert numbers == [1, 2]
+            assert "[1][2]" in report["thematic_findings"]["content"] or (
+                report["thematic_findings"]["reference_numbers"] == [1, 2]
+            )
+
+    def test_no_other_fixture_changed(self):
+        import hashlib
+
+        other_fixture_hashes = {
+            "clear_grounding_improvement": "69b115ff601b956d3c875a397436904f9b89abc55009e5fa48626ff0f177b084",
+            "justified_no_revision": "32ec978b95cfa18293b0cb89be556ecd9be1bd5cf9c053d22bdb2f863a9f87a3",
+            "cosmetic_rewrite_tie": "00083f27aa1c571416340efebcd0fc353c28b73fc518ba50a8cdbfb78a5bdf7e",
+            "citation_regression": "a53226acd8c2fde3977dc363de2467c14201efa948f195b47a24d1c5c27285d7",
+            "structural_regression": "ff46c50a68da67e52cb9bf25652e2878e77d5bd81fe3e274e8193fc4d4b86ec4",
+        }
+        for fixture_id, expected_hash in other_fixture_hashes.items():
+            path = rri.FIXTURES_DIR / f"{fixture_id}.json"
+            actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert actual_hash == expected_hash, f"{fixture_id}.json changed unexpectedly"
+
+    def test_fixture_still_satisfies_all_r6d1_invariants(self):
+        examples = rri.load_report_refinement_examples()  # raises ReportRefinementFixtureError on any violation
+        assert len(examples) == 7
+        e = next(x for x in examples if x.id == "mixed_tradeoff")
+        assert e.draft_report["report_template"] == "expert"
+        assert e.refined_report["report_template"] == "expert"
+
+    def test_rationale_strings_never_leak_into_report_content(self):
+        e = self._example()
+        rationales = [entry["rationale"] for entry in e.expected["dimension_directions"].values()]
+        for side_report in (e.draft_report, e.refined_report):
+            for key in rri.REQUIRED_SECTION_KEYS:
+                content = (side_report.get(key) or {}).get("content") or ""
+                for rationale in rationales:
+                    assert rationale not in content
+
+    def test_adjudication_note_documents_run_12_and_closure(self):
+        e = self._example()
+        assert "adjudication_note" in e.refinement_context
+        note = e.refinement_context["adjudication_note"].lower()
+        assert "run_id 12" in note or "run 12" in note
+        assert "mixed trade-off" in note or "trade-off" in note or "tradeoff" in note
+        assert "closes" in note or "closure" in note
+
+    def test_mock_report_refinement_still_seven_of_seven(self):
+        with patch.object(claim_source, "judge_claims") as claim_spy, \
+             patch.object(refinement_holistic, "judge_refinement_holistic") as pairwise_spy, \
+             patch.object(holistic, "judge_report") as holistic_spy:
+            result = rrr.run_experiment(mode="mock")
+        claim_spy.assert_not_called()
+        pairwise_spy.assert_not_called()
+        holistic_spy.assert_not_called()
+        assert result.total == 7
+        assert result.passed == 7
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_no_judge_or_runner_or_production_code_changed(self):
+        assert refinement_holistic.R6D_PAIRWISE_HOLISTIC_PROMPT_VERSION == "r6d3c-pairwise-holistic-v2"
+        assert holistic.HOLISTIC_JUDGE_PROMPT_VERSION == "r6c2-holistic-v1"
+        assert hasattr(rrr, "compute_claim_change_inventory")
+        assert hasattr(rrr, "_citation_correctness_from_claims")
+        assert hasattr(rrr, "_groundedness_from_claims")
+
+    def test_all_seven_synthetic_fixtures_now_have_live_calibrated_expectations(self):
+        """R6D synthetic-stage closure: all 7 hand-authored pairs have
+        now been exercised live and adjudicated at least once (via
+        R6D.3a-c, the holistic-synthesis checkpoints, the no-change/
+        regression controls, and this mixed-tradeoff closure)."""
+        examples = {e.id: e for e in rri.load_report_refinement_examples()}
+        assert set(examples) == {
+            "clear_grounding_improvement", "holistic_synthesis_improvement",
+            "justified_no_revision", "cosmetic_rewrite_tie",
+            "citation_regression", "structural_regression", "mixed_tradeoff",
+        }

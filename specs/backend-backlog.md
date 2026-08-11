@@ -1873,6 +1873,41 @@ invented:
   remain open — production refinement is not proven effective by any
   synthetic-fixture checkpoint; that remains R6D.4's job.**
 
+  **R6D synthetic-fixture stage CLOSED, run 12 (2026-08-11)**: run_id
+  12 (commit `e2b1b38`, tags `tradeoff`, "R6D mixed-tradeoff
+  validation") ran the last of the 7 synthetic fixtures, `mixed_
+  tradeoff`: 3 judge calls, no errors, 73.3s, 5/7 matched. Read-only
+  adjudication confirmed a genuine multidimensional trade-off: the
+  refined report's unsupported "industry-standard best practice"
+  overclaim simultaneously damages `citation_correctness` (neither
+  source establishes it), `groundedness` (unsupported claim, already
+  correctly expected), `analytical_quality` (evidence overreach), and
+  `coherence` (contradicts the report's own stated narrow scope) —
+  while the SAME refinement genuinely improves `synthesis_quality`
+  (real controlled-vs-production comparison, already correctly
+  expected) and `template_fit` (that comparison better fits the Expert
+  template). `source_balance` unchanged. **No overall winner, accept/
+  reject field, or composite score anywhere in the fixture.** **No
+  judge, runner, or production code changed.**
+
+  **This closes R6D's synthetic-fixture calibration stage — all 7
+  hand-authored pairs (clear_grounding_improvement, holistic_
+  synthesis_improvement, justified_no_revision, cosmetic_rewrite_tie,
+  citation_regression, structural_regression, mixed_tradeoff) have now
+  been exercised live and adjudicated at least once.** Accepted
+  limitations carried forward: some holistic dimensions have genuinely
+  overlapping boundaries (multiple checkpoints found one edit
+  legitimately touching several frozen dimensions at once); `template_
+  fit`/`coherence` showed real instability across repeated runs on the
+  same fixture and were accepted as residual judge/rubric ambiguity
+  rather than tuned indefinitely; live latency ranged materially
+  (16.4s–73.3s) with no SLO established. **None of this proves
+  production R4 refinement helps.** See `docs/evaluation.md`'s "R6D
+  synthetic-fixture stage: closed" section for the full record.
+  **R6D remains open. R6 remains open. No production refinement
+  decision has been made.** Next: **R6D.4** — evaluate a deliberately
+  small set of real R4-generated draft/refined pairs.
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs
