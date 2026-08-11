@@ -1824,6 +1824,27 @@ invented:
   record. Next: the two no-change controls, `justified_no_revision`
   and `cosmetic_rewrite_tie`. **R6D as a whole is still not closed.**
 
+  **R6D no-change controls, run 10 (2026-08-11)**: run_id 10 (commit
+  `5cfadb1`, tags `tie`, "R6D no-change controls validation") ran both
+  no-change control fixtures: 2/2 passed, 1.0 average expectation
+  agreement. `justified_no_revision` (byte-identical draft/refined)
+  confirmed the identical-input cost optimization (1 call, pairwise
+  holistic skipped) and all 7 dimensions correctly `unchanged` — a
+  strong draft receiving no revision is never falsely labelled
+  improved. `cosmetic_rewrite_tie` (reworded, no substantive change)
+  confirmed the full 3-call changed-pair path still correctly returns
+  all 7 dimensions `unchanged` — cosmetic rewriting alone is never
+  rewarded as semantic improvement. **No fixture, judge, prompt, or
+  runner correction was needed.** These results support two candidate
+  bounded-refinement stopping principles (don't revise a report that
+  already passes; don't accept a revision merely because it rewrites
+  the prose) as evaluation EVIDENCE only — **not wired into production
+  R4**, pending R6D.4's real output pairs. See `docs/evaluation.md`'s
+  "R6D no-change controls, run 10" section. Next: `citation_regression`
+  (semantic/citation damage from an apparently smoother revision) and
+  `structural_regression` (misleading semantic approval of a
+  structurally invalid refinement). **R6D remains open.**
+
 ### R6D.4: evaluate real R4-generated draft/refined report pairs
 - **Goal**: run R6D.3a's live paired evaluation against *real* R4
   output (actual `generate_report`/`revise_report` draft/refined pairs

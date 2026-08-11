@@ -1744,6 +1744,47 @@ revision` and `cosmetic_rewrite_tie` — both expect all 7 dimensions
 "nothing meaningful changed" rather than fabricating a direction.
 **This does not close R6D as a whole.**
 
+### R6D no-change controls, run 10 (2026-08-11) — 2/2, no correction needed
+
+Run_id 10 (`eval_results/report_refinement_history.csv`, commit
+`5cfadb1`, tags `tie`, note "R6D no-change controls validation") ran
+both no-change control fixtures in one pass: total=2, passed=2,
+failed=0, average expectation agreement=1.0, mean latency 26.1s.
+**No fixture, judge, prompt, or runner correction is justified by
+these results.**
+
+- **`justified_no_revision`** (byte-identical draft/refined):
+  `identical_input_reused=true`, `judge_call_count=1`, pairwise
+  holistic judge skipped entirely, `hard_failure_direction=unchanged`,
+  all 7 semantic directions `unchanged`, 7/7 agreement, no errors,
+  16.4s. Validates that a strong draft receiving no revision is never
+  falsely labelled as improved, and confirms the identical-pair cost
+  optimization (1 call, not 3) fires correctly on real live input.
+- **`cosmetic_rewrite_tie`** (reworded prose, no intended substantive
+  change): changed claims were detected (the wording genuinely
+  differs, so `identical_input_reused=false`), `judge_call_count=3`
+  (the full changed-pair path: 2 claim/source calls + 1 pairwise
+  holistic call), `hard_failure_direction=unchanged`, all 7 semantic
+  directions `unchanged`, 7/7 agreement, no errors, 35.8s. Validates
+  that cosmetic rewriting alone is never rewarded as semantic
+  improvement — the pipeline correctly distinguishes "the prose
+  changed" from "the content changed" even when claim-level diffing
+  finds real (reworded) changed claims to compare.
+
+**These two results support two candidate bounded-refinement stopping
+principles for a future production integration** — do not revise a
+report that already passes evaluation; do not accept a revision merely
+because it rewrites the prose — **but neither principle is wired into
+production R4 in this checkpoint.** They remain evaluation evidence
+only, pending R6D.4's real R4 output pairs; this checkpoint is
+documentation/evidence preservation, not a production change.
+
+**Next fixtures**: `citation_regression` (detect semantic/citation
+damage introduced by an apparently smoother revision) and
+`structural_regression` (prevent structurally invalid refinements from
+receiving misleading semantic approval). **R6D remains open — nothing
+here claims production refinement is proven effective.**
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why
