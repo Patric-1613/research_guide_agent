@@ -13,18 +13,32 @@ other evaluator in this project already establishes.
 
 `report_refinement_semantic_dimensions_not_evaluated` NEVER produces a
 real score -- it exists purely to make it structurally visible, in
-every run's own `evaluator_results`, that the 7 R6C semantic
+every MOCK-mode run's own `evaluator_results`, that the 7 R6C semantic
 dimensions (citation_correctness, groundedness, synthesis_quality,
 analytical_quality, template_fit, coherence, source_balance) were not
-measured by this mock-mode prediction. Mirrors `report_quality.py`'s
-own `report_quality_dimension_agreement` precedent exactly: that
-evaluator also always returns `score=None` in mock mode, for the same
-reason (nothing was actually judged yet) -- a `None` score never
-counts toward `run_suite`'s pass/fail or average, so registering this
-evaluator alongside the direction-agreement one changes nothing about
-which fixtures pass, it only documents, in the run's own data, that
-semantic quality was never claimed to be measured. Live paired
-semantic judging is R6D.3's job, not this phase's.
+measured by this mock-mode prediction. Registered only in mock mode
+(`run_report_refinement.py::run_experiment`) -- R6D.2's own mock
+behavior stays exactly byte-compatible.
+
+`report_refinement_semantic_direction_agreement` (R6D.3) is the live-
+mode counterpart: compares `prediction["dimension_directions"]`
+(populated only in live mode by `run_report_refinement.py::predict_
+live`) against a fixture's own `expected_dimension_directions`, one of
+the 7 R6C dimensions at a time. `score = matched / 7` -- a genuine
+fractional score, not the binary 1.0/0.0 the hard-failure-direction
+evaluator uses, per R6D.3's own explicit requirement. Because
+`run_suite`'s own pass/fail rule requires every evaluator's score to
+be exactly `1.0` for an example to count as passed, this automatically
+means **exact 7/7 direction agreement is required for a fully-passed
+example** -- no extra code needed to enforce that, it falls out of the
+existing shared aggregation rule the same way `report_quality_
+dimension_agreement`'s binary score already does for `report_quality`.
+`"unknown"` is compared with plain equality, exactly like every other
+direction value -- it is never treated as a wildcard that matches
+anything. **This score describes expectation agreement with a
+synthetic, hand-constructed fixture -- it is not a measurement of
+report quality, and the CLI's own aggregate `average_score` must never
+be read as one.** Registered only in live mode.
 """
 
 from __future__ import annotations
@@ -91,7 +105,63 @@ def report_refinement_semantic_dimensions_not_evaluated(
     }
 
 
+def report_refinement_semantic_direction_agreement(
+    prediction: dict[str, Any], expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Score `matched / 7` comparing each of the 7 R6C dimensions'
+    predicted direction against `expected["expected_dimension_
+    directions"]`'s own direction for that dimension -- exact equality
+    only, `"unknown"` included (never a wildcard). Returns `score=None`
+    (not 0.0) when there is nothing real to compare: no expected
+    directions given, or `prediction["dimension_directions"]` is `None`
+    (mock mode) -- a `None` score never counts against pass/fail or the
+    run's average, matching every other "no expectation -> no score"
+    evaluator in this project. `detail` carries the full per-dimension
+    expected/actual/match breakdown for the run's own detail JSON.
+    """
+    expected_directions = expected.get("expected_dimension_directions")
+    if not expected_directions:
+        return {
+            "key": "report_refinement_semantic_direction_agreement", "score": None,
+            "comment": "no expected_dimension_directions given",
+        }
+
+    if "error" in prediction:
+        return {
+            "key": "report_refinement_semantic_direction_agreement", "score": 0.0,
+            "comment": f"predict() raised: {prediction['error']}",
+        }
+
+    predicted_directions = prediction.get("dimension_directions")
+    if predicted_directions is None:
+        return {
+            "key": "report_refinement_semantic_direction_agreement", "score": None,
+            "comment": "no live dimension_directions to compare (mock mode)",
+        }
+
+    detail: dict[str, dict[str, Any]] = {}
+    matches = 0
+    for dim in REQUIRED_DIMENSION_NAMES:
+        expected_entry = expected_directions.get(dim) or {}
+        expected_direction = expected_entry.get("direction")
+        actual_direction = predicted_directions.get(dim)
+        match = actual_direction == expected_direction
+        detail[dim] = {"expected": expected_direction, "actual": actual_direction, "match": match}
+        if match:
+            matches += 1
+
+    score = round(matches / len(REQUIRED_DIMENSION_NAMES), 4)
+    return {
+        "key": "report_refinement_semantic_direction_agreement",
+        "score": score,
+        "comment": f"{matches}/{len(REQUIRED_DIMENSION_NAMES)} dimensions matched expected direction "
+                   "(expectation agreement, not a report-quality measurement)",
+        "detail": detail,
+    }
+
+
 ALL_EVALUATORS: dict[str, Any] = {
     "report_refinement_hard_failure_direction_agreement": report_refinement_hard_failure_direction_agreement,
     "report_refinement_semantic_dimensions_not_evaluated": report_refinement_semantic_dimensions_not_evaluated,
+    "report_refinement_semantic_direction_agreement": report_refinement_semantic_direction_agreement,
 }

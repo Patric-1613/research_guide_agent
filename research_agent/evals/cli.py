@@ -62,8 +62,9 @@ SUITES: dict[str, dict[str, Any]] = {
         "module": "research_agent.evals.runners.run_report_refinement",
         "results_csv": "report_refinement_history.csv",
         "live_warning": (
-            "mode=live is not implemented until R6D.3 (live paired semantic judging) -- this call exits "
-            "immediately with no API call and no result written."
+            "mode=live makes real OpenAI judge calls -- up to 4 per pair (one claim/source call plus one "
+            "holistic call for EACH of draft and refined), fewer when the identical-input optimization "
+            "applies for a revision_applied=false pair -- and can incur cost."
         ),
     },
 }

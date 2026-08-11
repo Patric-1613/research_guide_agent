@@ -1592,10 +1592,10 @@ invented:
     dimensions_not_evaluated` (always `score=None`, present to make
     "not measured yet" explicit in every run's own detail JSON).
   - `research_agent/evals/cli.py` — `report_refinement` registered
-    alongside `chat_relevance`/`report_quality`. `--mode live` raises
+    alongside `chat_relevance`/`report_quality`. `--mode live` raised
     `LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
-    effects, truthful "not implemented until R6D.3" message) — not
-    implemented yet, R6D.3's job.
+    effects, truthful "not implemented until R6D.3" message) at the
+    time this checkpoint closed — implemented in R6D.3, below.
   - Mock baseline: `total=7, passed=7, failed=0, average_score=1.000`
     — **this score is structural hard-failure-direction agreement
     only, never a report-quality or refinement-effectiveness score.**
@@ -1622,27 +1622,86 @@ invented:
 - **Status**: Closed (2026-08-11). Commit `e97b910` (R6D.1);
   R6D.2's own commit follows in this same backlog update.
 
-### R6D.3: live paired semantic judging, blinded A/B ordering
+### R6D.3: live paired semantic judging (independent per-side judging, not a blinded pairwise judge)
 - **Goal**: run R6C's claim/source and holistic judges against both
   halves of a pair and compute real *semantic* directions for the 7
   R6C dimensions — the question R6D.2 explicitly left unmeasured.
-- **Required design** (frozen in `specs/report-quality-evaluation-
-  plan.md` §8, not yet built): blinded A/B labels (the judge sees
-  `Report A`/`Report B`, never `draft`/`revised`), swapped order with
-  both calls always made (never cached/short-circuited), stable seeded
-  ordering per fixture/pair id, per-dimension A/B/tie (never one
-  collapsed global winner), `positional_disagreement` reported as its
-  own metric, citation-integrity preservation across a revision
-  checked deterministically (`_restore_dropped_citations` covers
-  papers; `revise_report`'s own docstring states web citations are
-  **not** restored the same way — R6D verifies both documented
-  behaviors hold, rather than assuming either), at least one human-
-  labelled longer-but-not-better pair reserved for R6E.
-- **Location (not yet touched)**: presumably extends `research_agent/
-  evals/runners/run_report_refinement.py` with a `predict_live`
-  alongside R6C's own `claim_source.py`/`holistic.py` judges — not
-  scoped in detail yet.
-- **Priority**: next, immediately after R6D.2.
+- **Design actually built (deviates from `specs/report-quality-
+  evaluation-plan.md` §8's original blinded-A/B sketch)**: each side
+  of a pair is judged **completely independently** through R6C's
+  existing single-report live path (`run_report_quality.predict_
+  live`, reused directly — no second judge implementation, no third
+  pairwise LLM judge, no blinded `Report A`/`Report B` labels, no
+  swap-order calls). Direction is derived afterward in plain Python by
+  comparing the two already-independent results
+  (`run_report_refinement._dimension_direction`, rules A-G — see
+  `docs/evaluation.md`'s "R6D.3" section for the full rule set). This
+  was the explicit scope given for this checkpoint; the §8 blinded-A/B
+  design, `positional_disagreement`, and the citation-integrity-
+  preservation check remain **not built** and are not re-scoped here.
+- **Cost bound**: at most 4 judge calls per pair (1 claim/source + 1
+  holistic, per side) — never a 5th. Identical-input optimization: a
+  `revision_applied=false` pair with byte-identical `draft_report`/
+  `refined_report` (exact equality, `report_refinement_inputs.
+  reports_are_equal`) is judged once and deep-copied, not twice.
+- **Direction thresholds**: `citation_correctness`/`groundedness`
+  direction is categorical-only (never score-derived); the 5 holistic
+  dimensions use `HOLISTIC_DIRECTION_MIN_DELTA = 0.10` —
+  **explicitly provisional and uncalibrated**, not derived from any
+  calibration study.
+- **Live evaluator**: `report_refinement_semantic_direction_agreement`
+  (`score = matched / 7` against a fixture's own
+  `expected.dimension_directions`, `unknown` never a wildcard) —
+  labeled expectation agreement, never an invented overall quality
+  score or winner.
+- **Mock mode unchanged/byte-compatible**: `predict()`, the hard-
+  failure-direction rules, and the mock evaluator pair are exactly as
+  R6D.2 left them.
+- **Tests**: `tests/test_evals_report_refinement.py` → 144 passed (was
+  99), all against a mocked OpenAI/judge boundary — no real paid call
+  made anywhere in this checkpoint's implementation or validation.
+  `report_quality` + `report_refinement` together → 336 passed. Full
+  backend suite → 1116 passed.
+  Mock non-regression re-run: `total=7, passed=7, failed=0,
+  average_score=1.000` (unchanged from R6D.2's own baseline).
+- **Location**: `research_agent/evals/runners/run_report_refinement.py`
+  (rewritten to add `predict_live` + helpers, mock `predict()`
+  unchanged), `research_agent/evals/evaluators/report_refinement.py`
+  (new `report_refinement_semantic_direction_agreement`, existing 2
+  evaluators unchanged), `research_agent/evals/cli.py` (`live_warning`
+  text updated, additive), `tests/test_evals_report_refinement.py`
+  (updated, +45 tests), `docs/evaluation.md` / `eval_data/report_
+  refinement/README.md` / `eval_results/README.md` (updated). **No
+  changes to `research_agent/report.py`, `research_agent/evals/
+  runners/run_report_quality.py`, `research_agent/evals/judges/`,
+  `research_agent/evals/report_quality_inputs.py`, `research_agent/
+  evals/report_refinement_inputs.py`, any existing fixture, R6C's
+  prompts or aggregation rules, or the production R4 refinement loop.**
+- **Priority**: n/a — done (R6D.4 is next).
+- **Status**: Closed (2026-08-11).
+
+### R6D.4: evaluate real R4-generated draft/refined report pairs
+- **Goal**: run R6D.3's live paired evaluation against *real* R4
+  output (actual `generate_report`/`revise_report` draft/refined pairs
+  from real or realistic topics), not R6D.1's 7 synthetic fixtures —
+  the first point at which this project can make an actual, evidence-
+  backed claim about whether refinement improves report quality.
+- **Why it matters**: R6D.1-R6D.3 validate that the *measurement*
+  machinery works correctly against hand-authored fixtures with known
+  answers and mocked judges. None of that is evidence about real R4
+  behavior. A small, deliberately bounded paid live run (a handful of
+  real pairs, real judge calls, human-reviewed) should happen first,
+  both to sanity-check the 0.10 holistic threshold against real model
+  output and as a natural precursor to R6D.4's own larger run.
+- **Required design (not yet scoped in detail)**: where real
+  draft/refined pairs come from (a fixed small topic set run through
+  the real R4 pipeline, captured once and frozen, vs. a live pipeline
+  call per eval run), whether/how to revisit `HOLISTIC_DIRECTION_MIN_
+  DELTA` once real score distributions exist, and whether the original
+  §8 blinded-A/B design should still be built as a complementary check
+  once real data exists to justify the added complexity.
+- **Location (not yet touched)**.
+- **Priority**: next, after a small paid live validation of R6D.3.
 - **Status**: Open. Not started.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts

@@ -51,21 +51,31 @@ policy — this file is a short local index.
   suite's live `prediction` follows.
 - `report_refinement_history.csv` — current running log, appended to
   by every `uv run python -m research_agent.evals.cli run --suite
-  report_refinement` run (R6D.2). `--mode mock` (the only implemented
-  mode so far) runs both the draft and refined report in each R6D.1
-  pair fixture through R6B's own deterministic checks (`run_report_
-  quality.predict()`, called directly, never reimplemented) and scores
-  only whether the derived `hard_failure_direction` (`improved`/
-  `unchanged`/`regressed`/`mixed`) matches the fixture's expectation —
-  **this average_score is structural-direction agreement only, not a
-  report-quality or refinement-effectiveness score**; the 7 semantic
-  R6C dimensions are never fabricated (`dimension_directions` is
-  always `null` in a mock prediction). `--mode live` is not
-  implemented yet (R6D.3, live paired semantic judging) — it exits 2
-  immediately with no API call and no artifact written. **Tracked**,
+  report_refinement` run (R6D.2 mock + R6D.3 live). `--mode mock` runs
+  both the draft and refined report in each R6D.1 pair fixture through
+  R6B's own deterministic checks (`run_report_quality.predict()`,
+  called directly, never reimplemented) and scores only whether the
+  derived `hard_failure_direction` (`improved`/`unchanged`/`regressed`/
+  `mixed`) matches the fixture's expectation — **this average_score is
+  structural-direction agreement only, not a report-quality or
+  refinement-effectiveness score**; the 7 semantic R6C dimensions are
+  never fabricated (`dimension_directions` is always `null` in a mock
+  prediction, zero OpenAI calls). `--mode live` (R6D.3) runs both
+  sides through R6C's existing live prediction path (`run_report_
+  quality.predict_live()`, reused directly) independently — **up to 4
+  real judge calls per pair**, fewer when the identical-input
+  optimization applies for a `revision_applied=false` pair with
+  byte-identical reports — then scores per-dimension expectation
+  agreement (`matched / 7`, exact 7/7 required to fully pass); missing
+  credentials exit 2 immediately with no API call and no artifact
+  written, never a silent fallback to mock. **No conclusion is drawn
+  yet that refinement improves report quality** — the 0.10 holistic
+  direction threshold (`run_report_refinement.HOLISTIC_DIRECTION_MIN_
+  DELTA`) is explicitly provisional and uncalibrated. **Tracked**,
   same conventions as the other suite logs above. See `docs/
-  evaluation.md`'s "R6D.2" section and `eval_data/report_refinement/
-  README.md` for the pair schema this suite's `prediction` follows.
+  evaluation.md`'s "R6D.2"/"R6D.3" sections and `eval_data/report_
+  refinement/README.md` for the pair schema this suite's `prediction`
+  follows.
 - `runs/` — per-run detail artifacts. From `ragas_eval.py`
   (`run_<id>.json` + `raw_<timestamp>.jsonl`), from the `chat_relevance`
   suite (`chat_relevance_run_<run_id>.json`, R7E.1), from the
@@ -77,11 +87,14 @@ policy — this file is a short local index.
   `judge_metadata` — model, both prompt versions, the aggregation
   policy version, latency, token usage, sampling coverage, and
   sanitization counts), and from the `report_refinement` suite
-  (`report_refinement_run_<run_id>.json`, R6D.2 — each pair's own
-  `prediction` holds `draft`/`refined` sub-dicts, each with `hard_
-  failures`/`structural_status`/`informational_signals`, plus the pair-
-  level `hard_failure_direction`, `dimension_directions` (always
-  `null` in mock mode), and `semantic_evaluation_status`). **Not
+  (`report_refinement_run_<run_id>.json`, R6D.2 mock + R6D.3 live —
+  each pair's own `prediction` holds `draft`/`refined` sub-dicts, each
+  with `hard_failures`/`structural_status`/`informational_signals`
+  (mock and live) plus `judge_dimensions`/`judge_metadata`/`error`
+  (live only), and the pair-level `hard_failure_direction`,
+  `dimension_directions` (always `null` in mock mode, one of 7
+  directions per dimension in live mode), `semantic_evaluation_status`,
+  and `identical_input_reused`). **Not
   tracked** (`.gitignore`d as of Phase 15) — reviewed locally; growing
   without bound is expected, and isn't meant to accumulate in git
   history the way the history CSVs above do.

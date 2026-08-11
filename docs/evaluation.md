@@ -1124,7 +1124,8 @@ uv run python -m research_agent.evals.cli run --suite report_refinement --mode m
 `--mode live` raises `LiveModeSetupError` before any example is
 loaded — exit 2, no traceback, no CSV row, no detail JSON — with a
 truthful "not implemented until R6D.3" message, the same posture R6B's
-own `report_quality` suite had before R6C.2 existed.
+own `report_quality` suite had before R6C.2 existed. **As of R6D.3,
+live mode is implemented — see below.**
 
 **Mock baseline** (`eval_results/report_refinement_history.csv`
 run_id 1, commit `e97b910`):
@@ -1148,14 +1149,112 @@ it, all 4 direction rules including the defensive `mixed` case and its
 count-vs-subset edge case, semantic-dimension non-fabrication, CSV/
 detail-JSON schema, and a direct no-OpenAI-import/no-network
 guarantee). `report_quality` + `report_refinement` together → 291
-passed. Full backend suite → 1071 passed.
+passed. Full backend suite → 1071 passed. **These counts predate
+R6D.3, see below for R6D.3's own totals.**
 
-**R6D.3 (live paired semantic judging) is next** — running R6C's
-claim/source and holistic judges against both halves of a pair and
-computing real semantic directions. **No claim is made anywhere in
-R6D.2 that refinement improves report quality** — only that R6D.2 can
-now detect whether R4's revision step changed a report's structural
-state, which is a narrower, purely deterministic question.
+## R6D.3 — live paired semantic judging (2026-08-11) — complete
+
+Adds an opt-in `--mode live` path to `report_refinement`, reusing
+R6C's existing per-report live-evaluation entry point
+(`run_report_quality.predict_live`) directly — **no second judge
+implementation, no third pairwise LLM judge, no change to R6C's
+prompts, aggregation rules, or the production R4 refinement loop.**
+Each side of a pair (`draft_report`, `refined_report`) is judged
+completely independently, exactly as `report_quality`'s own live mode
+already judges any single report; R6D.3 only diffs the two
+already-independent results afterward, in Python.
+
+**Cost bound**: at most 4 judge calls per pair (one claim/source call
++ one holistic call, for each of draft and refined) — never a 5th,
+never a call that sees both reports at once. **Identical-pair
+optimization**: when a fixture declares `revision_applied=false` AND
+`draft_report == refined_report` under exact equality (`report_
+refinement_inputs.reports_are_equal` — never a "same length"/"same
+references" heuristic), the draft side is evaluated once and its
+result deep-copied for the refined side (`identical_input_reused=
+True`), so a pair that never should have needed a second opinion never
+pays for one, and every comparable dimension direction naturally comes
+out `unchanged`.
+
+**Direction derivation** (`run_report_refinement._dimension_
+direction`, rules A–G, applied in this exact order, for all 7 R6C
+dimensions): either side `unknown` → `unknown`; both `not_applicable`
+→ `unchanged`; exactly one `not_applicable` → `unknown` (applicability
+changed, direction can't be inferred safely); a `fail`→`pass` or
+`pass`→`fail` label transition → `improved`/`regressed`; same label on
+`citation_correctness`/`groundedness` → `unchanged` (categorical only,
+never a score is invented from verdict counts); same label on the 5
+holistic dimensions → compare scores against `HOLISTIC_DIRECTION_
+MIN_DELTA = 0.10` (`refined - draft >= 0.10` → improved, `<= -0.10` →
+regressed, otherwise unchanged); a missing/malformed required score →
+`unknown`. **This 0.10 threshold is explicitly PROVISIONAL and
+uncalibrated** — a round, conservative starting point, not derived
+from any calibration study — the same "no invented weights without
+evidence" posture R6A/R6C.2c already established for this project's
+other thresholds. Word count, citation density, and source coverage
+are never used to infer semantic direction.
+
+**Live evaluator** (`report_refinement_semantic_direction_agreement`,
+registered only in live mode, alongside the unchanged `report_
+refinement_hard_failure_direction_agreement`): `score = matched / 7`
+comparing each predicted direction against a fixture's `expected.
+dimension_directions` — exact 7/7 agreement is required for a fully
+passed example (falls out of `run_suite`'s existing "score must be
+1.0" pass rule, no extra code needed), `"unknown"` is never a
+wildcard. **This score describes expectation agreement with a
+synthetic fixture, not a measurement of report quality** — no overall
+quality score or "winner" is ever computed.
+
+**Failure isolation** (unchanged from R6C, per-side): a structural
+hard failure on one side skips all judge calls for that side only (7
+dimensions `unknown`); a claim/source judge failure leaves `citation_
+correctness`/`groundedness` `unknown` while holistic dimensions may
+still be available; a holistic judge failure leaves its 5 dimensions
+`unknown` while claim/source dimensions may remain available; an
+unexpected exception on one side's evaluation is caught and recorded
+as a per-side `error` without crashing the whole suite run.
+
+**Mock mode is unchanged and byte-compatible**: `predict()`,
+`_side_prediction`, the hard-failure-direction rules, and the mock
+evaluator pair are exactly as R6D.2 left them —
+`dimension_directions=None`, `semantic_evaluation_status=
+"not_evaluated_in_mock_mode"`, zero OpenAI calls. Re-run for
+non-regression (`eval_results/report_refinement_history.csv` run_id
+2, commit `36518c4`, note "R6D.3 mock non-regression"):
+
+```
+[eval] suite=report_refinement mode=mock total=7 passed=7 failed=0 average_score=1.000
+```
+
+**Live CLI**:
+
+```bash
+uv run --env-file .env python -m research_agent.evals.cli run --suite report_refinement --mode live --subset 1 --note "..."
+```
+
+Constructs the OpenAI client the same way `report_quality` live mode
+does (`run_report_quality._build_live_client()`, reused directly, not
+reimplemented), uses `REPORT_QUALITY_JUDGE_MODEL` unchanged, prints a
+cost warning, and raises `LiveModeSetupError` (exit 2, no traceback,
+no CSV row, no detail JSON) on missing credentials — never a silent
+fallback to mock.
+
+**Validation**: `tests/test_evals_report_refinement.py` → 144 passed.
+`report_quality` + `report_refinement` together → 336 passed. Full
+backend suite → 1116 passed. All tests mock the OpenAI/judge boundary
+(`claim_source.judge_claims`, `holistic.judge_report`, and `run_
+report_quality.OpenAI` for client-construction failure/success) — **no
+real paid live call was made at any point during R6D.3's
+implementation or validation.**
+
+**No conclusion is drawn yet that refinement improves report
+quality** — R6D.3 only proves the live *measurement* path works
+end-to-end against synthetic fixtures with mocked judges. **Next
+steps**: a deliberately small paid live validation run (a handful of
+real pairs, real judge calls, human-reviewed) to sanity-check the
+0.10 holistic threshold and the aggregation behavior against real
+model output, followed by **R6D.4** — evaluating real R4-generated
+draft/refined report pairs (not synthetic fixtures) end-to-end.
 
 ## Related docs
 
