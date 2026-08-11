@@ -1920,8 +1920,10 @@ invented:
   *measurement* machinery works correctly against hand-authored
   fixtures with known, human-adjudicated answers. None of that is
   evidence about real R4 behavior at scale.
-- **Status**: Open. Not started as a whole — **R6D.4a (capture helper)
-  is complete**, see below. No real report has been captured yet.
+- **Status**: **Closed (2026-08-11)**. All four sub-phases (R6D.4a-d,
+  below) complete — 3 real R4 pairs captured, adjudicated, and live-
+  evaluated once (bounded, not rerun); see R6D.4d and the top-level "R6
+  — closed" entry below for the final result and product decision.
 
 #### R6D.4a: developer-only capture helper — complete (2026-08-11)
 - **Goal**: an in-memory, eval-only helper that captures a genuine R4
@@ -2011,6 +2013,148 @@ invented:
   Analytical/Expert) BEFORE any paid capture call.
 - **Status**: Closed (2026-08-11). **Does not close R6D.4** — no real
   report has been captured under this CLI yet.
+
+#### R6D.4c: precommit and capture 3 real pairs — complete (2026-08-11)
+- **Goal**: spend the real, paid R4 calls — capture exactly 3 real
+  draft/refined pairs (Foundational, Analytical, Expert), template
+  slots precommitted before any capture call so no pair can be dropped
+  or replaced after seeing its own content.
+- **What shipped**: `capture-refinement --allow-paid-calls` run once
+  per precommitted slot against R6D.4b's own CLI. Written to
+  `eval_results/captures/real-{foundational,analytical,expert}-01.json`
+  (gitignored, never committed), each independently `validate_r6d4_
+  capture`-clean. Foundational and Expert came back byte-identical
+  (`revision_applied=false` — R4 chose not to revise either draft);
+  Analytical is the one pair R4 actually revised (`revision_applied=
+  true`) — the only one of the three that can measure a real
+  refinement effect.
+- **Status**: Closed (2026-08-11). Does not close R6D.4 — no
+  adjudication or live evaluation exists yet.
+
+#### R6D.4d: adjudication, real-capture evaluation adapter, one bounded live run, and structural correction — complete, R6D closed (2026-08-11)
+- **Goal**: adjudicate the 3 real captures (blind, frozen before any
+  live result), build the minimal adapter to run R6D's existing live
+  machinery against them, run it exactly once, and correct any
+  objectively-verifiable label defect the run surfaces — without ever
+  rewriting the run's own recorded result.
+- **What shipped**: blind human (AI-assisted, human-confirmed) review
+  of Analytical against R6C's 7 dimensions, frozen and committed
+  BEFORE the draft/refined mapping was read, then mechanically
+  translated into R6D's own vocabulary (`eval_data/report_refinement/
+  real_reviews/*.json`, schemas `r6d4-review-v1`/`r6d4-adjudication-
+  v1`); Foundational/Expert needed no blind review — byte-identical
+  bodies make all 7 directions `unchanged` by construction. A new
+  `report_refinement_real` suite (`research_agent/evals/report_
+  refinement_real_inputs.py` + `research_agent/evals/runners/run_
+  report_refinement_real.py`) reuses `run_report_refinement.py`'s own
+  `predict`/`predict_live` and evaluators completely unchanged, hash-
+  binds each capture to its adjudication before constructing any
+  OpenAI client, and logs to its own separate history/detail files. One
+  live run (run_id 2, commit `003ad81`, 3 real judge calls, never
+  rerun): Foundational/Expert matched the frozen labels exactly (7/7
+  dimensions each); Analytical's refined report tripped R6B's own
+  deterministic structural gate (a newly-introduced `orphan_reference`
+  the draft didn't have), so its 7 semantic dimensions were correctly
+  forced `unknown` rather than judged. Afterward, `real-analytical-01`'s
+  `hard_failure_direction` label (`unchanged`, an unverified assumption
+  carried from the blind review) was independently re-checked against
+  R6B's deterministic checker and corrected to `regressed` — objective
+  and mechanically reproducible (2 orphan references, #9/#10, present
+  in `refined_report` only), never a re-judgment; all 7 semantic
+  `dimension_directions` stayed byte-identical. Run_id 2's own CSV row
+  and detail JSON (`average_score=0.6667`) were never rewritten or
+  rerun — the correction changes only the label a future run would be
+  compared against.
+- **Result**: directional evidence, not statistical proof. Full
+  narrative, per-pair/per-dimension breakdown, and the evaluator-
+  validity-vs-refinement-effectiveness distinction: `docs/
+  evaluation.md`'s "R6D.4d" section.
+- **Final product decision**: retain "Refine Once" as optional, **off
+  by default**; no autonomous multi-round refinement; a later phase
+  should target specific sections for revision instead of regenerating
+  all eight; require human comparison/approval before a revision
+  replaces the draft; preserve both versions for rollback. See the "R6
+  follow-on" backlog entry below for the concrete future items this
+  motivates, kept explicitly outside R6's own scope.
+- **Tests**: `tests/test_evals_report_refinement_real.py`, 34 passed
+  (30 adapter/loader + 4 structural-correction regression, none calling
+  a real API). Full backend suite → 1357 passed.
+- **Location**: `eval_data/report_refinement/real_reviews/*.json`,
+  `research_agent/evals/report_refinement_real_inputs.py` (new),
+  `research_agent/evals/runners/run_report_refinement_real.py` (new),
+  `research_agent/evals/cli.py` (suite registration), `tests/
+  test_evals_report_refinement_real.py` (new), `eval_results/
+  report_refinement_real_history.csv` (new, tracked).
+- **Status**: Closed (2026-08-11). **Closes R6D and R6 as a whole** —
+  no further R6 calibration or live reruns are planned.
+
+### R6 — closed (2026-08-11)
+- **R6A**: froze the 7-dimension rubric, the 6 hard-failure identifiers,
+  and the first synthetic fixture set.
+- **R6B**: built the deterministic structural evaluator and
+  informational signals (no judge model, no network call).
+- **R6C**: built the two bounded live judges (claim/source, holistic),
+  completed synthetic calibration; known limitations (see `docs/
+  evaluation.md`'s "R6C.3" section) were documented and retained, not
+  resolved by fiat.
+- **R6D**: 7 synthetic refinement pairs completed (R6D.1-R6D.3c); 3 real
+  R4 captures precommitted and captured (R6D.4c) — Foundational and
+  Expert byte-identical no-revision controls, Analytical the only real
+  revision; blind AI-assisted/human-confirmed adjudication found
+  citation correctness regressed, synthesis quality and template fit
+  improved, coherence regressed, groundedness/analytical quality/
+  source balance unchanged; the one bounded live run (run_id 2) found
+  the refined Analytical report had introduced an orphan reference, and
+  structural gating correctly withheld semantic judgment rather than
+  producing an unsupported one; **that live run's `average_score=
+  0.6667` is permanent and was never rewritten**; after the run, the
+  `hard_failure_direction` label was objectively corrected to
+  `regressed` — but the run itself was not rerun.
+- **Final product decision**: keep "Refine Once" optional and **off by
+  default**; do not build an autonomous multi-round refinement loop;
+  preserve both draft and revised versions; require human comparison/
+  approval before a revision becomes active; future refinement work
+  should target the affected section(s) instead of regenerating all
+  eight. R6 provides directional evidence, not statistical proof of
+  universal benefit or harm — three real pairs, one of them
+  semantically evaluable, can never be that.
+- **R6 is complete. No further R6 calibration or live reruns are
+  planned.** Full narrative: `docs/evaluation.md`'s "R6A" through
+  "R6D.4d" sections. Frozen result schema: `specs/report-quality-
+  evaluation-plan.md`.
+
+### R6 follow-on: targeted-section refinement, human approval, broader dataset, observability (not part of R6)
+- **Why these are listed separately**: R6's own final product decision
+  (above) motivates each of these, but none of them is an R6
+  measurement task — R6 is closed; these are ordinary product/backend
+  work items, gated on real product need, same as everything else in
+  this backlog.
+- **Targeted-section refinement**: R4's "Refine Once" currently
+  regenerates all 8 sections even when the evaluator's own `issues`/
+  `revision_instructions` point at 1-2 specific sections (see R4.2's
+  own entry above for what's already persisted). A scoped design pass
+  for revising only the affected section(s) — not a blind "smaller
+  prompt" change — is real future work, informed by (not blocked on)
+  R6D.4d's own finding that a full-report revision can introduce a new
+  structural defect outside the section that actually needed fixing.
+  Not started.
+- **Human approval workflow**: this is the same item already tracked as
+  **R4.4** above (optional human-in-the-loop refinement via a LangGraph
+  `interrupt()`) — R6D.4d's final product decision ("require human
+  comparison/approval before a revision becomes active") is additional
+  motivation for it, not a new item. Not started.
+- **Broader human-labelled real dataset**: R6D.4 evaluated exactly 3
+  precommitted real pairs by design (bounded cost, bounded scope).
+  Labelling more real pairs is legitimate future work **only if a
+  concrete product need justifies the cost** — not a default next step,
+  and not implied by anything in R6's own closure. Not started, not
+  scheduled.
+- **Production latency/cost observability for refinement**: R6D.4d's
+  own live run measured judge-call latency/count purely as evaluation
+  instrumentation (`eval_results/runs/report_refinement_real_run_2.
+  json`); no equivalent observability exists for the production
+  `refine_report_if_requested` path itself (real per-call latency/cost
+  in the live product, not the eval harness). Not started.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts
 - **Goal**: close the gap `eval_data/report_quality/fixtures/

@@ -1,20 +1,23 @@
-# R6 — report quality evaluation: frozen R6A design, plus what R6B/R6C actually shipped
+# R6 — report quality evaluation: frozen R6A design, plus what R6B/R6C/R6D actually shipped — R6 closed
 
 This document freezes the R6 result schema, hard-failure identifiers,
 informational-signal list, fixture architecture, and R6B/R6C/R6D
 scoring semantics, per the R6A checkpoint (§0-11 below, unmodified
 historical record). **R6A itself added no executable code** — it was
-a design/fixture-only phase; R6B and R6C are the phases that actually
-built against this frozen design. §12-14 (added at the R6C.3
+a design/fixture-only phase; R6B, R6C, and R6D are the phases that
+actually built against this frozen design. §12-14 (added at the R6C.3
 checkpoint, 2026-08-11) record what R6C actually shipped against the
 §10 design, the aggregation semantics it settled on, and the residual
-policy debt left open when R6C was closed — read those sections for
-current status; §0-11 remain the original frozen record and are
-preserved rather than rewritten. See `eval_data/report_quality/
-README.md` for the fixture set this document governs, `docs/
-evaluation.md`'s "R6A" through "R6C.3" sections for the workflow-doc
-cross-reference, and `specs/backend-backlog.md`'s R6A/R6B/R6C entries
-for status.
+policy debt left open when R6C was closed. §15 (added 2026-08-11)
+records what R6D actually shipped against the §8 design — including
+where it deliberately diverged — and closes R6 as a whole: no further
+R6 calibration or live reruns are planned. §0-11 remain the original
+frozen record and are preserved rather than rewritten. See
+`eval_data/report_quality/README.md` / `eval_data/report_refinement/
+README.md` for the fixture sets this document governs, `docs/
+evaluation.md`'s "R6A" through "R6D.4d" sections for the workflow-doc
+cross-reference, and `specs/backend-backlog.md`'s R6A-R6D entries for
+status.
 
 ## 0. Approved architectural decisions (binding on R6B onward)
 
@@ -652,3 +655,56 @@ applicable determination above.
   depends on the shell already having credentials exported, or an
   explicit `uv run --env-file .env ...` invocation; this is now the
   documented command form for live report-quality runs.
+
+## 15. R6D — what actually shipped (2026-08-11) — complete, R6 closed
+
+Section 8's plan (blinded A/B labels, both swap orders judged, a
+`positional_disagreement` metric) was never built as literally
+specified — R6D.3a's live design (superseding R6D.3) uses a single,
+non-blind **pairwise holistic call** that sees the draft and refined
+report directly, judging only the effect of the actual edit, plus two
+independent **claim/source** calls whose direction is derived from
+changed-claim comparison, never a whole-report aggregate. No swap
+order, no `positional_disagreement`. This divergence was a deliberate
+calibration decision (see `docs/evaluation.md`'s "R6D.3a" section for
+the full evidence: independent whole-report judging on unchanged
+content produced spurious direction noise that a paired, changed-
+claim-only comparison does not), not an oversight — recorded here so
+this section's original plan is never mistaken for what actually runs.
+
+**A/B blinding did still happen — at the human-adjudication layer, not
+the live judge.** R6D.4's real-pair work (the one part of section 8's
+original plan that *did* ship close to spec) has a human reviewer
+blind to which report is draft/refined for the one real pair with an
+actual revision (`real-analytical-01`) — frozen and committed before
+the mapping is ever read — see `eval_data/report_refinement/
+README.md`'s `real_reviews/` section for the schema.
+
+**The one human-labelled real pair this section anticipated**:
+`real-analytical-01` is that pair — not "longer-but-not-better"
+specifically (R6E's own narrower framing above), but a real,
+independently-adjudicated revision outcome the synthetic R6D.1-R6D.3c
+fixtures could never provide. Its adjudication found citation
+correctness and coherence regressed, synthesis quality and template
+fit improved, groundedness/analytical quality/source balance
+unchanged — and the one bounded live run against it (run_id 2) found
+its refined report had introduced a genuine new structural defect (an
+orphan reference the draft didn't have), correctly gating off semantic
+judgment on that pair rather than producing an unsupported one. That
+run's own `average_score=0.6667` is permanent; a later, independently-
+verified correction to the adjudication's `hard_failure_direction`
+(`unchanged` → `regressed`, all 7 semantic directions untouched) never
+rewrote it.
+
+**R6 is closed.** R6A froze the rubric/schema/fixtures; R6B shipped the
+deterministic evaluator; R6C shipped the two live judges and completed
+synthetic calibration (limitations above retained, not resolved by
+fiat); R6D shipped both the synthetic pair harness and one bounded real
+evaluation. Final product decision: keep "Refine Once" optional and
+off by default, no autonomous multi-round refinement, preserve both
+report versions, require human approval before a revision becomes
+active, and prefer targeted-section revision over full regeneration in
+any future refinement work. **Three real pairs are directional
+evidence, never statistical proof that refinement universally helps or
+hurts.** No further R6 calibration or live reruns are planned. Full
+narrative: `docs/evaluation.md`'s "R6A" through "R6D.4d" sections.

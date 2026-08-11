@@ -2964,6 +2964,86 @@ run_ids 2-9 (commits `cf60191`, `bf8541d`, `d0c4982`, `ff67113`,
 analysis, and `specs/backend-backlog.md`'s R6C entry for the tracked
 status record.
 
+### R6D — pairwise refinement-effectiveness evaluation (2026-08-11) — complete, R6 closed
+
+Measures whether R4's own "Refine Once" step actually changed a
+report's structural and semantic state — never whether R4's own
+in-generation `evaluate_report` gate was right; R6D reuses R6B's
+deterministic checks and R6C's live judges directly, it never
+reimplements or reinterprets them, and it never calls `research_agent.
+report`'s generation/evaluation/revision functions itself (R6D.4's
+capture step is the one narrow exception — see below).
+
+**Synthetic stage (R6D.1-R6D.3c, complete)**: 7 hand-authored draft/
+refined pairs (`eval_data/report_refinement/fixtures/`), each with a
+frozen, human-authored `expected.dimension_directions` block. R6D.2
+runs a purely deterministic mock prediction (R6B's own checks per
+side, hard-failure direction only). R6D.3's first live design
+(independent whole-report judging per side) was **superseded by
+R6D.3a** after real evidence showed ordinary judge sampling variance on
+UNCHANGED content was being mistaken for a real semantic direction —
+R6D.3a instead derives `citation_correctness`/`groundedness` from
+exactly the claim units that changed between draft and refined (by
+claim_id, exact-field equality), and derives the other 5 dimensions
+from one pairwise holistic call that sees both reports together and
+judges only the edit's effect — never two independent standalone
+holistic calls. Cost bound: 3 calls for a normal pair, 1 for a
+byte-identical (`revision_applied=false`) pair (the pairwise holistic
+call is skipped entirely — byte-identical content trivially implies
+`unchanged` on all 5 holistic dimensions).
+
+**Real-pair stage (R6D.4, complete)**: extends the same measurement to
+3 real R4-generated pairs, one per template, precommitted before any
+capture call (R6D.4c). `research_agent/evals/r6d4_capture.py` is the
+one place R6D imports `research_agent.report` directly — it reuses the
+exact real "Generate" production path (`generate_report_for_session`
+then `refine_report_if_requested`, `web_articles=[]`, matching `get_
+or_create_report`'s own initial-generation call exactly) with zero
+production-session mutation, and produces a deliberately **unlabelled**
+artifact (no `expected` block at all — assigning one after seeing a
+live judge's output would be answer-key bias). Labels are collected
+separately and frozen first: a human (AI-assisted, human-confirmed —
+explicitly not independent ground truth) blind-reviewed the one pair
+with a real revision (`real-analytical-01`) before the draft/refined
+mapping was ever read, committed, then mechanically translated into
+R6D's vocabulary (`eval_data/report_refinement/real_reviews/`); the
+other two pairs came back byte-identical (R4 chose not to revise), so
+all 7 directions are `unchanged` by construction, no blind review
+needed. A new suite, `report_refinement_real` (`research_agent/evals/
+report_refinement_real_inputs.py` + `research_agent/evals/runners/
+run_report_refinement_real.py`), hash-binds each capture to its
+adjudication and reuses the synthetic suite's own `predict`/`predict_
+live`/evaluators completely unchanged, logging to its own separate
+history so 3 real pairs never pool with the 7 synthetic ones.
+
+**The one bounded live run** (run_id 2, never rerun): the two
+byte-identical pairs matched their frozen labels exactly (14/14
+dimensions); the one real revision (`real-analytical-01`) tripped R6B's
+own deterministic structural gate — its refined report had a newly-
+introduced orphan reference the draft didn't have — so its 7 semantic
+dimensions were correctly forced `unknown` rather than judged
+unsupported. That run's `average_score=0.6667` is permanent. A
+follow-up, independently-verified structural correction (`hard_failure_
+direction: unchanged → regressed`, all 7 semantic directions
+untouched) was applied to the adjudication afterward — the run itself
+was never rewritten or rerun.
+
+**Final product decision**: keep "Refine Once" optional and off by
+default; no autonomous multi-round refinement; preserve both draft and
+revised versions; require human comparison/approval before a revision
+becomes active; future refinement work should target the affected
+section(s) rather than regenerate all eight. Three real pairs (one
+semantically evaluable) are directional evidence, never statistical
+proof that refinement universally helps or hurts.
+
+**R6 is closed** — R6A (rubric/schema), R6B (deterministic evaluator),
+R6C (live judges), R6D (synthetic + real paired refinement evaluation).
+No further R6 calibration or live reruns are planned. Full narrative:
+`docs/evaluation.md`'s "R6D.1" through "R6D.4d" sections and `eval_data/
+report_refinement/README.md`; frozen schema: `specs/report-quality-
+evaluation-plan.md` §8/§15; tracked status: `specs/backend-backlog.md`'s
+R6D entries.
+
 ### R7 — chat/web retrieval relevance guardrails (2026-08-07 to 2026-08-09) — R7A-R7E.5b complete
 
 **Why**: a real chat session about AI governance retrieved and cited a

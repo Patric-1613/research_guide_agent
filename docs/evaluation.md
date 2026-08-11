@@ -2086,6 +2086,166 @@ planning turn's own "selected before seeing evaluator outcomes"
 requirement. **This does not mark R6D.4 complete** — still no real
 report has been captured.
 
+### R6D.4c — precommit and capture 3 real pairs (2026-08-11) — complete
+
+Three template slots (Foundational, Analytical, Expert) were
+precommitted to specific local sessions before any paid capture call,
+then `capture-refinement --allow-paid-calls` was run once per slot
+against R6D.4b's own CLI — real `generate_report_for_session` +
+`refine_report_if_requested` calls, no other production entry point.
+Written to `eval_results/captures/real-foundational-01.json`,
+`real-analytical-01.json`, `real-expert-01.json` — gitignored, never
+committed, each independently `validate_r6d4_capture`-clean.
+Foundational and Expert came back byte-identical (`revision_applied=
+false`): R4 chose not to revise either draft. Analytical is the one
+pair where R4 actually revised (`revision_applied=true`) — the only
+one of the three that measures a real refinement effect.
+
+### R6D.4d — real-capture evaluation adapter, human adjudication, live evaluation, and structural correction (2026-08-11) — complete, R6D closed
+
+Four parts, in the order the "labels frozen before any live result is
+seen" constraint (R6D.4's own planning turn, restated above) requires:
+
+**Part 1-2 — blind human adjudication, frozen before evaluation.** A
+human (AI-assisted, final decision owned by the human — `reviewer_
+provenance.reviewer_type: "ai_assisted_human_confirmed"`, explicitly
+**not** independent human ground truth) reviewed the Analytical pair
+blind — "Report A"/"Report B" only, no draft/refined labels, no R4
+score — across the 7 R6C dimensions, written to `eval_data/report_
+refinement/real_reviews/real-analytical-01-blind-assessment.json`
+(`r6d4-review-v1`, blind vocabulary `A_better`/`B_better`/`unchanged`/
+`uncertain`) and committed. Only after that commit was the A/B mapping
+read and mechanically translated into R6D's own `improved`/`regressed`/
+`unchanged`/`unknown` vocabulary — no dimension value re-judged during
+translation — producing `real-analytical-01-adjudication.json`
+(`r6d4-adjudication-v1`): `citation_correctness: regressed`,
+`groundedness: unchanged`, `synthesis_quality: improved`,
+`analytical_quality: unchanged`, `template_fit: improved`, `coherence:
+regressed`, `source_balance: unchanged`. Foundational/Expert needed no
+blind review at all — byte-identical bodies make all 7 directions
+`unchanged` by construction (`reviewer_type: "deterministic_exact_
+equality"`). All three adjudications' `hard_failure_direction` were
+initially recorded `unchanged`, an assumption (not yet independently
+re-checked against R6B's own deterministic structural checker) that
+Part 3 would later find wrong for Analytical — see the correction
+below. See `eval_data/report_refinement/README.md`'s own `real_
+reviews/` section for the full schema and forbidden-content scan.
+
+**Part 3 — the `report_refinement_real` evaluation adapter.** A new
+suite, `research_agent/evals/report_refinement_real_inputs.py` +
+`research_agent/evals/runners/run_report_refinement_real.py`, reunites
+the 3 real captures with their adjudications into the exact `Example`
+shape `run_report_refinement.py`'s own `predict`/`predict_live`
+already consume — reused completely unchanged, no claim-comparison/
+holistic/aggregation/hard-failure logic duplicated. Every capture is
+re-validated (`r6d4_capture.validate_r6d4_capture`) and hash-bound to
+its adjudication before any OpenAI client is ever constructed:
+Foundational/Expert record `capture_sha256` directly; Analytical's
+adjudication instead records `blind_assessment_sha256`, since its
+capture hash was already bound once inside the blind-assessment file
+at blind-review time — the loader hops through that file (verifying
+its own hash first) rather than duplicating a second hash. Frozen
+labels only ever land in `Example.outputs` (read by evaluators AFTER
+prediction), never in `.inputs` (the only part a judge prompt is ever
+built from) — a label can never leak into a judge call. Separate
+result history (`eval_results/report_refinement_real_history.csv`,
+`eval_results/runs/report_refinement_real_run_<id>.json`) so 3 real,
+individually-adjudicated pairs never pool with the 7 synthetic
+fixtures. Tests: `tests/test_evals_report_refinement_real.py`, 30
+passed (against synthetic-but-schema-valid tmp_path fixtures, plus one
+test guarded to the real gitignored files); full backend suite → 1353
+passed. Mock-mode plumbing check run and committed (run_id 1,
+`report_refinement_real_history.csv`); **no live call made yet**.
+
+**Part 4 — the single bounded live run.** Exactly one `--mode live`
+run (run_id 2, commit `003ad81`, `mean_latency_ms=47087.0`) — never
+rerun, per this phase's own "a low score, disagreement, or unknown
+result is valid evidence, not a retry trigger" constraint:
+
+| Pair | Revision? | Judge calls | hard_failure_direction (pred vs. label *then in force*) | Dimensions matched |
+|---|---|---|---|---|
+| real-foundational-01 | No (byte-identical) | 1 (reused) | unchanged / unchanged — match | 7/7 |
+| real-analytical-01 | Yes | 1 (draft only — see below) | regressed / unchanged — mismatch | 0/7 (all `unknown`) |
+| real-expert-01 | No (byte-identical) | 1 (reused) | unchanged / unchanged — match | 7/7 |
+
+3 real judge calls total (well under the 5-call bound) — Analytical's
+own structural gate closed off 2 of its potential 3 calls. On
+Analytical, R6B's own deterministic checker (embedded in `predict_
+live` exactly as it is in every other suite — never a second
+reimplementation) found the *refined* report newly `structural_status:
+fail` (`hard_failures: ["orphan_reference"]`) where the draft was
+`pass` — so per this suite's existing, unmodified "a structurally
+invalid side is never judged" gate, the refined side's own claim/
+source call and the pairwise holistic call were both correctly
+skipped, and all 7 semantic dimensions were forced to `unknown` — not
+a judge disagreement, a structural gate firing exactly as designed.
+`average_score=0.6667` (4 of 6 evaluator scores were 1.0 — both
+evaluators passed on Foundational and Expert, both failed on
+Analytical). **This score is recorded permanently and is never
+rewritten** — see the correction below, which changes only the label
+a *later* run would be compared against, not this run's own result.
+
+**Structural correction (2026-08-11, commit `68e033b`).** The
+`hard_failure_direction: unchanged` label Analytical's adjudication
+carried into run_id 2 was independently re-verified after the fact and
+found to be an objective omission, not a judgment call: the blind
+review never re-ran R6B's own deterministic structural checker, only
+implicitly assumed a real revision changes semantic quality but not
+structural validity. Re-running `run_report_quality.predict()`
+directly against the real capture bodies confirms `draft_report` has
+zero orphan references and `refined_report` has exactly two —
+reference #9 ("HORNET: High-speed Onion Routing at the Network
+Layer") and reference #10 ("The Galactic Chemical Evolution of
+phosphorus observed with IGRINS"), both listed in `refined_report`'s
+own `references` but never cited by a bracketed marker anywhere in its
+rendered prose (an apparent false-positive paper-retrieval match on
+the literal string "HORNET" for #9; #10 is unrelated to the topic
+entirely). This is mechanically reproducible and independent of any
+judge model, blind reviewer, or semantic dimension — so only
+`hard_failure_direction` was corrected (`unchanged` → `regressed`);
+all 7 semantic `dimension_directions` are byte-identical to before.
+Captures, the blind assessment, run_id 2's own CSV row and detail
+JSON, judges, runners, and fixtures are all untouched — see `tests/
+test_evals_report_refinement_real.py::TestStructuralAdjudicationCorrection`
+for the regression proof (re-derives `regressed` independently via
+`run_report_quality.predict` + `run_report_refinement._hard_failure_
+direction`, then asserts it matches the corrected file).
+
+**Evaluator validity vs. refinement effectiveness — read separately.**
+On the two byte-identical control pairs the live judge matched the
+frozen adjudication perfectly (14/14 dimensions, 2/2 hard-failure
+directions) — expected, low-information agreement. On the one pair
+with a real semantic comparison to make, the live judge produced no
+comparable semantic verdict at all (its structural gate fired first) —
+so R6D's semantic judgment was never actually exercised against the
+human adjudication on real content; evaluator validity on that case
+remains untested, not disproven. Separately, refinement effectiveness:
+two of three real refinements made no edit at all (`unchanged` proves
+nothing about quality, only that R4 chose not to revise); the one pair
+that *was* revised introduced a new, objectively-verifiable structural
+defect the draft didn't have. **Three real pairs, one of them
+semantically evaluable, is directional evidence only — never
+statistical proof that refinement universally helps or hurts.**
+
+**Final product decision**: retain "Refine Once" as an optional,
+explicit action; keep it **off by default**; do not implement
+autonomous multi-round refinement; a later phase should target
+specific sections for revision rather than regenerating all eight;
+require human comparison/approval before a refined report replaces the
+draft; preserve both versions for rollback. The one real revision case
+observed reinforces this bounded, cautious posture rather than giving
+any objective reason to deviate from it.
+
+**R6 is closed** (R6A rubric/fixtures, R6B deterministic evaluation,
+R6C live judges, R6D synthetic + real paired refinement evaluation, in
+full). Not proof that refinement universally improves or harms report
+quality. No further R6 calibration or live reruns are planned.
+Targeted-section refinement design, a human-approval workflow, a
+broader human-labelled real dataset (only if product needs justify
+it), and production latency/cost observability are real, useful future
+work — tracked in `specs/backend-backlog.md`, explicitly **outside**
+R6's own scope.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

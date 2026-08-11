@@ -1,4 +1,4 @@
-# Report refinement-effectiveness pair fixtures (R6D.1–R6D.3c synthetic stage: CLOSED)
+# Report refinement-effectiveness pair fixtures (R6D: CLOSED, R6 as a whole: CLOSED)
 
 Fixtures for the `report_refinement` benchmark. **R6D.1** (schema/
 fixtures/loader), **R6D.2** (deterministic/mock pair runner + CLI
@@ -6,23 +6,30 @@ registration), and **R6D.3/R6D.3a-c** (opt-in live semantic pair
 judging, changed-claim + pairwise-holistic recalibration) are all
 complete — see `docs/evaluation.md`'s "R6D.1"/"R6D.2"/"R6D.3"/
 "R6D.3a" sections. There is still no call into `research_agent.
-report`'s generation/evaluation/revision functions anywhere — R6D
-measures whether R4's existing "refine once" step already changed a
-report's structural and semantic state; it never performs or
-simulates a refinement itself. **No claim is made here that
-refinement actually improves report quality** — that requires real R4
-output, which is R6D.4's job (not started).
+report`'s generation/evaluation/revision functions anywhere in the
+*evaluation* path — R6D measures whether R4's existing "refine once"
+step already changed a report's structural and semantic state; it
+never performs or simulates a refinement itself (`r6d4_capture.py`'s
+own capture step, below, is the one narrow, explicitly-scoped
+exception — it reuses the real production generation path once per
+captured pair, never a second implementation of it).
 
 **As of 2026-08-11, all 7 of R6D.1's synthetic pair fixtures have been
 exercised live and adjudicated at least once, and R6D's synthetic-
-fixture calibration stage is now CLOSED** — see `docs/evaluation.md`'s
+fixture calibration stage is CLOSED** — see `docs/evaluation.md`'s
 "R6D synthetic-fixture stage: closed" section for the full record and
 the per-fixture table of what each one validates. This closure proves
 the live *measurement* machinery (changed-claim comparison + pairwise
 holistic judging) behaves sensibly and reproducibly against hand-
-authored pairs with known, human-adjudicated answers. **It does not
-prove production R4 refinement is effective** — that remains R6D.4's
-job, against real R4 output pairs with no answer key.
+authored pairs with known, human-adjudicated answers.
+
+**As of 2026-08-11, R6D.4 (real R4-generated pairs) is also CLOSED** —
+see the `report_refinement_real` suite section below for the one
+bounded live run against 3 real pairs and its result. **This closes
+R6D, and R6 as a whole, completely.** Three real pairs (one
+semantically evaluable) are directional evidence about production R4
+refinement — never statistical proof that it universally helps or
+hurts. No further R6 calibration or live reruns are planned.
 
 R6C is frozen at tag `r6c-report-quality-evaluation` and evaluates one
 report independently across 7 dimensions (`citation_correctness`,
@@ -295,7 +302,17 @@ Two schemas, both JSON:
   directions are `unchanged` by construction, and `reviewer_provenance.
   reviewer_type` reads `"deterministic_exact_equality"`, explicitly
   distinguishing "mechanically unchanged because nothing differs" from
-  a real human quality judgment.
+  a real human quality judgment. `hard_failure_direction` may later
+  carry an optional `hard_failure_correction_note` + `corrected_at`
+  pair — see `real-analytical-01-adjudication.json`'s own for a worked
+  example: its `hard_failure_direction` was corrected from `unchanged`
+  to `regressed` after a live run surfaced an objectively-verifiable
+  deterministic finding (two orphan references) the original blind
+  review never checked for. A correction touches `hard_failure_
+  direction` only — the 7 semantic `dimension_directions` stay
+  byte-identical, since that value is never a re-judgment of report
+  quality, only a mechanical recheck against R6B's own deterministic
+  structural checker.
 
 Neither schema is registered with, validated by, or loadable through
 `report_refinement_inputs.py`'s own synthetic-fixture pipeline — a
@@ -308,7 +325,7 @@ draft/refined identity, translated directions, R4 scores, report
 bodies, session identifiers, automated judge output) present in the
 blind-assessment file.
 
-## `report_refinement_real` suite (R6D.4d Part 3) — plumbing only, no live run yet
+## `report_refinement_real` suite (R6D.4d) — complete, R6D closed
 
 `research_agent/evals/report_refinement_real_inputs.py` +
 `research_agent/evals/runners/run_report_refinement_real.py` reunite
@@ -349,13 +366,12 @@ for the same reason.
 
 `--mode mock`: deterministic, offline, zero OpenAI calls, `dimension_
 directions` stays `None` — byte-identical mock behavior to the
-synthetic suite. `--mode live` (not yet run — this phase is plumbing
-and mock validation only): at most 5 real judge calls total across the
-3 pairs under current pair content — 1 claim/source call each for the
-2 byte-identical pairs (real-foundational-01, real-expert-01), reused
-for the refined side; 2 claim/source calls + 1 pairwise holistic call
-for the 1 changed pair (real-analytical-01). The resulting score is
-**exact agreement with these 3 frozen adjudication labels — never a
+synthetic suite. `--mode live`: at most 5 real judge calls total across
+the 3 pairs under current pair content — 1 claim/source call each for
+the 2 byte-identical pairs (real-foundational-01, real-expert-01),
+reused for the refined side; 2 claim/source calls + 1 pairwise holistic
+call for the 1 changed pair (real-analytical-01). The resulting score
+is **exact agreement with these 3 frozen adjudication labels — never a
 report-quality or refinement-benefit measurement**; three pairs is far
 too small a sample for that claim regardless of the score.
 
@@ -364,14 +380,46 @@ uv run python -m research_agent.evals.cli run \
     --suite report_refinement_real --mode mock \
     --note "R6D.4 real-capture plumbing check"
 
-# not yet run -- makes real, billable calls (bounded at 5, see above):
 uv run --env-file .env python -m research_agent.evals.cli run \
     --suite report_refinement_real --mode live \
     --note "R6D.4 bounded real R4 refinement evaluation"
 ```
 
-Tests: `tests/test_evals_report_refinement_real.py`, 30 passed —
-against synthetic-but-schema-valid tmp_path fixtures for every
-rejection/adapter-shape/isolation case, plus one test guarded to run
-only when the real, gitignored capture files are present locally. No
-test calls a real API.
+**The single bounded live run happened once (run_id 2, commit
+`003ad81`) and was never rerun.** 3 real judge calls made (well under
+the 5-call bound — the one changed pair's own claim/source call on the
+refined side, and its pairwise holistic call, were both correctly
+skipped once R6B's own deterministic checker found a new structural
+hard failure in that refined report). Foundational and Expert matched
+their frozen labels exactly (7/7 dimensions each); Analytical's 7
+semantic dimensions came back `unknown` (structurally gated, not
+judged) and its predicted `hard_failure_direction` (`regressed`)
+disagreed with the label then in force (`unchanged`) —
+`average_score=0.6667`, **permanent, never rewritten**. That
+disagreement turned out to be an objective omission in the original
+label, not a real judge failure: `real-analytical-01`'s
+`hard_failure_direction` was independently re-verified against R6B's
+deterministic checker afterward and corrected to `regressed` (two
+orphan references — #9 "HORNET: High-speed Onion Routing at the
+Network Layer", #10 "The Galactic Chemical Evolution of phosphorus
+observed with IGRINS" — present in the refined report's own references
+but never cited in its rendered prose); all 7 semantic directions
+stayed byte-identical. See `docs/evaluation.md`'s "R6D.4d" section for
+the full per-pair/per-dimension breakdown and the evaluator-validity-
+vs-refinement-effectiveness distinction.
+
+**R6D is closed.** Final product decision: keep "Refine Once" optional
+and off by default, no autonomous multi-round refinement, preserve
+both report versions, require human approval before a revision becomes
+active, prefer targeted-section revision over full regeneration in any
+future refinement work. Three real pairs (one semantically evaluable)
+are directional evidence, never statistical proof that refinement
+universally helps or hurts. No further R6 calibration or live reruns
+are planned.
+
+Tests: `tests/test_evals_report_refinement_real.py`, 34 passed (30
+adapter/loader + 4 structural-correction regression) — against
+synthetic-but-schema-valid tmp_path fixtures for every rejection/
+adapter-shape/isolation case, plus tests guarded to run only when the
+real, gitignored capture files are present locally. No test calls a
+real API.
