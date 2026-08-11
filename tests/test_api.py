@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi.testclient import TestClient
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import get_db_connection
 from research_agent.storage import init_db as real_init_db
@@ -81,7 +82,12 @@ def _client():
         # not on any actual OpenAI API call — every real LLM call this file
         # makes is already separately mocked per-test). Patching it here
         # means the full suite needs zero API keys present.
+        # Usage Protection M1.1: lifespan() now also calls telemetry.
+        # init_usage_db() — redirected here for the same reason api.init_db
+        # is redirected just above, so this file's tests never create or
+        # touch the real data/usage_telemetry.sqlite.
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(telemetry, "USAGE_DB_PATH", Path(tmp) / "usage_telemetry.sqlite"), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)

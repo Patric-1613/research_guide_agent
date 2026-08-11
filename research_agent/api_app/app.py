@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import research_agent.api as api
 from research_agent.config import get_settings
+from research_agent.telemetry import RequestTelemetryMiddleware, init_usage_db
 
 
 @asynccontextmanager
@@ -31,6 +32,11 @@ async def lifespan(app: FastAPI):
     # (a FastAPI dependency, safe for the multi-threaded request handling a
     # single shared connection was not).
     api.init_db().close()
+    # Usage Protection M1.1: same one-throwaway-connection-at-startup
+    # convention as api.init_db() above — every later write opens its own
+    # short-lived connection (research_agent/telemetry.py's own
+    # _write_http_request/_write_paid_action), never a shared one.
+    init_usage_db().close()
     api._state["client"] = api.OpenAI()
     api._state["collection"] = api.get_chroma_collection()
     yield
@@ -51,6 +57,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Usage Protection M1.1: a pure ASGI middleware (not BaseHTTPMiddleware
+    # — see RequestTelemetryMiddleware's own docstring for why), observe-only.
+    # Records one http_requests row per request; does not touch route
+    # behavior, request/response bodies, or any header other than adding
+    # X-Request-ID to the real response.
+    app.add_middleware(RequestTelemetryMiddleware)
 
     from research_agent.api_app.routers.health import router as health_router
 

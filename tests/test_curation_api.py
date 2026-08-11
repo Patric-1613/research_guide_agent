@@ -42,6 +42,7 @@ from docx import Document as DocxDocument
 from fastapi.testclient import TestClient
 
 import research_agent.api as api
+import research_agent.telemetry as telemetry
 from research_agent.qa import sqlite_checkpointer
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import init_db as real_init_db
@@ -90,7 +91,10 @@ def _client():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
+        # Usage Protection M1.1: same redirect as test_api.py's own _client()
+        # — lifespan() now also calls telemetry.init_usage_db().
         with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(telemetry, "USAGE_DB_PATH", Path(tmp) / "usage_telemetry.sqlite"), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()), \
              patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
