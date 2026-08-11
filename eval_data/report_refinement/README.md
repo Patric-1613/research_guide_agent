@@ -1,12 +1,15 @@
-# Report refinement-effectiveness pair fixtures (R6D.1)
+# Report refinement-effectiveness pair fixtures (R6D.1 + R6D.2)
 
-Fixtures for the future `report_refinement` benchmark — **R6D.1 is
-schema/fixtures/loader only**. There is no live judge, no mock/live
-CLI suite registration, no pairwise aggregation, and no call into
-`research_agent.report`'s generation/evaluation/revision functions
-anywhere in this phase. **No claim is made here that refinement
-actually helps** — that is exactly the question R6D.2+ exists to
-measure, not assume.
+Fixtures for the `report_refinement` benchmark. **R6D.1** (schema/
+fixtures/loader) is complete; **R6D.2** (deterministic/mock pair
+runner + CLI registration) is also complete — see `docs/
+evaluation.md`'s "R6D.2" section. There is still no live judge and no
+call into `research_agent.report`'s generation/evaluation/revision
+functions anywhere. **No claim is made here that refinement actually
+improves report quality** — R6D.2 measures only whether R4's existing
+"refine once" step changed a report's *structural* state (R6B's 6
+hard-failure identifiers); the 7 semantic R6C dimensions remain
+unmeasured until R6D.3's live paired judging exists.
 
 R6C is frozen at tag `r6c-report-quality-evaluation` and evaluates one
 report independently across 7 dimensions (`citation_correctness`,
@@ -17,7 +20,28 @@ topic/template/evidence — and measures **direction**
 (`improved`/`unchanged`/`regressed`/`unknown`) per dimension, never an
 overall score or winner. See `specs/report-quality-evaluation-plan.md`
 section 8 for the original frozen R6D design and `docs/evaluation.md`'s
-"R6D.1" section for the full narrative.
+"R6D.1"/"R6D.2" sections for the full narrative.
+
+## Running the mock suite (R6D.2)
+
+```bash
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock --tags structural_integrity
+```
+
+`--mode mock` runs each pair's `draft_report` and `refined_report`
+independently through R6B's own deterministic hard-failure checks
+(`research_agent.evals.runners.run_report_quality.predict()`, called
+directly — never reimplemented) and derives a `hard_failure_direction`
+(`improved`/`unchanged`/`regressed`/`mixed`) from the two resulting
+failure sets. **The 7 semantic dimensions are never fabricated** —
+`dimension_directions` is always `null` in a mock prediction, never
+inferred from informational signals and never copied from a fixture's
+own `expected.dimension_directions`. `--mode live` is not implemented
+yet (R6D.3) — it exits 2 immediately, no API call, no CSV row, no
+detail JSON. See `research_agent/evals/runners/run_report_
+refinement.py` and `research_agent/evals/evaluators/report_
+refinement.py`.
 
 ## Layout
 
@@ -187,9 +211,11 @@ examples = rri.load_report_refinement_examples(tags=["improvement"])
 examples = rri.load_report_refinement_examples(subset=2)
 ```
 
-## What R6D.2 is (not built here)
+## What R6D.3 is (not built here)
 
-R6D.1 provides the schema and fixtures only. R6D.2 (not started) is
-responsible for actually running deterministic and/or live judge
-dimensions against each half of a pair and comparing them to produce
-real directions — see `specs/backend-backlog.md`'s R6D entry.
+R6D.2 measures only the deterministic `hard_failure_direction` (R6B's
+6 hard-failure identifiers, evaluated independently on each side of a
+pair). R6D.3 (not started) is responsible for running R6C's live
+claim/source and holistic judges against each half of a pair and
+computing real *semantic* directions for the 7 R6C dimensions — see
+`specs/backend-backlog.md`'s R6D entry.

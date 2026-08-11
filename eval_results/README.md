@@ -49,9 +49,26 @@ policy — this file is a short local index.
   report-quality-evaluation-plan.md` for the frozen result schema/
   hard-failure identifiers and §12-14 for the aggregation policy this
   suite's live `prediction` follows.
+- `report_refinement_history.csv` — current running log, appended to
+  by every `uv run python -m research_agent.evals.cli run --suite
+  report_refinement` run (R6D.2). `--mode mock` (the only implemented
+  mode so far) runs both the draft and refined report in each R6D.1
+  pair fixture through R6B's own deterministic checks (`run_report_
+  quality.predict()`, called directly, never reimplemented) and scores
+  only whether the derived `hard_failure_direction` (`improved`/
+  `unchanged`/`regressed`/`mixed`) matches the fixture's expectation —
+  **this average_score is structural-direction agreement only, not a
+  report-quality or refinement-effectiveness score**; the 7 semantic
+  R6C dimensions are never fabricated (`dimension_directions` is
+  always `null` in a mock prediction). `--mode live` is not
+  implemented yet (R6D.3, live paired semantic judging) — it exits 2
+  immediately with no API call and no artifact written. **Tracked**,
+  same conventions as the other suite logs above. See `docs/
+  evaluation.md`'s "R6D.2" section and `eval_data/report_refinement/
+  README.md` for the pair schema this suite's `prediction` follows.
 - `runs/` — per-run detail artifacts. From `ragas_eval.py`
   (`run_<id>.json` + `raw_<timestamp>.jsonl`), from the `chat_relevance`
-  suite (`chat_relevance_run_<run_id>.json`, R7E.1), and from the
+  suite (`chat_relevance_run_<run_id>.json`, R7E.1), from the
   `report_quality` suite (`report_quality_run_<run_id>.json`, one per
   run — mock runs hold each fixture's structural-check prediction
   only (`structural_integrity`, `informational_signals`, `warnings`,
@@ -59,10 +76,15 @@ policy — this file is a short local index.
   hold each judge's full per-claim verdicts, `judge_dimensions`, and
   `judge_metadata` — model, both prompt versions, the aggregation
   policy version, latency, token usage, sampling coverage, and
-  sanitization counts). **Not tracked** (`.gitignore`d as of Phase 15)
-  — reviewed locally; growing without bound is expected, and isn't
-  meant to accumulate in git history the way the history CSVs above
-  do.
+  sanitization counts), and from the `report_refinement` suite
+  (`report_refinement_run_<run_id>.json`, R6D.2 — each pair's own
+  `prediction` holds `draft`/`refined` sub-dicts, each with `hard_
+  failures`/`structural_status`/`informational_signals`, plus the pair-
+  level `hard_failure_direction`, `dimension_directions` (always
+  `null` in mock mode), and `semantic_evaluation_status`). **Not
+  tracked** (`.gitignore`d as of Phase 15) — reviewed locally; growing
+  without bound is expected, and isn't meant to accumulate in git
+  history the way the history CSVs above do.
 - `archive/` — historical/manual before-after snapshots of the two
   history CSVs above, kept as comparison points for specific past
   experiments. **Tracked.** See `archive/README.md` for what each one

@@ -1559,11 +1559,73 @@ invented:
 - **Priority**: n/a — done (R6D.2 is next).
 - **Status**: Closed (2026-08-11).
 
-### R6D.2+: deterministic/mock pair runner, live pairwise judging, blinded A/B ordering
-- **Goal**: actually run judges against both halves of an R6D.1 pair
-  and compute real directions — starting with a deterministic/mock
-  runner over the 7 fixtures (mirroring R6B's own "deterministic
-  first, live later" sequencing), then live pairwise judging.
+### R6D.2: deterministic/mock pair-evaluation runner
+- **Goal**: register a real `report_refinement` CLI suite and actually
+  run something against R6D.1's 7 pair fixtures — deterministic/mock
+  only, mirroring R6B's own "deterministic first, live later"
+  sequencing before R6C existed.
+- **Why it matters**: R6D.1 froze the pair schema but ran nothing;
+  R6D.2 is where a report pair's *structural* direction (R6B's own 6
+  hard-failure identifiers) becomes an actual, checkable measurement,
+  with the 7 semantic R6C dimensions explicitly left unmeasured rather
+  than silently assumed.
+- **Decision/what shipped**:
+  - `research_agent/evals/runners/run_report_refinement.py` —
+    `predict()` evaluates `draft_report` and `refined_report`
+    independently by calling `run_report_quality.predict()` directly
+    (wrapped in a throwaway `Example`) for each side — the exact same
+    function R6B's own suite uses, never a second interpretation of
+    the 6 hard-failure identifiers. `_hard_failure_direction` derives
+    `improved`/`unchanged`/`regressed`/`mixed` from the two resulting
+    failure sets, set-subset-based rather than count-based (a report
+    that fixes 3 defects while introducing 1 new one is `mixed`, not
+    `improved`, even though its raw failure count went down) —
+    `mixed` is checked first and never collapsed into `unchanged`.
+    `dimension_directions` is always `None` and `semantic_evaluation_
+    status` is always `"not_evaluated_in_mock_mode"` — never inferred
+    from informational signals, never copied from a fixture's own
+    `expected.dimension_directions`.
+  - `research_agent/evals/evaluators/report_refinement.py` — two
+    evaluators mirroring `report_quality.py`'s own pair exactly:
+    `report_refinement_hard_failure_direction_agreement` (1.0/0.0,
+    the only thing mock mode scores) and `report_refinement_semantic_
+    dimensions_not_evaluated` (always `score=None`, present to make
+    "not measured yet" explicit in every run's own detail JSON).
+  - `research_agent/evals/cli.py` — `report_refinement` registered
+    alongside `chat_relevance`/`report_quality`. `--mode live` raises
+    `LiveModeSetupError` (exit 2, no traceback, no CSV/detail side
+    effects, truthful "not implemented until R6D.3" message) — not
+    implemented yet, R6D.3's job.
+  - Mock baseline: `total=7, passed=7, failed=0, average_score=1.000`
+    — **this score is structural hard-failure-direction agreement
+    only, never a report-quality or refinement-effectiveness score.**
+  - See `docs/evaluation.md`'s "R6D.2" section for the full record.
+- **Location**: `research_agent/evals/runners/run_report_refinement.py`
+  (new), `research_agent/evals/evaluators/report_refinement.py` (new),
+  `research_agent/evals/cli.py` (updated, additive), `tests/test_
+  evals_report_refinement.py` (updated, +41 tests), `eval_results/
+  report_refinement_history.csv` (new, tracked), `docs/evaluation.md`
+  / `eval_data/report_refinement/README.md` / `eval_results/README.md`
+  (updated). **No changes to `research_agent/report.py`,
+  `research_agent/evals/runners/run_report_quality.py`,
+  `research_agent/evals/report_quality_inputs.py`, `research_agent/
+  evals/judges/`, `research_agent/evals/report_refinement_inputs.py`,
+  any existing fixture, `eval_results/report_quality_history.csv`,
+  `eval_results/chat_relevance_history.csv`, `pyproject.toml`, or
+  `uv.lock`.**
+- **Explicitly NOT part of this checkpoint**: no R6C live judge is
+  called anywhere. No blinded A/B ordering, no swap-order logic, no
+  citation-integrity-preservation check against a real revision, no
+  human-labelled pair. **No claim that refinement improves report
+  quality** — R6D.2 answers a narrower, purely structural question.
+- **Priority**: n/a — done (R6D.3 is next).
+- **Status**: Closed (2026-08-11). Commit `e97b910` (R6D.1);
+  R6D.2's own commit follows in this same backlog update.
+
+### R6D.3: live paired semantic judging, blinded A/B ordering
+- **Goal**: run R6C's claim/source and holistic judges against both
+  halves of a pair and compute real *semantic* directions for the 7
+  R6C dimensions — the question R6D.2 explicitly left unmeasured.
 - **Required design** (frozen in `specs/report-quality-evaluation-
   plan.md` §8, not yet built): blinded A/B labels (the judge sees
   `Report A`/`Report B`, never `draft`/`revised`), swapped order with
@@ -1576,11 +1638,11 @@ invented:
   **not** restored the same way — R6D verifies both documented
   behaviors hold, rather than assuming either), at least one human-
   labelled longer-but-not-better pair reserved for R6E.
-- **Location (not yet touched)**: presumably a new runner alongside
-  `research_agent/evals/runners/run_report_quality.py`, consuming
-  `research_agent/evals/report_refinement_inputs.py`'s loader — not
+- **Location (not yet touched)**: presumably extends `research_agent/
+  evals/runners/run_report_refinement.py` with a `predict_live`
+  alongside R6C's own `claim_source.py`/`holistic.py` judges — not
   scoped in detail yet.
-- **Priority**: next, immediately after R6D.1.
+- **Priority**: next, immediately after R6D.2.
 - **Status**: Open. Not started.
 
 ### Security debt: no independent prompt-injection defense in report generation / paper abstracts

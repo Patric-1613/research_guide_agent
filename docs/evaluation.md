@@ -1041,10 +1041,121 @@ enforcement, canonical section ordering, no-mutation, per-fixture
 directional-intent pinning, and a direct no-OpenAI-import/no-network
 guarantee). Full backend suite → 1030 passed.
 
-**R6D.2 (deterministic/mock pair runner) is next** — actually running
-R6B's deterministic checks and/or R6C's live judges against both
-halves of a pair and computing real directions. Nothing in R6D.1 is
-wired into any CLI suite, `eval_results/`, or runtime behavior.
+**R6D.2 (deterministic/mock pair runner) is complete — see below.**
+
+## R6D.2 — deterministic/mock pair-evaluation runner (2026-08-11) — complete
+
+Registers a real `report_refinement` CLI suite and actually runs
+something against R6D.1's 7 pair fixtures — **deterministic/mock
+only**. No R6C live judge is called anywhere in this phase; no claim
+is made that refinement improves report quality — R6D.2 measures only
+whether R4's existing "refine once" step changed a report's
+*structural* state (R6B's own 6 hard-failure identifiers), never a
+semantic one.
+
+**Reuses R6B's deterministic checks directly, never a second
+interpretation of them.** `research_agent/evals/runners/run_report_
+refinement.py::_side_prediction` evaluates one report body by calling
+`run_report_quality.predict()` itself, wrapped in a throwaway
+`Example` — the exact same function R6B's own single-report suite
+calls, not a reimplementation of the 6 hard-failure identifiers. Both
+halves of a pair (`draft_report`, `refined_report`) go through this
+identical path independently.
+
+**Direction derivation is set-based, not count-based.** Given each
+side's own hard-failure identifier set:
+- `improved` — refined's set is a **strict subset** of draft's (some
+  identifiers fixed, none introduced).
+- `regressed` — draft's set is a **strict subset** of refined's (some
+  identifiers introduced, none fixed).
+- `unchanged` — the two sets are identical.
+- `mixed` — **neither is a subset of the other** (each side has at
+  least one identifier the other lacks) — deliberately checked
+  *first* and never collapsed into `unchanged`, and, by the same
+  subset reasoning, never collapsed into `improved`/`regressed` by
+  raw failure *count* either: a refined report that fixes 3 old
+  defects while introducing 1 brand-new one has strictly fewer
+  failures by count, but is not defensibly "improved" — it traded one
+  problem class for another, which is exactly what `mixed` exists to
+  represent. None of R6D.1's 7 frozen fixtures currently exercise
+  `mixed` (the fixtures were not modified to add one); the runner
+  still supports it defensively, per R6D.2's own requirement.
+
+**Semantic dimensions are never fabricated.** A mock prediction's
+`dimension_directions` is always `None` and `semantic_evaluation_
+status` is always `"not_evaluated_in_mock_mode"` — never inferred from
+word counts, citation density, or source coverage, and never copied
+from a fixture's own `expected.dimension_directions` (which would make
+the mock evaluator tautological). Prediction shape:
+
+```json
+{
+  "pair_id": "...",
+  "draft": {"hard_failures": [...], "structural_status": "pass|fail", "informational_signals": {...}},
+  "refined": {"hard_failures": [...], "structural_status": "pass|fail", "informational_signals": {...}},
+  "hard_failure_direction": "improved|unchanged|regressed|mixed",
+  "dimension_directions": null,
+  "semantic_evaluation_status": "not_evaluated_in_mock_mode"
+}
+```
+
+**Two evaluators** (`research_agent/evals/evaluators/report_
+refinement.py`, mirroring `report_quality.py`'s own two-evaluator
+precedent exactly): `report_refinement_hard_failure_direction_
+agreement` (1.0/0.0, comparing `hard_failure_direction` against a
+fixture's `expected_hard_failure_direction` — the *only* thing mock
+mode actually measures) and `report_refinement_semantic_dimensions_
+not_evaluated` (always `score=None`, present purely to make "semantic
+quality was not measured" explicit in every run's own detail JSON,
+the same role `report_quality_dimension_agreement` already plays for
+`report_quality`'s own mock mode). **The aggregate `average_score`
+describes deterministic hard-failure-direction agreement only — it is
+not a report-quality score and not a refinement-effectiveness score.**
+
+**CLI**:
+
+```bash
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock --subset 2
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock --tags structural_integrity
+uv run python -m research_agent.evals.cli run --suite report_refinement --mode mock --note "..."
+```
+
+`--mode live` raises `LiveModeSetupError` before any example is
+loaded — exit 2, no traceback, no CSV row, no detail JSON — with a
+truthful "not implemented until R6D.3" message, the same posture R6B's
+own `report_quality` suite had before R6C.2 existed.
+
+**Mock baseline** (`eval_results/report_refinement_history.csv`
+run_id 1, commit `e97b910`):
+
+```
+[eval] suite=report_refinement mode=mock total=7 passed=7 failed=0 average_score=1.000
+```
+
+All 7 R6D.1 fixtures' predicted `hard_failure_direction` matched their
+`expected_hard_failure_direction` exactly (including `structural_
+regression`'s `regressed` and `justified_no_revision`'s `unchanged`).
+**This average_score is structural-direction agreement only** — it
+says nothing about whether refinement improved report *quality*, which
+remains unmeasured until R6D.3's live paired semantic judging exists.
+
+**Validation**: `tests/test_evals_report_refinement.py` → 99 passed
+(suite registration, mock CLI run with subset/tags/note plumbing, live
+mode's clean exit-2/no-artifacts guarantee, direct proof both sides of
+a pair reuse `run_report_quality.predict()` rather than reimplementing
+it, all 4 direction rules including the defensive `mixed` case and its
+count-vs-subset edge case, semantic-dimension non-fabrication, CSV/
+detail-JSON schema, and a direct no-OpenAI-import/no-network
+guarantee). `report_quality` + `report_refinement` together → 291
+passed. Full backend suite → 1071 passed.
+
+**R6D.3 (live paired semantic judging) is next** — running R6C's
+claim/source and holistic judges against both halves of a pair and
+computing real semantic directions. **No claim is made anywhere in
+R6D.2 that refinement improves report quality** — only that R6D.2 can
+now detect whether R4's revision step changed a report's structural
+state, which is a narrower, purely deterministic question.
 
 ## Related docs
 

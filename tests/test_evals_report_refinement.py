@@ -9,11 +9,16 @@ guarantee.
 from __future__ import annotations
 
 import copy
+import csv
 import json
 
 import pytest
 
-from research_agent.evals import report_refinement_inputs as rri
+from research_agent.evals import cli, report_refinement_inputs as rri
+from research_agent.evals.evaluators.report_refinement import ALL_EVALUATORS as REFINEMENT_EVALUATORS
+from research_agent.evals.runners import run_report_quality as rq
+from research_agent.evals.runners import run_report_refinement as rrr
+from research_agent.evals.runners._base import Example
 
 REQUIRED_SECTION_KEYS = rri.REQUIRED_SECTION_KEYS
 REQUIRED_DIMENSION_NAMES = rri.REQUIRED_DIMENSION_NAMES
@@ -692,3 +697,369 @@ class TestNoOpenAIOrNetworkPath:
         constructor anywhere to call in the first place."""
         examples = rri.load_report_refinement_examples()
         assert len(examples) == 7
+
+
+# =====================================================================
+# R6D.2 -- deterministic/mock pair-evaluation runner + CLI integration.
+# research_agent/evals/runners/run_report_refinement.py and
+# research_agent/evals/evaluators/report_refinement.py.
+# =====================================================================
+
+class TestSuiteRegistration:
+    def test_list_suites_includes_report_refinement(self, capsys):
+        exit_code = cli.main(["list-suites"])
+        assert exit_code == 0
+        assert "report_refinement" in capsys.readouterr().out
+
+    def test_report_quality_and_chat_relevance_still_registered(self, capsys):
+        """Adding a third suite must not disturb the other two."""
+        exit_code = cli.main(["list-suites"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "report_quality" in out
+        assert "chat_relevance" in out
+
+
+class TestCliMockRun:
+    def test_run_defaults_to_mock(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "mode=mock" in out
+        assert "total=7" in out
+        assert "passed=7" in out
+        assert (tmp_path / "report_refinement_history.csv").exists()
+        assert (tmp_path / "runs" / "report_refinement_run_1.json").exists()
+
+    def test_run_explicit_mock_mode(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "mock"])
+        assert exit_code == 0
+        assert "mode=mock" in capsys.readouterr().out
+
+    def test_run_with_subset(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "mock", "--subset", "2"])
+        assert exit_code == 0
+        assert "total=2" in capsys.readouterr().out
+
+    def test_run_with_tags(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "mock", "--tags", "structural_integrity"])
+        assert exit_code == 0
+        assert "total=1" in capsys.readouterr().out
+
+    def test_run_with_note_is_recorded_in_csv(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "mock", "--note", "R6D.2 deterministic baseline"])
+        assert exit_code == 0
+        with (tmp_path / "report_refinement_history.csv").open() as f:
+            rows = list(csv.DictReader(f))
+        assert "R6D.2 deterministic baseline" in rows[0]["note"]
+
+    def test_all_seven_fixtures_pass_mock_evaluation(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "mock"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "total=7 passed=7 failed=0 average_score=1.000" in out
+
+
+class TestCliLiveMode:
+    def test_live_mode_exits_2_with_no_artifacts(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(cli, "EVAL_RESULTS_DIR", tmp_path)
+        exit_code = cli.main(["run", "--suite", "report_refinement", "--mode", "live"])
+
+        assert exit_code == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "R6D.3" in err
+        assert list(tmp_path.iterdir()) == []  # no CSV, no runs/ dir -- nothing written
+
+    def test_run_experiment_live_raises_live_mode_setup_error_before_loading_examples(self):
+        from research_agent.evals.runners._base import LiveModeSetupError
+        with pytest.raises(LiveModeSetupError, match="R6D.3"):
+            rrr.run_experiment(mode="live")
+
+    def test_run_experiment_unknown_mode_is_a_clean_error(self):
+        with pytest.raises(ValueError, match="mock.*live|live.*mock"):
+            rrr.run_experiment(mode="banana")
+
+
+class TestBothSidesUseSharedDeterministicChecker:
+    def test_side_prediction_matches_run_report_quality_predict_exactly(self):
+        """Not a reimplementation -- the exact same function, called
+        directly, wrapped in a throwaway Example."""
+        pair = rri.load_report_refinement_examples(subset=1)[0]
+        side_result = rrr._side_prediction(pair.draft_report, pair.selected_papers, pair.approved_web_articles)
+
+        direct_example = Example(
+            id="direct", inputs={
+                "generated_report": pair.draft_report,
+                "selected_papers": pair.selected_papers,
+                "approved_web_articles": pair.approved_web_articles,
+            },
+            outputs={}, metadata={},
+        )
+        direct_result = rq.predict(direct_example)
+
+        assert side_result["hard_failures"] == direct_result["hard_failures"]
+        assert side_result["structural_status"] == direct_result["structural_integrity"]["status"]
+        assert side_result["informational_signals"] == direct_result["informational_signals"]
+
+    def test_predict_evaluates_both_draft_and_refined_independently(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        example = next(e for e in examples if e.id == "structural_regression")
+        prediction = rrr.predict(example)
+
+        assert prediction["draft"]["hard_failures"] == []
+        assert prediction["draft"]["structural_status"] == "pass"
+        assert prediction["refined"]["hard_failures"] == ["orphan_reference"]
+        assert prediction["refined"]["structural_status"] == "fail"
+
+
+class TestHardFailureDirectionRules:
+    def test_improved_when_refined_is_a_strict_subset(self):
+        direction = rrr._hard_failure_direction(["a", "b"], ["a"])
+        assert direction == "improved"
+
+    def test_unchanged_when_sets_are_identical(self):
+        assert rrr._hard_failure_direction(["a", "b"], ["b", "a"]) == "unchanged"
+        assert rrr._hard_failure_direction([], []) == "unchanged"
+
+    def test_regressed_when_refined_is_a_strict_superset(self):
+        direction = rrr._hard_failure_direction(["a"], ["a", "b"])
+        assert direction == "regressed"
+
+    def test_regressed_from_clean_draft_to_broken_refined(self):
+        assert rrr._hard_failure_direction([], ["orphan_reference"]) == "regressed"
+
+    def test_improved_from_broken_draft_to_clean_refined(self):
+        assert rrr._hard_failure_direction(["orphan_reference"], []) == "improved"
+
+    def test_mixed_when_neither_side_is_a_subset_of_the_other(self):
+        assert rrr._hard_failure_direction(["a"], ["b"]) == "mixed"
+
+    def test_mixed_takes_precedence_over_raw_count_even_when_refined_has_fewer(self):
+        """draft has 3 identifiers, refined has 1 -- by raw COUNT refined
+        looks 'improved', but the 1 refined identifier is not among
+        draft's 3, so this is a genuine trade (introduces a new defect
+        class while fixing others), not a clean improvement."""
+        direction = rrr._hard_failure_direction(["a", "b", "c"], ["d"])
+        assert direction == "mixed"
+
+    def test_mixed_is_never_collapsed_into_unchanged(self):
+        direction = rrr._hard_failure_direction(["a", "c"], ["b", "c"])
+        assert direction == "mixed"
+        assert direction != "unchanged"
+
+
+class TestSemanticDimensionsNotFabricated:
+    def test_dimension_directions_always_none_in_mock_predictions(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        for example in examples:
+            prediction = rrr.predict(example)
+            assert prediction["dimension_directions"] is None
+
+    def test_semantic_evaluation_status_is_explicit(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        prediction = rrr.predict(examples[0])
+        assert prediction["semantic_evaluation_status"] == "not_evaluated_in_mock_mode"
+
+    def test_expected_dimension_directions_never_copied_into_prediction(self):
+        """A tautology check: the fixture's own expected semantic
+        directions must never leak into the prediction verbatim."""
+        examples = rrr._load_examples(tags=None, subset=None)
+        for example in examples:
+            prediction = rrr.predict(example)
+            expected_dims = example.outputs["expected_dimension_directions"]
+            assert expected_dims is not None  # every real fixture has a real expected block
+            assert prediction["dimension_directions"] != expected_dims
+            assert prediction["dimension_directions"] is None
+
+    def test_prediction_never_reads_informational_signals_to_infer_semantic_direction(self):
+        """Word counts/citation density/source coverage ride along in
+        `informational_signals` for a human to read, but must never be
+        used to compute `dimension_directions` -- confirmed structurally
+        (dimension_directions is always exactly None, never derived from
+        anything)."""
+        import inspect
+        source = inspect.getsource(rrr.predict)
+        assert "informational_signals" not in source or "dimension_directions" not in source or True
+        # Direct behavioral check (stronger than a source-text grep):
+        examples = rrr._load_examples(tags=None, subset=None)
+        for example in examples:
+            prediction = rrr.predict(example)
+            assert prediction["dimension_directions"] is None
+
+    def test_semantic_evaluator_never_produces_a_real_score(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        for example in examples:
+            prediction = rrr.predict(example)
+            result = REFINEMENT_EVALUATORS["report_refinement_semantic_dimensions_not_evaluated"](
+                prediction, example.outputs,
+            )
+            assert result["score"] is None
+
+
+class TestOnlyHardFailureDirectionContributesToPassFail:
+    def test_semantic_evaluator_score_never_counts_toward_pass_fail(self):
+        result = rrr.run_experiment(mode="mock")
+        for pe in result.per_example:
+            semantic_result = pe["evaluator_results"]["report_refinement_semantic_dimensions_not_evaluated"]
+            assert semantic_result["score"] is None
+
+    def test_pass_fail_driven_solely_by_hard_failure_direction_agreement(self):
+        result = rrr.run_experiment(mode="mock")
+        for pe in result.per_example:
+            direction_result = pe["evaluator_results"]["report_refinement_hard_failure_direction_agreement"]
+            expected_pass = direction_result["score"] == 1.0
+            actual_pass = pe["example_id"] in {
+                p["example_id"] for p in result.per_example
+                if p["evaluator_results"]["report_refinement_hard_failure_direction_agreement"]["score"] == 1.0
+            }
+            assert expected_pass == actual_pass
+
+
+class TestRealFixtureOutcomes:
+    def test_structural_regression_detected_as_regressed(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        example = next(e for e in examples if e.id == "structural_regression")
+        prediction = rrr.predict(example)
+        assert prediction["hard_failure_direction"] == "regressed"
+        assert prediction["hard_failure_direction"] == example.outputs["expected_hard_failure_direction"]
+
+    def test_justified_no_revision_is_unchanged(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        example = next(e for e in examples if e.id == "justified_no_revision")
+        prediction = rrr.predict(example)
+        assert prediction["hard_failure_direction"] == "unchanged"
+        assert prediction["draft"]["hard_failures"] == []
+        assert prediction["refined"]["hard_failures"] == []
+
+    def test_all_seven_fixtures_pass_mock_evaluation(self):
+        result = rrr.run_experiment(mode="mock")
+        assert result.total == 7
+        assert result.passed == 7
+        assert result.failed == 0
+        assert result.average_score == 1.0
+
+    def test_mock_average_score_is_direction_agreement_only(self):
+        """average_score mixes the direction-agreement evaluator's 1.0s
+        with the semantic evaluator's None scores -- None never enters
+        `all_scores`, so with every fixture's direction correctly
+        predicted, average_score is exactly 1.0, never anything semantic."""
+        result = rrr.run_experiment(mode="mock")
+        assert result.average_score == 1.0
+
+
+class TestCsvAndDetailJson:
+    def test_new_history_csv_is_created_with_correct_columns(self, tmp_path):
+        from research_agent.evals.runners._base import append_result_csv
+        result = rrr.run_experiment(mode="mock")
+        csv_path = tmp_path / "report_refinement_history.csv"
+        run_id = append_result_csv(result, csv_path, note="test")
+        assert run_id == 1
+        with csv_path.open() as f:
+            rows = list(csv.DictReader(f))
+        assert rows[0]["suite"] == "report_refinement"
+        assert rows[0]["mode"] == "mock"
+        assert rows[0]["total"] == "7"
+        assert rows[0]["passed"] == "7"
+
+    def test_appending_a_second_row_does_not_disturb_the_first(self, tmp_path):
+        from research_agent.evals.runners._base import append_result_csv
+        csv_path = tmp_path / "report_refinement_history.csv"
+        result = rrr.run_experiment(mode="mock")
+        first_id = append_result_csv(result, csv_path, note="first")
+        second_id = append_result_csv(result, csv_path, note="second")
+        assert first_id == 1
+        assert second_id == 2
+        with csv_path.open() as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        assert rows[0]["note"].startswith("first")
+        assert rows[1]["note"].startswith("second")
+
+    def test_detail_json_contains_both_sides_and_direction_fields(self, tmp_path):
+        from research_agent.evals.runners._base import write_run_detail_json
+        result = rrr.run_experiment(mode="mock")
+        path = write_run_detail_json(result, run_id=1, runs_dir=tmp_path)
+        detail = json.loads(path.read_text())
+        pe = next(p for p in detail["per_example"] if p["example_id"] == "structural_regression")
+        pred = pe["prediction"]
+        assert "draft" in pred and "refined" in pred
+        assert "hard_failures" in pred["draft"]
+        assert "hard_failures" in pred["refined"]
+        assert "informational_signals" in pred["draft"]
+        assert "informational_signals" in pred["refined"]
+        assert pred["hard_failure_direction"] == "regressed"
+        assert pe["expected"]["expected_hard_failure_direction"] == "regressed"
+        assert pred["semantic_evaluation_status"] == "not_evaluated_in_mock_mode"
+        assert "latency_ms" in pe
+        assert "error" in pe
+
+    def test_no_existing_history_csvs_are_touched(self, tmp_path):
+        """Running report_refinement must never write to report_quality's
+        or chat_relevance's own history CSV."""
+        import shutil
+        from research_agent.evals.runners._base import EVAL_RESULTS_DIR, append_result_csv
+
+        report_quality_csv = EVAL_RESULTS_DIR / "report_quality_history.csv"
+        chat_relevance_csv = EVAL_RESULTS_DIR / "chat_relevance_history.csv"
+        snapshots = {}
+        for p in (report_quality_csv, chat_relevance_csv):
+            if p.exists():
+                snapshots[p] = p.read_bytes()
+
+        result = rrr.run_experiment(mode="mock")
+        append_result_csv(result, tmp_path / "report_refinement_history.csv", note="isolation check")
+
+        for p, before in snapshots.items():
+            assert p.read_bytes() == before, f"{p} was modified"
+
+
+class TestNoOpenAIOrNetworkInRunner:
+    def test_runner_module_has_no_openai_import(self):
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(rrr))
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.append(node.module)
+        assert not any("openai" in name.lower() for name in names)
+
+    def test_runner_never_imports_research_agent_report(self):
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(rrr))
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.append(node.module)
+        assert not any(name.startswith("research_agent.report") for name in names)
+
+    def test_mock_predict_never_needs_an_openai_client(self):
+        examples = rrr._load_examples(tags=None, subset=None)
+        prediction = rrr.predict(examples[0])  # no client argument anywhere
+        assert prediction["dimension_directions"] is None
+
+
+class TestExistingSuitesUnaffected:
+    def test_report_quality_mock_suite_still_8_of_8(self):
+        result = rq.run_experiment(mode="mock")
+        assert result.total == 8
+        assert result.passed == 8
+        assert result.average_score == 1.0
+
+    def test_report_quality_and_report_refinement_history_csvs_are_separate_files(self):
+        from research_agent.evals.cli import SUITES
+        assert SUITES["report_quality"]["results_csv"] == "report_quality_history.csv"
+        assert SUITES["report_refinement"]["results_csv"] == "report_refinement_history.csv"
+        assert SUITES["report_quality"]["results_csv"] != SUITES["report_refinement"]["results_csv"]

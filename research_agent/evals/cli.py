@@ -53,6 +53,19 @@ SUITES: dict[str, dict[str, Any]] = {
             "eligible report) and can incur cost."
         ),
     },
+    "report_refinement": {
+        "description": (
+            "Deterministic pair evaluation (R6D.2) -- runs R6B's own structural/citation checks against "
+            "both the draft and refined report in each R6D.1 fixture and derives a hard-failure direction. "
+            "No semantic (R6C) dimension is measured yet; live paired judging is R6D.3."
+        ),
+        "module": "research_agent.evals.runners.run_report_refinement",
+        "results_csv": "report_refinement_history.csv",
+        "live_warning": (
+            "mode=live is not implemented until R6D.3 (live paired semantic judging) -- this call exits "
+            "immediately with no API call and no result written."
+        ),
+    },
 }
 
 _DEFAULT_LIVE_WARNING = "mode=live makes real OpenAI API calls and can incur cost."
