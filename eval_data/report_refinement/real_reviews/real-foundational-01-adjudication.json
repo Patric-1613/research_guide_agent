@@ -1,0 +1,21 @@
+{
+  "schema_version": "r6d4-adjudication-v1",
+  "pair_id": "real-foundational-01",
+  "capture_sha256": "ac26af7eb4b3c3fcaa88480d09d30a4f39ce90d30ec7aebaa3bf9aeb9e084b09",
+  "dimension_directions": {
+    "citation_correctness": "unchanged",
+    "groundedness": "unchanged",
+    "synthesis_quality": "unchanged",
+    "analytical_quality": "unchanged",
+    "template_fit": "unchanged",
+    "coherence": "unchanged",
+    "source_balance": "unchanged"
+  },
+  "hard_failure_direction": "unchanged",
+  "reviewer_provenance": {
+    "reviewer_type": "deterministic_exact_equality",
+    "note": "draft_report == refined_report byte-for-byte (no revision occurred); all seven directions are mechanically unchanged by construction, not a human or automated quality judgment."
+  },
+  "translation_note": "No blind review or translation was needed -- every direction is derived directly from exact draft/refined equality, not from any assessment of report quality.",
+  "adjudicated_at": "2026-08-11T14:28:47.024743+00:00"
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": "r6d4-adjudication-v1",
+  "pair_id": "real-expert-01",
+  "capture_sha256": "b1d04732520029de6a4a7230651b25567179c9d4b8f4a312401b48816ed1ba94",
+  "dimension_directions": {
+    "citation_correctness": "unchanged",
+    "groundedness": "unchanged",
+    "synthesis_quality": "unchanged",
+    "analytical_quality": "unchanged",
+    "template_fit": "unchanged",
+    "coherence": "unchanged",
+    "source_balance": "unchanged"
+  },
+  "hard_failure_direction": "unchanged",
+  "reviewer_provenance": {
+    "reviewer_type": "deterministic_exact_equality",
+    "note": "draft_report == refined_report byte-for-byte (no revision occurred); all seven directions are mechanically unchanged by construction, not a human or automated quality judgment."
+  },
+  "translation_note": "No blind review or translation was needed -- every direction is derived directly from exact draft/refined equality, not from any assessment of report quality.",
+  "adjudicated_at": "2026-08-11T14:28:47.025349+00:00"
+}

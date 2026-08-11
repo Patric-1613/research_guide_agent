@@ -1,0 +1,26 @@
+{
+  "schema_version": "r6d4-adjudication-v1",
+  "pair_id": "real-analytical-01",
+  "part_a_commit": "52bcb6fa64efa288167f05480c8963f5de7e689e",
+  "blind_assessment_sha256": "c3f6c340e00b67f713381238d70833ced0200ad96548eaafc7a200e896d3a2a6",
+  "draft_label": "B",
+  "refined_label": "A",
+  "dimension_directions": {
+    "citation_correctness": "regressed",
+    "groundedness": "unchanged",
+    "synthesis_quality": "improved",
+    "analytical_quality": "unchanged",
+    "template_fit": "improved",
+    "coherence": "regressed",
+    "source_balance": "unchanged"
+  },
+  "hard_failure_direction": "unchanged",
+  "reviewer_provenance": {
+    "reviewer_type": "ai_assisted_human_confirmed",
+    "assistant_role": "blind comparative recommendation",
+    "final_decision_owner": "user",
+    "note": "This is not independent human ground truth."
+  },
+  "translation_note": "Translation from blind A/B labels to improved/regressed/unchanged/unknown was purely mechanical (A_better/B_better -> improved/regressed depending on which label the mapping says was 'refined'; unchanged -> unchanged; uncertain -> unknown), applied only AFTER the blind assessment above was frozen and committed (see part_a_commit) and the A/B mapping was read for the first time. No dimension value was re-judged, reconsidered, or adjusted during translation.",
+  "adjudicated_at": "2026-08-11T14:28:47.023778+00:00"
+}
