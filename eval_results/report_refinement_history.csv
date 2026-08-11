@@ -10,3 +10,4 @@ run_id,date,git_commit,suite,mode,total,passed,failed,average_score,tags,note
 9,2026-08-11T10:50:54.752264+00:00,70d70d5,report_refinement,live,1,0,1,0.8572,analytical_quality,R6D corrected holistic-synthesis validation | mean_latency_ms=42493.6
 10,2026-08-11T11:14:42.927937+00:00,5cfadb1,report_refinement,live,2,2,0,1.0,tie,R6D no-change controls validation | mean_latency_ms=26064.2
 11,2026-08-11T11:25:01.281813+00:00,921838b,report_refinement,live,2,1,1,0.8214,regression,R6D regression controls validation | mean_latency_ms=23367.3
+12,2026-08-11T11:39:24.233816+00:00,e2b1b38,report_refinement,live,1,0,1,0.7143,tradeoff,R6D mixed-tradeoff validation | mean_latency_ms=73257.2
