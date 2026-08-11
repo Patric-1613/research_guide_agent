@@ -3,6 +3,16 @@
 Concurrency correctness is proven with real OS threads racing against a
 real (tmp_path-scoped) SQLite file, not with sequential calls or mocks --
 that is the whole point of the module's atomicity claim.
+
+M2.1b: research_agent/leases.py does `from research_agent.telemetry
+import USAGE_DB_PATH` -- a by-value import that creates its own,
+independent `research_agent.leases.USAGE_DB_PATH` module attribute.
+Patching only `telemetry.USAGE_DB_PATH` does NOT redirect leases.py's
+own default (`path=None`) resolution -- every call in this file already
+passes `path=usage_db_path` explicitly so that gap was never actually
+exercised, but the fixture below also patches `leases.USAGE_DB_PATH`
+directly so a future test that omits `path=` still fails closed into
+the tmp file, never the real one.
 """
 
 from __future__ import annotations
@@ -17,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
+import research_agent.leases as leases
 import research_agent.telemetry as telemetry
 from research_agent.leases import (
     EXPENSIVE_ACTION_GROUP,
@@ -25,14 +36,17 @@ from research_agent.leases import (
     session_lease,
 )
 from research_agent.telemetry import init_usage_db
+from tests._usage_db_fingerprint import fingerprint_usage_db
 
 _REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 
 
 @pytest.fixture(autouse=True)
 def usage_db_path(tmp_path, monkeypatch):
     db_path = tmp_path / "usage.sqlite"
     monkeypatch.setattr(telemetry, "USAGE_DB_PATH", db_path)
+    monkeypatch.setattr(leases, "USAGE_DB_PATH", db_path)
     init_usage_db(path=db_path).close()
     return db_path
 
@@ -190,5 +204,9 @@ class TestFailClosed:
         assert release_lease("session", "s1", EXPENSIVE_ACTION_GROUP, "tok", path=missing) is False
 
 
-def test_real_usage_db_path_was_never_touched():
-    assert not _REAL_USAGE_DB_PATH.exists()
+def test_real_usage_db_path_untouched():
+    """Does NOT assert nonexistence -- a legitimate local
+    usage_telemetry.sqlite from real dev-server use is normal, valid
+    state. Proves nothing in this file's test run created, deleted, or
+    modified it (or its -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE

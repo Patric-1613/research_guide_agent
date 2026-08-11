@@ -24,8 +24,13 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain.tools import tool
 
 import research_agent.agent as agent_module
+import research_agent.telemetry as telemetry
 from research_agent.agent import ResearchSession, run_research_agent
 from research_agent.config import get_usage_policy
+from tests._usage_db_fingerprint import fingerprint_usage_db
+
+_REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 
 
 class FakeToolCallingModel(BaseChatModel):
@@ -197,7 +202,14 @@ class TestRealBoundedExecution:
 
 # --- End-to-end sanity: run_research_agent still returns a normal session ---
 
-def test_run_research_agent_returns_normal_session_when_under_every_limit(monkeypatch):
+def test_run_research_agent_returns_normal_session_when_under_every_limit(monkeypatch, tmp_path):
+    # run_research_agent wraps its own loop in telemetry.timed_child_call --
+    # currently a no-op with no active telemetry.paid_action() around it
+    # (confirmed: this test's own before/after DB fingerprint check below
+    # never changes), but redirected explicitly anyway so this test stays
+    # correct even if that call site's telemetry behavior changes later.
+    monkeypatch.setattr(telemetry, "USAGE_DB_PATH", tmp_path / "usage_telemetry.sqlite")
+
     final = AIMessage(content="the answer", tool_calls=[])
     fake_model = FakeToolCallingModel(responses=[final])
     monkeypatch.setattr(agent_module, "AGENT_MODEL", fake_model)
@@ -206,3 +218,11 @@ def test_run_research_agent_returns_normal_session_when_under_every_limit(monkey
 
     assert isinstance(session, ResearchSession)
     assert session.papers == []  # the fake model never called a search tool
+
+
+def test_real_usage_db_path_untouched():
+    """Does NOT assert nonexistence -- a legitimate local
+    usage_telemetry.sqlite from real dev-server use is normal, valid
+    state. Proves nothing in this file's test run created, deleted, or
+    modified it (or its -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE

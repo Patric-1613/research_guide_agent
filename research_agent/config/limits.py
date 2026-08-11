@@ -93,17 +93,23 @@ def get_usage_policy() -> UsagePolicy:
         max_concurrent_expensive_actions_per_session=_positive_int(
             "USAGE_MAX_CONCURRENT_EXPENSIVE_ACTIONS_PER_SESSION", 1
         ),
-        # Conservative defaults chosen after inspecting agent.py's topology:
-        # build_tools() exposes 4 tools (arxiv/semantic_scholar/rerank/web
-        # search) and a typical run alternates a handful of model turns
-        # with (possibly parallel) tool calls before producing a final
-        # answer. 10/10 gives real headroom for a normal multi-tool
-        # research turn while still bounding a runaway loop; revisit once
-        # real run-length telemetry exists.
+        # 10 / 10 / 15 (M2.1, reaffirmed unchanged in M2.1b): configurable
+        # PROVISIONAL safeguards, not calibrated or permanent values. Chosen
+        # after inspecting agent.py's topology alone -- build_tools()
+        # exposes 4 tools (arxiv/semantic_scholar/rerank/web search) and a
+        # typical run alternates a handful of model turns with (possibly
+        # parallel) tool calls before producing a final answer, so 10/10
+        # gives real headroom for a normal multi-tool research turn while
+        # still bounding a runaway loop. No real run-length telemetry has
+        # been consulted to set these; revisit once it exists. Every field
+        # here is overridable via its env var (see below) without a code
+        # change, precisely so a recalibration is a config change, not a
+        # redesign.
         agent_model_call_limit_per_run=_positive_int("USAGE_AGENT_MODEL_CALL_LIMIT_PER_RUN", 10),
         agent_tool_call_limit_per_run=_positive_int("USAGE_AGENT_TOOL_CALL_LIMIT_PER_RUN", 10),
         # Matches the task-specified default exactly; also passed as
         # LangGraph's own `recursion_limit` graph configuration (not
-        # middleware) at the `agent.stream(...)` call site.
+        # middleware) at the `agent.stream(...)` call site. Same provisional
+        # status as the two limits above -- not derived from real traffic.
         agent_recursion_limit=_positive_int("USAGE_AGENT_RECURSION_LIMIT", 15),
     )

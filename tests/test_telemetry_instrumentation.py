@@ -43,10 +43,12 @@ from research_agent import web_search as web_search_module
 from research_agent.qa import sqlite_checkpointer
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import init_db as real_init_db
+from tests._usage_db_fingerprint import fingerprint_usage_db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 # Captured before any test patches qa_module._init_direct_relevance_cache_db
 # by name -- a side_effect lambda that referenced qa_module.<name> from
 # INSIDE the patched context would just call right back into the mock
@@ -1440,6 +1442,9 @@ def _analytical_parsed_full(paper):
 
 def test_real_usage_db_path_untouched():
     """Session-wide proof, not just a per-test assumption: the ACTUAL
-    project path was never created or written to by anything in this
-    test run."""
-    assert not _REAL_USAGE_DB_PATH.exists()
+    project path is byte-identical after this test run to before it.
+    Does NOT assert nonexistence -- a legitimate local
+    usage_telemetry.sqlite from real dev-server use is normal, valid
+    state; this only proves nothing in this file's test run created,
+    deleted, or modified it (or its -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE

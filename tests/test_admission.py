@@ -1,10 +1,20 @@
 """Usage Protection M2.1 Part B: tests for research_agent/admission.py.
 
 Same isolation convention as tests/test_telemetry.py: the autouse
-`usage_db_path` fixture redirects `telemetry.USAGE_DB_PATH` to a fresh
+`usage_db_path` fixture redirects USAGE_DB_PATH to a fresh
 tmp_path-scoped, already-initialized file before every test body runs,
-and `test_real_usage_db_path_was_never_touched` at the bottom proves
-the real project DB was never created or written to by this file.
+and `test_real_usage_db_path_untouched` at the bottom proves the real
+project DB was untouched by this file.
+
+M2.1b: research_agent/admission.py does `from research_agent.telemetry
+import USAGE_DB_PATH` -- a by-value import that creates its own,
+independent `research_agent.admission.USAGE_DB_PATH` module attribute.
+Patching only `telemetry.USAGE_DB_PATH` does NOT redirect admission.py's
+own default (`path=None`) resolution -- every call in this file already
+passes `path=usage_db_path` explicitly so that gap was never actually
+exercised, but the fixture below also patches `admission.USAGE_DB_PATH`
+directly so a future test that omits `path=` still fails closed into
+the tmp file, never the real one.
 """
 
 from __future__ import annotations
@@ -18,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
+import research_agent.admission as admission
 import research_agent.telemetry as telemetry
 from research_agent.admission import (
     check_global_paid_action_window,
@@ -26,14 +37,17 @@ from research_agent.admission import (
 )
 from research_agent.config import get_usage_policy
 from research_agent.telemetry import init_usage_db
+from tests._usage_db_fingerprint import fingerprint_usage_db
 
 _REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 
 
 @pytest.fixture(autouse=True)
 def usage_db_path(tmp_path, monkeypatch):
     db_path = tmp_path / "usage.sqlite"
     monkeypatch.setattr(telemetry, "USAGE_DB_PATH", db_path)
+    monkeypatch.setattr(admission, "USAGE_DB_PATH", db_path)
     init_usage_db(path=db_path).close()
     return db_path
 
@@ -180,5 +194,9 @@ class TestFailClosed:
         assert decision.reason_code == "storage_unavailable"
 
 
-def test_real_usage_db_path_was_never_touched():
-    assert not _REAL_USAGE_DB_PATH.exists()
+def test_real_usage_db_path_untouched():
+    """Does NOT assert nonexistence -- a legitimate local
+    usage_telemetry.sqlite from real dev-server use is normal, valid
+    state. Proves nothing in this file's test run created, deleted, or
+    modified it (or its -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE

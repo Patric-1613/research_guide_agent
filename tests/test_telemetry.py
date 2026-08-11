@@ -4,8 +4,14 @@ calls a real network/OpenAI endpoint; nothing here touches the real
 `data/usage_telemetry.sqlite` (the autouse fixture below redirects
 `telemetry.USAGE_DB_PATH` to a fresh tmp_path-scoped file, already
 schema-initialized, before every test body runs) -- see
-`test_real_usage_db_path_was_never_touched` at the bottom of this file
-for the direct, session-wide proof of that.
+`test_real_usage_db_path_untouched` at the bottom of this file for the
+direct, session-wide proof of that.
+
+M2.1b: that proof compares a before/after fingerprint of the real file
+(existence, size, mtime, sha256, and its -wal/-shm sidecars), not a bare
+"does not exist" assertion -- a legitimate local usage_telemetry.sqlite
+from real dev-server use is normal, valid state and must not fail this
+suite just for existing.
 """
 
 from __future__ import annotations
@@ -29,11 +35,13 @@ from research_agent.telemetry import (
     paid_action,
     record_child_call,
 )
+from tests._usage_db_fingerprint import fingerprint_usage_db
 
 # Captured once, at import time, before any test has a chance to monkeypatch
 # USAGE_DB_PATH -- the one fixed reference point test_real_usage_db_path_
-# was_never_touched checks against at the end of this file.
+# untouched checks against at the end of this file.
 _REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 
 
 @pytest.fixture(autouse=True)
@@ -536,9 +544,13 @@ class TestCompatibility:
         assert not never_created.exists()
 
 
-def test_real_usage_db_path_was_never_touched():
+def test_real_usage_db_path_untouched():
     """Session-wide proof, not just a per-test assumption: the ACTUAL
     project path (captured at import time, before the autouse fixture
-    ever monkeypatches USAGE_DB_PATH for any test in this file) was
-    never created or written to by anything in this test run."""
-    assert not _REAL_USAGE_DB_PATH.exists()
+    ever monkeypatches USAGE_DB_PATH for any test in this file) is
+    byte-identical after this test run to before it. Does NOT assert
+    nonexistence -- a legitimate local usage_telemetry.sqlite from real
+    dev-server use is normal, valid state; this only proves nothing in
+    this file's test run created, deleted, or modified it (or its
+    -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE
