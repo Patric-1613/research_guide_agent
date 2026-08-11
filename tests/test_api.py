@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -717,6 +718,151 @@ def test_search_admission_storage_failure_returns_503():
     assert "sqlite3" not in body_text
     assert "Traceback" not in body_text
     mock_agent.assert_not_called()
+
+
+# =====================================================================
+# Usage Protection M2.2B Part C: search_chat concurrency decision.
+# Inspection found /chat (search_chat) genuinely stateless server-side
+# for a given search_id -- `history` comes entirely from the request
+# body, nothing is written back to any DB for search_id -- so it was
+# deliberately left lease-free (see research_agent/services/
+# chat_service.py's own comment). Proven here, not assumed.
+# =====================================================================
+
+def test_concurrent_search_chat_same_search_id_produce_independent_responses_no_shared_state():
+    """Real threads calling the service function directly (each with its
+    own DB connection, matching FastAPI's own per-request
+    get_db_connection pattern -- TestClient itself is not safe to drive
+    from multiple external Python threads concurrently, a separate,
+    unrelated limitation from anything under test here). Same
+    search_id, both admitted concurrently since there is no lease --
+    each must get back exactly its OWN answer, with no cross-talk or
+    corruption, because there is no shared per-search_id state to race
+    over."""
+    import research_agent.services.chat_service as chat_service
+    from research_agent.api_app.schemas import ChatTurn
+    from research_agent.storage import init_db, save_search
+
+    both_entered = threading.Event()
+    entered_count = {"n": 0}
+    entered_lock = threading.Lock()
+
+    def _blocking_ask(session, question, client=None, **kwargs):
+        with entered_lock:
+            entered_count["n"] += 1
+            if entered_count["n"] == 2:
+                both_entered.set()
+        both_entered.wait(timeout=5)  # force real overlap between the two calls
+        return {
+            "answer": f"answer to: {question}", "answerable": True,
+            "cited_papers": [], "cited_web_articles": [],
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "main.sqlite"
+        usage_db_path = Path(tmp) / "usage.sqlite"
+        telemetry.init_usage_db(path=usage_db_path).close()
+        conn = init_db(db_path)
+        search_id, _ = save_search(conn, "t", ["p1"], [0.9], web_articles=[])
+        conn.close()
+
+        api._state["collection"] = MagicMock()
+        api._state["client"] = MagicMock()
+
+        with patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(api, "get_papers_by_ids", return_value=[]), \
+             patch.object(api, "ask", side_effect=_blocking_ask):
+            results = {}
+
+            def _call(key, question):
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                try:
+                    results[key] = chat_service.answer_search_chat(conn, search_id, question, [])
+                finally:
+                    conn.close()
+
+            t1 = threading.Thread(target=_call, args=("one", "question one"))
+            t2 = threading.Thread(target=_call, args=("two", "question two"))
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert results["one"].answer == "answer to: question one"
+        assert results["two"].answer == "answer to: question two"
+
+        conn = sqlite3.connect(usage_db_path)
+        try:
+            rows = conn.execute("SELECT action_type, subject_id FROM paid_actions WHERE action_type = 'search_chat'").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 2  # both admitted -- no lease serializes them
+        assert all(r == ("search_chat", str(search_id)) for r in rows)
+
+
+def test_different_search_ids_run_concurrently_without_interference():
+    import research_agent.services.chat_service as chat_service
+    from research_agent.storage import init_db, save_search
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "main.sqlite"
+        usage_db_path = Path(tmp) / "usage.sqlite"
+        telemetry.init_usage_db(path=usage_db_path).close()
+        conn = init_db(db_path)
+        search_id_1, _ = save_search(conn, "t1", ["p1"], [0.9], web_articles=[])
+        search_id_2, _ = save_search(conn, "t2", ["p2"], [0.9], web_articles=[])
+        conn.close()
+
+        api._state["collection"] = MagicMock()
+        api._state["client"] = MagicMock()
+
+        with patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(api, "get_papers_by_ids", return_value=[]), \
+             patch.object(api, "ask", return_value={"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}):
+            results = {}
+
+            def _call(key, sid):
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                try:
+                    results[key] = chat_service.answer_search_chat(conn, sid, "q", [])
+                finally:
+                    conn.close()
+
+            t1 = threading.Thread(target=_call, args=("one", search_id_1))
+            t2 = threading.Thread(target=_call, args=("two", search_id_2))
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert results["one"].answer == "ok"
+        assert results["two"].answer == "ok"
+
+
+def test_search_chat_rejected_request_makes_zero_model_calls():
+    """answer_search_chat's own existing get_search()/None-check runs
+    BEFORE the guard opens (unchanged "existing validation first"
+    lifecycle) -- so a real, existing search_id is needed here, or the
+    rejection under test would never be reached at all (a nonexistent
+    search_id 404s first, before admission is ever checked)."""
+    papers = [_paper("p1", "Paper One")]
+    fake_session = MagicMock(papers=papers, ranked=[(papers[0], 0.9)], web_articles=[])
+    with _client_with_usage_db() as (client, usage_db_path), \
+         patch.object(api, "run_research_agent", return_value=fake_session):
+        search_id = client.post("/search", json={"topic": "t"}).json()["search_id"]
+
+        _exhaust_global_window(usage_db_path)
+        with patch.object(api, "ask") as mock_ask:
+            resp = client.post("/chat", json={"search_id": search_id, "question": "q"})
+
+    assert resp.status_code == 429
+    mock_ask.assert_not_called()
 
 
 if __name__ == "__main__":

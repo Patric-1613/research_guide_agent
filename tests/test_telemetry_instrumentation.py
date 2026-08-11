@@ -379,11 +379,18 @@ class TestSummarizeAction:
         assert rows[0]["subject_type"] == "search"
         assert rows[0]["subject_id"] == str(search_id)
 
-    def test_cached_summarize_records_action_with_zero_child_calls(self, usage_db_path):
-        """A cache-only completion (both summaries already generated for
-        this search_id) still gets exactly one row -- a real, successful
-        request -- but with total_call_count=0 and null token fields,
-        never fabricated zeros."""
+    def test_cached_summarize_records_no_second_action(self, usage_db_path):
+        """Usage Protection M2.2B superseded the original M1.2 behavior
+        here (a cache-only completion used to still record its own
+        zero-child-call row) -- M2.2B's own explicit requirement is that
+        a summary cache hit performs no admission check and acquires no
+        lease (research_agent/services/summary_service.py's own
+        _generate_or_get_summaries), and in this codebase's design the
+        guard that opens paid_action IS the admission boundary for this
+        action, so "no admission check" necessarily also means "no
+        paid_actions row" for a pure cache hit -- not a bug, the
+        intentional new contract. The first (real, generating) call
+        still gets its own row exactly as before."""
         with _api_client(usage_db_path) as client:
             search_id = self._seed_search(client)
             fake_summary = {"themes": [], "gaps_and_disagreements": "", "skipped_papers": []}
@@ -391,18 +398,14 @@ class TestSummarizeAction:
                 client.post("/summarize", json={"search_id": search_id})
                 # Second call: get_search now returns a saved summary, so
                 # _get_or_create_summary short-circuits before ever calling
-                # generate_summary again.
+                # generate_summary again -- and, as of M2.2B, before the
+                # guard opens at all.
                 resp = client.post("/summarize", json={"search_id": search_id})
 
         assert resp.status_code == 200
         assert mock_generate.call_count == 1  # only the first call actually generated
         rows = _actions(usage_db_path, action_type="summarize")
-        assert len(rows) == 2
-        cached_row = rows[1]
-        assert cached_row["total_call_count"] == 0
-        assert cached_row["input_tokens"] is None
-        assert cached_row["output_tokens"] is None
-        assert cached_row["total_tokens"] is None
+        assert len(rows) == 1  # only the first (real) call recorded a row
 
 
 class TestSearchChatAction:

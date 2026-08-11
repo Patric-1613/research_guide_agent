@@ -3,6 +3,14 @@ interactive present/interrupt/resume curation loop. Baseline
 single-process correctness here; the harder cross-process resume proof
 lives in scripts run for Phase 3d (see that phase's own driver scripts),
 since pytest itself runs everything in one process by construction.
+
+Usage Protection M2.2B: curation_loop.py's own _refill_node now opens
+research_agent.usage_guard.guard_paid_action on a real refill turn, so
+every test in this file -- not just the ones added for M2.2B -- gets an
+autouse fixture redirecting telemetry/admission/leases USAGE_DB_PATH to
+a fresh tmp_path file. Without it, any pre-existing test that happens
+to trigger a real refill would read and write the real
+data/usage_telemetry.sqlite.
 """
 
 from __future__ import annotations
@@ -10,11 +18,17 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
+import research_agent.admission as admission
+import research_agent.leases as leases
+import research_agent.telemetry as telemetry
 from research_agent.curation_loop import (
     get_curation_state,
     resume_curation_turn,
@@ -24,6 +38,22 @@ from research_agent.curation_session import _session_to_dict
 from research_agent.qa import sqlite_checkpointer
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper
+from research_agent.telemetry import init_usage_db
+from research_agent.usage_guard import UsageGuardRejection
+from tests._usage_db_fingerprint import fingerprint_usage_db
+
+_REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
+_REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
+
+
+@pytest.fixture(autouse=True)
+def usage_db_path(tmp_path, monkeypatch):
+    db_path = tmp_path / "usage.sqlite"
+    monkeypatch.setattr(telemetry, "USAGE_DB_PATH", db_path)
+    monkeypatch.setattr(admission, "USAGE_DB_PATH", db_path)
+    monkeypatch.setattr(leases, "USAGE_DB_PATH", db_path)
+    init_usage_db(path=db_path).close()
+    return db_path
 
 
 def _paper(pid: str) -> Paper:
@@ -802,6 +832,170 @@ def test_picks_referencing_a_paper_never_served_at_all_are_still_silently_reject
             )
 
         assert result["session"]["selected_paper_ids"] == [real_id]
+
+
+# =====================================================================
+# Usage Protection M2.2B: the conditional curation-refill guard, opened
+# inside curation_loop.py's own _refill_node -- the exact, single point
+# where a refill turn's paid work becomes certain.
+# =====================================================================
+
+def _rows(db_path, table):
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()]
+    finally:
+        conn.close()
+
+
+def test_no_refill_turn_bypasses_admission_and_lease(usage_db_path):
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            # reserve=15, batch_size=10 -> remaining=5 after turn 1, no refill.
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=100)))
+    assert _rows(usage_db_path, "paid_actions") == []
+    assert _rows(usage_db_path, "action_leases") == []
+
+
+def test_real_refill_turn_is_admitted_and_leased(usage_db_path):
+    from research_agent import query_expansion as qe_module
+
+    fresh_papers = [_paper(f"new{i}") for i in range(8)]
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh_papers), \
+             patch.object(qe_module, "rank_full_pool", side_effect=lambda topic, papers, client=None, **kw: (
+                 [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {}
+             )), \
+             sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            result = resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2], config={"client": MagicMock()})
+    assert result["refilled"] is True
+
+    rows = _rows(usage_db_path, "paid_actions")
+    assert len(rows) == 1  # exactly one top-level record, no duplicate/child-guard rows
+    assert rows[0]["action_type"] == "curation_refill"
+    assert rows[0]["subject_type"] == "session"
+    assert rows[0]["subject_id"] == "s1"
+    assert _rows(usage_db_path, "action_leases") == []  # released
+
+
+def test_exhausted_budget_rejects_refill_before_provider_work(usage_db_path):
+    from datetime import datetime, timezone
+
+    from research_agent import query_expansion as qe_module
+    from research_agent.config import get_usage_policy
+
+    policy = get_usage_policy()
+    now = datetime.now(timezone.utc).isoformat()
+    for i in range(policy.max_paid_actions_per_session_per_hour):
+        telemetry._write_paid_action(
+            action_id=f"seed-{i}", action_type="curation_chat", request_id=None,
+            subject_type="session", subject_id="s1", outcome="success", started_at=now, ended_at=now,
+            latency_ms=1.0, input_tokens=None, output_tokens=None, total_tokens=None, total_call_count=1,
+            child_calls_json="[]", path=usage_db_path,
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool") as mock_build, \
+             sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+            with pytest.raises(UsageGuardRejection) as exc_info:
+                resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2], config={"client": MagicMock()})
+
+    assert exc_info.value.reason_code == "session_hourly_limit_reached"
+    mock_build.assert_not_called()  # rejected before any provider work
+    # Still exactly the seeded rows -- the rejected attempt added none.
+    assert len(_rows(usage_db_path, "paid_actions")) == policy.max_paid_actions_per_session_per_hour
+
+
+def test_lease_releases_after_refill_failure():
+    from research_agent import query_expansion as qe_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with patch.object(qe_module, "build_candidate_pool", side_effect=RuntimeError("boom")), \
+             sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(10, target_count=100)))
+            batch1_ids = [p[0]["paper_id"] for p in result["__interrupt__"][0].value["batch"]]
+
+            with pytest.raises(RuntimeError):
+                resume_curation_turn("s1", cp, picked_paper_ids=batch1_ids[:2], config={"client": MagicMock()})
+
+            # Lease released despite the failure -- a second refill
+            # attempt for the same session must not be blocked by it.
+            with patch.object(qe_module, "build_candidate_pool", return_value=[_paper("new1")]), \
+                 patch.object(qe_module, "rank_full_pool", return_value=([(_paper("new1"), 1.0)], {})):
+                result2 = resume_curation_turn("s1", cp, picked_paper_ids=[], stop=False, request_refill=True, config={"client": MagicMock()})
+            assert result2["refilled"] is True
+
+
+def test_concurrent_same_session_refill_allows_exactly_one(usage_db_path):
+    """Real OS threads racing on _refill_node itself -- the exact node
+    this phase modified -- rather than through two concurrent
+    graph.invoke() calls on the SAME LangGraph thread_id. LangGraph's own
+    checkpointer does not guarantee well-defined behavior for two
+    truly-concurrent resumes of the same pending interrupt (confirmed
+    empirically: it introduces its own nondeterministic retry/ordering
+    noise unrelated to the guard), so that would not be a clean test of
+    the guard's own exclusion -- which is the thing this test, and
+    tests/test_usage_guard.py's own thorough multi-thread lease
+    coverage, actually need to prove. Calling the node function directly
+    with two threads exercises the identical guard_paid_action call
+    _refill_node makes inside the real graph, deterministically."""
+    from research_agent.curation_loop import CurationLoopState, _refill_node
+
+    release_event = threading.Event()
+    entered_event = threading.Event()
+    session = _session(10, target_count=100)
+    state: CurationLoopState = {
+        "session": _session_to_dict(session), "current_batch": [], "stop_reason": None,
+        "should_stop": False, "refilled": False, "force_refill": False,
+    }
+    config = {"configurable": {"thread_id": "curation-session:s1", "client": MagicMock()}}
+
+    def _blocking_refill_pool(session, **kwargs):
+        entered_event.set()
+        release_event.wait(timeout=5)
+        session.reserve = session.reserve + [(_paper("new1"), 1.0)]
+        return 1
+
+    with patch("research_agent.curation_loop.refill_pool", side_effect=_blocking_refill_pool):
+        outcomes = {}
+
+        def _attempt(key):
+            try:
+                _refill_node(state, config)
+                outcomes[key] = "admitted"
+            except UsageGuardRejection as exc:
+                outcomes[key] = exc.reason_code
+
+        t1 = threading.Thread(target=_attempt, args=("t1",))
+        t1.start()
+        assert entered_event.wait(timeout=5)  # t1 now holds the lease, blocked in refill_pool
+
+        _attempt("t2")  # runs on the main thread while t1 still holds the lease
+
+        release_event.set()
+        t1.join(timeout=5)
+
+    assert outcomes["t1"] == "admitted"
+    assert outcomes["t2"] == "action_in_progress"
+
+
+def test_real_usage_db_path_untouched():
+    """Does NOT assert nonexistence -- a legitimate local
+    usage_telemetry.sqlite from real dev-server use is normal, valid
+    state. Proves nothing in this file's test run created, deleted, or
+    modified it (or its -wal/-shm sidecars)."""
+    assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE
 
 
 if __name__ == "__main__":

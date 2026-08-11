@@ -55,14 +55,17 @@ def submit_picks(session_id: str, req: CurationPicksRequest, cp) -> CurationTurn
         raise ServiceError(400, "Session is not awaiting picks (curation already finished).")
 
     target_count = state["session"].target_count
-    # curation_refill only actually happens when the pool needs
-    # replenishing (session.remaining()==0) or the caller explicitly
-    # requested one (request_refill/refinement) -- discard_if_empty=True
-    # means the common no-refill path records no row at all, without this
-    # service needing to duplicate curation_loop.py's own routing decision.
-    with telemetry.paid_action("curation_refill", subject_type="session", subject_id=session_id, discard_if_empty=True):
-        result = resume_curation_turn(
-            session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
-            refinement=req.refinement, request_refill=req.request_refill, config=_curation_config(),
-        )
+    # Usage Protection M2.2B: curation_refill only actually happens when
+    # the pool needs replenishing (session.remaining()==0) or the caller
+    # explicitly requested one (request_refill/refinement) -- that
+    # decision is made INSIDE the graph (curation_loop.py's own
+    # _route_entry), not predictable here without duplicating it, so the
+    # guard now lives in curation_loop.py's _refill_node itself (the
+    # exact point paid work becomes certain) rather than wrapping this
+    # whole call unconditionally the way the old discard_if_empty=True
+    # paid_action did.
+    result = resume_curation_turn(
+        session_id, cp, picked_paper_ids=req.picked_paper_ids, stop=req.stop,
+        refinement=req.refinement, request_refill=req.request_refill, config=_curation_config(),
+    )
     return _turn_result_to_response(session_id, target_count, result)

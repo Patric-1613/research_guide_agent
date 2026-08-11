@@ -2650,6 +2650,47 @@ def test_nested_paid_action_remains_exactly_one_top_level_row():
     assert rows[0] == ("report_generate", session_id)
 
 
+def test_curation_chat_with_nested_web_search_child_call_remains_one_top_level_row():
+    """Usage Protection M2.2B Part D: curation_chat_service.py's own
+    docstring says a web-offer-accept turn can trigger a nested search
+    internally (via api.chat_turn) -- simulated here with a chat_turn
+    fake that itself opens a child call the same way a real nested
+    search would, proving the guard's OUTER paid_action still owns the
+    one row (M1's "first active action wins" nesting, not a second
+    guard/row from the inner work)."""
+    import sqlite3
+
+    def _fake_chat_turn_with_nested_child_call(session, message, client=None, **kwargs):
+        telemetry.record_child_call(
+            "web_search", "tavily", latency_ms=5.0, outcome="success",
+        )
+        session.chat_history.append({"role": "user", "content": message})
+        session.chat_history.append({"role": "assistant", "content": "ok"})
+        return {
+            "answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": [],
+            "web_offer_made": False, "web_search_used": True,
+        }
+
+    with _client_with_usage_db() as (client, usage_db_path):
+        session_id, pick_ids = _finish_curation(client)
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn_with_nested_child_call):
+            resp = client.post(f"/curation/{session_id}/chat", json={"message": "search the web for X"})
+        assert resp.status_code == 200
+
+        conn = sqlite3.connect(usage_db_path)
+        try:
+            rows = conn.execute(
+                "SELECT action_type, subject_id, total_call_count FROM paid_actions WHERE action_type = 'curation_chat'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    assert len(rows) == 1  # one top-level row, not two
+    assert rows[0][0] == "curation_chat"
+    assert rows[0][1] == session_id
+    assert rows[0][2] == 1  # the nested child call attached to it
+
+
 if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()

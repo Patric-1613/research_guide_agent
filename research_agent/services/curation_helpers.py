@@ -23,7 +23,14 @@ def _curation_config() -> dict:
     KeyError during Phase 6a's own design verification when it was
     omitted. Built fresh per request rather than cached in _state,
     since s2_api_key/openalex_mailto are read from the environment the
-    same way /search already does, not assumed constant."""
+    same way /search already does, not assumed constant.
+
+    Usage Protection M2.2B: research_agent.usage_guard.guard_paid_action
+    now wraps refill_pool's own call inside curation_loop.py's own
+    _refill_node -- session_id for that guard is recovered from
+    config["configurable"]["thread_id"] (always present, set by
+    start_curation_turn/resume_curation_turn themselves), not threaded
+    through here, so this function did not need a new parameter."""
     settings = get_settings()
     return {
         "client": api._state["client"],

@@ -73,12 +73,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from research_agent.curation_session import (
+    THREAD_ID_PREFIX,
     _dict_to_session,
     _session_to_dict,
     curation_thread_id,
 )
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
 from research_agent.schema import Paper
+from research_agent.usage_guard import guard_paid_action
 
 
 class CurationLoopState(TypedDict):
@@ -125,15 +127,41 @@ def _route_entry(state: CurationLoopState) -> str:
 
 
 def _refill_node(state: CurationLoopState, config) -> dict:
+    """Usage Protection M2.2B: this node is reached ONLY on the "refill"
+    branch of _route_entry -- the exact, single point in the whole
+    curation loop where paid work (refill_pool's own search/rank calls)
+    is definitely about to begin. Guarding here, not at the router/
+    service layer that calls start_curation_turn/resume_curation_turn,
+    means the common no-refill turn never touches admission or the
+    lease at all -- there is nothing to "predict" here, since this
+    function only runs once the graph has already decided to refill.
+
+    Also never re-executed on a resume: interrupt()/Command(resume=...)
+    only rewinds execution to present_and_apply (the one node that
+    calls interrupt()), never back to this node -- see this module's
+    own docstring -- so this guard opens/closes exactly once per real
+    refill turn, never twice.
+
+    session_id is recovered from `configurable["thread_id"]` (always
+    present -- start_curation_turn/resume_curation_turn set it
+    unconditionally from their own required session_id parameter,
+    unlike an optional key in the caller-supplied `config` dict, which
+    could be forgotten) by reversing curation_session.py's own
+    curation_thread_id() prefix -- the same reversal
+    curation_session.py's own list-reviews path already does, not a new
+    pattern invented here.
+    """
     session = _dict_to_session(state["session"])
     configurable = config["configurable"]
-    refill_pool(
-        session,
-        s2_api_key=configurable.get("s2_api_key"),
-        client=configurable["client"],
-        use_openalex_fallback=configurable.get("use_openalex_fallback", False),
-        openalex_mailto=configurable.get("openalex_mailto"),
-    )
+    session_id = configurable["thread_id"][len(THREAD_ID_PREFIX):]
+    with guard_paid_action("curation_refill", subject=("session", session_id), use_lease=True):
+        refill_pool(
+            session,
+            s2_api_key=configurable.get("s2_api_key"),
+            client=configurable["client"],
+            use_openalex_fallback=configurable.get("use_openalex_fallback", False),
+            openalex_mailto=configurable.get("openalex_mailto"),
+        )
     return {"session": _session_to_dict(session), "refilled": True}
 
 
