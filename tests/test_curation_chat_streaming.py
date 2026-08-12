@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from research_agent.chat_streaming import AnswerCompleted, AnswerDelta, ChatAnswerStreamError, StreamedChatAnswer
-from research_agent.curation_chat_streaming import stream_curation_chat_turn
+from research_agent.curation_chat_streaming import HandledStreamFailure, stream_curation_chat_turn
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper, WebArticle
 
@@ -63,6 +63,32 @@ async def _collect(session, message, **kwargs):
 
 def _types(events):
     return [t for t, _ in events]
+
+
+async def _collect_until_raise(session, message, **kwargs):
+    """Like _collect, but for a turn expected to raise (HandledStream
+    Failure or asyncio.CancelledError) instead of completing normally
+    -- Lifecycle-hardening checkpoint: handled failures are no longer
+    self-converted to error/done events by stream_curation_chat_turn
+    itself (that now happens one layer up, in curation_chat_service.py,
+    OUTSIDE its own telemetry.paid_action block -- see that module's
+    own docstring for why). Returns (events_collected_before_the_raise,
+    the_raised_exception)."""
+    events = []
+    gen = stream_curation_chat_turn(
+        session, message,
+        session_id=kwargs.pop("session_id", "sess-1"),
+        checkpointer=kwargs.pop("checkpointer", MagicMock()),
+        sync_client=kwargs.pop("sync_client", MagicMock()),
+        async_client=kwargs.pop("async_client", MagicMock()),
+        top_k=kwargs.pop("top_k", 5),
+    )
+    try:
+        async for event in gen:
+            events.append((event.type, event.data))
+    except (HandledStreamFailure, asyncio.CancelledError) as exc:
+        return events, exc
+    raise AssertionError("expected stream_curation_chat_turn to raise, but it completed normally")
 
 
 @patch("research_agent.curation_chat_streaming.save_curation_session")
@@ -106,7 +132,13 @@ def test_zero_delta_final_only_completion_for_no_sources_early_return(mock_save)
 @patch("research_agent.curation_chat_streaming.save_curation_session")
 @patch("research_agent.curation_chat_streaming.stream_chat_answer")
 @patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0))
-def test_handled_stream_error_emits_error_then_done_never_completed(mock_classify, mock_stream, mock_save):
+def test_handled_stream_error_raises_handled_stream_failure_never_completed(mock_classify, mock_stream, mock_save):
+    """Lifecycle-hardening checkpoint: a handled ChatAnswerStreamError
+    now propagates out of stream_curation_chat_turn as HandledStream
+    Failure (never self-converted to error/done here) -- see tests/
+    test_curation_chat_stream_service.py for proof this correctly makes
+    the wrapping telemetry.paid_action record outcome="error" once the
+    caller lets it propagate out of that block first."""
     session = _session(web_articles_added=[_web_article("https://x.com/a", "Article A")])
 
     async def _raising():
@@ -115,12 +147,12 @@ def test_handled_stream_error_emits_error_then_done_never_completed(mock_classif
 
     mock_stream.return_value = _raising()
 
-    events = _run(_collect(session, "what does the web say?"))
+    events, exc = _run(_collect_until_raise(session, "what does the web say?"))
 
-    assert _types(events)[-2:] == ["error", "done"]
+    assert isinstance(exc, HandledStreamFailure)
+    assert exc.reason_code == "provider_error"
+    assert exc.message == "The model provider returned an error."
     assert "completed" not in _types(events)
-    error_payload = next(data for t, data in events if t == "error")
-    assert error_payload == {"reason_code": "provider_error", "message": "The model provider returned an error."}
     mock_save.assert_not_called()
     assert session.chat_history == []  # never appended -- no terminal validation happened
 
@@ -151,19 +183,18 @@ def test_cancelled_reason_code_reraises_asyncio_cancelled_error(mock_classify, m
 @patch("research_agent.curation_chat_streaming.save_curation_session")
 @patch("research_agent.curation_chat_streaming.stream_chat_answer")
 @patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0))
-def test_persistence_failure_emits_error_never_completed(mock_classify, mock_stream, mock_save):
+def test_persistence_failure_raises_handled_stream_failure_never_completed(mock_classify, mock_stream, mock_save):
     session = _session(web_articles_added=[_web_article("https://x.com/a", "Article A")])
     completed = AnswerCompleted(result=StreamedChatAnswer(answer="Hi", answerable=True, cited_papers=[], cited_web_articles=[]))
     mock_stream.return_value = _fake_stream_chat_answer([completed])
     mock_save.side_effect = RuntimeError("disk full")
 
-    events = _run(_collect(session, "q"))
+    events, exc = _run(_collect_until_raise(session, "q"))
 
-    assert _types(events)[-2:] == ["error", "done"]
+    assert isinstance(exc, HandledStreamFailure)
+    assert exc.reason_code == "persistence_failed"
+    assert "disk full" not in exc.message
     assert "completed" not in _types(events)
-    error_payload = next(data for t, data in events if t == "error")
-    assert error_payload["reason_code"] == "persistence_failed"
-    assert "disk full" not in str(error_payload)
 
 
 @patch("research_agent.curation_chat_streaming.save_curation_session")
@@ -227,12 +258,13 @@ def test_web_offer_decline_skips_maybe_set_web_offer(mock_classify, mock_stream,
 
 
 @patch("research_agent.curation_chat_streaming._classify_offer_response", side_effect=RuntimeError("boom"))
-def test_unexpected_exception_becomes_safe_generic_error_event(mock_classify):
+def test_unexpected_exception_becomes_safe_handled_stream_failure(mock_classify):
     session = _session(pending_web_offer={"question": "q"})
 
-    events = _run(_collect(session, "hi"))
+    events, exc = _run(_collect_until_raise(session, "hi"))
 
-    assert _types(events) == ["started", "error", "done"]
-    error_payload = next(data for t, data in events if t == "error")
-    assert error_payload == {"reason_code": "provider_error", "message": "The model provider returned an error."}
-    assert "boom" not in str(error_payload)
+    assert _types(events) == ["started"]
+    assert isinstance(exc, HandledStreamFailure)
+    assert exc.reason_code == "provider_error"
+    assert exc.message == "The model provider returned an error."
+    assert "boom" not in exc.message

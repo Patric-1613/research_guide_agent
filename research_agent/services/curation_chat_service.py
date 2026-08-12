@@ -20,8 +20,9 @@ from research_agent.api_app.schemas import (
 )
 import research_agent.telemetry as telemetry
 from research_agent.api_app.serializers import _report_to_out
+from research_agent.chat_streaming import build_done_event, build_error_event
 from research_agent.config import get_usage_policy
-from research_agent.curation_chat_streaming import stream_curation_chat_turn
+from research_agent.curation_chat_streaming import HandledStreamFailure, stream_curation_chat_turn
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
 from research_agent.session_limits import check_chat_turn_capacity
@@ -89,6 +90,21 @@ def stream_answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -
     admission_and_lease_for_streaming`'s own docstring for the real,
     empirically-confirmed `contextvars` hazard that would result from
     doing otherwise.
+
+    Lifecycle-hardening checkpoint: `stream_curation_chat_turn`'s own
+    `HandledStreamFailure` is caught HERE, OUTSIDE the `with telemetry.
+    paid_action(...):` block below -- letting it propagate OUT of that
+    block first is what makes `telemetry.paid_action`'s own `except
+    Exception` branch record the top-level `paid_actions` row as
+    `outcome="error"`, which simply yielding `error`/`done` and
+    returning normally from inside that block never did. Only once that
+    outcome has been recorded does this function convert the exception
+    into the safe `error`+`done` SSE pair the client actually sees --
+    never exception text, never a second telemetry write. `asyncio.
+    CancelledError` is not caught here at all: it is left to propagate
+    all the way out of `event_stream()`, so `telemetry.paid_action`
+    records `outcome="cancelled"` (never `"error"`) and no `completed`/
+    `error` event is ever emitted for it.
     """
     session = load_curation_session(session_id, cp)
     if session is None:
@@ -105,12 +121,23 @@ def stream_answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -
 
     async def event_stream() -> AsyncIterator[str]:
         try:
-            with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
-                async for event in stream_curation_chat_turn(
-                    session, req.message, session_id=session_id, checkpointer=cp,
-                    sync_client=api._state["client"], async_client=api._state["async_client"],
-                ):
-                    yield event.to_sse()
+            try:
+                with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+                    async for event in stream_curation_chat_turn(
+                        session, req.message, session_id=session_id, checkpointer=cp,
+                        sync_client=api._state["client"], async_client=api._state["async_client"],
+                    ):
+                        yield event.to_sse()
+            except HandledStreamFailure as exc:
+                # telemetry.paid_action's own __exit__ has ALREADY run
+                # by this point (it wraps the `async for` above, not
+                # this except clause) and already recorded outcome=
+                # "error" -- this only ever produces the client-facing
+                # SSE frames, never a second telemetry write, and never
+                # raises again (no exception escapes event_stream after
+                # this, so Starlette sees a clean, normal stream end).
+                yield build_error_event(exc.reason_code, exc.message).to_sse()
+                yield build_done_event().to_sse()
         finally:
             # Always runs after telemetry.paid_action's own __exit__
             # above (a `finally` on the OUTER try only executes once

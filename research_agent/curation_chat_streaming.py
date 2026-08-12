@@ -2,8 +2,27 @@
 streaming domain service -- one async generator per turn, yielding the
 shared M4.1 SSE event vocabulary (research_agent/chat_streaming.py) in
 the fixed order `started -> phase* -> delta* -> completed -> done` on
-success, or `started -> phase* -> delta* -> error -> done` on a
-recognized, safely-reportable failure.
+success.
+
+**Lifecycle-hardening checkpoint.** A handled, recognized failure (a
+`ChatAnswerStreamError` from the model adapter, a persistence failure,
+or any other unexpected exception from the underlying sync helpers
+this reuses) is raised here as the module's own typed
+`HandledStreamFailure`, NOT self-converted into `error`/`done` events
+-- that conversion happens one layer up, in `services/curation_chat_
+service.py::stream_answer_curation_chat`, OUTSIDE its own `with
+telemetry.paid_action(...):` block. This is deliberate: letting
+`HandledStreamFailure` propagate out of that `with` block is what
+makes `telemetry.paid_action` record the top-level `paid_actions` row
+as `outcome="error"` (its own `except Exception` branch) instead of
+`"success"` -- a real, previously-incorrect telemetry gap a genuinely
+handled failure used to produce, since simply yielding `error`+`done`
+and returning normally left nothing to tell `telemetry.paid_action`
+anything had gone wrong. `asyncio.CancelledError` is unaffected by
+this change -- it is still always re-raised, never converted to
+`HandledStreamFailure` or an `error` event, so `telemetry.paid_action`
+still records `outcome="cancelled"` for it, correctly distinct from
+`"error"`.
 
 **No admission/lease/HTTP awareness here.** This module assumes the
 caller (`services/curation_chat_service.py::stream_answer_curation_chat`)
@@ -57,33 +76,36 @@ filtering logic:
 
 **Persistence commit point.** `save_curation_session` (a LangGraph
 checkpointer write) is the one and only mutation of durable state this
-module ever performs, always immediately before the `completed` event,
-always wrapped in `asyncio.shield(...)` (see `_persist_and_complete`)
--- once that call has actually been scheduled onto its worker thread,
-the write itself runs to completion regardless of whether the
-awaiting coroutine is later cancelled (Python cannot forcibly stop a
-running thread; `asyncio.shield` only protects the AWAITING coroutine
-from having the inner call torn down early, so it still gets a chance
-to react normally in the common case). This module never claims a
-cancellation can abort in-flight threadpool work -- it only guarantees
-the write itself is a single, already-atomic checkpoint operation, and
-that `completed` is never emitted before that write has genuinely
-succeeded.
+module ever performs, always immediately before the `completed` event
+-- see `_persist_and_complete`. The save runs as an explicitly
+retained `asyncio.Task` (`asyncio.to_thread(save_curation_session,
+...)`), awaited via `asyncio.shield` so an outer cancellation does not
+tear the task itself down (Python cannot forcibly stop a running
+thread regardless). Lifecycle-hardening checkpoint: on outer
+cancellation, this module now explicitly `await`s that SAME retained
+task (via `asyncio.wait`, which never re-raises the task's own result)
+before re-raising -- so the save is always allowed to fully settle
+before this generator's own cleanup (and, one layer up, the caller's
+lease release) proceeds. `completed` is never emitted before the save
+has genuinely succeeded, and never at all once a cancellation has been
+observed here.
 
 **Cancellation.** A genuine `asyncio.CancelledError` from request
 disconnection propagates through this module's `await`/`async for`
 points completely untouched wherever this module itself does not
-intercept it, EXCEPT for one documented case: M4.1's own
+intercept it, EXCEPT for two documented cases: (1) M4.1's own
 `stream_chat_answer` catches `CancelledError` internally and re-raises
 it as an ordinary `ChatAnswerStreamError(reason_code="cancelled", ...)`
 (a deliberate, documented M4.1 design -- see that function's own
-docstring). This module detects exactly that reason code and raises a
-FRESH `asyncio.CancelledError` in response, so real task cancellation
-still propagates to the caller's own enclosing `telemetry.paid_action`
-block (which records the "cancelled" outcome) and, after that, to
-`usage_guard.StreamingLeaseHandle.release` (which frees the lease)
-rather than being silently normalized into an ordinary SSE `error`
-event.
+docstring) -- this module detects exactly that reason code and raises
+a FRESH `asyncio.CancelledError` in response; (2) `_persist_and_
+complete`'s own cancellation handling described above, which waits for
+the in-flight save before re-raising. Either way, real task
+cancellation always propagates to the caller's own enclosing
+`telemetry.paid_action` block (which records the "cancelled" outcome)
+and, after that, to `usage_guard.StreamingLeaseHandle.release` (which
+frees the lease) rather than being silently normalized into an
+ordinary SSE `error` event or a `"success"` telemetry outcome.
 """
 
 from __future__ import annotations
@@ -104,7 +126,6 @@ from research_agent.chat_streaming import (
     build_completed_event,
     build_delta_event,
     build_done_event,
-    build_error_event,
     build_phase_event,
     build_started_event,
     stream_chat_answer,
@@ -121,6 +142,29 @@ from research_agent.curation_session import save_curation_session
 from research_agent.query_expansion import PaperPoolSession
 
 logger = logging.getLogger(__name__)
+
+
+class HandledStreamFailure(Exception):
+    """Lifecycle-hardening checkpoint: the ONE internal signal this
+    module raises for a recognized, safely-reportable failure (a model
+    adapter error, a persistence failure, or any other unexpected
+    exception from an underlying sync helper) -- deliberately an
+    ordinary `Exception` (never `asyncio.CancelledError`), so it both
+    (a) makes `telemetry.paid_action`'s own `except Exception` branch
+    record the wrapping action's outcome as `"error"`, and (b) is
+    exactly what `stream_answer_curation_chat` (one layer up, OUTSIDE
+    that `with telemetry.paid_action(...):` block) catches to emit the
+    safe `error`+`done` SSE frames. `reason_code`/`message` are always
+    one of this project's own small, fixed, safe values -- never raw
+    exception text -- matching `chat_streaming.ChatAnswerStreamError`'s
+    own contract exactly (this class exists only because that one is
+    specific to the model-adapter layer and this module needs the same
+    shape for persistence/unexpected failures too)."""
+
+    def __init__(self, reason_code: str, message: str):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.message = message
 
 
 def _pending_offer_kind_and_description(session: PaperPoolSession) -> tuple[str | None, str | None]:
@@ -178,23 +222,41 @@ async def _drain_phase_queue_until(task: "asyncio.Task[Any]", phase_queue: "asyn
 async def _persist_and_complete(
     session: PaperPoolSession, session_id: str, checkpointer: Any, streamed: StreamedChatAnswer,
 ) -> AsyncIterator[ChatStreamEvent]:
-    """The ONE place this module ever calls `save_curation_session` --
-    see this module's own docstring for why the call is wrapped in
-    `asyncio.shield`. `completed` is yielded if, and only if, this save
-    genuinely succeeds; a save failure yields a safe `error` (a new,
+    """The ONE place this module ever calls `save_curation_session`.
+    `completed` is yielded if, and only if, this save genuinely
+    succeeds; a save failure raises `HandledStreamFailure` (a new,
     M4.2A-specific reason code -- M4.1 never covered persistence, so
-    there was no existing safe code for this) then `done`, never
-    `completed`."""
+    there was no existing safe code for this) instead of self-emitting
+    `error`/`done` -- see this module's own docstring for why.
+
+    Lifecycle-hardening checkpoint: the save runs as an explicitly
+    retained `asyncio.Task`, never a bare, unretained `asyncio.shield(
+    asyncio.to_thread(...))` expression -- a shielded task that is
+    never held onto again cannot be waited on again either, which is
+    exactly what outer-cancellation handling below needs to do (a
+    shielded persistence task must not outlive the lease its own
+    caller releases once THIS function returns/raises)."""
     yield build_phase_event("saving")
+    save_task: "asyncio.Task[None]" = asyncio.create_task(
+        asyncio.to_thread(save_curation_session, session, session_id, checkpointer)
+    )
     try:
-        await asyncio.shield(asyncio.to_thread(save_curation_session, session, session_id, checkpointer))
+        await asyncio.shield(save_task)
     except asyncio.CancelledError:
+        # Outer cancellation: asyncio.shield already protected save_task
+        # itself from being cancelled, but THIS coroutine's own await
+        # was interrupted regardless -- asyncio.wait (never asyncio.
+        # shield again, and never a bare `await save_task`, which would
+        # re-raise the task's own exception here) blocks until the
+        # retained task has genuinely settled (success or failure)
+        # before this function's own cleanup completes, so the caller's
+        # lease-release `finally` never runs while persistence is still
+        # in flight. completed is never yielded on this path.
+        await asyncio.wait([save_task])
         raise
     except Exception:
         logger.exception("curation_chat_streaming: failed to persist session after a streamed turn")
-        yield build_error_event("persistence_failed", "Failed to save the conversation.")
-        yield build_done_event()
-        return
+        raise HandledStreamFailure("persistence_failed", "Failed to save the conversation.") from None
     yield build_completed_event(streamed)
     yield build_done_event()
 
@@ -316,9 +378,7 @@ async def _stream_fresh_answer(
                 raise asyncio.CancelledError() from None
             call.outcome = "error"
             call.error_type = "ChatAnswerStreamError"
-            yield build_error_event(exc.reason_code, exc.message)
-            yield build_done_event()
-            return
+            raise HandledStreamFailure(exc.reason_code, exc.message) from None
 
     streamed_raw = final_result_holder["value"]
     # chat-ux-fixes bug 5 parity: _generate_node applies this exact
@@ -371,21 +431,23 @@ async def stream_curation_chat_turn(
     "synthesize"`) have ALL already been validated by the caller --
     mirroring `curation_chat_service.answer_curation_chat`'s own
     pre-guard checks -- and that admission + the session lease have
-    already been acquired (see `usage_guard.open_paid_action_for_
-    streaming`), BEFORE this generator is ever constructed. This
+    already been acquired (see `usage_guard.open_admission_and_lease_
+    for_streaming`), BEFORE this generator is ever constructed. This
     function performs no request-shape validation of its own, only the
     actual guarded streaming work; the caller is responsible for
-    releasing the guard handle in its own `finally`, regardless of how
-    this generator ends.
+    releasing the lease in its own `finally`, regardless of how this
+    generator ends.
 
     A handled, recognized failure (a `ChatAnswerStreamError` from the
     model adapter, a persistence failure, or any other unexpected
-    exception from the underlying sync helpers this reuses) always
-    yields a safe `error` event -- a stable, fixed reason code and
-    message, never exception text -- followed by `done`, never
-    `completed`. A genuine `asyncio.CancelledError` is always
-    RE-RAISED after whatever cleanup already ran, never turned into an
-    `error` event -- see this module's own docstring.
+    exception from the underlying sync helpers this reuses) is RAISED
+    as `HandledStreamFailure` -- a stable, fixed reason code and
+    message, never exception text -- for the caller to convert into a
+    safe `error`+`done` SSE pair from OUTSIDE its own `telemetry.
+    paid_action` block; see this module's own docstring for why this
+    function does not emit those events itself. A genuine `asyncio.
+    CancelledError` is always RE-RAISED after whatever cleanup already
+    ran, never turned into `HandledStreamFailure` or an `error` event.
     """
     yield build_started_event()
 
@@ -412,7 +474,8 @@ async def stream_curation_chat_turn(
             yield event
     except asyncio.CancelledError:
         raise
+    except HandledStreamFailure:
+        raise
     except Exception:
         logger.exception("curation_chat_streaming: unhandled failure during a streamed turn")
-        yield build_error_event("provider_error", "The model provider returned an error.")
-        yield build_done_event()
+        raise HandledStreamFailure("provider_error", "The model provider returned an error.") from None
