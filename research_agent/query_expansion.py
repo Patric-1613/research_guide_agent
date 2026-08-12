@@ -863,6 +863,26 @@ class PaperPoolSession:
     # fields above -- never assumed to be in 1:1 lockstep with
     # web_articles_added, always read via .get(url).
     web_article_provenance_by_url: dict[str, dict] = field(default_factory=dict)
+    # M3.1: chat-summarization foundation -- NOT yet read by any live
+    # request path (see research_agent/chat_summarization.py's own module
+    # docstring). chat_summary is the persisted structured summary
+    # (research_agent.chat_summarization.ChatHistorySummary.model_dump()
+    # -- a plain JSON-compatible dict here, same "dict | None" style as
+    # `report`/`pending_web_offer`/`pending_report_update` above, not a
+    # dataclass/Pydantic object, since PaperPoolSession's own persistence
+    # is already whole-session JSON serialization throughout).
+    # chat_summary_covers_history_count is a RAW chat_history entry count
+    # (never a turn/exchange count, never divided or multiplied by two
+    # anywhere) -- if it's 12, the summary covers exactly
+    # chat_history[:12]; chat_summarization.py's exchange-boundary helper
+    # guarantees this index only ever lands on a real user/assistant pair
+    # boundary, never mid-pair. chat_summary_updated_at is real wall-clock
+    # UTC ISO 8601 time set only when a summary is actually (re)written --
+    # never fabricated/backdated, None on a session that predates M3 or
+    # has never been summarized.
+    chat_summary: dict | None = None
+    chat_summary_covers_history_count: int = 0
+    chat_summary_updated_at: str | None = None
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""

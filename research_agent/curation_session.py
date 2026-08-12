@@ -279,6 +279,12 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         # above -- no Paper/WebArticle objects nested in it, nothing to
         # convert.
         "web_article_provenance_by_url": dict(session.web_article_provenance_by_url),
+        # M3.1: chat_summary is already a plain JSON-compatible dict (or
+        # None) -- same opaque pass-through convention as chat_history/
+        # web_article_provenance_by_url above, no object to convert.
+        "chat_summary": dict(session.chat_summary) if session.chat_summary is not None else None,
+        "chat_summary_covers_history_count": session.chat_summary_covers_history_count,
+        "chat_summary_updated_at": session.chat_summary_updated_at,
     }
 
 
@@ -343,6 +349,20 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         # convention as report_approved_web_article_urls/
         # revoked_web_article_urls above.
         web_article_provenance_by_url=dict(d.get("web_article_provenance_by_url", {})),
+        # M3.1: a session saved before this phase (or one that has never
+        # been summarized yet) simply has no summary recorded -- None/0/
+        # None are the correct "nothing summarized yet" defaults, same
+        # backward-compat convention as every field above. Deliberately
+        # does NOT validate chat_summary's shape here (that's
+        # chat_summarization.py's job, at READ time when actually building
+        # model context, not at deserialization time) -- a malformed dict
+        # still loads cleanly as a plain dict; only when something
+        # actually tries to USE it as a ChatHistorySummary does validation
+        # happen, so a corrupt/old value here can never crash a plain
+        # session load.
+        chat_summary=d.get("chat_summary"),
+        chat_summary_covers_history_count=d.get("chat_summary_covers_history_count", 0),
+        chat_summary_updated_at=d.get("chat_summary_updated_at"),
     )
 
 

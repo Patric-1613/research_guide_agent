@@ -58,6 +58,29 @@ class UsagePolicy:
     agent_tool_call_limit_per_run: int
     agent_recursion_limit: int
 
+    # --- M3.1: read by research_agent/chat_summarization.py's pure helpers
+    # only -- nothing on the live curation-chat request path calls any of
+    # that module yet (see its own module docstring). Independent of
+    # max_chat_turns_per_session above: that's a storage-capacity ceiling
+    # (how many turns a session may ever hold, M2.2C), this is a
+    # model-context-cost policy (how much of that stored history gets sent
+    # to the model on any one turn) -- the two intentionally never share a
+    # constant, so recalibrating one is never assumed to imply the other.
+    chat_summary_trigger_tokens: int
+    # In USER TURNS/EXCHANGES (one user+assistant pair), not raw
+    # chat_history entries -- see chat_summarization.py's own exchange-
+    # boundary helper for why a raw-entry count would be the wrong unit
+    # here (a pair must never be split across the retained/summarized
+    # boundary).
+    chat_summary_keep_recent_turns: int
+    chat_summary_max_output_tokens: int
+    # Same turn/exchange unit as chat_summary_keep_recent_turns above --
+    # the minimum number of NEWLY eligible turns that must have
+    # accumulated since the current summary's own coverage before a
+    # second (or later) summarization pass is allowed to fire again, even
+    # if the token trigger alone would otherwise re-fire every turn.
+    chat_summary_min_new_turns: int
+
 
 def _positive_int(name: str, default: int) -> int:
     """Reads an env var as a positive int, or falls back to `default`.
@@ -128,4 +151,21 @@ def get_usage_policy() -> UsagePolicy:
         # middleware) at the `agent.stream(...)` call site. Same provisional
         # status as the two limits above -- not derived from real traffic.
         agent_recursion_limit=_positive_int("USAGE_AGENT_RECURSION_LIMIT", 15),
+        # M3.1: provisional, uncalibrated -- chosen the same way as every
+        # other threshold in this module (topology inspection: today's
+        # MAX_HISTORY_TURNS=8 cap already implies a typical uncompressed
+        # recent-history window of roughly a few thousand tokens; 6000
+        # gives real headroom above that before compression kicks in, not
+        # a calibrated figure). Revisit once usage_telemetry.sqlite has
+        # real curation-chat token data -- same caveat as every M1/M2
+        # value already carries.
+        chat_summary_trigger_tokens=_positive_int("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", 6_000),
+        # Deliberately reuses qa.MAX_HISTORY_TURNS's own already-reasoned
+        # value ("confirmed with the project owner: coherence rarely
+        # depends on more than a handful of recent turns here") rather
+        # than inventing a second, silently-different "how much recent
+        # context matters" number in the same codebase.
+        chat_summary_keep_recent_turns=_positive_int("USAGE_CHAT_SUMMARY_KEEP_RECENT_TURNS", 8),
+        chat_summary_max_output_tokens=_positive_int("USAGE_CHAT_SUMMARY_MAX_OUTPUT_TOKENS", 800),
+        chat_summary_min_new_turns=_positive_int("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", 4),
     )

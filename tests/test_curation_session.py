@@ -690,6 +690,138 @@ def test_old_session_with_no_report_at_all_has_no_implicit_version():
         assert loaded.active_report_version_id is None
 
 
+def test_chat_summary_fields_round_trip_through_real_sqlite():
+    """Usage Protection M3.1: chat_summary/chat_summary_covers_history_count/
+    chat_summary_updated_at are new persisted fields -- proves the whole
+    structured dict content (not just the dataclass default) survives a
+    real save/load, same pattern as
+    test_web_article_provenance_by_url_round_trips_through_real_sqlite."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        chat_summary = {
+            "research_intent": "Understand parameter-efficient fine-tuning",
+            "resolved_terminology": "PEFT = parameter-efficient fine-tuning",
+            "key_conclusions": ["LoRA reduces trainable parameters"],
+            "open_questions": [],
+            "papers_discussed": ["p0"],
+            "web_articles_discussed": [],
+            "user_preferences": "",
+            "unresolved_disagreements": "",
+        }
+        session = PaperPoolSession(
+            topic="parameter-efficient fine-tuning",
+            stage="synthesize",
+            chat_summary=chat_summary,
+            chat_summary_covers_history_count=12,
+            chat_summary_updated_at="2026-08-12T10:00:00+00:00",
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-summary", cp)
+            loaded = load_curation_session("session-summary", cp)
+
+        assert loaded is not None
+        assert loaded.chat_summary == chat_summary
+        assert loaded.chat_summary_covers_history_count == 12
+        assert loaded.chat_summary_updated_at == "2026-08-12T10:00:00+00:00"
+
+
+def test_chat_summary_none_and_zero_defaults_round_trip():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(topic="x")
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-no-summary", cp)
+            loaded = load_curation_session("session-no-summary", cp)
+
+        assert loaded.chat_summary is None
+        assert loaded.chat_summary_covers_history_count == 0
+        assert loaded.chat_summary_updated_at is None
+
+
+def test_old_session_missing_all_chat_summary_keys_loads_with_safe_defaults():
+    """A checkpoint saved before M3.1 has none of the three new keys at
+    all -- must load cleanly with chat_summary=None,
+    chat_summary_covers_history_count=0, chat_summary_updated_at=None,
+    same .get(..., default) backward-compat convention as every other
+    field in this file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_format_dict = {
+            "topic": "old style session", "reserve": [], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+            "selected_paper_ids": [], "selected_papers": [], "report": None, "chat_history": [],
+            "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+            "refinement_notes": [], "report_covered_web_article_count": 0,
+            # deliberately no chat_summary/chat_summary_covers_history_count/
+            # chat_summary_updated_at keys
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-no-summary-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-no-summary-id", cp)
+
+        assert loaded is not None
+        assert loaded.chat_summary is None
+        assert loaded.chat_summary_covers_history_count == 0
+        assert loaded.chat_summary_updated_at is None
+
+
+def test_updated_at_stays_none_when_absent_even_with_other_fields_present():
+    """No fabricated timestamps: a session with a real chat_summary/
+    covers_count but no updated_at recorded must load with
+    chat_summary_updated_at exactly None, never a synthesized value."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="x", chat_summary={"research_intent": "ok"}, chat_summary_covers_history_count=4,
+        )
+        assert session.chat_summary_updated_at is None
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-no-timestamp", cp)
+            loaded = load_curation_session("session-no-timestamp", cp)
+
+        assert loaded.chat_summary == {"research_intent": "ok"}
+        assert loaded.chat_summary_covers_history_count == 4
+        assert loaded.chat_summary_updated_at is None
+
+
+def test_malformed_persisted_chat_summary_does_not_crash_a_plain_session_load():
+    """curation_session.py's own _dict_to_session deliberately does NOT
+    validate chat_summary's shape -- a malformed dict still loads
+    cleanly as a plain dict; only chat_summarization.py's own helpers
+    (at actual context-construction time) treat it as invalid. Proves
+    the load path itself never raises regardless of what's in there."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("malformed-summary-id")}}
+            malformed_dict = {
+                "topic": "x", "reserve": [], "cursor": 0, "seen_paper_ids": [], "seen_titles": [],
+                "stage": "curate", "target_count": 10, "selected_paper_ids": [], "selected_papers": [],
+                "report": None, "chat_history": [], "web_articles_added": [], "pending_web_offer": None,
+                "pending_report_update": None, "refinement_notes": [], "report_covered_web_article_count": 0,
+                "chat_summary": {"exchange_id": "not-a-real-summary-shape"},
+                "chat_summary_covers_history_count": 999,
+                "chat_summary_updated_at": "not-actually-checked-here",
+            }
+            graph.invoke({"session": malformed_dict}, config=config)
+            loaded = load_curation_session("malformed-summary-id", cp)
+
+        assert loaded is not None
+        # The raw dict round-trips as-is (no validation at THIS layer) --
+        # chat_summarization.load_persisted_summary_state is what treats
+        # it as invalid, tested separately in tests/test_chat_summarization.py.
+        assert loaded.chat_summary == {"exchange_id": "not-a-real-summary-shape"}
+        assert loaded.chat_summary_covers_history_count == 999
+
+
 def test_old_session_without_web_article_provenance_key_loads_with_empty_dict():
     """R7E.2 backward compatibility: a checkpoint saved before this phase
     has no web_article_provenance_by_url key at all -- must load cleanly
