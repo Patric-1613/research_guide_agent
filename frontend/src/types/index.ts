@@ -371,6 +371,73 @@ export interface CurationChatRequest {
   message: string
 }
 
+// Usage Protection M4.1/M4.2A: the frozen streaming event vocabulary
+// research_agent/chat_streaming.py defines and research_agent/
+// curation_chat_streaming.py emits, in order `started -> phase* -> delta*
+// -> completed -> done` on success, or `started -> phase* -> delta* ->
+// error -> done` on a handled failure. Mirrors ChatStreamEventType/
+// ChatStreamPhase field-for-field -- kept as plain interfaces, not
+// generated, same convention as every other type in this file. See
+// lib/api/chatStream.ts for the adapter that decodes the raw SSE
+// response into these, and hooks/useCurationSession.ts for the state
+// machine that enforces their ordering.
+export type ChatStreamPhase =
+  | 'preparing_context'
+  | 'summarizing_history'
+  | 'checking_relevance'
+  | 'searching_web'
+  | 'generating'
+  | 'saving'
+
+export type ChatStreamEventType = 'started' | 'phase' | 'delta' | 'completed' | 'error' | 'done'
+
+export interface ChatStreamStartedEvent {
+  type: 'started'
+  data: Record<string, never>
+}
+
+export interface ChatStreamPhaseEvent {
+  type: 'phase'
+  data: { phase: ChatStreamPhase }
+}
+
+export interface ChatStreamDeltaEvent {
+  type: 'delta'
+  data: { text: string }
+}
+
+// Deliberately narrower than a persisted ChatTurn -- exchange_id,
+// relevance metadata, and offer state are NOT here (they only ever come
+// from a canonical reload, see useCurationSession's own sendChatMessage
+// Streaming docstring). answer here is provisional/preview text only.
+export interface ChatStreamCompletedEvent {
+  type: 'completed'
+  data: {
+    answer: string
+    answerable: boolean
+    cited_papers: CitedPaperOut[]
+    cited_web_articles: CitedWebArticleOut[]
+  }
+}
+
+export interface ChatStreamErrorEvent {
+  type: 'error'
+  data: { reason_code: string; message: string }
+}
+
+export interface ChatStreamDoneEvent {
+  type: 'done'
+  data: Record<string, never>
+}
+
+export type ChatStreamServerEvent =
+  | ChatStreamStartedEvent
+  | ChatStreamPhaseEvent
+  | ChatStreamDeltaEvent
+  | ChatStreamCompletedEvent
+  | ChatStreamErrorEvent
+  | ChatStreamDoneEvent
+
 export interface CurationDeleteResponse {
   session_id: string
   deleted: boolean

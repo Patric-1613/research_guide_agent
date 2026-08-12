@@ -45,8 +45,9 @@ export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion, sendChatMessage,
-    deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview,
+    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion,
+    chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
+    deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   } = useCurationSession()
 
   const [stagedPickIds, setStagedPickIds] = useState<string[]>([])
@@ -202,9 +203,19 @@ export default function CurationWorkspacePage() {
   // source makes the report stale), and accepted via the SAME Yes/No
   // buttons -> onSendMessage path ChatModePanel already uses for the
   // web-search offer, not a separate mechanism.
+  // Usage Protection M4.2B: streaming is now the normal submission path
+  // for the persistent-input Send button and the web-search/report-
+  // update offer Yes/No buttons alike (ChatModePanel's own onSendMessage
+  // prop, unchanged in shape) -- sendChatMessage (non-streaming) remains
+  // fully callable on the hook for backward compatibility, just no
+  // longer wired to this UI's own normal submission path.
   async function handleSendMessage(message: string) {
-    await sendChatMessage(message)
+    await sendChatMessageStreaming(message)
     setReviewsRefreshToken((t) => t + 1)
+  }
+
+  function handleRetryChatSync() {
+    void refresh()
   }
 
   async function handleDeleteExchanges(exchangeIds: string[]) {
@@ -350,7 +361,7 @@ export default function CurationWorkspacePage() {
                   {workspaceMode === 'chat' && (
                     <ChatModePanel
                       state={state}
-                      disabled={loading}
+                      disabled={loading || chatStreamActive}
                       onSendMessage={handleSendMessage}
                       lastSearchMeta={lastChatSearchMeta}
                       onDeleteExchanges={handleDeleteExchanges}
@@ -359,6 +370,12 @@ export default function CurationWorkspacePage() {
                       lastAddToReportResult={lastAddToReportResult}
                       onEditExchange={handleEditExchange}
                       onDismissReportStaleWarning={dismissReportStaleWarning}
+                      chatStreamActive={chatStreamActive}
+                      chatStreamPhase={chatStreamPhase}
+                      chatStreamText={chatStreamText}
+                      chatStreamSyncFailed={chatStreamSyncFailed}
+                      onCancelChatStream={cancelChatStream}
+                      onRetrySync={handleRetryChatSync}
                     />
                   )}
                   {workspaceMode === 'report' && (

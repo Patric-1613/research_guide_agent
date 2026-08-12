@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { curationApi } from '../lib/api/client'
+import { ChatStreamTransportError, streamCurationChat } from '../lib/api/chatStream'
 import { getUserFacingErrorMessage } from '../lib/api/errorMessages'
-import type { CurationStateResponse, RefinementMode, ReportTemplate } from '../types'
+import { ApiError } from '../types'
+import type { ChatStreamPhase, CurationStateResponse, RefinementMode, ReportTemplate } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
 // deliberately client-only, accumulated as turns happen during THIS page
@@ -145,6 +147,16 @@ interface UseCurationSessionResult {
   // same return convention as generate/regenerateReport above.
   activateReportVersion: (versionId: string) => Promise<CurationStateResponse | undefined>
   sendChatMessage: (message: string) => Promise<void>
+  // Usage Protection M4.2B: streaming lifecycle state/actions -- the
+  // normal UI submission path now uses sendChatMessageStreaming (see
+  // CurationWorkspacePage.tsx); sendChatMessage above remains available
+  // unchanged for backward compatibility.
+  chatStreamActive: boolean
+  chatStreamPhase: ChatStreamPhase | null
+  chatStreamText: string
+  chatStreamSyncFailed: boolean
+  sendChatMessageStreaming: (message: string) => Promise<void>
+  cancelChatStream: () => void
   // curation-chat-delete Phase 3: exchange_ids, not individual message
   // ids -- deleting an exchange always removes both the user question and
   // assistant answer that share it (see the backend's own
@@ -189,6 +201,44 @@ export function useCurationSession(): UseCurationSessionResult {
   const [lastAddToReportResult, setLastAddToReportResult] = useAutoClearingState<AddToReportResult>()
   const turnEventsSessionRef = useRef<string | null>(null)
 
+  // Usage Protection M4.2B: chat-streaming lifecycle state, owned here
+  // (not inside ChatModePanel) per this phase's own explicit requirement
+  // -- only what's genuinely needed to render/control an in-flight
+  // stream: whether one is active, its current phase, the accumulated
+  // safe answer text so far, and whether the post-completion canonical
+  // reload failed. Citation/exchange metadata is deliberately NOT
+  // tracked here -- see sendChatMessageStreaming's own docstring for why
+  // chatStreamText alone is always enough.
+  const [chatStreamActive, setChatStreamActiveState] = useState(false)
+  const [chatStreamPhase, setChatStreamPhase] = useState<ChatStreamPhase | null>(null)
+  const [chatStreamText, setChatStreamText] = useState('')
+  const [chatStreamSyncFailed, setChatStreamSyncFailed] = useState(false)
+  // A ref alongside the state above: sendChatMessageStreaming's own
+  // "reject a second concurrent stream" guard reads THIS, not the state,
+  // since a rapid double-invocation (e.g. a fast double-click) could
+  // otherwise race ahead of a state update that hasn't re-rendered yet.
+  const chatStreamActiveRef = useRef(false)
+  const chatStreamAbortRef = useRef<AbortController | null>(null)
+
+  const setChatStreamActive = useCallback((active: boolean) => {
+    chatStreamActiveRef.current = active
+    setChatStreamActiveState(active)
+  }, [])
+
+  // The one place the streaming preview is ever cleared -- called on a
+  // successful canonical reload (loadState below, which every action
+  // already calls on its own success; once fresh chat_history has
+  // landed, the temporary preview is superseded, per this phase's own
+  // "replace it with canonical history after reload" requirement), on a
+  // handled SSE error, and on cancellation.
+  const clearChatStreamPreview = useCallback(() => {
+    setChatStreamActive(false)
+    setChatStreamPhase(null)
+    setChatStreamText('')
+    setChatStreamSyncFailed(false)
+    chatStreamAbortRef.current = null
+  }, [setChatStreamActive])
+
   // chat-ux-polish Phase A: called at the start of every chat action
   // (sendChatMessage/deleteExchanges/editExchange/addExchangesToReport)
   // so a success/info notice from a DIFFERENT, earlier action can't keep
@@ -212,8 +262,13 @@ export function useCurationSession(): UseCurationSessionResult {
       setTurnEvents([])
       setLastChatSearchMeta(null)
     }
+    // Usage Protection M4.2B: canonical state is now current -- any
+    // leftover streaming preview (from this call's own caller, or from
+    // an earlier turn) is superseded. Safe to call unconditionally: a
+    // no-op when there was nothing to clear.
+    clearChatStreamPreview()
     return fresh
-  }, [])
+  }, [clearChatStreamPreview])
 
   const runAction = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
     setLoading(true)
@@ -245,6 +300,18 @@ export function useCurationSession(): UseCurationSessionResult {
       runAction(() => loadState(sessionId))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+
+  // Usage Protection M4.2B: aborts any in-flight chat stream whenever the
+  // open session changes -- a stream belongs to the session it was
+  // started for, and switching sessions must not let it keep running and
+  // writing into now-stale UI state -- or when this hook itself
+  // unmounts. One cleanup function covers both: React runs it before
+  // re-running this effect for a new sessionId, and again on unmount.
+  useEffect(() => {
+    return () => {
+      chatStreamAbortRef.current?.abort()
+    }
   }, [sessionId])
 
   useEffect(() => {
@@ -349,6 +416,179 @@ export function useCurationSession(): UseCurationSessionResult {
     [runAction, sessionId, loadState, clearActionNotices, setLastChatSearchMeta],
   )
 
+  // Usage Protection M4.2B: the streaming counterpart to sendChatMessage
+  // above -- POST /curation/{session_id}/chat/stream via lib/api/
+  // chatStream.ts's streamCurationChat, driving this hook's own
+  // chatStream* state instead of resolving once like every other action
+  // here. sendChatMessage itself is untouched and stays fully callable
+  // (non-streaming backward compatibility is an explicit requirement of
+  // this phase) -- this is simply what the UI's normal Send/offer-button
+  // path now calls instead (see CurationWorkspacePage.tsx's own
+  // handleSendMessage).
+  //
+  // Event-sequencing is enforced HERE, not in chatStream.ts (which only
+  // validates SSE framing) -- a violation of the frozen M4.1/M4.2A
+  // contract (delta before started, anything after done, more than one
+  // completed/error, both completed AND error, done missing entirely) is
+  // treated exactly like a transport failure: the stream is abandoned, a
+  // safe message is shown, and canonical state is reloaded to discover
+  // what (if anything) the backend actually persisted. Real backend
+  // behavior never produces this -- it would only come from a corrupted
+  // transport.
+  //
+  // Does not run through runAction/the shared loading flag (unlike every
+  // other action here) -- this needs its own incremental phase/delta
+  // updates DURING the round trip, not runAction's single before/after
+  // toggle, and a cancellation must never populate the shared `error`
+  // banner. chatStreamActiveRef guards against a second concurrent
+  // stream; CurationWorkspacePage additionally disables the whole panel
+  // (loading || chatStreamActive) while one is running.
+  const sendChatMessageStreaming = useCallback(
+    async (message: string): Promise<void> => {
+      if (!sessionId || chatStreamActiveRef.current) return
+      clearActionNotices()
+      setError(null)
+      const controller = new AbortController()
+      chatStreamAbortRef.current = controller
+      setChatStreamActive(true)
+      setChatStreamPhase(null)
+      setChatStreamText('')
+      setChatStreamSyncFailed(false)
+
+      const syncMessage = 'Lost the connection while the assistant was responding. Checking what was saved…'
+      const reloadBestEffort = async () => {
+        try {
+          await loadState(sessionId)
+        } catch {
+          // Best-effort only -- the next successful action's own
+          // loadState call will catch canonical state up regardless.
+        }
+      }
+
+      let sawStarted = false
+      let sawDone = false
+      let sawCompleted = false
+      let sawError = false
+
+      try {
+        for await (const event of streamCurationChat(sessionId, { message }, { signal: controller.signal })) {
+          if (sawDone) {
+            throw new ChatStreamTransportError('Received data after the stream had already ended.')
+          }
+          if (event.type === 'started') {
+            if (sawStarted) throw new ChatStreamTransportError('Received a duplicate start signal.')
+            sawStarted = true
+            continue
+          }
+          if (!sawStarted) {
+            throw new ChatStreamTransportError('Received data before the stream had started.')
+          }
+          switch (event.type) {
+            case 'phase':
+              setChatStreamPhase(event.data.phase)
+              break
+            case 'delta':
+              setChatStreamText((prev) => prev + event.data.text)
+              break
+            case 'completed':
+              if (sawCompleted || sawError) throw new ChatStreamTransportError('Received more than one terminal signal.')
+              sawCompleted = true
+              break
+            case 'error':
+              if (sawCompleted || sawError) throw new ChatStreamTransportError('Received more than one terminal signal.')
+              sawError = true
+              setError(event.data.message)
+              break
+            case 'done':
+              sawDone = true
+              break
+          }
+        }
+      } catch (err) {
+        if (controller.signal.aborted) {
+          // Deliberate user/unmount/session-change cancellation -- never
+          // a visible application error. The backend's own M4.2A
+          // lifecycle hardening guarantees a genuinely cancelled turn
+          // never leaves a half-persisted result (research_agent/
+          // curation_chat_streaming.py's own _persist_and_complete waits
+          // for any in-flight save to settle before the lease is
+          // released), so reloading here can only ever reveal "nothing
+          // changed" or a save that had already committed -- either way,
+          // canonical state is what must be shown, never the abandoned
+          // local preview.
+          clearChatStreamPreview()
+          await reloadBestEffort()
+          return
+        }
+        clearChatStreamPreview()
+        if (err instanceof ApiError) {
+          // A preflight rejection (404/400/409/422/429/503) -- research_
+          // agent/services/curation_chat_service.py::stream_answer_
+          // curation_chat's own synchronous checks all run BEFORE any
+          // StreamingResponse is constructed, so nothing was ever
+          // started; the existing shared error-message mapping applies
+          // and there is nothing to reload.
+          setError(getUserFacingErrorMessage(err))
+          return
+        }
+        // Any other failure once an attempt to read the stream began --
+        // a ChatStreamTransportError (malformed/truncated SSE) or a raw
+        // transport failure (e.g. the underlying fetch() itself
+        // rejecting) alike -- is the same "something broke mid-response"
+        // bucket: a safe, fixed retry message, never automatically
+        // resending the POST, and a reload to discover whether anything
+        // was actually persisted before the failure.
+        setError(syncMessage)
+        await reloadBestEffort()
+        return
+      }
+
+      if (!sawDone || (!sawCompleted && !sawError)) {
+        // The server closed the connection without the one required
+        // clean-termination signal (`done`), or without ever reaching a
+        // terminal outcome at all -- same "malformed/truncated" bucket
+        // as the catch block above.
+        clearChatStreamPreview()
+        setError(syncMessage)
+        await reloadBestEffort()
+        return
+      }
+
+      if (sawError) {
+        // A handled SSE error -> done: the backend's own M4.2A hardening
+        // guarantees nothing was persisted for a handled failure (see
+        // research_agent/curation_chat_streaming.py's own
+        // HandledStreamFailure docstring), so no reload is needed here --
+        // the safe message is already set above.
+        clearChatStreamPreview()
+        return
+      }
+
+      // Success: completed -> done. chatStreamText already holds the
+      // exact final answer text -- the adapter's own "sum of deltas ==
+      // final answer" invariant (research_agent/chat_streaming.py's own
+      // stream_chat_answer docstring) -- so there is nothing further to
+      // capture from the completed event's own payload before reloading
+      // canonical state, which is authoritative for everything the
+      // completed payload deliberately does not carry (exchange_id,
+      // citations, relevance metadata, offer state, chat_references).
+      setChatStreamPhase(null)
+      try {
+        await loadState(sessionId)
+        // loadState's own success path already calls
+        // clearChatStreamPreview() -- see above.
+      } catch {
+        setChatStreamSyncFailed(true)
+        setChatStreamActive(false)
+      }
+    },
+    [sessionId, loadState, clearActionNotices, clearChatStreamPreview, setChatStreamActive],
+  )
+
+  const cancelChatStream = useCallback(() => {
+    chatStreamAbortRef.current?.abort()
+  }, [])
+
   const deleteExchanges = useCallback(
     (exchangeIds: string[]) =>
       runAction(async () => {
@@ -452,6 +692,7 @@ export function useCurationSession(): UseCurationSessionResult {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
     openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion, sendChatMessage,
+    chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
     deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   }
 }

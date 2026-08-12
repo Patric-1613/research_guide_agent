@@ -23,7 +23,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'It is about X.' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByText('what is this about?')).toBeInTheDocument()
     expect(screen.getByText('It is about X.')).toBeInTheDocument()
@@ -32,7 +32,7 @@ describe('ChatModePanel', () => {
   it('typing a message and pressing Send calls onSendMessage and clears the input', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     const input = screen.getByTestId('persistent-input')
     await user.type(input, 'tell me more')
@@ -45,7 +45,7 @@ describe('ChatModePanel', () => {
   it('Send does nothing on empty/whitespace-only text', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), '   ')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -57,7 +57,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
     const state = baseState({ pending_web_offer: { question: 'what about scaling laws?' } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getByTestId('web-offer-yes'))
     expect(onSendMessage).toHaveBeenCalledWith('yes')
@@ -70,7 +70,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn()
     const state = baseState({ pending_report_update: { new_article_count: 1 } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByText('Update the report to include the newly approved source(s)?')).toBeInTheDocument()
     await user.click(screen.getByTestId('web-offer-no'))
@@ -78,7 +78,7 @@ describe('ChatModePanel', () => {
   })
 
   it('no offers pending: no Yes/No buttons render', () => {
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
     expect(screen.queryByTestId('web-offer-yes')).not.toBeInTheDocument()
   })
 
@@ -86,7 +86,7 @@ describe('ChatModePanel', () => {
     const user = userEvent.setup()
     let resolveSend: () => void = () => {}
     const onSendMessage = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve }))
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), 'tell me more')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -104,7 +104,7 @@ describe('ChatModePanel', () => {
     let resolveSend: () => void = () => {}
     const onSendMessage = vi.fn(() => new Promise<void>((resolve) => { resolveSend = resolve }))
     const state = baseState({ pending_web_offer: { question: 'what about scaling laws?' } })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getByTestId('web-offer-yes'))
 
@@ -116,7 +116,7 @@ describe('ChatModePanel', () => {
   it('chat-ux-fixes bug 3: the optimistic bubble is cleared even if onSendMessage rejects, not left stuck', async () => {
     const user = userEvent.setup()
     const onSendMessage = vi.fn().mockRejectedValue(new Error('boom'))
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.type(screen.getByTestId('persistent-input'), 'tell me more')
     await user.click(screen.getByTestId('persistent-input-send'))
@@ -128,7 +128,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 2 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 2 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -139,7 +139,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 1 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 1 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -150,7 +150,7 @@ describe('ChatModePanel', () => {
     render(
       <ChatModePanel
         state={baseState()} disabled={false} onSendMessage={vi.fn()}
-        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 0 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastSearchMeta={{ webSearchUsed: true, newWebArticlesFound: 0 }} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -158,7 +158,7 @@ describe('ChatModePanel', () => {
   })
 
   it('chat-ux-fixes bug 2: no note at all when the last reply never searched the web', () => {
-    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
     expect(screen.queryByTestId('web-search-meta-note')).not.toBeInTheDocument()
   })
 
@@ -171,7 +171,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'Per [Web 1], ...', used_web_search: true, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByTestId('web-metadata-hint')).toHaveTextContent(
       'This answer used web sources — report-inclusion controls will be added to the message menu in a future update.',
@@ -185,7 +185,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'It is about X [Paper 1].', used_web_search: false, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.queryByTestId('web-metadata-hint')).not.toBeInTheDocument()
   })
@@ -199,7 +199,7 @@ describe('ChatModePanel', () => {
         { role: 'assistant', content: 'a2 [Web 1]', used_web_search: true, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getAllByTestId('web-metadata-hint')).toHaveLength(1)
   })
@@ -218,18 +218,18 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
   }
 
   it('renders a "..." message menu button for every chat message', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
     expect(screen.getAllByTestId('message-menu-button')).toHaveLength(4)
   })
 
   it('the menu button has an accessible label', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
     expect(screen.getAllByLabelText('Message actions')).toHaveLength(4)
   })
 
   it('curation-chat-delete Phase 3: opening a message menu shows Select and Delete active; Add to report disabled here because this message (a paper-only exchange) is ineligible', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0]) // ex-1's user message
 
@@ -240,7 +240,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('curation-chat-edit Phase 5: Edit appears only on the user-question side of an exchange, and is enabled for a real exchange_id', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
     const menuButtons = screen.getAllByTestId('message-menu-button')
 
     await user.click(menuButtons[0]) // user message, exchange_id: 'ex-1'
@@ -253,7 +253,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('clicking Select in a message menu enters select mode with checkboxes, and no bulk bar yet', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.queryAllByTestId('exchange-select-checkbox')).toHaveLength(0)
 
@@ -270,7 +270,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('selectable exchanges can be checked and unchecked, and the count updates', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -288,7 +288,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('checking either message of the same exchange reflects as one shared selection', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -302,7 +302,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('curation-chat-delete Phase 3: the bulk action bar shows Delete selected active; Add selected to report disabled because the selection (ex-1, paper-only) has no eligible exchange', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -314,7 +314,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
 
   it('Clear selection empties the selection, hides the bulk bar, and exits select mode', async () => {
     const user = userEvent.setup()
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     await user.click(screen.getByTestId('message-menu-select'))
@@ -336,7 +336,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'a new answer', exchange_id: 'ex-1', used_web_search: false, added_to_report: false },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[2]) // the new question's menu
     await user.click(screen.getByTestId('message-menu-select'))
@@ -356,14 +356,14 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'pre-Phase-1 answer' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     expect(screen.getByTestId('message-menu-select')).toBeDisabled()
   })
 
   it('the web badge and hint still render normally with the menu/select UI layered on top', () => {
-    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByTestId('chat-web-badge')).toBeInTheDocument()
     expect(screen.getByTestId('web-metadata-hint')).toBeInTheDocument()
@@ -377,7 +377,7 @@ describe('ChatModePanel -- curation-chat-select Phase 2: message menu + select m
         { role: 'assistant', content: 'pre-Phase-1 answer' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     await user.click(screen.getAllByTestId('message-menu-button')[0])
     expect(screen.getByTestId('message-menu-delete')).toBeDisabled()
@@ -401,7 +401,7 @@ describe('ChatModePanel -- curation-chat-menu-dismiss: closing the "..." menu on
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
   }
@@ -522,7 +522,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -545,7 +545,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -564,7 +564,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -590,7 +590,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -609,7 +609,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -628,7 +628,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -650,7 +650,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     const menuButton = screen.getAllByLabelText('Message actions')[0]
@@ -663,7 +663,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale
-        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-possibly-stale-warning')).toBeInTheDocument()
@@ -673,7 +673,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.queryByTestId('report-possibly-stale-warning')).not.toBeInTheDocument()
@@ -683,7 +683,7 @@ describe('ChatModePanel -- curation-chat-delete Phase 3: deleting exchanges', ()
     render(
       <ChatModePanel
         state={exchangeState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.getByTestId('chat-web-badge')).toBeInTheDocument()
@@ -721,7 +721,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -734,7 +734,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     const menuButtons = screen.getAllByTestId('message-menu-button')
@@ -768,7 +768,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={relevanceState(false)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -781,7 +781,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={relevanceState(true)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -794,7 +794,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={relevanceState(undefined)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -807,7 +807,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={relevanceState(null)} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -823,7 +823,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -840,7 +840,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -855,7 +855,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -876,7 +876,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -896,7 +896,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -913,7 +913,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={{ addedCount: 1, skippedCount: 0, sourceCount: 1 }} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={{ addedCount: 1, skippedCount: 0, sourceCount: 1 }} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.getByTestId('add-to-report-success-note')).toHaveTextContent('Added 1 exchange (1 source) to the report.')
@@ -923,7 +923,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
     render(
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
-        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.queryByTestId('add-to-report-success-note')).not.toBeInTheDocument()
@@ -944,7 +944,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false}
-        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={onAddExchangesToReport} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -965,7 +965,7 @@ describe('ChatModePanel -- curation-chat-add-to-report Phase 4: adding exchanges
       <ChatModePanel
         state={mixedEligibilityState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false}
-        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1000,7 +1000,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     const menuButtons = screen.getAllByTestId('message-menu-button')
@@ -1019,7 +1019,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1034,7 +1034,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1052,7 +1052,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1071,7 +1071,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1092,7 +1092,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1109,7 +1109,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1129,7 +1129,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={onEditExchange} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1154,7 +1154,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-possibly-stale-warning')).toBeInTheDocument()
@@ -1167,7 +1167,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
       <ChatModePanel
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={onDeleteExchanges} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
-        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1186,6 +1186,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
         state={stateWithEditableAndOldEntries()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
         onDeleteExchanges={vi.fn()} reportPossiblyStale onAddExchangesToReport={vi.fn()}
         lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={onDismissReportStaleWarning}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
       />,
     )
 
@@ -1197,7 +1198,7 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
 
 describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references panel', () => {
   it('hides the Chat references panel when chat_references is empty', () => {
-    render(<ChatModePanel state={baseState({ chat_references: [] })} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={baseState({ chat_references: [] })} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
@@ -1212,7 +1213,7 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
         { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     const panel = screen.getByTestId('chat-references')
     expect(panel).toBeInTheDocument()
@@ -1227,7 +1228,7 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
         { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByTestId('chat-reference-web-icon-2')).toHaveAttribute('aria-label', 'Web source')
     expect(screen.queryByTestId('chat-reference-web-icon-1')).not.toBeInTheDocument()
@@ -1239,7 +1240,7 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
         { number: 1, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     const link = screen.getByRole('link', { name: 'Web Article. x.com.' })
     expect(link).toHaveAttribute('href', 'https://x.com')
@@ -1256,7 +1257,7 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
         { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
       ],
     })
-    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />)
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#chat-ref-1')
     expect(document.getElementById('chat-ref-1')).toBeInTheDocument()
@@ -1272,8 +1273,157 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
     })
 
     expect(() =>
-      render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} />),
+      render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />),
     ).not.toThrow()
     expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatModePanel -- Usage Protection M4.2B: streaming chat UI', () => {
+  interface StreamingOverrides {
+    state?: CurationStateResponse
+    chatStreamActive?: boolean
+    chatStreamPhase?: string | null
+    chatStreamText?: string
+    chatStreamSyncFailed?: boolean
+  }
+
+  function renderStreaming(overrides: StreamingOverrides = {}) {
+    const onCancelChatStream = vi.fn()
+    const onRetrySync = vi.fn()
+    const onSendMessage = vi.fn()
+    render(
+      <ChatModePanel
+        state={overrides.state ?? baseState()} disabled={false} onSendMessage={onSendMessage} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={overrides.chatStreamActive ?? false}
+        chatStreamPhase={(overrides.chatStreamPhase as never) ?? null}
+        chatStreamText={overrides.chatStreamText ?? ''}
+        chatStreamSyncFailed={overrides.chatStreamSyncFailed ?? false}
+        onCancelChatStream={onCancelChatStream} onRetrySync={onRetrySync}
+      />,
+    )
+    return { onCancelChatStream, onRetrySync, onSendMessage }
+  }
+
+  it('renders the temporary assistant response area with the accumulated safe answer text', () => {
+    renderStreaming({ chatStreamActive: true, chatStreamText: 'Hello wor' })
+    expect(screen.getByTestId('chat-stream-response')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-stream-text')).toHaveTextContent('Hello wor')
+  })
+
+  it('shows a concise phase label, not the raw backend identifier, while there is no answer text yet', () => {
+    renderStreaming({ chatStreamActive: true, chatStreamPhase: 'checking_relevance', chatStreamText: '' })
+    expect(screen.getByTestId('chat-stream-phase')).toHaveTextContent('Checking sources')
+    expect(screen.queryByText('checking_relevance')).not.toBeInTheDocument()
+  })
+
+  it('maps every phase the backend actually emits to its own concise label', () => {
+    const cases: Array<[string, string]> = [
+      ['preparing_context', 'Preparing context'],
+      ['summarizing_history', 'Summarizing conversation'],
+      ['checking_relevance', 'Checking sources'],
+      ['searching_web', 'Searching the web'],
+      ['generating', 'Writing answer'],
+      ['saving', 'Saving'],
+    ]
+    for (const [phase, label] of cases) {
+      const { unmount } = render(
+        <ChatModePanel
+          state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+          onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+          lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+          chatStreamActive chatStreamPhase={phase as never} chatStreamText="" chatStreamSyncFailed={false}
+          onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+        />,
+      )
+      expect(screen.getByTestId('chat-stream-phase')).toHaveTextContent(label)
+      unmount()
+    }
+  })
+
+  it('no temporary response area at all when no stream is active', () => {
+    renderStreaming({ chatStreamActive: false })
+    expect(screen.queryByTestId('chat-stream-response')).not.toBeInTheDocument()
+  })
+
+  it('the Stop button replaces Send while a stream is active, and is accessible', async () => {
+    const user = userEvent.setup()
+    const { onCancelChatStream } = renderStreaming({ chatStreamActive: true, chatStreamPhase: 'generating' })
+
+    expect(screen.queryByTestId('persistent-input-send')).not.toBeInTheDocument()
+    const stopButton = screen.getByTestId('chat-stream-stop')
+    expect(stopButton).toBeInTheDocument()
+    expect(stopButton).toHaveAccessibleName(/stop/i)
+
+    await user.click(stopButton)
+    expect(onCancelChatStream).toHaveBeenCalledTimes(1)
+  })
+
+  it('Send is present (not Stop) when no stream is active', () => {
+    renderStreaming({ chatStreamActive: false })
+    expect(screen.getByTestId('persistent-input-send')).toBeInTheDocument()
+    expect(screen.queryByTestId('chat-stream-stop')).not.toBeInTheDocument()
+  })
+
+  it('a cancelled/cleared stream removes the temporary partial answer -- driven purely by props, no local memory of it', () => {
+    const { rerender } = render(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase={null} chatStreamText="a partial answer" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('chat-stream-response')).toBeInTheDocument()
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('chat-stream-response')).not.toBeInTheDocument()
+    expect(screen.queryByText('a partial answer')).not.toBeInTheDocument()
+  })
+
+  it('does not fabricate citation UI from streamed text -- a bracketed marker renders as plain literal text, not a link', () => {
+    renderStreaming({ chatStreamActive: true, chatStreamText: 'See [1] for details.' })
+    const textEl = screen.getByTestId('chat-stream-text')
+    expect(textEl).toHaveTextContent('See [1] for details.')
+    expect(textEl.querySelector('a')).toBeNull()
+  })
+
+  it('existing chat_history rendering is unaffected by the streaming props defaulting to inactive', () => {
+    const state = baseState({
+      chat_history: [
+        { role: 'user', content: 'what is this about?' },
+        { role: 'assistant', content: 'It is about X.' },
+      ],
+    })
+    renderStreaming({ state })
+    expect(screen.getByText('what is this about?')).toBeInTheDocument()
+    expect(screen.getByText('It is about X.')).toBeInTheDocument()
+    expect(screen.queryByTestId('chat-stream-response')).not.toBeInTheDocument()
+  })
+
+  it('shows a safe retryable sync message with a Retry action when chatStreamSyncFailed is true', async () => {
+    const user = userEvent.setup()
+    const { onRetrySync } = renderStreaming({ chatStreamSyncFailed: true })
+
+    const notice = screen.getByTestId('chat-stream-sync-failed')
+    expect(notice).toBeInTheDocument()
+    await user.click(screen.getByTestId('chat-stream-sync-retry'))
+    expect(onRetrySync).toHaveBeenCalledTimes(1)
+  })
+
+  it('no sync-failed notice when chatStreamSyncFailed is false', () => {
+    renderStreaming({ chatStreamSyncFailed: false })
+    expect(screen.queryByTestId('chat-stream-sync-failed')).not.toBeInTheDocument()
   })
 })

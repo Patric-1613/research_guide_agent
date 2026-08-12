@@ -2,8 +2,9 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCurationSession, getSessionIdFromUrl } from './useCurationSession'
 import { curationApi } from '../lib/api/client'
+import { streamCurationChat, ChatStreamTransportError } from '../lib/api/chatStream'
 import { ApiError } from '../types'
-import type { CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../types'
+import type { ChatStreamServerEvent, CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../types'
 
 vi.mock('../lib/api/client', () => ({
   curationApi: {
@@ -21,6 +22,67 @@ vi.mock('../lib/api/client', () => ({
     editChatExchange: vi.fn(),
   },
 }))
+
+vi.mock('../lib/api/chatStream', async () => {
+  const actual = await vi.importActual<typeof import('../lib/api/chatStream')>('../lib/api/chatStream')
+  return {
+    streamCurationChat: vi.fn(),
+    ChatStreamTransportError: actual.ChatStreamTransportError,
+  }
+})
+
+// Turns a fixed array of events into an async generator that honors the
+// AbortSignal streamCurationChat's own real fetch()/reader.read() would --
+// rejecting with a genuine AbortError once the signal fires, exactly what
+// controller.abort() (via cancelChatStream) must trigger.
+async function* fakeStream(events: ChatStreamServerEvent[], signal: AbortSignal): AsyncGenerator<ChatStreamServerEvent> {
+  for (const event of events) {
+    if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    await Promise.resolve()
+    yield event
+  }
+}
+
+// A stream that fails before yielding anything at all -- used to
+// simulate a preflight ApiError or a raw transport failure (e.g. fetch()
+// itself rejecting) without relying on unreachable code after a throw to
+// satisfy the AsyncGenerator return type.
+// eslint-disable-next-line require-yield
+async function* throwingStream(err: unknown): AsyncGenerator<ChatStreamServerEvent> {
+  throw err
+}
+
+// A stream that fails after yielding a few events -- simulates a
+// malformed/truncated SSE stream discovered mid-response.
+async function* streamThatFailsMidway(
+  events: ChatStreamServerEvent[],
+  err: unknown,
+): AsyncGenerator<ChatStreamServerEvent> {
+  for (const event of events) {
+    yield event
+  }
+  throw err
+}
+
+// A stream that yields `started` then hangs until the signal is aborted
+// (mirroring a real in-flight fetch a user cancels mid-response) or the
+// test calls `resume()`.
+function controllableStream() {
+  let resolveGate: (() => void) | null = null
+  const gate = new Promise<void>((resolve) => { resolveGate = resolve })
+  async function* gen(signal: AbortSignal): AsyncGenerator<ChatStreamServerEvent> {
+    yield { type: 'started', data: {} }
+    await Promise.race([
+      gate,
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) { reject(new DOMException('The operation was aborted.', 'AbortError')); return }
+        signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
+      }),
+    ])
+    yield { type: 'phase', data: { phase: 'generating' } }
+  }
+  return { gen, resume: () => resolveGate?.() }
+}
 
 function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
   return {
@@ -446,5 +508,403 @@ describe('useCurationSession', () => {
     })
 
     expect(result.current.reportPossiblyStale).toBe(false)
+  })
+})
+
+describe('useCurationSession -- Usage Protection M4.2B: chat-streaming lifecycle', () => {
+  async function mountAtS1() {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+    const rendered = renderHook(() => useCurationSession())
+    await waitFor(() => expect(rendered.result.current.state).not.toBeNull())
+    return rendered
+  }
+
+  it('started -> phase -> delta -> completed -> done: accumulates phase/text, then reloads canonical state and clears the preview', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) =>
+      fakeStream(
+        [
+          { type: 'started', data: {} },
+          { type: 'phase', data: { phase: 'generating' } },
+          { type: 'delta', data: { text: 'Hello' } },
+          { type: 'completed', data: { answer: 'Hello', answerable: true, cited_papers: [], cited_web_articles: [] } },
+          { type: 'done', data: {} },
+        ],
+        opts.signal,
+      ),
+    )
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(streamCurationChat).toHaveBeenCalledWith('s1', { message: 'hi' }, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(result.current.chatStreamActive).toBe(false)
+    expect(result.current.chatStreamText).toBe('')
+    expect(result.current.chatStreamSyncFailed).toBe(false)
+    expect(result.current.error).toBeNull()
+    // The canonical reload (getState) ran again beyond the initial mount load.
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('a final-only answer (zero deltas) still completes successfully', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) =>
+      fakeStream(
+        [
+          { type: 'started', data: {} },
+          { type: 'completed', data: { answer: '', answerable: false, cited_papers: [], cited_web_articles: [] } },
+          { type: 'done', data: {} },
+        ],
+        opts.signal,
+      ),
+    )
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('anything?')
+    })
+
+    expect(result.current.error).toBeNull()
+    expect(result.current.chatStreamActive).toBe(false)
+  })
+
+  it('one large final delta accumulates into chatStreamText DURING the stream, before completed/done arrive', async () => {
+    const { result } = await mountAtS1()
+    let releaseDone: (() => void) | null = null
+    const doneGate = new Promise<void>((resolve) => { releaseDone = resolve })
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      (async function* () {
+        yield { type: 'started', data: {} } as ChatStreamServerEvent
+        yield { type: 'delta', data: { text: 'The full answer arrives all at once.' } } as ChatStreamServerEvent
+        await doneGate
+        yield {
+          type: 'completed',
+          data: { answer: 'The full answer arrives all at once.', answerable: true, cited_papers: [], cited_web_articles: [] },
+        } as ChatStreamServerEvent
+        yield { type: 'done', data: {} } as ChatStreamServerEvent
+      })(),
+    )
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.sendChatMessageStreaming('q')
+    })
+
+    await waitFor(() => expect(result.current.chatStreamText).toBe('The full answer arrives all at once.'))
+    expect(result.current.chatStreamActive).toBe(true) // still mid-stream
+
+    releaseDone!()
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(result.current.error).toBeNull()
+  })
+
+  it('multiple deltas accumulate in order without duplication', async () => {
+    const { result } = await mountAtS1()
+    let releaseDone: (() => void) | null = null
+    const doneGate = new Promise<void>((resolve) => { releaseDone = resolve })
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      (async function* () {
+        yield { type: 'started', data: {} } as ChatStreamServerEvent
+        yield { type: 'delta', data: { text: 'Hel' } } as ChatStreamServerEvent
+        yield { type: 'delta', data: { text: 'lo ' } } as ChatStreamServerEvent
+        yield { type: 'delta', data: { text: 'world' } } as ChatStreamServerEvent
+        await doneGate
+        yield { type: 'completed', data: { answer: 'Hello world', answerable: true, cited_papers: [], cited_web_articles: [] } } as ChatStreamServerEvent
+        yield { type: 'done', data: {} } as ChatStreamServerEvent
+      })(),
+    )
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.sendChatMessageStreaming('q')
+    })
+
+    await waitFor(() => expect(result.current.chatStreamText).toBe('Hello world'))
+
+    releaseDone!()
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(result.current.error).toBeNull()
+  })
+
+  it('reloads canonical state only after completed THEN done, not merely after completed', async () => {
+    const { result } = await mountAtS1()
+    let releaseDone: (() => void) | null = null
+    const doneGate = new Promise<void>((resolve) => { releaseDone = resolve })
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      (async function* () {
+        yield { type: 'started', data: {} } as ChatStreamServerEvent
+        yield { type: 'completed', data: { answer: 'Hi', answerable: true, cited_papers: [], cited_web_articles: [] } } as ChatStreamServerEvent
+        await doneGate
+        yield { type: 'done', data: {} } as ChatStreamServerEvent
+      })(),
+    )
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.sendChatMessageStreaming('hi')
+    })
+
+    await waitFor(() => expect(vi.mocked(curationApi.getState).mock.calls.length).toBeGreaterThanOrEqual(1))
+    // Only the initial mount load so far -- completed alone must not
+    // have triggered a reload yet.
+    expect(curationApi.getState).toHaveBeenCalledTimes(1)
+
+    releaseDone!()
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects a second concurrent chat stream while one is already active', async () => {
+    const { result } = await mountAtS1()
+    const { gen } = controllableStream()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+    let firstPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      firstPromise = result.current.sendChatMessageStreaming('first')
+    })
+    await waitFor(() => expect(result.current.chatStreamActive).toBe(true))
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('second')
+    })
+
+    expect(streamCurationChat).toHaveBeenCalledTimes(1)
+
+    // Clean up: cancel the still-active first stream.
+    act(() => {
+      result.current.cancelChatStream()
+    })
+    await act(async () => {
+      await firstPromise
+    })
+  })
+
+  it('a handled SSE error -> done sets the safe backend message, clears the preview, and never reloads', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) =>
+      fakeStream(
+        [
+          { type: 'started', data: {} },
+          { type: 'phase', data: { phase: 'generating' } },
+          { type: 'error', data: { reason_code: 'provider_error', message: 'The model provider returned an error.' } },
+          { type: 'done', data: {} },
+        ],
+        opts.signal,
+      ),
+    )
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(result.current.error).toBe('The model provider returned an error.')
+    expect(result.current.chatStreamActive).toBe(false)
+    // No reload for a handled failure -- the backend guarantees nothing
+    // was persisted, so only the initial mount load happened.
+    expect(curationApi.getState).toHaveBeenCalledTimes(1)
+  })
+
+  it('a malformed/truncated stream stops locally, shows a safe retryable message, and reloads canonical state', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      streamThatFailsMidway(
+        [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }],
+        new ChatStreamTransportError('Received a malformed message from the server.'),
+      ),
+    )
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(result.current.chatStreamActive).toBe(false)
+    expect(result.current.error).toMatch(/lost the connection/i)
+    expect(result.current.error).not.toMatch(/malformed message/i)
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('a raw transport failure (e.g. the underlying fetch rejecting) is treated the same as a malformed stream: safe message + reload', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation(() => throwingStream(new TypeError('Failed to fetch')))
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(result.current.chatStreamActive).toBe(false)
+    expect(result.current.error).toMatch(/lost the connection/i)
+    expect(result.current.error).not.toContain('Failed to fetch')
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('a preflight ApiError (e.g. 429) uses the existing safe error mapping and never reloads', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      throwingStream(
+        new ApiError(429, {
+          detail: { reason_code: 'session_hourly_limit_reached', message: 'This session has reached its usage limit.' },
+        }),
+      ),
+    )
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(result.current.error).toBe('This session has reached its usage limit.')
+    expect(curationApi.getState).toHaveBeenCalledTimes(1)
+  })
+
+  it('reload failure after a successful completed/done keeps the answer visible and sets chatStreamSyncFailed', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) =>
+      fakeStream(
+        [
+          { type: 'started', data: {} },
+          { type: 'delta', data: { text: 'Hello' } },
+          { type: 'completed', data: { answer: 'Hello', answerable: true, cited_papers: [], cited_web_articles: [] } },
+          { type: 'done', data: {} },
+        ],
+        opts.signal,
+      ),
+    )
+    vi.mocked(curationApi.getState).mockRejectedValueOnce(new Error('network down'))
+
+    await act(async () => {
+      await result.current.sendChatMessageStreaming('hi')
+    })
+
+    expect(result.current.chatStreamSyncFailed).toBe(true)
+    expect(result.current.chatStreamActive).toBe(false)
+    // The completed answer stays visible -- the preview is NOT cleared.
+    expect(result.current.chatStreamText).toBe('Hello')
+  })
+
+  it('cancellation: aborts the stream, does not set a visible error, and reloads canonical state', async () => {
+    const { result } = await mountAtS1()
+    const { gen } = controllableStream()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.sendChatMessageStreaming('hi')
+    })
+    await waitFor(() => expect(result.current.chatStreamActive).toBe(true))
+
+    act(() => {
+      result.current.cancelChatStream()
+    })
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(result.current.error).toBeNull()
+    expect(result.current.chatStreamActive).toBe(false)
+    expect(result.current.chatStreamText).toBe('')
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('unmounting the hook aborts an in-flight chat stream', async () => {
+    const { gen } = controllableStream()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+    const { result, unmount } = await mountAtS1()
+
+    act(() => {
+      void result.current.sendChatMessageStreaming('hi')
+    })
+    await waitFor(() => expect(result.current.chatStreamActive).toBe(true))
+
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort')
+    unmount()
+
+    expect(abortSpy).toHaveBeenCalled()
+    abortSpy.mockRestore()
+  })
+
+  it('switching to a different session aborts the in-flight chat stream for the old one', async () => {
+    const { gen } = controllableStream()
+    vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+    const { result } = await mountAtS1()
+
+    act(() => {
+      void result.current.sendChatMessageStreaming('hi')
+    })
+    await waitFor(() => expect(result.current.chatStreamActive).toBe(true))
+
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's2', topic: 'other' }))
+    await act(async () => {
+      await result.current.openReview('s2')
+    })
+
+    expect(abortSpy).toHaveBeenCalled()
+    abortSpy.mockRestore()
+  })
+
+  describe('invalid event ordering is rejected safely (never crashes, never surfaces raw internals)', () => {
+    async function expectOrderingViolationHandledSafely(events: ChatStreamServerEvent[]) {
+      const { result } = await mountAtS1()
+      vi.mocked(streamCurationChat).mockImplementation((_sessionId, _req, opts) => fakeStream(events, opts.signal))
+      vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+      await act(async () => {
+        await result.current.sendChatMessageStreaming('hi')
+      })
+
+      expect(result.current.chatStreamActive).toBe(false)
+      expect(result.current.error).toMatch(/lost the connection/i)
+      expect(curationApi.getState).toHaveBeenCalledTimes(2)
+    }
+
+    it('a delta before started', async () => {
+      await expectOrderingViolationHandledSafely([{ type: 'delta', data: { text: 'x' } }])
+    })
+
+    it('an event after done', async () => {
+      await expectOrderingViolationHandledSafely([
+        { type: 'started', data: {} },
+        { type: 'done', data: {} },
+        { type: 'phase', data: { phase: 'saving' } },
+      ])
+    })
+
+    it('more than one completed event', async () => {
+      await expectOrderingViolationHandledSafely([
+        { type: 'started', data: {} },
+        { type: 'completed', data: { answer: 'a', answerable: true, cited_papers: [], cited_web_articles: [] } },
+        { type: 'completed', data: { answer: 'b', answerable: true, cited_papers: [], cited_web_articles: [] } },
+        { type: 'done', data: {} },
+      ])
+    })
+
+    it('both error and completed for the same turn', async () => {
+      await expectOrderingViolationHandledSafely([
+        { type: 'started', data: {} },
+        { type: 'error', data: { reason_code: 'provider_error', message: 'The model provider returned an error.' } },
+        { type: 'completed', data: { answer: 'a', answerable: true, cited_papers: [], cited_web_articles: [] } },
+        { type: 'done', data: {} },
+      ])
+    })
+
+    it('the stream ends without a done event at all', async () => {
+      await expectOrderingViolationHandledSafely([
+        { type: 'started', data: {} },
+        { type: 'completed', data: { answer: 'a', answerable: true, cited_papers: [], cited_web_articles: [] } },
+      ])
+    })
   })
 })

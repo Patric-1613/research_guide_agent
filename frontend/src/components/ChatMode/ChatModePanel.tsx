@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { CurationStateResponse } from '../../types'
+import { CircleStop } from 'lucide-react'
+import type { ChatStreamPhase, CurationStateResponse } from '../../types'
 import type { AddToReportResult, ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
 import { ChatMessageRow, isEligibleForAddToReport } from '../TurnFeed/ChatMessageRow'
@@ -9,6 +10,22 @@ import { ReferencesList } from '../shared/ReferencesList'
 // Usage Protection M2.3 Part D: mirrors research_agent/config/limits.py's
 // max_text_length -- preventative UX only.
 const MAX_MESSAGE_LENGTH = 2000
+
+// Usage Protection M4.2B: concise, user-facing labels for the backend's
+// own internal phase vocabulary (research_agent/chat_streaming.py's
+// ChatStreamPhase) -- never the raw identifier itself. Only ever shown
+// for a phase this component actually receives; no entry here implies
+// every turn shows all six (most show a small subset -- see
+// research_agent/curation_chat_streaming.py's own docstring for exactly
+// when each one fires).
+const CHAT_STREAM_PHASE_LABELS: Record<ChatStreamPhase, string> = {
+  preparing_context: 'Preparing context',
+  summarizing_history: 'Summarizing conversation',
+  checking_relevance: 'Checking sources',
+  searching_web: 'Searching the web',
+  generating: 'Writing answer',
+  saving: 'Saving',
+}
 
 interface ChatModePanelProps {
   state: CurationStateResponse
@@ -32,6 +49,16 @@ interface ChatModePanelProps {
   // warning explicitly, instead of it only ever going away when another
   // delete/edit response happens to override it.
   onDismissReportStaleWarning: () => void
+  // Usage Protection M4.2B: streaming lifecycle -- owned by
+  // useCurationSession, passed straight through. onSendMessage above is
+  // unchanged (CurationWorkspacePage now wires it to the streaming
+  // action; this panel doesn't need to know that).
+  chatStreamActive: boolean
+  chatStreamPhase: ChatStreamPhase | null
+  chatStreamText: string
+  chatStreamSyncFailed: boolean
+  onCancelChatStream: () => void
+  onRetrySync: () => void
 }
 
 // Chat mode's center panel shows ONLY the conversation -- no paper pool
@@ -40,6 +67,7 @@ interface ChatModePanelProps {
 export function ChatModePanel({
   state, disabled, onSendMessage, lastSearchMeta, onDeleteExchanges, reportPossiblyStale,
   onAddExchangesToReport, lastAddToReportResult, onEditExchange, onDismissReportStaleWarning,
+  chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, onCancelChatStream, onRetrySync,
 }: ChatModePanelProps) {
   const [text, setText] = useState('')
   // chat-ux-fixes bug 3: onSendMessage awaits the FULL round trip
@@ -273,6 +301,46 @@ export function ChatModePanel({
             <ChatMessage turn={{ role: 'user', content: pendingMessage }} />
           </div>
         )}
+        {/* Usage Protection M4.2B: the one temporary assistant response
+            area for an in-flight stream. Renders plain text ONLY, never
+            through renderContentWithMarkers -- citation rendering is
+            deliberately withheld until the canonical reload after
+            completed -> done lands the real ChatTurn (see
+            useCurationSession's own sendChatMessageStreaming docstring).
+            min-h keeps the bubble's height stable as the content swaps
+            between a short phase label and the (possibly longer)
+            streamed answer text, so the surrounding layout doesn't jump. */}
+        {chatStreamActive && (
+          <div data-testid="chat-stream-response" className="flex items-start justify-start gap-1.5">
+            <div className="min-h-[2.25rem] max-w-[80%] rounded-lg border border-border bg-panel-alt px-3 py-2 text-sm text-text">
+              {chatStreamText ? (
+                <span data-testid="chat-stream-text" className="whitespace-pre-wrap break-words">
+                  {chatStreamText}
+                </span>
+              ) : (
+                <span data-testid="chat-stream-phase" className="text-text-muted">
+                  {chatStreamPhase ? CHAT_STREAM_PHASE_LABELS[chatStreamPhase] : 'Thinking…'}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        {chatStreamSyncFailed && (
+          <p
+            data-testid="chat-stream-sync-failed"
+            className="flex items-center justify-center gap-2 text-center text-xs text-text-muted"
+          >
+            <span>Got the reply, but couldn't sync the conversation afterward.</span>
+            <button
+              type="button"
+              data-testid="chat-stream-sync-retry"
+              onClick={() => void onRetrySync()}
+              className="shrink-0 underline decoration-dotted hover:text-accent"
+            >
+              Retry
+            </button>
+          </p>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -387,15 +455,31 @@ export function ChatModePanel({
             maxLength={MAX_MESSAGE_LENGTH}
             className="flex-1 rounded-md border border-border bg-panel-alt px-3 py-2 text-sm text-text outline-none focus:border-accent disabled:opacity-60"
           />
-          <button
-            type="button"
-            data-testid="persistent-input-send"
-            onClick={handleSend}
-            disabled={disabled || !text.trim() || text.trim().length > MAX_MESSAGE_LENGTH}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
-          >
-            Send
-          </button>
+          {/* Usage Protection M4.2B: Send and Stop share this one slot --
+              never both at once -- so the input row's own width/layout
+              never shifts as a stream starts or ends. */}
+          {chatStreamActive ? (
+            <button
+              type="button"
+              data-testid="chat-stream-stop"
+              onClick={onCancelChatStream}
+              aria-label="Stop generating"
+              title="Stop generating"
+              className="flex items-center justify-center rounded-md border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:border-danger hover:text-danger"
+            >
+              <CircleStop className="h-4 w-4" aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="persistent-input-send"
+              onClick={handleSend}
+              disabled={disabled || !text.trim() || text.trim().length > MAX_MESSAGE_LENGTH}
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
       {showBulkDeleteConfirm && (

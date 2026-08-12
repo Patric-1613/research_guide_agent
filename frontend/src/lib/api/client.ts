@@ -24,8 +24,30 @@ import { ApiError } from '../../types'
 
 // Reads at call time via Vite's import.meta.env, not module load time --
 // makes it possible to swap in tests without needing to reload the module.
-function baseUrl(): string {
+// Exported (Usage Protection M4.2B) so lib/api/chatStream.ts builds the
+// same base URL for its own fetch() call, rather than re-deriving it.
+export function baseUrl(): string {
   return import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+}
+
+// Usage Protection M4.2B: pulled out of request() below, unchanged
+// behavior, so lib/api/chatStream.ts's own fetch() call (which needs the
+// raw streaming response body on success, so it can't go through
+// request()/postJson() itself) still maps a non-2xx response to the same
+// ApiError shape/Retry-After handling every other endpoint already gets.
+export async function throwApiErrorIfNotOk(response: Response): Promise<void> {
+  if (response.ok) return
+  let body: ApiErrorBody | null = null
+  try {
+    body = await response.json()
+  } catch {
+    body = null
+  }
+  // Usage Protection M2.3: only the Retry-After header is ever read
+  // here -- response headers are not exposed generally, this is the
+  // one specific header ApiError's own constructor knows how to
+  // safely parse (see its own docstring on the supported format).
+  throw new ApiError(response.status, body, response.headers.get('Retry-After'))
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -33,19 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   })
-  if (!response.ok) {
-    let body: ApiErrorBody | null = null
-    try {
-      body = await response.json()
-    } catch {
-      body = null
-    }
-    // Usage Protection M2.3: only the Retry-After header is ever read
-    // here -- response headers are not exposed generally, this is the
-    // one specific header ApiError's own constructor knows how to
-    // safely parse (see its own docstring on the supported format).
-    throw new ApiError(response.status, body, response.headers.get('Retry-After'))
-  }
+  await throwApiErrorIfNotOk(response)
   return response.json() as Promise<T>
 }
 
