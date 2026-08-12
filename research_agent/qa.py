@@ -1859,13 +1859,49 @@ def _no_sources_empty_node(state: QAState) -> dict:
     return {"result": result}
 
 
-def _generate_node(state: QAState) -> dict:
-    session = state["session"]
-    question = state["question"]
-    top_k = state["top_k"]
-    retrieved_papers = state["retrieved_papers"]
-    retrieved_web_articles = state["retrieved_web_articles"]
+@dataclass
+class PreparedAnswerGeneration:
+    """Usage Protection M4.1 Part B: the exact prepared input the
+    (non-streaming) `_generate_answer` call and any future streaming
+    equivalent both need -- nothing more, nothing less. `papers_by_id`/
+    `web_by_url` are carried alongside `messages`/`schema` because the
+    caller needs the SAME already-filtered/retrieved lookup dicts to
+    resolve `cited_paper_ids`/`cited_web_urls` back into real
+    `Paper`/`WebArticle` objects once a parsed answer comes back --
+    duplicating retrieval/filtering logic to reconstruct them
+    separately would be exactly the kind of second implementation this
+    refactor exists to avoid."""
 
+    messages: list[dict]
+    schema: type[BaseModel]
+    papers_by_id: dict[str, Paper]
+    web_by_url: dict[str, WebArticle]
+
+
+def prepare_answer_generation(
+    question: str,
+    recent_history: list[dict],
+    retrieved_papers: list[Paper],
+    retrieved_web_articles: list[WebArticle],
+) -> PreparedAnswerGeneration:
+    """Usage Protection M4.1 Part B: extracted verbatim from
+    `_generate_node` below (byte-identical logic, only the four inputs
+    it actually needs are now explicit parameters instead of read off
+    `QAState`) -- the ONE place both the existing synchronous
+    `_generate_node` and a future streaming caller (`chat_streaming.py`)
+    build the exact same messages/schema for answer generation. Never
+    calls the model itself, never touches `session`, never mutates
+    anything -- a pure function, matching this project's own "shared
+    preparation helper, not graph interruption" design decision for
+    M4.1 (see chat_streaming.py's own module docstring for why
+    `interrupt_before` was tested and rejected).
+
+    Reuses `_build_answer_schema` (the dynamic Literal-constrained
+    citation-grounding schema) and `ANSWER_SYSTEM_PROMPT` completely
+    unchanged -- no prompt, citation rule, or schema-construction logic
+    is duplicated here, only the message-assembly shape that already
+    existed inline in `_generate_node`.
+    """
     papers_by_id = {p.paper_id: p for p in retrieved_papers}
     web_by_url = {a.url: a for a in retrieved_web_articles}
     schema = _build_answer_schema(list(papers_by_id), list(web_by_url) or None)
@@ -1885,13 +1921,27 @@ def _generate_node(state: QAState) -> dict:
         context_sections.append(f"Retrieved web articles:\n\n{web_context}")
 
     messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
-    messages.extend(state["recent_history"])
+    messages.extend(recent_history)
     messages.append({
         "role": "user",
         "content": "\n\n".join(context_sections) + f"\n\nQuestion: {question}",
     })
 
-    parsed = _generate_answer(messages, schema, state["client"], model=ANSWER_MODEL)
+    return PreparedAnswerGeneration(messages=messages, schema=schema, papers_by_id=papers_by_id, web_by_url=web_by_url)
+
+
+def _generate_node(state: QAState) -> dict:
+    session = state["session"]
+    question = state["question"]
+    top_k = state["top_k"]
+    retrieved_papers = state["retrieved_papers"]
+    retrieved_web_articles = state["retrieved_web_articles"]
+
+    prepared = prepare_answer_generation(question, state["recent_history"], retrieved_papers, retrieved_web_articles)
+    papers_by_id = prepared.papers_by_id
+    web_by_url = prepared.web_by_url
+
+    parsed = _generate_answer(prepared.messages, prepared.schema, state["client"], model=ANSWER_MODEL)
 
     # Defensive: don't trust the model to honor "empty if not answerable" on
     # its own — enforce it, since a fabricated citation on an "I can't

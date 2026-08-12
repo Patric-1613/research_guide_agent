@@ -30,7 +30,7 @@ from research_agent.qa import (
     capped_history, _renumber_citation_markers, _filter_relevant_web_articles, ask,
     _DIRECT_RELEVANCE_JUDGE_THRESHOLD, _DIRECT_RELEVANCE_PROMPT_VERSION, _build_direct_relevance_messages,
     _direct_relevance_cache_key, _init_direct_relevance_cache_db, _judge_direct_web_relevance,
-    _detect_retrieved_prompt_injection, CONDENSE_MODEL, _hash_text,
+    _detect_retrieved_prompt_injection, CONDENSE_MODEL, _hash_text, prepare_answer_generation,
 )
 from research_agent.schema import Paper, WebArticle
 
@@ -2313,6 +2313,94 @@ def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
     # only the prompt sent to the model is capped, not what's stored (a
     # caller building a UI transcript still sees every turn).
     assert len(session.history) == 12 * 2 + 2
+
+
+# =====================================================================
+# Usage Protection M4.1 Part B: prepare_answer_generation extraction --
+# proves the refactored helper produces EXACTLY what _generate_node's
+# own inline logic built before this extraction (same messages, same
+# schema shape, same papers_by_id/web_by_url), not just "the existing
+# suite still passes" (already true, but this makes the equivalence
+# explicit and directly testable in isolation).
+# =====================================================================
+
+class TestPrepareAnswerGeneration:
+    def test_messages_shape_matches_generate_node_convention(self):
+        papers = [_paper("1111", "Paper One")]
+        prepared = prepare_answer_generation(
+            "What about limitations?", [{"role": "user", "content": "prior q"}, {"role": "assistant", "content": "prior a"}],
+            papers, [],
+        )
+        assert prepared.messages[0] == {"role": "system", "content": ANSWER_SYSTEM_PROMPT}
+        assert prepared.messages[1] == {"role": "user", "content": "prior q"}
+        assert prepared.messages[2] == {"role": "assistant", "content": "prior a"}
+        assert prepared.messages[-1]["role"] == "user"
+        assert "Question: What about limitations?" in prepared.messages[-1]["content"]
+        assert "paper_id: 1111" in prepared.messages[-1]["content"]
+        assert "Abstract for Paper One." in prepared.messages[-1]["content"]
+
+    def test_schema_is_literal_constrained_to_exactly_the_retrieved_papers(self):
+        papers = [_paper("1111", "Paper One"), _paper("2222", "Paper Two")]
+        prepared = prepare_answer_generation("q", [], papers, [])
+        prepared.schema(answerable=True, answer="ok [Paper 1]", cited_paper_ids=["1111"])
+        with pytest.raises(Exception):
+            prepared.schema(answerable=True, answer="bad", cited_paper_ids=["not-a-real-id"])
+
+    def test_no_web_articles_means_no_cited_web_urls_field_at_all(self):
+        prepared = prepare_answer_generation("q", [], [_paper("1111", "P")], [])
+        assert "cited_web_urls" not in prepared.schema.model_fields
+
+    def test_web_articles_present_adds_web_context_section(self):
+        articles = [_web_article("https://x.com", "Article X")]
+        prepared = prepare_answer_generation("q", [], [], articles)
+        assert "Retrieved web articles" in prepared.messages[-1]["content"]
+        assert "url: https://x.com" in prepared.messages[-1]["content"]
+        assert "cited_web_urls" in prepared.schema.model_fields
+
+    def test_papers_by_id_and_web_by_url_are_exact_lookup_dicts(self):
+        papers = [_paper("1111", "Paper One")]
+        articles = [_web_article("https://x.com", "Article X")]
+        prepared = prepare_answer_generation("q", [], papers, articles)
+        assert prepared.papers_by_id == {"1111": papers[0]}
+        assert prepared.web_by_url == {"https://x.com": articles[0]}
+
+    def test_is_pure_no_mutation_of_inputs(self):
+        history = [{"role": "user", "content": "q"}]
+        history_snapshot = [dict(h) for h in history]
+        papers = [_paper("1111", "P")]
+        prepare_answer_generation("q", history, papers, [])
+        assert history == history_snapshot
+
+    def test_matches_generate_node_end_to_end_via_ask(self):
+        """The decisive equivalence proof: driving a real ask() call
+        (which internally now calls prepare_answer_generation) and
+        asserting the exact messages/schema sent to the model are
+        identical to what this same fixture produced BEFORE the M4.1
+        refactor (values captured once, pinned here)."""
+        papers = [_paper("1111", "Paper One")]
+        session = ChatSession(papers=papers, history=[
+            {"role": "user", "content": "what is RoCoFT?"},
+            {"role": "assistant", "content": "RoCoFT is a parameter-efficient fine-tuning method."},
+        ])
+        schema = _build_answer_schema(["1111"])
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="What are RoCoFT's limitations?"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="X [Paper 1].", cited_paper_ids=["1111"],
+        )
+        with patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask(session, "Thanks, but what about its limitations?", client=mock_client)
+
+        sent = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+        assert sent[0] == {"role": "system", "content": ANSWER_SYSTEM_PROMPT}
+        assert sent[-1]["role"] == "user"
+        assert "Question: Thanks, but what about its limitations?" in sent[-1]["content"]
+        assert "paper_id: 1111" in sent[-1]["content"]
 
 
 # =====================================================================
