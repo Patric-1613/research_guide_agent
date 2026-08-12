@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 import research_agent.api as api
 from research_agent.config import get_settings, get_usage_policy
+from research_agent.provider_clients import default_async_openai_client
 from research_agent.request_limits import RequestBodyLimitMiddleware
 from research_agent.session_limits import SessionCapacityError
 from research_agent.telemetry import RequestTelemetryMiddleware, init_usage_db
@@ -86,6 +87,12 @@ async def lifespan(app: FastAPI):
     # the timeout= kwarg directly here preserves that while still
     # applying the same centralized, provisional provider timeout.
     api._state["client"] = api.OpenAI(timeout=get_usage_policy().provider_timeout_seconds)
+    # Usage Protection M4.2A: the async counterpart, used ONLY by the
+    # curation-chat streaming endpoint's own model-generation call
+    # (research_agent/chat_streaming.py::stream_chat_answer) -- every
+    # other provider call anywhere in this app still uses the sync
+    # client above, unchanged.
+    api._state["async_client"] = default_async_openai_client()
     api._state["collection"] = api.get_chroma_collection()
     yield
 

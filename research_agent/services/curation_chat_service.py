@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import AsyncIterator
+
+from fastapi.responses import StreamingResponse
+
 import research_agent.api as api
 from research_agent.api_app.schemas import (
     ChatTurn,
@@ -14,12 +18,14 @@ from research_agent.api_app.schemas import (
     CurationChatRequest,
     CurationChatResponse,
 )
+import research_agent.telemetry as telemetry
 from research_agent.api_app.serializers import _report_to_out
 from research_agent.config import get_usage_policy
+from research_agent.curation_chat_streaming import stream_curation_chat_turn
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
 from research_agent.session_limits import check_chat_turn_capacity
-from research_agent.usage_guard import guard_paid_action
+from research_agent.usage_guard import guard_paid_action, open_admission_and_lease_for_streaming
 
 
 def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> CurationChatResponse:
@@ -58,6 +64,66 @@ def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> Curat
         report_update_declined=result.get("report_update_declined", False),
         report_updated=result.get("report_updated", False),
         chat_history=[ChatTurn(**turn) for turn in session.chat_history],
+    )
+
+
+def stream_answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> StreamingResponse:
+    """Usage Protection M4.2A Part E: the streaming counterpart to
+    `answer_curation_chat` above -- `POST /curation/{session_id}/chat/
+    stream`. Every pre-guard check below (session existence, chat-turn
+    capacity, stage readiness) runs BEFORE the guard opens and BEFORE
+    any `StreamingResponse` is constructed, exactly mirroring
+    `answer_curation_chat`'s own ordering -- a streaming generator body
+    only ever starts running once HTTP headers may already be
+    committed, so every rejection that must become a clean 409/429/503/
+    400 JSON response has to be resolved here, synchronously, first.
+
+    Uses `usage_guard.open_admission_and_lease_for_streaming` (NOT
+    `guard_paid_action`) -- admission + the lease are acquired here,
+    before the response is built, and the lease is released later,
+    inside the streaming generator's own `finally`, once the streamed
+    work (model execution AND final session persistence) has fully
+    finished. `telemetry.paid_action` is deliberately opened ENTIRELY
+    inside `event_stream()` below, via a plain `with` statement --
+    never split across this function and the generator -- see `open_
+    admission_and_lease_for_streaming`'s own docstring for the real,
+    empirically-confirmed `contextvars` hazard that would result from
+    doing otherwise.
+    """
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise ServiceError(404, "session_id not found")
+    check_chat_turn_capacity(session.chat_history, get_usage_policy())
+    if session.stage != "synthesize":
+        raise ServiceError(
+            400,
+            f"Session is not ready for chat (stage={session.stage!r}, expected 'synthesize') -- "
+            "curation must finish (target met, user stopped, or topic exhausted) before chatting.",
+        )
+
+    lease_handle = open_admission_and_lease_for_streaming("curation_chat", subject=("session", session_id), use_lease=True)
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            with telemetry.paid_action("curation_chat", subject_type="session", subject_id=session_id):
+                async for event in stream_curation_chat_turn(
+                    session, req.message, session_id=session_id, checkpointer=cp,
+                    sync_client=api._state["client"], async_client=api._state["async_client"],
+                ):
+                    yield event.to_sse()
+        finally:
+            # Always runs after telemetry.paid_action's own __exit__
+            # above (a `finally` on the OUTER try only executes once
+            # the inner `with` block has already fully exited) -- the
+            # lease is released only once the wrapped action's own
+            # success/error/cancelled outcome has already been
+            # recorded, never before.
+            lease_handle.release()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
 
 

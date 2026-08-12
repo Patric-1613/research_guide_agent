@@ -81,7 +81,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, TypedDict, Literal
+from typing import Any, Callable, TypedDict, Literal
 
 from langfuse import get_client, observe
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -1928,6 +1928,119 @@ def prepare_answer_generation(
     })
 
     return PreparedAnswerGeneration(messages=messages, schema=schema, papers_by_id=papers_by_id, web_by_url=web_by_url)
+
+
+@dataclass
+class QATurnPreparation:
+    """Usage Protection M4.2A Part C: the result of `prepare_qa_turn`
+    below -- exactly one of `early_result`/`prepared` is set, mirroring
+    the two shapes `ask()`'s own `_DEFAULT_GRAPH.invoke(...)` call can
+    produce for one turn.
+
+    `early_result`: set when the turn never reaches answer generation
+    at all (a non-substantive message, or no papers/web articles to
+    answer from, initially or after retrieval+filtering) -- this IS the
+    final `result` dict `ask()` itself would have returned for this
+    turn (same shape: answer/answerable/cited_papers/retrieved_papers/
+    cited_web_articles/retrieved_web_articles/web_relevance_verified),
+    already applied to `session.history` by whichever node produced it
+    -- nothing further to prepare or stream.
+
+    `prepared`/`web_relevance_verified`: set when the turn reached the
+    exact point `_generate_node` would call `_generate_answer` --
+    ready to hand to `chat_streaming.stream_chat_answer` (or the
+    existing synchronous `_generate_answer`) unchanged. `session.
+    history` has NOT been touched yet on this path -- unlike
+    `_generate_node`, which appends immediately after its own model
+    call, a streaming caller must not append anything until the
+    streamed answer has been fully, terminally validated (see this
+    project's own M4 planning report on persistence commit points).
+    """
+
+    early_result: dict | None = None
+    prepared: PreparedAnswerGeneration | None = None
+    web_relevance_verified: bool = True
+
+
+def prepare_qa_turn(
+    session: ChatSession,
+    question: str,
+    client: OpenAI,
+    top_k: int,
+    recent_history: list[dict],
+    on_phase: Callable[[str], None] | None = None,
+) -> QATurnPreparation:
+    """Usage Protection M4.2A Part C: a shared orchestration helper
+    that runs `_DEFAULT_GRAPH`'s own classify/condense/retrieve/filter
+    nodes -- reused directly, unchanged, by calling the exact same node
+    functions and routing functions the compiled graph itself uses --
+    up to, but never including, `generate_answer`. Never calls
+    `_generate_answer`/`_generate_node`, never invokes the model for an
+    answer, never mutates `session.history` beyond whatever an early-
+    return node itself already does (identical to what running the real
+    graph that far would do).
+
+    Deliberately NOT a second compiled `StateGraph` (`interrupt_before`
+    was tested and rejected for exactly this purpose in M4.1 -- see
+    `chat_streaming.py`'s own module docstring) and NOT a duplicated
+    reimplementation of any node's own logic -- every step below is a
+    direct call to the SAME function `build_qa_graph` wires into
+    `_DEFAULT_GRAPH`, so this can never silently drift out of sync with
+    the real graph's own behavior for the branches it covers.
+
+    `on_phase`, if given, is called synchronously, zero or more times,
+    at the two points a genuinely distinct unit of work begins:
+    once before classify/condense/retrieve ("preparing_context") --
+    but only once routing has confirmed this turn will actually reach
+    retrieval (an early non_substantive/no_sources exit never calls
+    it) -- and once before the relevance-filtering step
+    ("checking_relevance"). A caller integrating this into an async
+    streaming generator is expected to run this whole function in a
+    worker thread and bridge `on_phase` back to the event loop (e.g.
+    via `loop.call_soon_threadsafe`) -- this function itself has no
+    asyncio dependency at all, matching every other synchronous
+    building block it's assembled from.
+    """
+    state: QAState = {
+        "session": session,
+        "question": question,
+        "recent_history": recent_history,
+        "client": client,
+        "top_k": top_k,
+        "is_non_substantive": False,
+        "standalone_query": None,
+        "retrieved_papers": [],
+        "retrieved_web_articles": [],
+        "web_relevance_verified": True,
+        "result": {},
+    }
+
+    state.update(_classify_node(state))
+    route = _route_after_classify(state)
+    if route == "non_substantive":
+        state.update(_non_substantive_node(state))
+        return QATurnPreparation(early_result=state["result"])
+    if route == "no_sources":
+        state.update(_no_sources_initial_node(state))
+        return QATurnPreparation(early_result=state["result"])
+
+    if on_phase is not None:
+        on_phase("preparing_context")
+
+    if route == "condense":
+        state.update(_condense_node(state))
+    state.update(_retrieve_node(state))
+
+    if on_phase is not None:
+        on_phase("checking_relevance")
+    state.update(_filter_web_relevance_node(state))
+
+    if _route_retrieved(state) == "no_sources":
+        state.update(_no_sources_empty_node(state))
+        return QATurnPreparation(early_result=state["result"])
+
+    prepared = prepare_answer_generation(question, recent_history, state["retrieved_papers"], state["retrieved_web_articles"])
+    return QATurnPreparation(prepared=prepared, web_relevance_verified=state["web_relevance_verified"])
 
 
 def _generate_node(state: QAState) -> dict:

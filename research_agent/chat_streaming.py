@@ -91,10 +91,18 @@ ChatStreamEventType = Literal["started", "phase", "delta", "completed", "error",
 # The only phase values this module's own docstring/tests reference --
 # a small, fixed, safe enum (never free text), matching this project's
 # own established "safe fixed vocabulary, never raw internal detail"
-# convention (M2.3's own reason-code message mapping). Not yet emitted
-# by any live pipeline -- listed here so a future M4.2 caller and this
-# module's own tests share one source of truth for the approved values.
-ChatStreamPhase = Literal["preparing_context", "checking_relevance", "generating"]
+# convention (M2.3's own reason-code message mapping). Usage Protection
+# M4.2A: expanded from M4.1's original 3-value set to the full,
+# grounded vocabulary the production streaming service
+# (research_agent/curation_chat_streaming.py) actually emits --
+# `summarizing_history` (M3 bounded-history summarization, only when it
+# genuinely triggers), `searching_web` (a web-search-offer accept turn
+# only), and `saving` (session persistence, every successful turn) --
+# no phase here is emitted unless that operation genuinely occurs; see
+# that module's own docstring for exactly when each one fires.
+ChatStreamPhase = Literal[
+    "preparing_context", "summarizing_history", "checking_relevance", "searching_web", "generating", "saving",
+]
 
 
 @dataclass

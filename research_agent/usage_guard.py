@@ -67,7 +67,8 @@ from __future__ import annotations
 
 import logging
 import math
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterator, Literal
 
@@ -207,3 +208,102 @@ def guard_paid_action(
             subject_kwargs = {"subject_type": subject[0], "subject_id": subject[1]}
         with telemetry.paid_action(action_type, discard_if_empty=discard_if_empty, **subject_kwargs):
             yield
+
+
+@dataclass
+class StreamingLeaseHandle:
+    """Usage Protection M4.2A: what `open_admission_and_lease_for_
+    streaming` below returns -- an already-acquired lease, held open
+    across an `async def` streaming route/generator instead of a
+    single `with` block. Wraps ONLY the lease (`research_agent.leases.
+    session_lease`) -- deliberately NEVER `telemetry.paid_action` --
+    see that function's own docstring for why the two cannot share one
+    manually-driven context-manager object here. `release()` must be
+    called exactly once, in a `finally`.
+    """
+
+    _cm: AbstractContextManager[LeaseDecision] | None
+    _released: bool = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        if self._cm is not None:
+            self._cm.__exit__(None, None, None)
+
+
+def open_admission_and_lease_for_streaming(
+    action_type: str,
+    *,
+    subject: tuple[str, str],
+    use_lease: bool = True,
+) -> StreamingLeaseHandle:
+    """Usage Protection M4.2A: the streaming-route counterpart to
+    `guard_paid_action` above, covering ONLY admission + the lease --
+    deliberately NOT `telemetry.paid_action`, unlike an earlier version
+    of this function (`open_paid_action_for_streaming`, since removed).
+
+    **Why telemetry is excluded here, empirically, not assumed.** An
+    earlier version of this function drove `guard_paid_action`'s own
+    combined admission+lease+telemetry context by hand, entered here
+    and exited later from inside a streaming generator. This crashed
+    under real test conditions: `telemetry.paid_action` sets a
+    `contextvars.ContextVar` via `_action_var.set(...)` and later
+    calls `_action_var.reset(token)` -- a `Token` can only be reset in
+    the EXACT `Context` object it was created in, not merely an
+    equivalent copy. Confirmed directly against the installed
+    `starlette==1.3.1`: `StreamingResponse.__call__` only awaits its
+    own `stream_response(send)` directly, in the SAME asyncio Task, on
+    the modern ASGI path (`spec_version >= (2, 4)`, what a real uvicorn
+    deployment reports) -- but on the OLDER fallback path (`spec_
+    version < (2, 4)`, confirmed to be what Starlette's own `TestClient`/
+    httpx `ASGITransport` reports, since neither sets an explicit
+    `spec_version` in the scope it constructs), `StreamingResponse`
+    spawns `stream_response` via `anyio.create_task_group().
+    start_soon(...)` -- a genuinely DIFFERENT Task, with its own COPIED
+    (not identical) `Context`. `guard_paid_action.__enter__()` called
+    from the original route-handler Task, then `.__exit__()` driven
+    later from inside that spawned Task, hit exactly this `ValueError`
+    in practice, not hypothetically. Since nothing here can guarantee
+    which of these two ASGI code paths any given deployment (or a
+    proxy/gateway in front of it) actually takes, relying on
+    `contextvars` correctness across this specific boundary is not
+    safe in general.
+
+    `check_admission`/`session_lease` (unlike `telemetry.paid_action`)
+    touch no `contextvars.ContextVar` at all -- both are ordinary,
+    stateless-per-call SQLite reads/writes returning a plain decision/
+    token object -- so entering (here, synchronously, before a
+    `StreamingResponse` is ever constructed) and exiting later (from
+    whichever Task ends up running the streaming generator) is
+    completely safe for these two.
+
+    **The caller is responsible for opening `telemetry.paid_action(...)`
+    itself**, via a plain `with` statement, ENTIRELY WITHIN the async
+    generator's own body -- never split across this function's caller
+    and the generator -- so `_action_var.set()`/`.reset()` always
+    happen from calls made by the SAME suspended generator frame,
+    which is always self-consistent regardless of which Task ends up
+    running it. See `research_agent/curation_chat_streaming.py`'s own
+    docstring for the exact pattern this is designed for.
+
+    Raises `UsageGuardRejection` synchronously, before anything is
+    opened -- identical reason codes/`Retry-After` computation to
+    `guard_paid_action`'s own lease-rejection path.
+    """
+    policy = get_usage_policy()
+    check_admission(subject, policy)
+
+    if not use_lease:
+        return StreamingLeaseHandle(_cm=None)
+
+    subject_type, subject_id = subject
+    cm = session_lease(subject_type, subject_id, ttl_seconds=policy.expensive_action_lease_ttl_seconds)
+    decision = cm.__enter__()
+    if not decision.acquired:
+        cm.__exit__(None, None, None)
+        if decision.reason_code == "storage_unavailable":
+            raise UsageGuardRejection("usage_protection_unavailable")
+        raise UsageGuardRejection("action_in_progress", retry_after_seconds=_lease_retry_after(decision))
+    return StreamingLeaseHandle(_cm=cm)

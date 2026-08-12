@@ -17,6 +17,7 @@ from research_agent.services.curation_chat_service import (
     answer_curation_chat,
     delete_curation_chat_exchanges,
     edit_curation_chat_exchange,
+    stream_answer_curation_chat,
 )
 from research_agent.services.errors import ServiceError
 
@@ -30,6 +31,22 @@ def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(api
             return answer_curation_chat(session_id, req, cp)
         except ServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+# Usage Protection M4.2A Part E: the streaming counterpart -- the
+# existing non-streaming endpoint above is completely unchanged, still
+# the default for any client that hasn't adopted streaming yet. No
+# _upstream_error_guard here: unlike the endpoint above, nothing this
+# route does BEFORE returning the StreamingResponse ever calls an
+# LLM/external API synchronously (every provider call happens later,
+# inside the streamed generator body, which reports its own safe error
+# events instead -- see curation_chat_streaming.py's own docstring).
+@router.post("/curation/{session_id}/chat/stream")
+def curation_chat_turn_stream(session_id: str, req: CurationChatRequest, cp=Depends(api.get_curation_checkpointer)):
+    try:
+        return stream_answer_curation_chat(session_id, req, cp)
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 # curation-chat-delete Phase 3: POST, not DELETE-with-body -- the one
