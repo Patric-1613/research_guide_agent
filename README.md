@@ -767,6 +767,23 @@ was overdue rather than new when added: earlier `@observe`-decorated
 modules had been silently doing so on every test run since tracing was
 first introduced.
 
+## Usage safeguards
+
+The backend enforces configurable usage protections — per-session/global
+paid-action budgets, a same-session concurrency lease, request-body/text/
+ID/session-capacity caps, and bounded standalone-agent runs — all
+provisional defaults, overridable via env vars documented in
+`research_agent/config/limits.py` and described in full in
+`docs/architecture.md`'s "Usage Protection M1/M2" sections. Rejections
+return a stable reason code and a safe, user-facing message (never a raw
+stack trace or internal detail); the frontend surfaces these as a
+dismissable alert.
+
+A related, separate `data/usage_telemetry.sqlite` database (gitignored,
+same as `data/history.sqlite`) records operational metadata only — route,
+status, latency, token/call counts — **never** prompt text, chat
+messages, report content, or any other request/response body content.
+
 ## Known limitations
 
 - Abstracts only — no PDF full-text ingestion (out of scope for v1).

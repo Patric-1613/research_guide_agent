@@ -2348,7 +2348,154 @@ invented:
   local `usage_telemetry.sqlite` doesn't have enough genuine
   application traffic in it).
 - **Status**: Closed (2026-08-11). Commits: `649c5e5` (M1.1), `01b948a`
-  (M1.2).
+  (M1.2). **M2 below is also now closed** — the "not enough data yet"
+  branch above did apply: M2's thresholds were set from topology
+  inspection, not real-traffic calibration (see M2's own "Priority"
+  line below).
+
+### Usage Protection M2: agent execution limits, admission/leases, static/session/provider limits, frontend UX, red-team coverage — complete
+- **Goal**: turn M1's observe-only telemetry into real enforcement —
+  bound the standalone agent's own run length, admit/reject paid work
+  against per-session and global budgets, prevent concurrent paid work
+  on the same session, cap request/text/ID/session size at the static
+  layer, and make every resulting rejection understandable and
+  recoverable in the frontend — all provisional and configurable, not
+  calibrated against real traffic yet.
+- **Why it matters**: M1 closed with an explicit "no rate limiting, no
+  429s, no quotas" scope line — this is the phase that actually adds
+  those, so a single runaway agent loop, a scripted burst of paid
+  requests, or two concurrent expensive actions on one session can no
+  longer run unbounded or corrupt shared session state.
+- **M2.1 — agent execution limits + admission/lease foundation**
+  (`research_agent/agent.py`, `research_agent/admission.py` (new),
+  `research_agent/leases.py` (new), `research_agent/config/limits.py`
+  (new), `research_agent/telemetry.py`): `ModelCallLimitMiddleware`
+  (10/run, `exit_behavior="end"`) and `ToolCallLimitMiddleware` (10/run,
+  `exit_behavior="continue"` — see `docs/architecture.md`'s M2 section
+  for why `"continue"`, not `"end"`, is correct here) wrap the
+  standalone agent; explicit `recursion_limit=15` passed to
+  `agent.stream()`. `admission.py`/`leases.py` land as read-but-not-yet-
+  applied-by-any-route foundations (hourly/daily/global budget checks;
+  one atomic SQLite lease per session via `INSERT ... ON CONFLICT ...
+  DO UPDATE ... WHERE action_leases.expires_at < excluded.acquired_at`).
+  Tests: extensive (`test_admission.py`, `test_agent_limits.py`,
+  `test_config_limits.py`, `test_leases.py`, new).
+- **M2.1b — telemetry-test DB isolation fix**: a real gap found while
+  building M2.1 — some usage-guard/agent-limit tests could still touch
+  the real `data/usage_telemetry.sqlite` path under certain monkeypatch
+  orderings. Fixed by adding `tests/_usage_db_fingerprint.py` (shared
+  before/after fingerprint helper) and tightening the isolation fixtures
+  in `test_admission.py`/`test_agent_limits.py`/`test_leases.py`/
+  `test_telemetry.py`/`test_telemetry_instrumentation.py`.
+- **M2.2A — paid-action budgets and session concurrency enforcement**
+  (`research_agent/usage_guard.py`, new): composes M2.1's admission
+  checks and leases with M1's `paid_action(...)` into one reusable
+  `guard_paid_action(...)` context manager. Fail-closed (unlike M1's
+  fail-open telemetry) — a storage error during an admission/lease
+  check is treated as a rejection, never a silent pass-through. One
+  centralized FastAPI exception handler maps the resulting
+  `UsageGuardRejection` to 429/409/503 with `Retry-After` where
+  meaningful. Tests: `test_usage_guard.py` (new, 305 lines), plus
+  `test_api.py`/`test_curation_api.py` additions.
+- **M2.2B — conditional paid-workflow guard placement**
+  (`curation_loop.py`, `services/chat_service.py`,
+  `services/curation_core_service.py`, `services/curation_helpers.py`,
+  `services/curation_history_service.py`, `services/summary_service.py`):
+  moved the refill guard *inside* `_refill_node` (only a turn that
+  actually refills opens the guard); confirmed/hardened the cache-hit-
+  bypasses-guard, cache-re-check-after-lease-acquisition pattern for
+  report/summary generation; confirmed `search_chat` is guarded for
+  budget but deliberately lease-free (stateless per turn, no shared
+  session state to conflict over). Tests: `test_curation_loop.py`,
+  `test_summary_service.py` (new), `test_api.py`/`test_curation_api.py`
+  additions.
+- **M2.2C — static request/text/ID/session/provider limits**
+  (`research_agent/request_limits.py` (new), `research_agent/
+  session_limits.py` (new), `api_app/constrained_types.py`,
+  `api_app/schemas.py`, `provider_clients.py`): 64 KiB request body (a
+  pure ASGI middleware, draining `receive()` itself rather than
+  trusting `Content-Length`), 2,000-char text fields, 30-ID mutation
+  cap, 60-selected-paper/100-chat-turn session capacity (`409`, no
+  `Retry-After` — a capacity conflict, not a rate one), 60s OpenAI
+  timeout (arXiv/Tavily don't expose a compatible timeout parameter yet
+  — documented gap, not silently assumed covered), 20-call provider
+  fan-out ceiling (every fan-out path actually exercised today stays
+  ≤5). Tests: `test_request_limits.py`, `test_schema_limits.py`,
+  `test_session_limits.py`, `test_provider_clients.py` (all new).
+- **M2.3 — frontend usage-protection UX and red-team regression
+  coverage** (`frontend/src/types/index.ts`, `frontend/src/lib/api/
+  errorMessages.ts` (new), `frontend/src/hooks/useCurationSession.ts`,
+  `frontend/src/pages/CurationWorkspacePage.tsx`, chat/review/edit-
+  question components; `tests/test_red_team_bypass.py`, new): one
+  extended, structured `ApiError`; a centralized reason-code → user-
+  message mapping (no raw reason codes ever shown); one shared,
+  accessible (`role="alert"`) error banner reused by every curation
+  action, with existing report/chat/selection state always preserved
+  after a rejection and no automatic retry; client-side preventative
+  caps (2,000-char `maxLength`, 30-ID/60-paper selection caps) layered
+  on top of, never instead of, backend enforcement. 29 new backend red-
+  team tests covering body/schema/session-capacity/admission-
+  concurrency bypass attempts and explicit validation → capacity →
+  admission → lease → provider ordering assertions, plus 34 new
+  frontend tests. Full backend suite: **1638 passed** (1609 before this
+  chunk). Frontend suite: **303 passed**. Frontend build: clean.
+- **Explicitly not built**: telemetry admin/dashboard endpoint (M1.3
+  remains skipped, M2 doesn't add one), authentication/IP-based
+  identity, distributed rate limiting (SQLite admission/leases suit
+  only the current single-instance phase), cross-request session-
+  mutation versioning (the pre-existing non-paid-mutation race noted in
+  `docs/architecture.md`'s M2 section is untouched), long-chat
+  summarization, response streaming.
+- **Location**: see each sub-entry above; full narrative in `docs/
+  architecture.md`'s "Usage Protection M2" section.
+- **Priority**: thresholds throughout M2 are provisional (topology-
+  inspection-derived, not real-traffic-calibrated) — recalibrating them
+  against `usage_telemetry.sqlite` once it holds enough genuine traffic
+  is real, useful future work, tracked as its own open item below. Next
+  substantive phase is **M3** (long-chat summarization); **M4**
+  (streaming) follows M3.
+- **Status**: Closed (2026-08-12). Commits: `67035be` (M2.1), `1ef7a1c`
+  (M2.1b), `49dbd2c` (M2.2A), `633abd1` (M2.2B), `e5418bf` (M2.2C),
+  `f4679d0` (M2.3).
+
+### Usage Protection follow-on: threshold calibration, distributed rate limiting, admin dashboard, session-mutation versioning, broader provider timeouts (not part of M1/M2)
+- **Goal**: the real, useful next-layer work M1/M2 deliberately left
+  open, tracked so it isn't lost, not because any of it is scheduled.
+- **Items**:
+  - **Threshold calibration using real telemetry** — once
+    `usage_telemetry.sqlite` holds enough genuine production traffic,
+    revisit every M2.1/M2.2 provisional number (agent call limits,
+    session/global budgets, lease TTL, static caps) against real usage
+    instead of topology inspection.
+  - **Telemetry admin/dashboard endpoint** — M1.3 was skipped, M2 didn't
+    revisit it; still no HTTP-exposed read path over
+    `usage_telemetry.sqlite`. Worth building only once something in the
+    product actually needs it (an ops view, a self-serve usage page);
+    query the SQLite file directly until then.
+  - **Distributed rate limiting/storage for multi-instance deployment**
+    — the current SQLite-backed admission counters and leases are
+    correct for one process; a real multi-instance deployment needs a
+    shared store (e.g. Redis) and true in-flight reservation counting,
+    not just completion-based counting.
+  - **Cross-request session-mutation versioning** — selected-paper
+    capacity (and other non-paid session mutations) is not fully atomic
+    across simultaneous requests for the same session; needs real
+    transactional/versioned session persistence, not attempted here.
+  - **Broader provider timeout support** — `provider_timeout_seconds`
+    only reaches the OpenAI client today; arXiv's `arxiv` package and
+    the current Tavily tool-client abstraction don't expose a compatible
+    timeout parameter.
+- **Priority**: open, none scheduled — each item above is real and
+  worth doing, but none blocks M3/M4.
+- **Status**: Open.
+
+**M1/M2 are complete for the current single-user SQLite architecture.**
+Neither claims authentication, distributed rate limiting, chat
+summarization, or response streaming — those are explicitly out of
+scope here, tracked as **M3** (long-chat summarization, next) and
+**M4** (chat/report streaming, after M3). No M5 (or any further
+milestone) exists anywhere in this project's prior roadmap docs as of
+this checkpoint — none is invented here.
 
 Placeholders below, ready for real entries:
 
