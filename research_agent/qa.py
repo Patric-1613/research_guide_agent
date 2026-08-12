@@ -91,6 +91,16 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
 import research_agent.telemetry as telemetry
+from research_agent.chat_summarization import (
+    ChatHistorySummary,
+    SUMMARY_MODEL,
+    build_chat_context,
+    collect_allowed_summary_sources,
+    enforce_conversation_budget,
+    generate_replacement_summary,
+    render_summary_message,
+)
+from research_agent.config import get_usage_policy
 from research_agent.embeddings import (
     CACHE_DB_PATH,
     _embed_texts,
@@ -184,6 +194,19 @@ class ChatSession:
     history: list[dict] = field(default_factory=list)  # [{"role": "user"|"assistant", "content": str}]
     topic: str = ""
     web_article_provenance_by_url: dict[str, dict] = field(default_factory=dict)
+    # Usage Protection M3.2: mirrors PaperPoolSession's own three
+    # persisted summary fields (same names/types/defaults, for a direct
+    # 1:1 copy in curation_chat.py's _build_chat_session/ask_in_session)
+    # -- purely additive, same backward-compatibility posture as
+    # `topic`/`web_article_provenance_by_url` above. Only read when
+    # ask()'s own enable_chat_summarization=True (curation chat only --
+    # see ask()'s own docstring); a bare ChatSession() or any caller that
+    # omits these (search chat's chat_service.py) sees byte-identical
+    # behavior to before this phase, since these fields are simply never
+    # consulted on that path at all.
+    chat_summary: dict | None = None
+    chat_summary_covers_history_count: int = 0
+    chat_summary_updated_at: str | None = None
 
 
 def _build_answer_schema(paper_ids: list[str], web_urls: list[str] | None = None) -> type[BaseModel]:
@@ -312,6 +335,113 @@ def capped_history(history: list[dict], max_turns: int = MAX_HISTORY_TURNS) -> l
     """
     sliced = history[-2 * max_turns:]
     return [{"role": turn["role"], "content": turn["content"]} for turn in sliced]
+
+
+def _prepare_bounded_recent_history(session: ChatSession, client: OpenAI) -> list[dict]:
+    """Usage Protection M3.2: replaces a bare `capped_history(session.
+    history)` call for curation chat only -- the ONE place ask()'s
+    model-bound conversation-history component gets built when a caller
+    opts in via `enable_chat_summarization=True` (see ask()'s own
+    docstring). Runs once, entirely BEFORE the graph is invoked -- both
+    `_condense_node` and `_generate_node` read the SAME finalized
+    `QAState["recent_history"]` this function returns; neither node
+    independently triggers or generates a second summary.
+
+    Lifecycle, matching the task's own documented M3.2 design exactly:
+      1. `chat_summarization.build_chat_context(...)` validates the
+         currently persisted summary state and decides whether a
+         (re)summarization pass is warranted. Its own `model_messages`
+         is ALWAYS already a safe, immediately-usable fallback --
+         everything below can fail at any point and this function still
+         returns a bounded, non-crashing result.
+      2. If `context.should_summarize`: derive the exact ALLOWED source
+         ids/urls (`collect_allowed_summary_sources`, against the
+         RAW/unstripped history slice -- `context.history_to_summarize`
+         itself has already had citation metadata stripped, by design)
+         and call the live summarizer
+         (`chat_summarization.generate_replacement_summary`).
+         - On success: splice the freshly rendered summary message in
+           place of any old one (or prepend it, on a first-ever
+           summarization), and update `session.chat_summary`/
+           `chat_summary_covers_history_count`/`chat_summary_updated_at`
+           IN MEMORY on this `ChatSession` object -- the caller
+           (`curation_chat.py::ask_in_session`) is responsible for
+           copying these back onto the real `PaperPoolSession` and
+           persisting them together with the new exchange in the same
+           final `save_curation_session()` call; nothing here saves
+           anything.
+         - On ANY failure (network/API error, refusal, schema-invalid
+           or empty/meaningless output): logged (never exposed to the
+           user), summary fields are left completely untouched, and the
+           function simply returns `context.model_messages` unchanged
+           -- the previous valid summary (if any) plus a bounded recent
+           tail, or plain bounded recent history if there was no valid
+           previous summary yet. No retry, no fallback model.
+      3. Final independent safety net
+         (`chat_summarization.enforce_conversation_budget`): even a
+         correctly-summarized context can still exceed the configured
+         conversation budget if the retained recent exchanges alone are
+         long -- trims the OLDEST retained exchange GROUPS only (never
+         the summary message, never a split pair, never below the most
+         recent exchange) until it fits. Reuses
+         `policy.chat_summary_trigger_tokens` as the budget rather than
+         inventing a second policy field, per the task's own preference
+         -- inspection found no existing separate "conversation budget"
+         setting that would justify a new one.
+    """
+    policy = get_usage_policy()
+    context = build_chat_context(
+        session.history, session.chat_summary, session.chat_summary_covers_history_count,
+        policy, ANSWER_SYSTEM_PROMPT, selected_papers=session.papers, web_articles_added=session.web_articles,
+    )
+    final_messages = context.model_messages
+    has_summary_message = context.valid_previous_summary is not None
+
+    if context.should_summarize:
+        start_index = context.prospective_coverage_count - len(context.history_to_summarize)
+        raw_new_slice = session.history[start_index:context.prospective_coverage_count]
+        allowed_paper_ids, allowed_web_urls = collect_allowed_summary_sources(
+            raw_new_slice, context.valid_previous_summary,
+        )
+        try:
+            proposed_dict = generate_replacement_summary(
+                previous_summary=context.valid_previous_summary,
+                new_history_slice=context.history_to_summarize,
+                selected_papers=[p for p in session.papers if p.paper_id in allowed_paper_ids],
+                web_articles_added=[a for a in session.web_articles if a.url in allowed_web_urls],
+                client=client,
+                model=SUMMARY_MODEL,
+                max_output_tokens=policy.chat_summary_max_output_tokens,
+            )
+        except Exception:
+            # Usage Protection M3.2 failure policy: never a user-facing
+            # error, never a retry/fallback model, summary state left
+            # exactly as it was -- final_messages already holds the
+            # safe fallback build_chat_context computed above (the
+            # previous valid summary + bounded tail, or plain bounded
+            # capped-history-equivalent history if there was no valid
+            # previous summary at all).
+            logger.warning(
+                "chat-history summarization failed for this turn -- continuing with %s",
+                "the previous valid summary plus a bounded recent tail" if has_summary_message
+                else "today's bounded recent-history-only behavior",
+                exc_info=True,
+            )
+        else:
+            new_summary = ChatHistorySummary.model_validate(proposed_dict)
+            new_summary_message = render_summary_message(new_summary, session.papers, session.web_articles)
+            final_messages = [
+                new_summary_message,
+                *(final_messages[1:] if has_summary_message else final_messages),
+            ]
+            has_summary_message = True
+            session.chat_summary = proposed_dict
+            session.chat_summary_covers_history_count = context.prospective_coverage_count
+            session.chat_summary_updated_at = datetime.now(timezone.utc).isoformat()
+
+    return enforce_conversation_budget(
+        final_messages, has_summary_message, ANSWER_SYSTEM_PROMPT, policy.chat_summary_trigger_tokens,
+    )
 
 
 # semantic-classify-message: replaces the old exact-match allowlist with
@@ -1899,6 +2029,8 @@ def ask(
     question: str,
     client: OpenAI | None = None,
     top_k: int = TOP_K_DEFAULT,
+    *,
+    enable_chat_summarization: bool = False,
 ) -> dict:
     """Answer a question grounded in session.papers and session.web_articles,
     using session.history for follow-up context. Appends the turn to
@@ -1910,9 +2042,23 @@ def ask(
     qa-langgraph-conversion — this wrapper's signature and return shape are
     unchanged so every existing caller (api.py's /chat endpoint, RAGAS eval
     scripts) keeps working as-is.
+
+    Usage Protection M3.2: `enable_chat_summarization` defaults to
+    `False` -- every existing caller (search chat's stateless `/chat`
+    endpoint, RAGAS eval scripts, any test that doesn't pass this kwarg)
+    gets EXACTLY today's bare `capped_history(session.history)` behavior,
+    byte-identical, zero risk. Only `curation_chat.py::ask_in_session`
+    passes `True`, opting into `_prepare_bounded_recent_history`'s
+    bounded-context construction (validate persisted summary -> maybe
+    live-summarize newly eligible older history -> finalize a bounded
+    conversation-history component) -- see that function's own
+    docstring for the full lifecycle.
     """
     client = client or default_openai_client()
-    recent_history = capped_history(session.history)
+    recent_history = (
+        _prepare_bounded_recent_history(session, client) if enable_chat_summarization
+        else capped_history(session.history)
+    )
 
     initial_state: QAState = {
         "session": session,

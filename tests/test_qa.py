@@ -24,8 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from unittest.mock import patch
 
+from research_agent.config import get_usage_policy
 from research_agent.qa import (
-    MAX_HISTORY_TURNS, ChatSession, _build_answer_schema, _classify_non_substantive, condense_question,
+    MAX_HISTORY_TURNS, ANSWER_SYSTEM_PROMPT, ChatSession, _build_answer_schema, _classify_non_substantive, condense_question,
     capped_history, _renumber_citation_markers, _filter_relevant_web_articles, ask,
     _DIRECT_RELEVANCE_JUDGE_THRESHOLD, _DIRECT_RELEVANCE_PROMPT_VERSION, _build_direct_relevance_messages,
     _direct_relevance_cache_key, _init_direct_relevance_cache_db, _judge_direct_web_relevance,
@@ -2312,6 +2313,444 @@ def test_ask_caps_history_to_last_n_turns_in_prompt_sent_to_model():
     # only the prompt sent to the model is capped, not what's stored (a
     # caller building a UI transcript still sees every turn).
     assert len(session.history) == 12 * 2 + 2
+
+
+# =====================================================================
+# Usage Protection M3.2: ask(enable_chat_summarization=True) integration
+# =====================================================================
+#
+# Search chat and every OTHER test above never pass
+# enable_chat_summarization -- the default (False) means these tests
+# below are the ONLY place this behavior is exercised at all. No real
+# network/OpenAI calls anywhere; every client is a MagicMock.
+
+from research_agent.chat_summarization import ChatHistorySummary
+from research_agent.qa import _prepare_bounded_recent_history
+
+
+def _long_alternating_history(n_turns: int) -> list[dict]:
+    history = []
+    for i in range(n_turns):
+        history.append({"role": "user", "content": f"question {i}", "exchange_id": f"e{i}"})
+        history.append({
+            "role": "assistant", "content": f"answer {i}", "exchange_id": f"e{i}",
+            "used_web_search": False, "cited_papers": [], "cited_web_articles": [], "added_to_report": False,
+        })
+    return history
+
+
+def _mock_summary_parse_response(summary: ChatHistorySummary, usage_tokens=(100, 50, 150)):
+    prompt, completion, total = usage_tokens
+    mock_message = MagicMock(parsed=summary, refusal=None)
+    mock_usage = MagicMock(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+    mock_response = MagicMock(usage=mock_usage)
+    mock_response.choices = [MagicMock(message=mock_message)]
+    return mock_response
+
+
+def _summarize_or_answer_side_effect(summary: ChatHistorySummary, answer_response, call_log: list | None = None):
+    def side_effect(*args, **kwargs):
+        if kwargs.get("response_format") is ChatHistorySummary:
+            if call_log is not None:
+                call_log.append("summary")
+            return _mock_summary_parse_response(summary)
+        if call_log is not None:
+            call_log.append("answer")
+        return answer_response
+    return side_effect
+
+
+class TestPrepareBoundedRecentHistoryUnit:
+    """Direct unit tests of _prepare_bounded_recent_history -- isolated
+    from the rest of ask()'s graph (retrieval/embedding/condense), which
+    is exactly the point: this function's own contract doesn't depend on
+    any of that."""
+
+    def test_first_trigger_receives_no_previous_summary(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        assert "first summarization pass" in messages[-1]["content"]
+
+    def test_incremental_trigger_receives_previous_structured_summary(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        session = ChatSession(
+            history=history,
+            chat_summary={"research_intent": "an earlier, already-persisted research intent"},
+            chat_summary_covers_history_count=8,
+        )
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        assert "an earlier, already-persisted research intent" in messages[-1]["content"]
+
+    def test_newly_selected_history_excludes_already_covered_entries(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        session = ChatSession(
+            history=history, chat_summary={"research_intent": "ok"}, chat_summary_covers_history_count=8,
+        )
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        user_content = messages[-1]["content"]
+        assert "question 0" not in user_content  # index 0-1, already covered
+        assert "question 3" not in user_content  # index 6-7, already covered
+        assert "question 4" in user_content  # index 8, first newly-eligible entry
+
+    def test_only_metadata_referenced_source_ids_are_allowed(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        history[9]["cited_papers"] = [{"paper_id": "p1", "title": "Only This One"}]
+        papers = [_paper("p1", "Only This One"), _paper("p2", "Never Referenced")]
+        session = ChatSession(history=history, papers=papers)
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        user_content = messages[-1]["content"]
+        assert "p1" in user_content
+        assert "p2" not in user_content
+
+    def test_structured_response_validated_and_normalized_into_session_state(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(
+            ChatHistorySummary(research_intent="normalized intent", key_conclusions=["c1"]),
+        )
+        _prepare_bounded_recent_history(session, client)
+        assert session.chat_summary["research_intent"] == "normalized intent"
+        assert session.chat_summary["key_conclusions"] == ["c1"]
+        assert isinstance(session.chat_summary, dict)
+
+    def test_malformed_response_is_a_summarization_failure_and_leaves_summary_fields_empty(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        bad_parsed = MagicMock()
+        bad_parsed.model_dump.return_value = {"research_intent": 123}
+        mock_message = MagicMock(parsed=bad_parsed, refusal=None)
+        mock_response = MagicMock(usage=None)
+        mock_response.choices = [MagicMock(message=mock_message)]
+        client.chat.completions.parse.return_value = mock_response
+        _prepare_bounded_recent_history(session, client)  # must not raise
+        assert session.chat_summary is None
+        assert session.chat_summary_covers_history_count == 0
+
+    def test_summary_generated_exactly_once_per_call(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        client.chat.completions.parse.assert_called_once()
+
+    def test_real_utc_aware_timestamp_set_on_success(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        before = datetime.now(timezone.utc)
+        _prepare_bounded_recent_history(session, client)
+        after = datetime.now(timezone.utc)
+        updated_at = datetime.fromisoformat(session.chat_summary_updated_at)
+        assert before <= updated_at <= after
+
+    def test_coverage_advances_to_prospective_endpoint_on_success(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        policy = get_usage_policy()
+        expected_boundary = 40 - 2 * policy.chat_summary_keep_recent_turns
+        assert session.chat_summary_covers_history_count == expected_boundary
+
+    def test_later_turn_reuses_summary_without_another_call_when_not_retriggered(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        session = ChatSession(
+            history=_long_alternating_history(20),
+            chat_summary={"research_intent": "already summarized"},
+            chat_summary_covers_history_count=24,  # already covers up to the retained boundary
+        )
+        client = MagicMock()
+        messages = _prepare_bounded_recent_history(session, client)
+        client.chat.completions.parse.assert_not_called()
+        assert any("already summarized" in m["content"] for m in messages)
+
+    def test_four_newly_eligible_turns_can_trigger_incremental_replacement(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "4")
+        history = _long_alternating_history(20)  # 20 groups, keep 8 -> boundary at index 24
+        session = ChatSession(
+            history=history, chat_summary={"research_intent": "old"}, chat_summary_covers_history_count=16,
+        )  # exactly 4 newly-eligible groups (indices 16-23) before the retained boundary
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="replaced"))
+        _prepare_bounded_recent_history(session, client)
+        client.chat.completions.parse.assert_called_once()
+        assert session.chat_summary["research_intent"] == "replaced"
+
+    def test_fewer_than_four_newly_eligible_turns_does_not_trigger_replacement(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "4")
+        history = _long_alternating_history(20)
+        session = ChatSession(
+            history=history, chat_summary={"research_intent": "old"}, chat_summary_covers_history_count=18,
+        )  # only 3 newly-eligible groups (indices 18-23) before the retained boundary
+        client = MagicMock()
+        _prepare_bounded_recent_history(session, client)
+        client.chat.completions.parse.assert_not_called()
+        assert session.chat_summary["research_intent"] == "old"  # unchanged
+
+    def test_replacement_preserves_prior_summary_through_the_prompt_contract(self, monkeypatch):
+        """Not a claim about model behavior (that's the live model's own
+        job) -- proves the PROMPT ITSELF instructs preservation and
+        supplies the prior summary verbatim, the contract this codebase
+        can actually verify deterministically."""
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(
+            history=_long_alternating_history(20),
+            chat_summary={"research_intent": "must be preserved verbatim if still relevant"},
+            chat_summary_covers_history_count=8,
+        )
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        sent = client.chat.completions.parse.call_args.kwargs["messages"]
+        system_text = sent[0]["content"]
+        user_text = sent[1]["content"]
+        assert "preserves still-relevant information from the previous summary" in system_text.lower()
+        assert "must be preserved verbatim if still relevant" in user_text
+
+
+class TestPrepareBoundedRecentHistoryFailurePolicy:
+    def test_first_summary_failure_falls_back_to_recent_capped_history(self, monkeypatch):
+        # 500 is calibrated so it's low enough to cross the FULL-history
+        # trigger check (forcing an attempted summarization, which then
+        # fails) but high enough that the fallback's own bounded tail
+        # (well under 500 tokens for this fixture) is NOT further reduced
+        # by the separate enforce_conversation_budget safety net -- this
+        # test isolates the failure-fallback behavior specifically, not
+        # budget-trimming interaction (covered separately elsewhere).
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "500")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        session = ChatSession(history=history)
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = ConnectionError("network down")
+        messages = _prepare_bounded_recent_history(session, client)
+        policy = get_usage_policy()
+        assert messages == capped_history(history, max_turns=policy.chat_summary_keep_recent_turns)
+
+    def test_incremental_failure_retains_and_uses_previous_summary(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        session = ChatSession(
+            history=history, chat_summary={"research_intent": "the valid previous summary"},
+            chat_summary_covers_history_count=8,
+        )
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = ConnectionError("network down")
+        messages = _prepare_bounded_recent_history(session, client)
+        assert any("the valid previous summary" in m["content"] for m in messages)
+
+    def test_coverage_and_timestamp_unchanged_on_failure(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        session = ChatSession(
+            history=history, chat_summary={"research_intent": "old"}, chat_summary_covers_history_count=8,
+            chat_summary_updated_at="2026-01-01T00:00:00+00:00",
+        )
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = RuntimeError("boom")
+        _prepare_bounded_recent_history(session, client)
+        assert session.chat_summary_covers_history_count == 8
+        assert session.chat_summary_updated_at == "2026-01-01T00:00:00+00:00"
+
+    def test_no_automatic_retry_on_failure(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        session = ChatSession(history=_long_alternating_history(20))
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = RuntimeError("boom")
+        _prepare_bounded_recent_history(session, client)
+        client.chat.completions.parse.assert_called_once()  # exactly once -- no retry
+
+    def test_failure_never_returns_raw_unbounded_full_history(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(50)
+        session = ChatSession(history=history)
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = RuntimeError("boom")
+        messages = _prepare_bounded_recent_history(session, client)
+        policy = get_usage_policy()
+        assert len(messages) <= 2 * policy.chat_summary_keep_recent_turns
+
+
+class TestConversationBudgetEndToEnd:
+    @pytest.mark.parametrize("n_turns", [0, 8, 20, 100])
+    def test_bounded_across_history_sizes(self, n_turns, monkeypatch):
+        from langchain_core.messages.utils import count_tokens_approximately
+        session = ChatSession(history=_long_alternating_history(n_turns))
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        messages = _prepare_bounded_recent_history(session, client)
+        policy = get_usage_policy()
+        tokens = count_tokens_approximately([{"role": "system", "content": ANSWER_SYSTEM_PROMPT}] + messages)
+        assert tokens <= policy.chat_summary_trigger_tokens + 50  # small slack for the system-prompt-plus-summary floor
+
+    def test_full_stored_history_deep_equal_except_appended_exchange(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        history = _long_alternating_history(20)
+        snapshot = [dict(e) for e in history]
+        session = ChatSession(history=history)
+        client = MagicMock()
+        client.chat.completions.parse.return_value = _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+        _prepare_bounded_recent_history(session, client)
+        # _prepare_bounded_recent_history itself never appends to
+        # session.history -- only ask()'s own graph nodes do that, after
+        # a real answer is generated (untouched here).
+        assert session.history == snapshot
+
+
+class TestAskEndToEndWithSummarization:
+    def test_summary_generated_exactly_once_before_graph_execution(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        papers = [_paper("p1", "Paper One")]
+        session = ChatSession(papers=papers, history=_long_alternating_history(20))
+        schema = _build_answer_schema(["p1"])
+        answer_response = _mock_parse_response(schema, answerable=True, answer="Final [Paper 1].", cited_paper_ids=["p1"])
+        call_log: list[str] = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.side_effect = _summarize_or_answer_side_effect(
+            ChatHistorySummary(research_intent="ok"), answer_response, call_log,
+        )
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="standalone question"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask(session, "new question", client=mock_client, enable_chat_summarization=True)
+
+        assert call_log == ["summary", "answer"]  # summary strictly before the answer call
+
+    def test_same_finalized_history_component_feeds_condense_and_answer(self, monkeypatch):
+        sentinel_context = [{"role": "system", "content": "SENTINEL SUMMARY MESSAGE"}, {"role": "user", "content": "recent q"}]
+        papers = [_paper("p1", "Paper One")]
+        session = ChatSession(papers=papers, history=[
+            {"role": "user", "content": "prior q"}, {"role": "assistant", "content": "prior a"},
+        ])
+        schema = _build_answer_schema(["p1"])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="Final [Paper 1].", cited_paper_ids=["p1"],
+        )
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="standalone question"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+
+        with patch("research_agent.qa._prepare_bounded_recent_history", return_value=sentinel_context), \
+             patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask(session, "new question", client=mock_client, enable_chat_summarization=True)
+
+        condense_transcript = mock_client.chat.completions.create.call_args.kwargs["messages"][-1]["content"]
+        assert "SENTINEL SUMMARY MESSAGE" in condense_transcript
+        assert "recent q" in condense_transcript
+
+        answer_messages = mock_client.chat.completions.parse.call_args.kwargs["messages"]
+        assert sentinel_context[0] in answer_messages
+        assert sentinel_context[1] in answer_messages
+
+    def test_answer_failure_after_summary_success_raises_and_never_appends_to_history(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        papers = [_paper("p1", "Paper One")]
+        history = _long_alternating_history(20)
+        snapshot_len = len(history)
+        session = ChatSession(papers=papers, history=history)
+
+        def parse_side_effect(*args, **kwargs):
+            if kwargs.get("response_format") is ChatHistorySummary:
+                return _mock_summary_parse_response(ChatHistorySummary(research_intent="ok"))
+            raise RuntimeError("answer generation failed")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.side_effect = parse_side_effect
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="standalone question"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            with pytest.raises(RuntimeError):
+                ask(session, "new question", client=mock_client, enable_chat_summarization=True)
+
+        # session.history is the SAME list object ChatSession.history
+        # aliases -- a failed answer generation never appends to it.
+        assert len(session.history) == snapshot_len
+
+    def test_search_chat_style_call_without_the_flag_is_unaffected(self, monkeypatch):
+        """The exact call shape chat_service.py's answer_search_chat uses
+        -- no enable_chat_summarization kwarg at all -- must never touch
+        chat_summarization.py in any way."""
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")  # would force-trigger IF summarization ran at all
+        papers = [_paper("p1", "Paper One")]
+        session = ChatSession(papers=papers, history=_long_alternating_history(20))
+        schema = _build_answer_schema(["p1"])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="Final [Paper 1].", cited_paper_ids=["p1"],
+        )
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="standalone question"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask(session, "new question", client=mock_client)  # no enable_chat_summarization kwarg
+
+        mock_client.chat.completions.parse.assert_called_once()  # only the real answer call -- no summary attempt
+        assert session.chat_summary is None
 
 
 if __name__ == "__main__":

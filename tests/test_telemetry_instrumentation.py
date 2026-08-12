@@ -205,6 +205,11 @@ _PRODUCTION_MODULES_WITH_EXTERNAL_CALLS = (
     "research_agent/curation_chat.py",
     "research_agent/enrichment.py",
     "research_agent/agent.py",
+    # Usage Protection M3.2: chat_summarization.py's own
+    # generate_replacement_summary makes this module's one real
+    # client.chat.completions.parse(...) call -- wrapped in
+    # telemetry.timed_child_call, same as every other entry here.
+    "research_agent/chat_summarization.py",
 )
 # Excluded per the M1.2 spec: eval/CLI code is a separate, un-instrumented
 # world by design (see tests/test_telemetry_instrumentation.py's own

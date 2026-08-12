@@ -1,20 +1,28 @@
-"""Usage Protection M3.1: tests for research_agent/chat_summarization.py --
-deterministic, pure-function summary-state helpers. Nothing here makes a
-real network/OpenAI call (the module itself never constructs one), and
-nothing here touches the live curation-chat request path (qa.py,
-curation_chat.py, services/) -- that wiring is M3.2.
+"""Usage Protection M3.1/M3.2: tests for research_agent/chat_summarization.py.
+
+M3.1's own pure/deterministic helpers (schema, coverage, exchange
+boundaries, selection, trigger, rendering, replacement validation,
+invalidation) still make no real network/OpenAI call and are covered in
+the first half of this file. M3.2 activates exactly one real call
+(`generate_replacement_summary`) -- every test that exercises it mocks
+the OpenAI client (never a real network call), matching this project's
+own established `MagicMock()`-based convention.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import sys
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from pydantic import ValidationError
 
+import research_agent.telemetry as telemetry
 from research_agent.chat_summarization import (
     ChatHistorySummary,
     MAX_KEY_CONCLUSIONS_ITEMS,
@@ -25,7 +33,10 @@ from research_agent.chat_summarization import (
     MAX_WEB_ARTICLES_DISCUSSED_ITEMS,
     build_chat_context,
     cleared_chat_summary_fields,
+    collect_allowed_summary_sources,
     determine_invalidation,
+    enforce_conversation_budget,
+    generate_replacement_summary,
     group_into_exchanges,
     load_persisted_summary_state,
     render_summary_message,
@@ -38,6 +49,34 @@ from research_agent.qa import capped_history
 from research_agent.schema import Paper, WebArticle
 
 SYSTEM_PROMPT = "You are a research assistant answering questions using ONLY the provided sources."
+
+
+@pytest.fixture(autouse=True)
+def usage_db_path(tmp_path, monkeypatch):
+    """Same per-file isolation convention as tests/test_usage_guard.py/
+    test_telemetry_instrumentation.py -- autouse so NOTHING in this file
+    can ever touch the real data/usage_telemetry.sqlite, even a test
+    that doesn't explicitly need telemetry."""
+    db_path = tmp_path / "usage_telemetry.sqlite"
+    monkeypatch.setattr(telemetry, "USAGE_DB_PATH", db_path)
+    telemetry.init_usage_db(path=db_path).close()
+    return db_path
+
+
+def _actions(db_path, **where):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM paid_actions").fetchall()]
+    finally:
+        conn.close()
+    for key, value in where.items():
+        rows = [r for r in rows if r[key] == value]
+    return rows
+
+
+def _child_calls(action_row) -> list[dict]:
+    return json.loads(action_row["child_calls_json"])
 
 
 def _paper(pid: str, title: str | None = None) -> Paper:
@@ -650,3 +689,245 @@ class TestInvalidation:
             "chat_summary_covers_history_count": 0,
             "chat_summary_updated_at": None,
         }
+
+
+# --- M3.2 Part A: allowed-source derivation -------------------------------
+
+class TestCollectAllowedSummarySources:
+    def test_no_previous_summary_uses_only_new_slice_metadata(self):
+        raw_slice = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a", "cited_papers": [{"paper_id": "p1", "title": "T"}],
+             "cited_web_articles": [{"url": "https://x.com", "title": "T2"}]},
+        ]
+        ids, urls = collect_allowed_summary_sources(raw_slice, None)
+        assert ids == {"p1"}
+        assert urls == {"https://x.com"}
+
+    def test_previous_summary_sources_are_unioned_with_new_slice(self):
+        prev = ChatHistorySummary(research_intent="ok", papers_discussed=["p0"], web_articles_discussed=["https://old.com"])
+        raw_slice = [{"role": "assistant", "content": "a", "cited_papers": [{"paper_id": "p1", "title": "T"}], "cited_web_articles": []}]
+        ids, urls = collect_allowed_summary_sources(raw_slice, prev)
+        assert ids == {"p0", "p1"}
+        assert urls == {"https://old.com"}
+
+    def test_user_turns_never_contribute_ids(self):
+        raw_slice = [{"role": "user", "content": "q", "cited_papers": [{"paper_id": "should-never-count"}]}]
+        ids, urls = collect_allowed_summary_sources(raw_slice, None)
+        assert ids == set()
+
+    def test_empty_slice_and_no_previous_summary_yields_empty_sets(self):
+        ids, urls = collect_allowed_summary_sources([], None)
+        assert ids == set() and urls == set()
+
+    def test_missing_metadata_keys_degrade_gracefully(self):
+        raw_slice = [{"role": "assistant", "content": "a"}]  # no cited_papers/cited_web_articles at all
+        ids, urls = collect_allowed_summary_sources(raw_slice, None)
+        assert ids == set() and urls == set()
+
+
+# --- M3.2 Part A: live summarizer (mocked OpenAI client) ------------------
+
+def _mock_parse_response(parsed, usage_tokens: tuple[int, int, int] | None = (100, 50, 150)):
+    mock_message = MagicMock(parsed=parsed, refusal=None)
+    mock_usage = None
+    if usage_tokens is not None:
+        prompt, completion, total = usage_tokens
+        mock_usage = MagicMock(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+    mock_response = MagicMock(usage=mock_usage)
+    mock_response.choices = [MagicMock(message=mock_message)]
+    return mock_response
+
+
+class TestGenerateReplacementSummary:
+    def test_first_time_call_receives_no_previous_summary_marker(self):
+        client = MagicMock()
+        parsed = ChatHistorySummary(research_intent="ok")
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        generate_replacement_summary(None, [{"role": "user", "content": "hi"}], [], [], client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        user_content = messages[-1]["content"]
+        assert "first summarization pass" in user_content
+
+    def test_incremental_call_receives_previous_summary_as_json(self):
+        client = MagicMock()
+        prev = ChatHistorySummary(research_intent="prior intent here", key_conclusions=["c1"])
+        parsed = ChatHistorySummary(research_intent="ok")
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        generate_replacement_summary(prev, [{"role": "user", "content": "hi"}], [], [], client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        user_content = messages[-1]["content"]
+        assert "prior intent here" in user_content
+        assert '"c1"' in user_content
+
+    def test_uses_structured_output_parse_with_chat_history_summary_schema(self):
+        client = MagicMock()
+        parsed = ChatHistorySummary(research_intent="ok")
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        generate_replacement_summary(None, [], [], [], client, model="gpt-4.1-mini", max_output_tokens=500)
+        kwargs = client.chat.completions.parse.call_args.kwargs
+        assert kwargs["response_format"] is ChatHistorySummary
+        assert kwargs["model"] == "gpt-4.1-mini"
+        assert kwargs["max_completion_tokens"] == 500
+
+    def test_only_metadata_referenced_source_ids_are_offered_and_enforced(self):
+        client = MagicMock()
+        papers = [_paper("p1"), _paper("p2")]
+        # Model tries to reference p2 (not in the allowed/known pool passed
+        # to this call) -- validate_replacement_summary must filter it out.
+        parsed = ChatHistorySummary(research_intent="ok", papers_discussed=["p1", "p2", "ghost"])
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        result = generate_replacement_summary(None, [], [papers[0]], [], client)  # only p1 passed in as known
+        assert result["papers_discussed"] == ["p1"]
+
+    def test_malformed_response_raises(self):
+        client = MagicMock()
+        bad_parsed = MagicMock()
+        bad_parsed.model_dump.return_value = {"research_intent": 123}  # wrong type
+        client.chat.completions.parse.return_value = _mock_parse_response(bad_parsed)
+        with pytest.raises(Exception):
+            generate_replacement_summary(None, [], [], [], client)
+
+    def test_refused_response_raises(self):
+        client = MagicMock()
+        mock_message = MagicMock(parsed=None, refusal="cannot comply")
+        mock_response = MagicMock(usage=None)
+        mock_response.choices = [MagicMock(message=mock_message)]
+        client.chat.completions.parse.return_value = mock_response
+        with pytest.raises(RuntimeError):
+            generate_replacement_summary(None, [], [], [], client)
+
+    def test_api_error_propagates(self):
+        client = MagicMock()
+        client.chat.completions.parse.side_effect = ConnectionError("network down")
+        with pytest.raises(ConnectionError):
+            generate_replacement_summary(None, [], [], [], client)
+
+    def test_empty_meaningless_response_raises(self):
+        client = MagicMock()
+        parsed = MagicMock()
+        parsed.model_dump.return_value = {"research_intent": "   "}  # blank after strip
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        with pytest.raises(ValueError):
+            generate_replacement_summary(None, [], [], [], client)
+
+    def test_no_raw_evidence_report_pending_or_control_data_reaches_the_prompt(self):
+        client = MagicMock()
+        parsed = ChatHistorySummary(research_intent="ok")
+        client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+        # new_history_slice is deliberately already-stripped {role, content}
+        # only, matching what select_summarizable_slice actually returns --
+        # this proves the prompt builder doesn't reach for anything else.
+        history_slice = [{"role": "user", "content": "What about LoRA?"}, {"role": "assistant", "content": "LoRA reduces params."}]
+        generate_replacement_summary(None, history_slice, [], [], client)
+        messages = client.chat.completions.parse.call_args.kwargs["messages"]
+        full_text = " ".join(m["content"] for m in messages)
+        for forbidden in ["abstract", "snippet", "pending_web_offer", "pending_report_update", "exchange_id", "refinement"]:
+            assert forbidden not in full_text.lower()
+
+    def test_records_exactly_one_successful_child_call_with_usage(self, usage_db_path):
+        with telemetry.paid_action("curation_chat", subject_type="session", subject_id="s1"):
+            client = MagicMock()
+            parsed = ChatHistorySummary(research_intent="ok")
+            client.chat.completions.parse.return_value = _mock_parse_response(parsed, usage_tokens=(120, 40, 160))
+            generate_replacement_summary(None, [], [], [], client)
+        action = _actions(usage_db_path, action_type="curation_chat")[0]
+        children = _child_calls(action)
+        assert len(children) == 1
+        assert children[0]["call_type"] == "summarize_chat_history"
+        assert children[0]["provider"] == "openai"
+        assert children[0]["outcome"] == "success"
+        assert children[0]["input_tokens"] == 120
+        assert children[0]["output_tokens"] == 40
+        assert children[0]["total_tokens"] == 160
+
+    def test_records_exactly_one_failed_child_call_with_safe_error_type_only(self, usage_db_path):
+        with telemetry.paid_action("curation_chat", subject_type="session", subject_id="s1"):
+            client = MagicMock()
+            client.chat.completions.parse.side_effect = ConnectionError("some real internal detail: /etc/secrets")
+            with pytest.raises(ConnectionError):
+                generate_replacement_summary(None, [], [], [], client)
+        action = _actions(usage_db_path, action_type="curation_chat")[0]
+        children = _child_calls(action)
+        assert len(children) == 1
+        assert children[0]["call_type"] == "summarize_chat_history"
+        assert children[0]["outcome"] == "error"
+        assert children[0]["error_type"] == "ConnectionError"
+        # Never the raw exception text -- error_type is the only detail persisted.
+        assert "secrets" not in json.dumps(action)
+
+    def test_not_triggered_means_no_summary_child_call_exists(self, usage_db_path):
+        """generate_replacement_summary is simply never called when
+        should_summarize is False (see qa.py's own orchestration) --
+        confirmed here at the telemetry level: an action with no
+        summarization attempt at all has no summarize_chat_history child."""
+        with telemetry.paid_action("curation_chat", subject_type="session", subject_id="s1"):
+            pass  # no generate_replacement_summary call this "turn"
+        action = _actions(usage_db_path, action_type="curation_chat")[0]
+        assert _child_calls(action) == []
+
+    def test_no_second_paid_action_or_lease_opened(self, usage_db_path):
+        """generate_replacement_summary never opens its own paid_action
+        (chat_summarization.py never imports usage_guard/telemetry.
+        paid_action) -- only ONE paid_actions row exists for the whole
+        simulated turn, with the summary call attached as its child via
+        telemetry's own "first active action wins" nesting."""
+        with telemetry.paid_action("curation_chat", subject_type="session", subject_id="s1"):
+            client = MagicMock()
+            parsed = ChatHistorySummary(research_intent="ok")
+            client.chat.completions.parse.return_value = _mock_parse_response(parsed)
+            generate_replacement_summary(None, [], [], [], client)
+        conn = sqlite3.connect(usage_db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM paid_actions").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 1
+
+
+# --- M3.2 Part C: final conversation-budget safety net --------------------
+
+class TestEnforceConversationBudget:
+    def _long_tail(self, n_exchanges: int) -> list[dict]:
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"content {i} " * 40}
+            for i in range(2 * n_exchanges)
+        ]
+
+    def test_within_budget_is_a_no_op(self):
+        messages = [{"role": "system", "content": "SUMMARY"}, {"role": "user", "content": "hi"}]
+        out = enforce_conversation_budget(messages, True, "sys", budget_tokens=100_000)
+        assert out == messages
+
+    def test_over_budget_drops_oldest_whole_exchanges_only(self):
+        tail = self._long_tail(8)
+        messages = [{"role": "system", "content": "SUMMARY"}] + tail
+        out = enforce_conversation_budget(messages, True, "sys", budget_tokens=50)
+        assert out[0] == messages[0]  # summary message never touched
+        assert len(out) < len(messages)
+        # Whatever remains must still be a whole number of (user,
+        # assistant) pairs -- never a lone dangling message.
+        remaining_tail = out[1:]
+        assert len(remaining_tail) % 2 == 0
+        assert all(remaining_tail[i]["role"] == "user" for i in range(0, len(remaining_tail), 2))
+        assert all(remaining_tail[i]["role"] == "assistant" for i in range(1, len(remaining_tail), 2))
+        # Must be the MOST RECENT exchanges (highest indices), not the oldest.
+        assert remaining_tail[-1] == tail[-1]
+
+    def test_never_drops_below_the_single_most_recent_exchange(self):
+        tail = self._long_tail(1)
+        messages = [{"role": "system", "content": "SUMMARY"}] + tail
+        out = enforce_conversation_budget(messages, True, "sys", budget_tokens=1)  # impossible budget
+        assert out[1:] == tail  # the one exchange is never dropped/split
+
+    def test_no_leading_summary_case_still_bounds_the_tail(self):
+        tail = self._long_tail(8)
+        out = enforce_conversation_budget(tail, False, "sys", budget_tokens=50)
+        assert len(out) < len(tail)
+        assert len(out) % 2 == 0
+
+    def test_summary_text_itself_is_never_truncated_mid_field(self):
+        long_summary_text = "x" * 400
+        messages = [{"role": "system", "content": long_summary_text}] + self._long_tail(8)
+        out = enforce_conversation_budget(messages, True, "sys", budget_tokens=1)
+        assert out[0]["content"] == long_summary_text  # untouched, not truncated

@@ -44,7 +44,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 import research_agent.telemetry as telemetry
-from research_agent import qa
+from research_agent import chat_summarization, qa
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import (
     GENERATION_REASON_CHAT_AUTO_UPDATE,
@@ -84,6 +84,12 @@ def _build_chat_session(session: PaperPoolSession) -> qa.ChatSession:
         history=session.chat_history,
         topic=session.topic,
         web_article_provenance_by_url=session.web_article_provenance_by_url,
+        # Usage Protection M3.2: the 1:1 copy that lets qa.ask()'s own
+        # bounded-context construction see (and, on a successful live
+        # summarization, update) this session's persisted summary state.
+        chat_summary=session.chat_summary,
+        chat_summary_covers_history_count=session.chat_summary_covers_history_count,
+        chat_summary_updated_at=session.chat_summary_updated_at,
     )
 
 
@@ -103,11 +109,50 @@ def ask_in_session(
     no-papers-and-no-web-articles case cleanly (routes to its own
     "no_sources" path), so re-checking it here would just duplicate
     that behavior instead of reusing it.
+
+    Usage Protection M3.2: the ONLY call site that opts curation chat
+    into qa.ask()'s bounded-context construction
+    (`enable_chat_summarization=True`) -- this is the one function every
+    _chat_turn_impl branch that generates a real answer (plain fallback,
+    offer-decline/other, and _accept_web_offer's own internal re-ask)
+    routes through, so summarization is wired in exactly once, covering
+    every real-answer path with no per-branch duplication. If qa.ask()
+    updated chat_summary/chat_summary_covers_history_count/
+    chat_summary_updated_at in memory (only ever happens on a
+    SUCCESSFUL live summarization pass -- see qa.py's own
+    _prepare_bounded_recent_history), they are copied back here so the
+    caller's own final save_curation_session() call persists the new
+    summary alongside the new exchange, in the SAME checkpoint -- no
+    separate/independent save. If qa.ask() itself raises (answer
+    generation failed), this line is never reached, so nothing here is
+    updated and the caller's save never runs either -- next request may
+    summarize the same range again.
     """
     chat_session = _build_chat_session(session)
-    result = qa.ask(chat_session, question, client=client, top_k=top_k)
+    result = qa.ask(chat_session, question, client=client, top_k=top_k, enable_chat_summarization=True)
     session.chat_history = chat_session.history
+    session.chat_summary = chat_session.chat_summary
+    session.chat_summary_covers_history_count = chat_session.chat_summary_covers_history_count
+    session.chat_summary_updated_at = chat_session.chat_summary_updated_at
     return result
+
+
+def _invalidate_chat_summary_if_covered(session: PaperPoolSession, earliest_affected_index: int) -> None:
+    """Usage Protection M3.2 Part F: wires chat_summarization.
+    determine_invalidation into the mutation paths that can shrink or
+    replace chat_history (delete_chat_exchanges, edit_chat_exchange).
+    Full invalidation (clears all three summary fields), never semantic
+    subtraction -- matches chat_summarization.py's own documented
+    design. A no-op when there is no persisted chat_summary at all
+    (nothing to invalidate), and a no-op when `earliest_affected_index`
+    is at or after the summary's own claimed coverage (the mutation
+    only touched recent, never-summarized entries)."""
+    has_summary = session.chat_summary is not None
+    if chat_summarization.determine_invalidation(
+        session.chat_summary_covers_history_count, earliest_affected_index, has_summary,
+    ):
+        for field_name, value in chat_summarization.cleared_chat_summary_fields().items():
+            setattr(session, field_name, value)
 
 
 _WEB_OFFER_SUFFIX = " Would you like me to search the web for more on this?"
@@ -644,11 +689,14 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
     live_before = live_cited_web_article_urls(session)
     matched_ids: set[str] = set()
     report_possibly_stale = False
+    earliest_deleted_index: int | None = None
     kept: list[dict] = []
-    for turn in session.chat_history:
+    for index, turn in enumerate(session.chat_history):
         turn_exchange_id = turn.get("exchange_id")
         if turn_exchange_id is not None and turn_exchange_id in target_ids:
             matched_ids.add(turn_exchange_id)
+            if earliest_deleted_index is None:
+                earliest_deleted_index = index
             if turn.get("role") == "assistant" and turn.get("added_to_report"):
                 report_possibly_stale = True
             continue
@@ -658,6 +706,11 @@ def delete_chat_exchanges(session: PaperPoolSession, exchange_ids: list[str]) ->
     if report_possibly_stale:
         prune_report_approved_web_article_urls(session)
     _sync_revoked_web_article_urls(session, live_before)
+    # Usage Protection M3.2 Part F: raw-entry index of the earliest
+    # actually-removed entry -- None (nothing matched) means nothing to
+    # invalidate, handled by simply not calling the helper.
+    if earliest_deleted_index is not None:
+        _invalidate_chat_summary_if_covered(session, earliest_deleted_index)
     return sorted(matched_ids), report_possibly_stale
 
 
@@ -1018,6 +1071,13 @@ def edit_chat_exchange(
     live_before = live_cited_web_article_urls(session)
     removed = session.chat_history[user_idx:]
     report_possibly_stale = any(turn.get("role") == "assistant" and turn.get("added_to_report") for turn in removed)
+
+    # Usage Protection M3.2 Part F: BEFORE truncation/rerun, using the
+    # same user_idx truncation boundary the rest of this function
+    # already uses -- so the fresh chat_turn() call below (which
+    # internally calls ask_in_session -> qa.ask()) sees the correctly
+    # invalidated-or-retained summary state, not stale pre-edit state.
+    _invalidate_chat_summary_if_covered(session, user_idx)
 
     session.chat_history = session.chat_history[:user_idx]
     if report_possibly_stale:

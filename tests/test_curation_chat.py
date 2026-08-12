@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.curation_chat import (
     _OfferResponseIntent,
+    _build_chat_session,
     _classify_offer_response,
     _record_web_article_provenance,
     approve_web_article_urls,
@@ -3353,3 +3354,299 @@ def test_derive_chat_references_never_reads_or_mutates_session_report():
     derive_chat_references(session)
 
     assert session.report is sentinel_report  # same object, completely untouched
+
+
+# =====================================================================
+# Usage Protection M3.2
+# =====================================================================
+
+def _many_exchanges(n: int) -> list[dict]:
+    entries: list[dict] = []
+    for i in range(n):
+        entries.extend(_exchange(f"ex-{i}"))
+    return entries
+
+
+# --- Part E: ChatSession/state threading ------------------------------
+
+class TestAskInSessionSummaryStateThreading:
+    def test_build_chat_session_copies_summary_state_from_paper_pool_session(self):
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize", chat_summary={"research_intent": "x"},
+            chat_summary_covers_history_count=4, chat_summary_updated_at="2026-01-01T00:00:00+00:00",
+        )
+        chat_session = _build_chat_session(session)
+        assert chat_session.chat_summary == {"research_intent": "x"}
+        assert chat_session.chat_summary_covers_history_count == 4
+        assert chat_session.chat_summary_updated_at == "2026-01-01T00:00:00+00:00"
+
+    def test_ask_in_session_copies_updated_summary_state_back_after_a_successful_call(self, monkeypatch):
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_TRIGGER_TOKENS", "1")
+        monkeypatch.setenv("USAGE_CHAT_SUMMARY_MIN_NEW_TURNS", "1")
+        from research_agent.chat_summarization import ChatHistorySummary
+
+        papers = [_paper("p1", "RoCoFT")]
+        session = PaperPoolSession(
+            topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+            chat_history=_many_exchanges(15),
+        )
+        schema = _build_answer_schema(["p1"])
+        call_log = []
+
+        def parse_side_effect(*args, **kwargs):
+            if kwargs.get("response_format") is ChatHistorySummary:
+                call_log.append("summary")
+                return _mock_parse_response(ChatHistorySummary, research_intent="new intent")
+            call_log.append("answer")
+            return _mock_parse_response(schema, answerable=True, answer="Fresh [Paper 1].", cited_paper_ids=["p1"])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.side_effect = parse_side_effect
+        mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="standalone"))],
+            usage=MagicMock(total_tokens=50, prompt_tokens=40, completion_tokens=10),
+        )
+
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask_in_session(session, "new question", client=mock_client)
+
+        assert call_log[0] == "summary"  # confirmed triggered
+        # PaperPoolSession itself (not just the transient ChatSession) has
+        # the fresh summary state -- ready for the caller's own final
+        # save_curation_session() to persist alongside the new exchange.
+        assert session.chat_summary["research_intent"] == "new intent"
+        assert session.chat_summary_covers_history_count > 0
+        assert session.chat_summary_updated_at is not None
+
+    def test_old_session_with_no_summary_remains_unchanged_until_threshold_reached(self):
+        """A short conversation never crosses the trigger -- chat_summary
+        stays exactly at its untouched default."""
+        papers = [_paper("p1", "RoCoFT")]
+        session = PaperPoolSession(
+            topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+            chat_history=_exchange("ex-0"),
+        )
+        schema = _build_answer_schema(["p1"])
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="A [Paper 1].", cited_paper_ids=["p1"],
+        )
+
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            ask_in_session(session, "q", client=mock_client)
+
+        assert session.chat_summary is None
+        assert session.chat_summary_covers_history_count == 0
+
+
+# --- Part F: edit/delete invalidation -----------------------------------
+
+class TestChatSummaryInvalidation:
+    def test_covered_delete_clears_summary(self):
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1"), *_exchange("ex-2")],
+            chat_summary={"research_intent": "covers the first exchange"},
+            chat_summary_covers_history_count=2,  # covers exactly ex-0's pair
+            chat_summary_updated_at="2026-01-01T00:00:00+00:00",
+        )
+        delete_chat_exchanges(session, ["ex-0"])  # index 0, < coverage (2) -> invalidates
+        assert session.chat_summary is None
+        assert session.chat_summary_covers_history_count == 0
+        assert session.chat_summary_updated_at is None
+
+    def test_uncovered_delete_retains_summary(self):
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1"), *_exchange("ex-2")],
+            chat_summary={"research_intent": "covers only ex-0"},
+            chat_summary_covers_history_count=2,
+            chat_summary_updated_at="2026-01-01T00:00:00+00:00",
+        )
+        delete_chat_exchanges(session, ["ex-2"])  # index 4, >= coverage (2) -> retains
+        assert session.chat_summary == {"research_intent": "covers only ex-0"}
+        assert session.chat_summary_covers_history_count == 2
+        assert session.chat_summary_updated_at == "2026-01-01T00:00:00+00:00"
+
+    def test_delete_at_exactly_the_coverage_boundary_retains(self):
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1")],
+            chat_summary={"research_intent": "covers ex-0"},
+            chat_summary_covers_history_count=2,  # ex-1 starts exactly at index 2
+        )
+        delete_chat_exchanges(session, ["ex-1"])  # earliest affected index == 2 == coverage -> retain
+        assert session.chat_summary == {"research_intent": "covers ex-0"}
+
+    def test_covered_edit_clears_before_rerun(self):
+        papers = [_paper("p1", "RoCoFT")]
+        session = PaperPoolSession(
+            topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1"), *_exchange("ex-2")],
+            chat_summary={"research_intent": "covers ex-0 and ex-1"},
+            chat_summary_covers_history_count=4,  # covers ex-0 (0-1) and ex-1 (2-3)
+        )
+        schema = _build_answer_schema(["p1"])
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="Fresh [Paper 1].", cited_paper_ids=["p1"],
+        )
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)  # user_idx=2, < coverage(4)
+        assert session.chat_summary is None
+        assert session.chat_summary_covers_history_count == 0
+
+    def test_uncovered_edit_retains_prior_summary_and_uses_it_for_the_regenerated_answer(self):
+        papers = [_paper("p1", "RoCoFT")]
+        session = PaperPoolSession(
+            topic="peft", selected_paper_ids=["p1"], selected_papers=papers, stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1"), *_exchange("ex-2")],
+            chat_summary={"research_intent": "covers only ex-0"},
+            chat_summary_covers_history_count=2,  # ex-1 starts at index 2 -- NOT covered
+        )
+        schema = _build_answer_schema(["p1"])
+        mock_client = MagicMock()
+        mock_client.chat.completions.parse.return_value = _mock_parse_response(
+            schema, answerable=True, answer="Fresh [Paper 1].", cited_paper_ids=["p1"],
+        )
+        with patch("research_agent.qa._classify_non_substantive", return_value=(False, None, 0.0)), \
+             patch("research_agent.qa.embed_and_index_papers"), \
+             patch("research_agent.qa.get_chroma_collection"), \
+             patch("research_agent.qa.semantic_search", return_value=[(papers[0], 0.9)]):
+            edit_chat_exchange(session, "ex-1", "edited question", client=mock_client)  # user_idx=2, >= coverage(2)
+        # Retained -- the regenerated answer's own prompt should have used
+        # the still-valid summary (indirectly proven: the summarizer was
+        # never called since USAGE_CHAT_SUMMARY_TRIGGER_TOKENS is at its
+        # real high default here, so no re-trigger; summary state itself
+        # is the direct, load-bearing assertion).
+        assert session.chat_summary == {"research_intent": "covers only ex-0"}
+        assert session.chat_summary_covers_history_count == 2
+
+    def test_invalidation_persists_through_the_final_save(self, tmp_path):
+        from research_agent.curation_session import save_curation_session
+        from research_agent.qa import sqlite_checkpointer
+
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1")],
+            chat_summary={"research_intent": "covers ex-0"}, chat_summary_covers_history_count=2,
+        )
+        delete_chat_exchanges(session, ["ex-0"])
+        assert session.chat_summary is None
+
+        db_path = tmp_path / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "sess-1", cp)
+            from research_agent.curation_session import load_curation_session
+            loaded = load_curation_session("sess-1", cp)
+        assert loaded.chat_summary is None
+        assert loaded.chat_summary_covers_history_count == 0
+
+    def test_old_turns_without_exchange_id_do_not_crash_invalidation(self):
+        old_entries = [{"role": "user", "content": "old q"}, {"role": "assistant", "content": "old a"}]
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize", chat_history=[*old_entries, *_exchange("ex-0")],
+            chat_summary={"research_intent": "x"}, chat_summary_covers_history_count=2,
+        )
+        deleted_ids, _ = delete_chat_exchanges(session, ["ex-0"])  # never touches the exchange_id=None pair
+        assert deleted_ids == ["ex-0"]
+        # ex-0 starts at index 2, == coverage(2) -> retained, no crash either way
+        assert session.chat_summary == {"research_intent": "x"}
+
+    def test_pending_offer_and_revoked_source_behavior_unchanged_by_invalidation(self):
+        """M3.2 Part F must not touch pending_web_offer/pending_report_
+        update/revoked_web_article_urls -- those are edit_chat_exchange's
+        own, separate, already-existing responsibilities."""
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_history=[*_exchange("ex-0"), *_exchange("ex-1")],
+            chat_summary={"research_intent": "covers ex-0"}, chat_summary_covers_history_count=2,
+            pending_web_offer={"question": "still pending, unrelated to ex-0"},
+        )
+        delete_chat_exchanges(session, ["ex-0"])
+        assert session.chat_summary is None  # invalidated, as expected
+        # delete_chat_exchanges never touches pending_web_offer at all
+        # (only edit_chat_exchange does, unconditionally, for its own
+        # documented reasons) -- unchanged here.
+        assert session.pending_web_offer == {"question": "still pending, unrelated to ex-0"}
+
+
+# --- Part G: citation/provenance guarantees ------------------------------
+
+class TestCitationProvenanceUnaffectedBySummary:
+    def test_derive_chat_references_identical_with_and_without_a_persisted_summary(self):
+        p1 = _paper("p1", "Paper One")
+        chat_history = [
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+        ]
+        session_no_summary = PaperPoolSession(
+            topic="peft", stage="synthesize", selected_papers=[p1], chat_history=[dict(t) for t in chat_history],
+        )
+        session_with_summary = PaperPoolSession(
+            topic="peft", stage="synthesize", selected_papers=[p1], chat_history=[dict(t) for t in chat_history],
+            chat_summary={"research_intent": "some persisted summary", "papers_discussed": ["p1"]},
+            chat_summary_covers_history_count=2,
+        )
+        result_without = derive_chat_references(session_no_summary)
+        result_with = derive_chat_references(session_with_summary)
+        assert result_without == result_with
+
+    def test_report_promotion_eligibility_identical_with_and_without_a_persisted_summary(self):
+        chat_history = [
+            _user_turn("ex-1", "q1"),
+            _assistant_turn("ex-1", "answer", cited_web_articles=[{"url": "https://x.com", "title": "X"}]),
+        ]
+        session_no_summary = PaperPoolSession(topic="peft", stage="synthesize", chat_history=[dict(t) for t in chat_history])
+        session_with_summary = PaperPoolSession(
+            topic="peft", stage="synthesize", chat_history=[dict(t) for t in chat_history],
+            chat_summary={"research_intent": "x"}, chat_summary_covers_history_count=2,
+        )
+        eligible_without, skipped_without = select_eligible_exchanges_for_report(session_no_summary, ["ex-1"])
+        eligible_with, skipped_with = select_eligible_exchanges_for_report(session_with_summary, ["ex-1"])
+        assert (eligible_without, skipped_without) == (eligible_with, skipped_with)
+
+    def test_summary_source_identifiers_create_no_new_chat_references(self):
+        """A summary can legitimately reference p2 in its own
+        papers_discussed (e.g. carried forward from an earlier pass) even
+        though p2 is never cited in the CURRENT chat_history -- proves
+        derive_chat_references (which only ever reads chat_history) does
+        not manufacture a reference for it."""
+        p1 = _paper("p1", "Paper One")
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize", selected_papers=[p1],
+            chat_history=[
+                _user_turn("ex-1", "q1"),
+                _assistant_turn("ex-1", "Per [Paper 1].", cited_papers=[{"paper_id": "p1", "title": "Paper One"}]),
+            ],
+            chat_summary={"research_intent": "x", "papers_discussed": ["p1", "p2-never-in-chat-history"]},
+            chat_summary_covers_history_count=2,
+        )
+        result = derive_chat_references(session)
+        titles = {r["title"] for r in result["references"]} if result["references"] and "title" in result["references"][0] else None
+        # Exactly one reference (Paper One via p1) -- nothing conjured for
+        # a summary-only-referenced id that chat_history itself never cites.
+        assert len(result["references"]) == 1
+
+    def test_cited_papers_and_cited_web_articles_remain_only_on_original_assistant_turns(self):
+        """A persisted chat_summary is never itself a ChatTurn dict -- it
+        has no exchange_id/role/cited_papers/cited_web_articles fields at
+        all, structurally, so citation metadata can only ever live on
+        real chat_history entries."""
+        session = PaperPoolSession(
+            topic="peft", stage="synthesize",
+            chat_summary={"research_intent": "x", "papers_discussed": ["p1"]},
+            chat_summary_covers_history_count=0,
+        )
+        assert "cited_papers" not in session.chat_summary
+        assert "cited_web_articles" not in session.chat_summary
+        assert "exchange_id" not in session.chat_summary
