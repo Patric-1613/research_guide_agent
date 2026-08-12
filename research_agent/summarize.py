@@ -57,6 +57,7 @@ from research_agent.citations import (
     format_harvard_citation,
     select_citation,
 )
+from research_agent.provider_clients import default_openai_client
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import paper_metadata
 
@@ -184,7 +185,7 @@ def generate_summary(
     papers_by_id = {p.paper_id: p for p in papers}
     schema = _build_response_schema(list(papers_by_id))
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     parsed = _generate_theme_summary(topic, papers, schema, client, model)
 
     referenced_ids: set[str] = set()
@@ -295,7 +296,7 @@ def generate_web_summary(
     )
     user_message = f"Research topic: {topic}\n\nWeb articles:\n\n{listing}"
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     with telemetry.timed_child_call("generate_web_summary", "openai", model=model) as call:
         response = client.chat.completions.parse(
             model=model,

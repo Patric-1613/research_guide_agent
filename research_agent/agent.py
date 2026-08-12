@@ -28,7 +28,6 @@ from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitM
 from langchain.tools import tool
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
-from openai import OpenAI
 
 import research_agent.telemetry as telemetry
 from research_agent.config import get_usage_policy
@@ -36,6 +35,7 @@ from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection
 from research_agent.enrichment import enrich_missing_abstracts
 from research_agent.ingestion import get_rate_limited_call_count, reset_rate_limit_tracking, search_arxiv, search_semantic_scholar
+from research_agent.provider_clients import default_openai_client
 from research_agent.query_expansion import suggest_related_titles
 from research_agent.ranking import get_partition_n, merge_with_guaranteed_slots, partition_by_citation
 from research_agent.schema import Paper, WebArticle
@@ -321,7 +321,7 @@ def build_tools(session: ResearchSession) -> list:
             enrich_missing_abstracts(session.papers)
 
             collection = get_chroma_collection()
-            client = OpenAI()
+            client = default_openai_client()
             stats = embed_and_index_papers(session.papers, collection=collection, client=client)
 
             # Round-2 enhancement 2's filters (doi_required/min_citation_count)

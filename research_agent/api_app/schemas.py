@@ -12,12 +12,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from research_agent.api_app.constrained_types import IdList, OptionalUserText, UserText
 from research_agent.citations import CitationStyle
+from research_agent.config import get_usage_policy
 from research_agent.report import RefinementMode, ReportTemplate
 
 
 class SearchRequest(BaseModel):
-    topic: str
+    topic: UserText
     # 3-30: a deliberate, code-enforced bound on how many results a single
     # request can ask for, independent of any particular frontend.
     top_k: int = Field(default=10, ge=3, le=30)
@@ -162,10 +164,34 @@ class ChatTurn(BaseModel):
     web_relevance_verified: bool | None = None
 
 
+class ChatTurnIn(BaseModel):
+    """Usage Protection M2.2C: the request-side mirror of ChatTurn above,
+    used only by ChatRequest.history (client-echoed chat history for the
+    stateless one-shot /chat) -- identical shape, `content` constrained.
+    ChatTurn itself is also a RESPONSE field (ChatResponse.history and
+    several curation response models), so it stays completely
+    unconstrained; an assistant-generated answer can legitimately exceed
+    the user-text length bound."""
+
+    role: Literal["user", "assistant"]
+    content: UserText
+    exchange_id: str | None = None
+    used_web_search: bool = False
+    cited_web_articles: list[CitedWebArticleOut] = Field(default_factory=list)
+    cited_papers: list[CitedPaperOut] = Field(default_factory=list)
+    added_to_report: bool = False
+    web_relevance_verified: bool | None = None
+
+
 class ChatRequest(BaseModel):
     search_id: int
-    question: str
-    history: list[ChatTurn] = []
+    question: UserText
+    # List-size bound consistent with the 100-turn session policy (2
+    # raw entries -- one user, one assistant -- per turn; see
+    # research_agent/session_limits.py's own docstring for the exact
+    # turn-counting rule this mirrors, used for curation's own stored
+    # chat_history rather than this stateless, client-echoed history).
+    history: list[ChatTurnIn] = Field(default_factory=list, max_length=get_usage_policy().max_chat_turns_per_session * 2)
 
 
 class ChatResponse(BaseModel):
@@ -189,7 +215,7 @@ class LibraryItem(BaseModel):
 
 
 class CurationStartRequest(BaseModel):
-    topic: str
+    topic: UserText
     # 1-30: matches report.py's own documented 30-paper cap; target_count
     # is "how many picks the user wants total," not a per-batch size.
     target_count: int = Field(default=10, ge=1, le=30)
@@ -197,14 +223,14 @@ class CurationStartRequest(BaseModel):
 
 
 class CurationPicksRequest(BaseModel):
-    picked_paper_ids: list[str] = []
+    picked_paper_ids: IdList = Field(default_factory=list)
     stop: bool = False
     # curation-refinement-and-auto-offer Phase 6f: optional free-text
     # steering (e.g. "focus on more recent work"), carried into the
     # SAME resume payload picked_paper_ids/stop already use -- see
     # resume_curation_turn's own docstring for why it can't be a
     # separate out-of-band call instead.
-    refinement: str | None = None
+    refinement: OptionalUserText = None
     # curation-turn-history Phase 9d: explicit "search for more now"
     # request -- reuses the SAME force_refill mechanism refinement above
     # already triggers, not a second one. False (the default) preserves
@@ -478,7 +504,7 @@ class CurationStateResponse(BaseModel):
 
 
 class CurationChatRequest(BaseModel):
-    message: str
+    message: UserText
 
 
 class CurationChatResponse(BaseModel):
@@ -501,7 +527,7 @@ class CurationChatDeleteRequest(BaseModel):
     # curation-chat-delete Phase 3: exchange_id, not individual message ids
     # -- deleting an exchange always removes both the user question and
     # assistant answer that share it (see delete_chat_exchanges()).
-    exchange_ids: list[str]
+    exchange_ids: IdList
 
 
 class CurationChatDeleteResponse(BaseModel):
@@ -518,7 +544,7 @@ class CurationChatDeleteResponse(BaseModel):
 
 
 class CurationChatAddToReportRequest(BaseModel):
-    exchange_ids: list[str]
+    exchange_ids: IdList
 
 
 class CurationChatAddToReportResponse(BaseModel):
@@ -537,7 +563,7 @@ class CurationChatAddToReportResponse(BaseModel):
 
 class CurationChatEditRequest(BaseModel):
     exchange_id: str
-    question: str
+    question: UserText
 
 
 class CurationChatEditResponse(BaseModel):

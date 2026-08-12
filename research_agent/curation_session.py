@@ -40,9 +40,11 @@ from typing import TypedDict
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
+from research_agent.config import get_usage_policy
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import ANALYTICAL_SECTION_NAMES, GENERATION_REASON_INITIAL
 from research_agent.schema import Paper, WebArticle
+from research_agent.session_limits import check_selected_paper_capacity
 
 # Distinct prefix so curation-session rows in the shared
 # data/qa_checkpoints.sqlite file are easy to identify/scope separately
@@ -469,6 +471,11 @@ def select_paper_from_history(session: PaperPoolSession, paper_id: str) -> None:
     paper_dict = _find_paper_in_turn_history(session, paper_id)
     if paper_dict is None:
         raise ValueError(f"paper_id {paper_id!r} was not found in this session's turn history")
+    # Usage Protection M2.2C Part C: checked before the append below, so
+    # a rejection leaves selected_paper_ids/selected_papers untouched --
+    # the caller (curation_history_service.select_from_history) never
+    # calls save_curation_session() if this raises.
+    check_selected_paper_capacity(session.selected_paper_ids, [paper_id], get_usage_policy())
     session.selected_paper_ids.append(paper_id)
     session.selected_papers.append(Paper(**paper_dict))
 

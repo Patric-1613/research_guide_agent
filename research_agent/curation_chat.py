@@ -52,6 +52,7 @@ from research_agent.report import (
     build_references_and_renumber,
     regenerate_report_with_new_sources,
 )
+from research_agent.provider_clients import default_openai_client
 from research_agent.schema import WebArticle
 from research_agent.web_search import search_web
 
@@ -480,7 +481,7 @@ def _chat_turn_impl(
             f"Session is not ready for chat (stage={session.stage!r}, expected 'synthesize') -- "
             "curation must finish (target met, user stopped, or topic exhausted) before chatting."
         )
-    client = client or OpenAI()
+    client = client or default_openai_client()
 
     if session.pending_web_offer is not None:
         offer_description = f"search the web for more on: {session.pending_web_offer['question']!r}"

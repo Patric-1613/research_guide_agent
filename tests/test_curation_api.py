@@ -48,6 +48,7 @@ import research_agent.admission as admission
 import research_agent.api as api
 import research_agent.leases as leases
 import research_agent.telemetry as telemetry
+from research_agent.config import get_usage_policy
 from research_agent.qa import sqlite_checkpointer
 from research_agent.schema import Paper, WebArticle
 from research_agent.storage import init_db as real_init_db
@@ -2689,6 +2690,304 @@ def test_curation_chat_with_nested_web_search_child_call_remains_one_top_level_r
     assert rows[0][0] == "curation_chat"
     assert rows[0][1] == session_id
     assert rows[0][2] == 1  # the nested child call attached to it
+
+
+# =====================================================================
+# Usage Protection M2.2C Parts C/D: HTTP-level selected-paper (60) and
+# chat-turn (100) capacity enforcement.
+# =====================================================================
+
+def _select_up_to_n_papers(client, n: int, pool_size: int = 300) -> tuple[str, list[str]]:
+    """Drives real /curation/start + /picks calls across as many batches
+    as needed (BATCH_SIZE=10 per turn) to reach exactly `n` selected
+    papers, then leaves the session mid-curation (stage=="curate") with
+    a fresh pending batch -- the caller decides what to submit next.
+
+    pool_size is deliberately much larger than `n`: every /picks call
+    serves a fresh BATCH_SIZE=10 batch regardless of how many of it are
+    actually picked, so the reserve depletes faster than the selected
+    count grows -- and callers of this helper always make at least one
+    MORE /picks call afterward (the boundary-crossing one under test),
+    outside this function's own build_candidate_pool/rank_full_pool
+    mocks. A generous pool_size keeps the reserve far from exhaustion
+    (and therefore far from a real, unmocked refill) through those
+    follow-up calls too, without needing a wider/leakier patch scope."""
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(pool_size)]
+    with patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        # target_count is capped at 30 by CurationStartRequest itself (a
+        # separate, unrelated schema bound) -- it only controls when
+        # curation WOULD stop on its own, not how many papers can be
+        # picked; pool_size (papers available across batches) is what
+        # actually needs to exceed the 60 selected-paper cap here.
+        start_body = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
+        session_id = start_body["session_id"]
+        batch = start_body["batch"]
+        selected: list[str] = []
+        while len(selected) < n:
+            remaining = n - len(selected)
+            pick_ids = [p["paper_id"] for p in batch[:remaining]]
+            resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": pick_ids, "stop": False}).json()
+            selected.extend(pick_ids)
+            batch = resp["batch"]
+    return session_id, selected
+
+
+def test_selected_paper_cap_60_accepted_61_rejected_with_409():
+    policy_limit = 60
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, policy_limit - 1)
+        # One more pick reaches exactly 60 -- must be accepted.
+        start_body = client.get(f"/curation/{session_id}")
+        pending = start_body.json()["pending_batch"]
+        one_more = pending[0]["paper_id"]
+        resp_60 = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [one_more], "stop": False})
+        assert resp_60.status_code == 200
+        assert len(resp_60.json()["selected_paper_ids"]) == policy_limit
+
+        # A further pick would make 61 -- must be rejected with 409.
+        pending2 = resp_60.json()["batch"]
+        over_pick = pending2[0]["paper_id"]
+        resp_61 = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [over_pick], "stop": False})
+
+    assert resp_61.status_code == 409
+    assert resp_61.json()["detail"]["reason_code"] == "selected_paper_limit_reached"
+    assert "Retry-After" not in resp_61.headers
+
+
+def test_selected_paper_cap_rejection_leaves_session_unchanged():
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, 60)
+        state_before = client.get(f"/curation/{session_id}").json()
+
+        pending = state_before["pending_batch"]
+        over_pick = pending[0]["paper_id"]
+        resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [over_pick], "stop": False})
+        assert resp.status_code == 409
+
+        state_after = client.get(f"/curation/{session_id}").json()
+
+    assert state_after["selected_paper_ids"] == state_before["selected_paper_ids"]
+    assert state_after["pending_batch"] == state_before["pending_batch"]
+
+
+def test_selected_paper_cap_duplicate_picks_do_not_count_twice():
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, 60)
+        # Re-submitting already-selected ids must not be treated as
+        # pushing the count past the cap.
+        resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": selected[:5], "stop": False})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["selected_paper_ids"]) == 60
+
+
+def test_select_from_history_shares_the_same_60_cap():
+    """select_paper_from_history (curation_session.py) is the OTHER
+    mutation boundary for selected papers -- same cap, same error."""
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, 60)
+        state = client.get(f"/curation/{session_id}").json()
+        pending = state["pending_batch"]
+        # Stop curation so select-from-history's own stage=="synthesize" gate opens.
+        client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [], "stop": True})
+
+        # Some paper seen in turn_history but never selected.
+        history_state = client.get(f"/curation/{session_id}").json()
+        all_served = {p["paper_id"] for entry in history_state["turn_history"] for p in entry["batch"]}
+        unselected = next(iter(all_served - set(selected)))
+
+        resp = client.post(f"/curation/{session_id}/select-from-history", json={"paper_id": unselected})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason_code"] == "selected_paper_limit_reached"
+
+
+def test_chat_turn_cap_100_accepted_101_rejected_with_409(monkeypatch):
+    policy = get_usage_policy()
+    limit = policy.max_chat_turns_per_session
+    # Raised so the (unrelated) M2.1/M2.2A paid-action budget never
+    # trips before this test reaches the chat-turn cap under test --
+    # each chat turn also consumes one paid_action.
+    monkeypatch.setenv("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", "1000")
+    monkeypatch.setenv("USAGE_GLOBAL_PAID_ACTION_LIMIT", "1000")
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            eid = f"e{len(session.chat_history)}"
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": eid})
+            session.chat_history.append({"role": "assistant", "content": "ok", "exchange_id": eid})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            for i in range(limit):
+                resp = client.post(f"/curation/{session_id}/chat", json={"message": f"q{i}"})
+                assert resp.status_code == 200, f"turn {i} unexpectedly rejected"
+
+            resp_over = client.post(f"/curation/{session_id}/chat", json={"message": "one too many"})
+
+    assert resp_over.status_code == 409
+    assert resp_over.json()["detail"]["reason_code"] == "chat_turn_limit_reached"
+    assert "Retry-After" not in resp_over.headers
+
+
+def test_chat_turn_cap_rejection_makes_zero_model_calls_and_leaves_history_unchanged(monkeypatch):
+    policy = get_usage_policy()
+    limit = policy.max_chat_turns_per_session
+    # Raised so the (unrelated) M2.1/M2.2A paid-action budget never
+    # trips before this test reaches the chat-turn cap under test --
+    # each chat turn also consumes one paid_action.
+    monkeypatch.setenv("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", "1000")
+    monkeypatch.setenv("USAGE_GLOBAL_PAID_ACTION_LIMIT", "1000")
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            eid = f"e{len(session.chat_history)}"
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": eid})
+            session.chat_history.append({"role": "assistant", "content": "ok", "exchange_id": eid})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            for i in range(limit):
+                client.post(f"/curation/{session_id}/chat", json={"message": f"q{i}"})
+            history_before = client.get(f"/curation/{session_id}").json()["chat_history"]
+
+            with patch.object(api, "chat_turn") as mock_chat:
+                resp = client.post(f"/curation/{session_id}/chat", json={"message": "rejected"})
+            history_after = client.get(f"/curation/{session_id}").json()["chat_history"]
+
+    assert resp.status_code == 409
+    mock_chat.assert_not_called()
+    assert history_after == history_before
+
+
+def test_chat_turn_cap_old_entries_without_exchange_metadata_still_count(monkeypatch):
+    """A pre-Phase-1 chat_history (no exchange_id at all on any entry)
+    must still be counted correctly against the cap."""
+    policy = get_usage_policy()
+    limit = policy.max_chat_turns_per_session
+    # Raised so the (unrelated) M2.1/M2.2A paid-action budget never
+    # trips before this test reaches the chat-turn cap under test --
+    # each chat turn also consumes one paid_action.
+    monkeypatch.setenv("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", "1000")
+    monkeypatch.setenv("USAGE_GLOBAL_PAID_ACTION_LIMIT", "1000")
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        # Seed an old-shape, metadata-free history directly via a fake
+        # chat_turn that appends bare {role, content} dicts (no
+        # exchange_id/cited_papers/etc keys at all).
+        def _bare_chat_turn(session, message, client=None, **kwargs):
+            session.chat_history.append({"role": "user", "content": message})
+            session.chat_history.append({"role": "assistant", "content": "ok"})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_bare_chat_turn):
+            for i in range(limit):
+                assert client.post(f"/curation/{session_id}/chat", json={"message": f"q{i}"}).status_code == 200
+            resp = client.post(f"/curation/{session_id}/chat", json={"message": "over"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason_code"] == "chat_turn_limit_reached"
+
+
+def test_chat_turn_cap_deletion_restores_capacity(monkeypatch):
+    policy = get_usage_policy()
+    limit = policy.max_chat_turns_per_session
+    # Raised so the (unrelated) M2.1/M2.2A paid-action budget never
+    # trips before this test reaches the chat-turn cap under test --
+    # each chat turn also consumes one paid_action.
+    monkeypatch.setenv("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", "1000")
+    monkeypatch.setenv("USAGE_GLOBAL_PAID_ACTION_LIMIT", "1000")
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            eid = f"e{len(session.chat_history)}"
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": eid})
+            session.chat_history.append({"role": "assistant", "content": "ok", "exchange_id": eid})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            for i in range(limit):
+                client.post(f"/curation/{session_id}/chat", json={"message": f"q{i}"})
+            # At cap -- delete one exchange to free a slot.
+            client.post(f"/curation/{session_id}/chat/exchanges/delete", json={"exchange_ids": ["e0"]})
+            resp = client.post(f"/curation/{session_id}/chat", json={"message": "now allowed"})
+
+    assert resp.status_code == 200
+
+
+def test_chat_turn_cap_edit_of_an_old_exchange_does_not_get_blocked_at_cap(monkeypatch):
+    """Editing an OLD exchange truncates it and everything after, then
+    appends exactly one fresh pair -- net effect reduces the turn
+    count, so it must not be rejected just because the session was at
+    the cap before the edit."""
+    policy = get_usage_policy()
+    limit = policy.max_chat_turns_per_session
+    # Raised so the (unrelated) M2.1/M2.2A paid-action budget never
+    # trips before this test reaches the chat-turn cap under test --
+    # each chat turn also consumes one paid_action.
+    monkeypatch.setenv("USAGE_MAX_PAID_ACTIONS_PER_SESSION_PER_HOUR", "1000")
+    monkeypatch.setenv("USAGE_GLOBAL_PAID_ACTION_LIMIT", "1000")
+    with _client() as client:
+        session_id, pick_ids = _finish_curation(client)
+
+        def _fake_chat_turn(session, message, client=None, **kwargs):
+            eid = f"e{len(session.chat_history)}"
+            session.chat_history.append({"role": "user", "content": message, "exchange_id": eid})
+            session.chat_history.append({"role": "assistant", "content": "ok", "exchange_id": eid})
+            return {"answer": "ok", "answerable": True, "cited_papers": [], "cited_web_articles": []}
+
+        with patch.object(api, "chat_turn", side_effect=_fake_chat_turn):
+            for i in range(limit):
+                client.post(f"/curation/{session_id}/chat", json={"message": f"q{i}"})
+
+            def _fake_edit(session, exchange_id, new_question, client=None, **kwargs):
+                _fake_chat_turn(session, new_question, client=client)
+                return (
+                    {"answer": "edited", "answerable": True, "cited_papers": [], "cited_web_articles": []},
+                    False,
+                )
+
+            with patch.object(api, "edit_chat_exchange", side_effect=_fake_edit):
+                # Editing the FIRST exchange ("e0") truncates the other 99
+                # away and appends 1 fresh one -- net count drops to 1.
+                resp = client.post(f"/curation/{session_id}/chat/exchanges/edit", json={"exchange_id": "e0", "question": "edited question"})
+
+    assert resp.status_code == 200
+
+
+# --- Provider fan-out (Part F): both existing fan-out points are already
+# bounded to <=5 titles by suggest_related_titles()'s own [:max_titles]
+# slice -- confirmed by inspection, no production change made. These
+# regression tests prove that bound, not the general HTTP surface.
+
+def test_suggested_title_fan_out_is_bounded_at_the_source_not_20():
+    """query_expansion.py's own _search_title_pairs_bounded (and agent.
+    py's _search_titles_bounded) fan out over suggest_related_titles()'s
+    return value, which is ALREADY code-sliced to `[:max_titles]`
+    (default 5) before it ever reaches asyncio.gather -- confirmed here
+    directly against the real function, not assumed from reading it."""
+    from unittest.mock import MagicMock
+
+    from research_agent.query_expansion import suggest_related_titles
+
+    class _FakeParsed:
+        titles = [f"Title {i}" for i in range(50)]  # a hypothetically misbehaving model
+
+    fake_message = MagicMock(parsed=_FakeParsed())
+    fake_response = MagicMock(usage=MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2))
+    fake_response.choices = [MagicMock(message=fake_message)]
+    fake_client = MagicMock()
+    fake_client.chat.completions.parse.return_value = fake_response
+
+    titles = suggest_related_titles("some topic", max_titles=5, client=fake_client)
+
+    assert len(titles) <= 5
+    assert len(titles) < 20
 
 
 if __name__ == "__main__":

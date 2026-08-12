@@ -25,6 +25,7 @@ from langfuse import get_client, observe
 from openai import OpenAI
 
 import research_agent.telemetry as telemetry
+from research_agent.provider_clients import default_openai_client
 from research_agent.schema import Paper
 from research_agent.tracing import ranked_paper_metadata
 
@@ -210,7 +211,7 @@ def embed_and_index_papers(
         return {"cache_hits": 0, "cache_misses": 0, "tokens_billed": 0, "estimated_cost_usd": 0.0, "papers_skipped": skipped}
 
     collection = collection or get_chroma_collection()
-    client = client or OpenAI()
+    client = client or default_openai_client()
     cache_conn = _init_cache_db()
 
     texts_and_fallback = [_embedding_text(p) for p in papers]
@@ -309,7 +310,7 @@ def semantic_search(
     filtered out anyway.
     """
     collection = collection or get_chroma_collection()
-    client = client or OpenAI()
+    client = client or default_openai_client()
 
     get_client().update_current_span(
         input={

@@ -48,6 +48,7 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 import research_agent.telemetry as telemetry
 from research_agent.citations import format_apa_citation, format_web_citation
+from research_agent.provider_clients import default_openai_client
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import paper_metadata
@@ -1115,7 +1116,7 @@ def generate_report(
     schema = _build_report_schema(list(papers_by_id), list(web_by_url) or None, section_definitions)
     system_prompt = _build_report_system_prompt(section_definitions, report_template)
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     parsed = _generate_report_sections(topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt)
 
     referenced_ids: set[str] = set()
@@ -1361,7 +1362,7 @@ def _regenerate_report_sections_with_sources(
         allowed_web_urls=allowed_web_urls, web_by_url=web_by_url,
     )
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     parsed = _generate_report_sections(
         session.topic, selected_papers, web_articles, schema, client, model, system_prompt=system_prompt,
         telemetry_call_type="report_regeneration",

@@ -146,12 +146,15 @@ def test_rerank_tool_survives_underlying_exception_and_keeps_collected_papers():
     _arxiv_tool, _s2_tool, rerank_tool, _web_tool = build_tools(session)
     session.papers = [_paper("Some Paper", "arxiv", "1111.1111")]
 
-    # Mock the OpenAI() client construction itself too — otherwise this test's
+    # Mock the client construction itself too — otherwise this test's
     # outcome would depend on whether a real API key happens to be present
     # in the environment (it constructs a real client before the patched
     # embed_and_index_papers call ever runs), which isn't the failure this
-    # test is about.
-    with patch("research_agent.agent.OpenAI"), \
+    # test is about. Usage Protection M2.2C: agent.py now calls the shared
+    # research_agent.provider_clients.default_openai_client() factory
+    # (adds the centralized provider timeout) rather than OpenAI()
+    # directly, so that's the name to patch here.
+    with patch("research_agent.agent.default_openai_client"), \
          patch("research_agent.agent.embed_and_index_papers", side_effect=RuntimeError("OpenAI is down")):
         result = rerank_tool.invoke({"query": "test", "top_k": 5})
 

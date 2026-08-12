@@ -15,8 +15,10 @@ from research_agent.api_app.schemas import (
     CurationChatResponse,
 )
 from research_agent.api_app.serializers import _report_to_out
+from research_agent.config import get_usage_policy
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.services.errors import ServiceError
+from research_agent.session_limits import check_chat_turn_capacity
 from research_agent.usage_guard import guard_paid_action
 
 
@@ -24,6 +26,11 @@ def answer_curation_chat(session_id: str, req: CurationChatRequest, cp) -> Curat
     session = load_curation_session(session_id, cp)
     if session is None:
         raise ServiceError(404, "session_id not found")
+    # Usage Protection M2.2C Part D: checked before admission/lease/
+    # paid_action/any provider call -- a normal chat turn only ever
+    # appends, never truncates, so the cap is checked against the
+    # session's current chat_history as-is.
+    check_chat_turn_capacity(session.chat_history, get_usage_policy())
     # A single "curation_chat" action covers the whole turn, including any
     # nested second ask (web-offer accept) or report-regeneration
     # (report-update-offer accept) chat_turn() triggers internally -- "first
@@ -135,6 +142,27 @@ def edit_curation_chat_exchange(session_id: str, req: CurationChatEditRequest, c
     session = load_curation_session(session_id, cp)
     if session is None:
         raise ServiceError(404, "session_id not found")
+
+    # Usage Protection M2.2C Part D: edit_chat_exchange (api.py/curation_
+    # chat.py) is documented as truncate-and-regenerate, not an in-place
+    # edit -- it removes the edited exchange and everything
+    # chronologically after it, then appends exactly one fresh pair.
+    # Checking the cap against the raw PRE-edit count would incorrectly
+    # reject an edit to an OLD exchange that actually reduces the total
+    # turn count; this simulates the same truncation (the identical,
+    # simple, stable predicate edit_chat_exchange itself uses -- not a
+    # fragile duplication of complex logic) and only rejects if even the
+    # one fresh replacement pair would exceed the cap. An unknown
+    # exchange_id (user_idx is None) fails validation inside
+    # edit_chat_exchange itself right after with a 400, regardless of
+    # this check's outcome.
+    user_idx = next(
+        (i for i, turn in enumerate(session.chat_history)
+         if turn.get("role") == "user" and turn.get("exchange_id") == req.exchange_id),
+        None,
+    )
+    history_after_truncation = session.chat_history[:user_idx] if user_idx is not None else session.chat_history
+    check_chat_turn_capacity(history_after_truncation, get_usage_policy())
 
     # Usage Protection M2.2A: edit-and-rerun -- re-invokes the model for a
     # single exchange, same guard shape as answer_curation_chat above.

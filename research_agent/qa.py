@@ -102,6 +102,7 @@ from research_agent.embeddings import (
     get_chroma_collection,
     semantic_search,
 )
+from research_agent.provider_clients import default_openai_client
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import paper_metadata
 
@@ -1910,7 +1911,7 @@ def ask(
     unchanged so every existing caller (api.py's /chat endpoint, RAGAS eval
     scripts) keeps working as-is.
     """
-    client = client or OpenAI()
+    client = client or default_openai_client()
     recent_history = capped_history(session.history)
 
     initial_state: QAState = {

@@ -42,6 +42,7 @@ from research_agent.ingestion import (
     search_openalex,
     search_semantic_scholar,
 )
+from research_agent.provider_clients import default_openai_client
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import ranked_paper_metadata, tag_current_trace
 
@@ -150,7 +151,7 @@ def suggest_related_titles(
         logger.warning("suggest_related_titles called with empty topic")
         return []
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     user_content = f"Topic: {topic}\n\nSuggest up to {max_titles} well-known real papers on this topic."
     if exclude_titles:
         excluded_list = "\n".join(f"- {t}" for t in exclude_titles)
@@ -282,7 +283,7 @@ def canonicalize_topic(topic: str, client: OpenAI | None = None) -> str:
     if not topic.strip():
         return topic
 
-    client = client or OpenAI()
+    client = client or default_openai_client()
     messages = [
         {"role": "system", "content": CANONICALIZE_TOPIC_SYSTEM_PROMPT},
         {"role": "user", "content": f"Raw input: {topic}"},
@@ -468,7 +469,7 @@ def build_candidate_pool(
     third always-on source, and never triggered by anything other than
     S2 genuinely giving up.
     """
-    client = client or OpenAI()
+    client = client or default_openai_client()
     # Starts counting search_semantic_scholar calls (original query + one
     # per suggested title, below) that need a retry, so this function's own
     # span metadata can carry "how many of my child calls hit rate-limiting"
@@ -565,7 +566,7 @@ def rank_full_pool(
     tokens_billed/estimated_cost_usd/papers_skipped) so callers can log
     cost the same way regardless of whether the pool was empty.
     """
-    client = client or OpenAI()
+    client = client or default_openai_client()
     if not deduped:
         return [], dict(_EMPTY_EMBED_STATS)
     collection = collection or get_chroma_collection()
@@ -613,7 +614,7 @@ def expanded_search(
     build_candidate_pool() — see its docstring; default False produces
     identical behavior to before these parameters existed.
     """
-    client = client or OpenAI()
+    client = client or default_openai_client()
     tag_current_trace(["expanded_search"])
 
     deduped = build_candidate_pool(
@@ -928,7 +929,7 @@ def refill_pool(
     is exhausted, not an error; callers should surface that to the user
     rather than looping forever (Phase 1d's adversarial case).
     """
-    client = client or OpenAI()
+    client = client or default_openai_client()
     unserved_tail = session.reserve[session.cursor:]
     unserved_ids = {p.paper_id for p, _ in unserved_tail}
 

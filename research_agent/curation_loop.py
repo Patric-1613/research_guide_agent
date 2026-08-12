@@ -78,8 +78,10 @@ from research_agent.curation_session import (
     _session_to_dict,
     curation_thread_id,
 )
+from research_agent.config import get_usage_policy
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
 from research_agent.schema import Paper
+from research_agent.session_limits import check_selected_paper_capacity
 from research_agent.usage_guard import guard_paid_action
 
 
@@ -232,6 +234,17 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
         for paper_dict, _ in entry["batch"]:
             presented_by_id[paper_dict["paper_id"]] = paper_dict
     valid_picks = [pid for pid in picked_paper_ids if pid in presented_by_id]
+
+    # Usage Protection M2.2C Part C: checked here, before ANY mutation
+    # below, so a rejection leaves session.selected_paper_ids/
+    # selected_papers (and everything else this node would otherwise
+    # touch -- refinement_notes, force_refill) byte-identical. Raising
+    # from inside this LangGraph node is safe for the same reason
+    # M2.2B's own guard_paid_action call in _refill_node is: this
+    # function's only mutation happens in its own return statement,
+    # which never executes if this raises first, so the prior
+    # checkpoint is left untouched.
+    check_selected_paper_capacity(session.selected_paper_ids, valid_picks, get_usage_policy())
 
     for pid in valid_picks:
         if pid not in session.selected_paper_ids:
@@ -411,6 +424,19 @@ def get_curation_state(session_id: str, checkpointer: BaseCheckpointSaver) -> di
 
     session = _dict_to_session(snap.values["session"])
     pending_batch = None
-    if snap.next and snap.tasks and snap.tasks[0].interrupts:
+    # Usage Protection M2.2C: `snap.next` alone is NOT a reliable signal
+    # for "is a batch still genuinely pending" -- confirmed directly
+    # (not assumed) by forcing session_limits.SessionCapacityError out
+    # of _present_and_apply_node after interrupt() had already returned
+    # a resume payload: LangGraph correctly keeps the SAME interrupt
+    # (same batch, still resumable -- a follow-up resume_curation_turn()
+    # call with valid picks succeeds normally) but leaves `snap.next`
+    # empty on the errored task, which the OLD `snap.next and ...` guard
+    # here misread as "nothing pending," silently hiding a still-real,
+    # still-resumable batch from a client's GET right after a rejected
+    # mutation. `snap.tasks[0].interrupts` itself is the fact that
+    # matters; `snap.next` is now only an additional signal for cases
+    # where a batch already exists but wasn't reached via a task error.
+    if snap.tasks and snap.tasks[0].interrupts and (snap.next or snap.tasks[0].error):
         pending_batch = snap.tasks[0].interrupts[0].value["batch"]
     return {"session": session, "pending_batch": pending_batch, "refilled": snap.values.get("refilled", False)}
