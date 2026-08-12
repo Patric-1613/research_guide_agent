@@ -2,11 +2,16 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { curationApi } from './client'
 import { ApiError } from '../../types'
 
-function mockFetchOnce(status: number, body: unknown) {
+// Usage Protection M2.3: headers defaults to an empty Headers so every
+// EXISTING call site (none of which pass a 3rd argument) keeps working
+// unchanged -- response.headers.get(...) (ApiError's own Retry-After
+// read in client.ts) resolves to null rather than throwing.
+function mockFetchOnce(status: number, body: unknown, headers: Record<string, string> = {}) {
   const fetchMock = vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
     json: async () => body,
+    headers: new Headers(headers),
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock

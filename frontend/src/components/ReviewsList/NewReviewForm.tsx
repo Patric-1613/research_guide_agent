@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from 'react'
 
+// Usage Protection M2.3 Part D: mirrors research_agent/config/limits.py's
+// max_text_length (2,000 chars) -- preventative UX only, the backend
+// remains authoritative (SearchRequest/CurationStartRequest.topic).
+const MAX_TOPIC_LENGTH = 2000
+
 interface NewReviewFormProps {
   onSubmit: (topic: string, targetCount: number) => void
   onCancel: () => void
@@ -8,12 +13,13 @@ interface NewReviewFormProps {
 export function NewReviewForm({ onSubmit, onCancel }: NewReviewFormProps) {
   const [topic, setTopic] = useState('')
   const [targetCount, setTargetCount] = useState(10)
+  const trimmedTopic = topic.trim()
+  const overLimit = trimmedTopic.length > MAX_TOPIC_LENGTH
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const trimmed = topic.trim()
-    if (!trimmed) return
-    onSubmit(trimmed, targetCount)
+    if (!trimmedTopic || overLimit) return
+    onSubmit(trimmedTopic, targetCount)
   }
 
   return (
@@ -26,6 +32,7 @@ export function NewReviewForm({ onSubmit, onCancel }: NewReviewFormProps) {
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           placeholder="e.g. parameter-efficient fine-tuning"
+          maxLength={MAX_TOPIC_LENGTH}
           className="rounded-md border border-border bg-panel-alt px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
         />
       </label>
@@ -45,7 +52,7 @@ export function NewReviewForm({ onSubmit, onCancel }: NewReviewFormProps) {
         <button
           type="submit"
           data-testid="new-review-start"
-          disabled={!topic.trim()}
+          disabled={!trimmedTopic || overLimit}
           className="flex-1 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-40"
         >
           Start

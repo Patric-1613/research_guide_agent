@@ -380,14 +380,98 @@ export interface ApiErrorBody {
   detail: string | { error: string } | unknown
 }
 
+// Usage Protection M2.3: one field-level validation error, as safely
+// derived from FastAPI's own 422 `detail` array shape
+// ({type, loc, msg, ctx, input}). Deliberately keeps ONLY `loc`/`msg` --
+// `input` echoes the raw submitted value back (which is exactly the
+// "serialized response object"/raw user content this phase's own
+// safety rules forbid displaying) and `ctx`/`type` are internal detail,
+// not user-safe text.
+export interface ApiValidationError {
+  loc: string
+  msg: string
+}
+
+const RETRY_AFTER_INTEGER_SECONDS = /^\d+$/
+
+// Only the backend's own Retry-After format is supported: a positive
+// integer number of seconds (research_agent/api_app/app.py always sends
+// str(exc.retry_after_seconds), never an HTTP-date). An HTTP-date value
+// (or anything else non-integer, non-positive, or missing) safely
+// becomes null rather than being mis-parsed into a wrong number.
+function parseRetryAfterSeconds(value: string | null | undefined): number | null {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (!RETRY_AFTER_INTEGER_SECONDS.test(trimmed)) return null
+  const seconds = Number.parseInt(trimmed, 10)
+  return seconds > 0 ? seconds : null
+}
+
 export class ApiError extends Error {
   status: number
   body: ApiErrorBody | null
+  // Usage Protection M2.3: structured fields parsed once here, so every
+  // caller (the shared error-message helper, any component that wants
+  // to branch on it) reads the same already-safe data instead of each
+  // re-parsing `body` itself. All null when not present/not the
+  // recognized shape -- never guessed or fabricated.
+  //
+  // Stable backend reason code (research_agent/usage_guard.py's
+  // GuardReasonCode, research_agent/session_limits.py's
+  // SessionCapacityReasonCode) -- present only for the M2 guard-error
+  // `{detail: {reason_code, message}}` shape.
+  reasonCode: string | null
+  // The backend's own already-safe, user-facing message -- present for
+  // the M2 guard-error shape (detail.message) AND for the older plain-
+  // string `{detail: "..."}` shape (e.g. ServiceError's 400/404s)
+  // several existing endpoints already use, so a caller doesn't need to
+  // know which shape it was to read a safe message.
+  safeMessage: string | null
+  // Non-null only when a valid Retry-After header was present.
+  retryAfterSeconds: number | null
+  // Present only for FastAPI's own 422 validation-error array shape.
+  validationErrors: ApiValidationError[] | null
 
-  constructor(status: number, body: ApiErrorBody | null) {
-    const detail = typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail ?? {})
-    super(`API request failed (${status}): ${detail}`)
+  constructor(status: number, body: ApiErrorBody | null, retryAfterHeader?: string | null) {
+    const detail: unknown = body?.detail
+    let reasonCode: string | null = null
+    let safeMessage: string | null = null
+    let validationErrors: ApiValidationError[] | null = null
+
+    if (typeof detail === 'string') {
+      safeMessage = detail
+    } else if (Array.isArray(detail)) {
+      validationErrors = detail
+        .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+        .map((entry) => ({
+          loc: Array.isArray(entry.loc)
+            ? entry.loc.filter((part) => typeof part === 'string' || typeof part === 'number').join('.')
+            : '',
+          msg: typeof entry.msg === 'string' ? entry.msg : 'Invalid value.',
+        }))
+    } else if (detail && typeof detail === 'object') {
+      const record = detail as Record<string, unknown>
+      if (typeof record.reason_code === 'string') reasonCode = record.reason_code
+      if (typeof record.message === 'string') safeMessage = record.message
+    }
+
+    // .message stays a short, always-safe summary -- NEVER a
+    // JSON.stringify of the raw response body (the previous behavior
+    // here, which could surface a serialized object, or a 422's raw
+    // `input` field, straight to the UI). Existing callers that only
+    // checked a plain-string detail keep seeing that exact string.
+    const messageText =
+      safeMessage ??
+      (validationErrors
+        ? `Validation failed for ${validationErrors.length} field(s).`
+        : `API request failed (${status}).`)
+    super(messageText)
+
     this.status = status
     this.body = body
+    this.reasonCode = reasonCode
+    this.safeMessage = safeMessage
+    this.validationErrors = validationErrors
+    this.retryAfterSeconds = parseRetryAfterSeconds(retryAfterHeader)
   }
 }

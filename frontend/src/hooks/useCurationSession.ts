@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { curationApi } from '../lib/api/client'
-import { ApiError } from '../types'
+import { getUserFacingErrorMessage } from '../lib/api/errorMessages'
 import type { CurationStateResponse, RefinementMode, ReportTemplate } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
@@ -221,7 +221,13 @@ export function useCurationSession(): UseCurationSessionResult {
     try {
       return await action()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
+      // Usage Protection M2.3: the one shared translation from a caught
+      // failure to safe, user-facing text -- see lib/api/errorMessages.ts.
+      // `state`/`turnEvents`/etc. are untouched here (they're only ever
+      // updated by loadState() on a CONFIRMED backend success elsewhere
+      // in this hook), so whatever was already rendered before this
+      // action stays exactly as it was.
+      setError(getUserFacingErrorMessage(err))
       return undefined
     } finally {
       setLoading(false)

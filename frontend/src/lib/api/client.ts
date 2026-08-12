@@ -40,7 +40,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       body = null
     }
-    throw new ApiError(response.status, body)
+    // Usage Protection M2.3: only the Retry-After header is ever read
+    // here -- response headers are not exposed generally, this is the
+    // one specific header ApiError's own constructor knows how to
+    // safely parse (see its own docstring on the supported format).
+    throw new ApiError(response.status, body, response.headers.get('Retry-After'))
   }
   return response.json() as Promise<T>
 }

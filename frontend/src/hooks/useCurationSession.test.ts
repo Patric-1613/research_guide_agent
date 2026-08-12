@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCurationSession, getSessionIdFromUrl } from './useCurationSession'
 import { curationApi } from '../lib/api/client'
+import { ApiError } from '../types'
 import type { CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../types'
 
 vi.mock('../lib/api/client', () => ({
@@ -181,6 +182,71 @@ describe('useCurationSession', () => {
 
     await waitFor(() => expect(result.current.error).toBe('Error: network down'))
     expect(result.current.loading).toBe(false)
+  })
+
+  it('a new failed action REPLACES a stale error from a previous failed action, rather than stacking it', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(new Error('first failure'))
+    await act(async () => {
+      await result.current.sendChatMessage('hello')
+    })
+    expect(result.current.error).toBe('Error: first failure')
+
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(new Error('second failure'))
+    await act(async () => {
+      await result.current.sendChatMessage('hello again')
+    })
+    expect(result.current.error).toBe('Error: second failure')
+    expect(result.current.error).not.toContain('first failure')
+  })
+
+  it('a successful action clears an existing error left over from a prior failed action', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(new Error('boom'))
+    await act(async () => {
+      await result.current.sendChatMessage('hello')
+    })
+    expect(result.current.error).toBe('Error: boom')
+
+    vi.mocked(curationApi.chat).mockResolvedValueOnce(chatResponse())
+    await act(async () => {
+      await result.current.sendChatMessage('retry')
+    })
+    expect(result.current.error).toBeNull()
+  })
+
+  it('a real ApiError rejection (e.g. action_in_progress) surfaces the safe mapped message, never the raw reason_code', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(
+      new ApiError(409, {
+        detail: {
+          reason_code: 'action_in_progress',
+          message: 'Another request is already in progress for this session. Please wait for it to finish.',
+        },
+      }),
+    )
+    await act(async () => {
+      await result.current.sendChatMessage('hello')
+    })
+
+    expect(result.current.error).toBe('Another action is already running for this review. Please wait and try again.')
+    expect(result.current.error).not.toContain('action_in_progress')
+    expect(result.current.error).not.toMatch(/[{}[\]]/)
   })
 
   it('deleteReview: deleting the CURRENTLY OPEN session clears sessionId/state and the URL (Phase 8, item 1)', async () => {

@@ -6,6 +6,10 @@ import { ChatMessageRow, isEligibleForAddToReport } from '../TurnFeed/ChatMessag
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { ReferencesList } from '../shared/ReferencesList'
 
+// Usage Protection M2.3 Part D: mirrors research_agent/config/limits.py's
+// max_text_length -- preventative UX only.
+const MAX_MESSAGE_LENGTH = 2000
+
 interface ChatModePanelProps {
   state: CurationStateResponse
   disabled: boolean
@@ -84,8 +88,18 @@ export function ChatModePanel({
   function handleToggleSelect(exchangeId: string) {
     setSelectedExchangeIds((prev) => {
       const next = new Set(prev)
-      if (next.has(exchangeId)) next.delete(exchangeId)
-      else next.add(exchangeId)
+      if (next.has(exchangeId)) {
+        next.delete(exchangeId)
+        return next
+      }
+      // Usage Protection M2.3 Part D: bulk delete/add-to-report both
+      // submit exchange_ids as one IdList-constrained request field
+      // (research_agent/api_app/schemas.py, cap 30) -- a session can
+      // have up to 100 chat turns, so selecting past 30 here is a real,
+      // reachable case, unlike the current single-batch pick UI. Purely
+      // preventative: the backend re-validates the same cap regardless.
+      if (next.size >= 30) return next
+      next.add(exchangeId)
       return next
     })
   }
@@ -206,7 +220,13 @@ export function ChatModePanel({
 
   function handleSend() {
     const trimmed = text.trim()
-    if (!trimmed) return
+    // Usage Protection M2.3 Part D: mirrors research_agent/config/
+    // limits.py's max_text_length -- preventative UX only, the backend
+    // (CurationChatRequest.message) remains authoritative. The
+    // maxLength attribute on the input below already prevents typing/
+    // pasting past this in practice; this guard is a defensive backstop
+    // for the submit action itself, matching the task's own wording.
+    if (!trimmed || trimmed.length > MAX_MESSAGE_LENGTH) return
     setText('')
     void dispatchMessage(trimmed)
   }
@@ -364,13 +384,14 @@ export function ChatModePanel({
             onKeyDown={handleKeyDown}
             disabled={disabled}
             placeholder="Ask a question about the selected papers..."
+            maxLength={MAX_MESSAGE_LENGTH}
             className="flex-1 rounded-md border border-border bg-panel-alt px-3 py-2 text-sm text-text outline-none focus:border-accent disabled:opacity-60"
           />
           <button
             type="button"
             data-testid="persistent-input-send"
             onClick={handleSend}
-            disabled={disabled}
+            disabled={disabled || !text.trim() || text.trim().length > MAX_MESSAGE_LENGTH}
             className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
           >
             Send

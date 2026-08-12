@@ -178,6 +178,9 @@ export function ReviewModePanel({
           onChange={(e) => setRefinement(e.target.value)}
           disabled={disabled}
           placeholder="Refine what you're looking for (optional)..."
+          // Usage Protection M2.3 Part D: mirrors research_agent/config/
+          // limits.py's max_text_length -- preventative UX only.
+          maxLength={2000}
           className="rounded-md border border-border bg-panel-alt px-3 py-2 text-sm text-text outline-none focus:border-accent disabled:opacity-60"
         />
         <div className="flex items-center justify-between gap-2">

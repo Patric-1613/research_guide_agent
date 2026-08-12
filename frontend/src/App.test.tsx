@@ -325,4 +325,122 @@ describe('App', () => {
     await user.click(screen.getByTestId('close-turn-history'))
     expect(screen.getByTestId('review-continue')).toBeInTheDocument()
   })
+
+  // Usage Protection M2.3 Part C/F: the shared error banner every
+  // curation action (search/start, curation chat, picks/refill, report
+  // generate/regenerate, chat add-to-report) surfaces through, since
+  // they all go through useCurationSession's one `error` state.
+  describe('usage-protection error banner', () => {
+    it('renders an accessible alert with the message when useCurationSession reports an error', () => {
+      mockSession(fullState(), { error: 'Another action is already running for this review. Please wait and try again.' })
+      render(<App />)
+
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent('Another action is already running for this review. Please wait and try again.')
+      expect(screen.getByTestId('curation-error-banner')).toBe(alert)
+    })
+
+    it('renders no alert when there is no error', () => {
+      mockSession(fullState())
+      render(<App />)
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('existing report/chat/selection state remains rendered alongside the error banner', () => {
+      mockSession(
+        fullState({
+          stage: 'synthesize', pending_batch: null,
+          selected_papers: [{
+            paper_id: 'p1', title: 'Still Selected', authors: [], year: null, venue: null,
+            abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
+            source_urls: {}, score: null,
+          }],
+          selected_paper_ids: ['p1'],
+          report: {
+            findings: { content: 'f', cited_papers: [], cited_web_articles: [] },
+            limitations: { content: 'l', cited_papers: [], cited_web_articles: [] },
+            future_scope: { content: 's', cited_papers: [], cited_web_articles: [] },
+            skipped_paper_ids: [],
+          },
+        }),
+        { error: 'This review has reached its selected-paper limit. Remove some papers before adding more.' },
+      )
+      render(<App />)
+
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+      // Renders in both the center card and the right-panel selected
+      // list (same multi-match reasoning as this file's own pre-existing
+      // "Already Selected" test above).
+      expect(screen.getAllByText('Still Selected').length).toBeGreaterThan(0)
+    })
+
+    it('export links remain present and usable after a paid-action rejection', () => {
+      mockSession(
+        fullState({
+          stage: 'synthesize', pending_batch: null,
+          report: {
+            findings: { content: 'f', cited_papers: [], cited_web_articles: [] },
+            limitations: { content: 'l', cited_papers: [], cited_web_articles: [] },
+            future_scope: { content: 's', cited_papers: [], cited_web_articles: [] },
+            skipped_paper_ids: [],
+          },
+        }),
+        { error: 'Usage protection is temporarily unavailable, so no paid action was started. Please try again shortly.' },
+      )
+      render(<App />)
+
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+      expect(vi.mocked(curationApi.getReportExportUrl)).toHaveBeenCalled()
+    })
+
+    it('loading is false after a failed action, leaving controls enabled', () => {
+      mockSession(fullState(), { error: 'x', loading: false })
+      render(<App />)
+
+      expect(screen.getByTestId('review-continue')).not.toBeDisabled()
+    })
+  })
+
+  describe('client-side preventative text limits (Usage Protection M2.3 Part D)', () => {
+    it('the new-review topic input has maxLength=2000', async () => {
+      const user = userEvent.setup()
+      vi.mocked(curationApi.listReviews).mockResolvedValue([])
+      mockSession(null)
+      render(<App />)
+
+      await user.click(screen.getByRole('button', { name: '+ New review' }))
+      expect(screen.getByTestId('new-review-topic')).toHaveAttribute('maxlength', '2000')
+    })
+
+    it('the chat message input has maxLength=2000', async () => {
+      const user = userEvent.setup()
+      mockSession(fullState({ stage: 'synthesize', pending_batch: null }))
+      render(<App />)
+
+      await user.click(screen.getByTestId('workspace-mode-chat'))
+      expect(screen.getByTestId('persistent-input')).toHaveAttribute('maxlength', '2000')
+    })
+
+    it('the review refinement input has maxLength=2000', () => {
+      mockSession(fullState())
+      render(<App />)
+
+      expect(screen.getByTestId('review-refinement-input')).toHaveAttribute('maxlength', '2000')
+    })
+
+    it('pasted input at exactly the limit is not silently truncated below it by application logic', async () => {
+      const user = userEvent.setup()
+      mockSession(fullState({ stage: 'synthesize', pending_batch: null }))
+      render(<App />)
+      await user.click(screen.getByTestId('workspace-mode-chat'))
+
+      const input = screen.getByTestId('persistent-input') as HTMLInputElement
+      const exactly2000 = 'a'.repeat(2000)
+      await user.click(input)
+      await user.paste(exactly2000)
+
+      expect(input.value.length).toBe(2000) // the full, untruncated text the maxLength attribute allows
+    })
+  })
 })

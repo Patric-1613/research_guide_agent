@@ -14,6 +14,16 @@ import type { RefinementMode, ReportTemplate } from '../types'
 
 const MODE_PARAM = 'mode'
 
+// Usage Protection M2.3 Part D: preventative-UX mirrors of the backend's
+// own provisional policy values (research_agent/config/limits.py:
+// max_picked_ids_per_mutation, max_selected_papers_per_session) -- NOT
+// re-derivations of backend logic, just the same two numbers, so a
+// future backend policy change (still out of scope for this phase) is
+// the only place this app's actual enforcement lives. See handleAdd
+// below for where these are applied.
+const MAX_PICKED_IDS_PER_MUTATION = 30
+const MAX_SELECTED_PAPERS_PER_SESSION = 60
+
 // Mirrors the `session` URL param pattern in useCurationSession.ts --
 // workspaceMode is UI-only state, but it still needs to survive a real
 // browser reload (e.g. mid-chat), or a refresh would silently bounce the
@@ -223,7 +233,22 @@ export default function CurationWorkspacePage() {
   }
 
   function handleAdd(paperId: string) {
-    setStagedPickIds((prev) => (prev.includes(paperId) ? prev : [...prev, paperId]))
+    setStagedPickIds((prev) => {
+      if (prev.includes(paperId)) return prev
+      // Usage Protection M2.3 Part D: preventative-only UX mirrors of the
+      // backend's own provisional caps (research_agent/config/limits.py)
+      // -- picked_paper_ids per /picks mutation (30) and unique selected
+      // papers per session (60). The backend remains authoritative and
+      // re-checks both for real (session_limits.py); this only avoids an
+      // avoidable round trip for the common case of staging past either
+      // cap through this UI's own turn-history "add from any past turn"
+      // path, the one place more than a single batch's worth (10) can
+      // accumulate before one submission.
+      if (prev.length >= MAX_PICKED_IDS_PER_MUTATION) return prev
+      const existingSelected = state?.selected_paper_ids.length ?? 0
+      if (existingSelected + prev.length + 1 > MAX_SELECTED_PAPERS_PER_SESSION) return prev
+      return [...prev, paperId]
+    })
   }
 
   function handleRemoveStaged(paperId: string) {
@@ -251,8 +276,22 @@ export default function CurationWorkspacePage() {
               {loading ? 'Loading…' : 'Select a review on the left, or start a new one.'}
             </div>
           )}
+          {/* Usage Protection M2.3 Part C: the one shared error surface for
+              every curation action (useCurationSession's own runAction sets
+              `error` on failure, clears it at the start of the next action
+              AND on any success -- see that hook for the full lifecycle).
+              role="alert" gives it accessible live-region semantics without
+              adding a toast/alert library; a new action or a successful
+              retry is what clears it, never a timer, so it stays visible
+              exactly as long as nothing else has happened yet. */}
           {error && (
-            <div className="border-b border-danger/30 bg-danger-soft px-4 py-2 text-sm text-danger">{error}</div>
+            <div
+              role="alert"
+              data-testid="curation-error-banner"
+              className="border-b border-danger/30 bg-danger-soft px-4 py-2 text-sm text-danger"
+            >
+              {error}
+            </div>
           )}
           {state && (
             <>
