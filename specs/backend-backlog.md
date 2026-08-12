@@ -2489,13 +2489,142 @@ invented:
   worth doing, but none blocks M3/M4.
 - **Status**: Open.
 
-**M1/M2 are complete for the current single-user SQLite architecture.**
-Neither claims authentication, distributed rate limiting, chat
-summarization, or response streaming — those are explicitly out of
-scope here, tracked as **M3** (long-chat summarization, next) and
-**M4** (chat/report streaming, after M3). No M5 (or any further
-milestone) exists anywhere in this project's prior roadmap docs as of
-this checkpoint — none is invented here.
+### Usage Protection M3: bounded curation-chat summarization — complete
+- **Goal**: close the gap M1/M2 explicitly left open — `qa.py::
+  capped_history` has always silently dropped anything before the last
+  8 exchanges from the MODEL's own view of a curation-chat conversation,
+  even though the full conversation stays visible to the user the whole
+  time. M3 bounds model-bound context via a validated, persisted
+  structured summary instead of silent truncation, without ever
+  deleting, truncating, or rewriting the real, stored, user-visible
+  `chat_history`.
+- **Scope decision**: persisted curation chat only. Search chat is
+  stateless/client-echoed (no server-persisted growth problem to
+  solve); the standalone `create_agent` agent has no persisted
+  multi-turn conversation at all (one topic, one shot, no `thread_id`).
+  LangChain's `SummarizationMiddleware` (installed `langchain==1.3.11`,
+  inspected directly at the source level) was deliberately NOT used:
+  it hooks `AgentMiddleware.before_model` against a `create_agent`-
+  built `AgentState`'s `list[AnyMessage]` channel, and curation chat's
+  own graph (`qa.py::build_qa_graph`) is a hand-built `StateGraph
+  (QAState)` with no middleware pipeline and a plain-dict `list[dict]`
+  history — there is no compatible hook, and forcing the QA graph into
+  `create_agent` merely to gain one would mean rebuilding the whole
+  condense → retrieve → filter-web-relevance → generate pipeline as
+  agent turns. `ContextEditingMiddleware` remains deferred too — it
+  clears stale TOOL-CALL results inside one agent run, a different
+  problem from persistent cross-request conversation-history loss, and
+  no stale-tool-result problem has been observed to justify it.
+- **M3.1 — deterministic summary state, policy, and context builder**
+  (`research_agent/chat_summarization.py`, new; `research_agent/
+  config/limits.py`, `research_agent/query_expansion.py`, `research_
+  agent/curation_session.py` updated): `ChatHistorySummary` (Pydantic,
+  `extra="forbid"`); four provisional policy fields
+  (`chat_summary_trigger_tokens=6000`, `chat_summary_keep_recent_
+  turns=8`, `chat_summary_max_output_tokens=800`, `chat_summary_min_
+  new_turns=4`), independent of M2.2C's own 100-turn storage ceiling;
+  three new `PaperPoolSession` fields (`chat_summary`, `chat_summary_
+  covers_history_count` — a RAW entry count, never a turn count —
+  `chat_summary_updated_at`), all `.get(key, default)` backward-
+  compatible; exchange-boundary/selection/trigger/rendering/
+  replacement-validation/invalidation helpers, all pure — no `OpenAI()`
+  construction, no network call, nothing wired into the live request
+  path yet (by design, matching the same "lay the foundation, activate
+  later" precedent M2.1's admission/leases and `qa.py`'s own
+  `sqlite_checkpointer()` already set). Tests: `tests/test_chat_
+  summarization.py` (new, 76), `tests/test_curation_session.py` (+6),
+  `tests/test_config_limits.py` (+19, exact-equality test updated for
+  the 4 new fields, existing M1/M2 defaults spot-checked unchanged).
+  Full backend suite: **1739 passed** (1638 before this chunk).
+- **M3.2 — live curation-chat integration, telemetry, invalidation,
+  and regression coverage** (`research_agent/chat_summarization.py`
+  extended with the one real `client.chat.completions.parse(...)` call
+  this phase makes; `research_agent/qa.py` — `ChatSession` gains the
+  three summary fields, `ask(enable_chat_summarization=False)` defaults
+  to today's exact `capped_history` behavior for every existing caller
+  (search chat, RAGAS scripts) and only `curation_chat.py::
+  ask_in_session` opts in; `research_agent/curation_chat.py` —
+  `_build_chat_session`/`ask_in_session` copy summary state in and back
+  out, `delete_chat_exchanges`/`edit_chat_exchange` wire in M3.1's
+  invalidation rule before their own truncation/rerun): summary
+  generation attaches as a `summarize_chat_history` child call under
+  the already-open top-level `curation_chat` `paid_action` — no second
+  admission check, no second lease, no duplicate `paid_actions` row,
+  confirmed by a same-session-concurrency regression test (still
+  exactly one 200/one 409) and a different-sessions-independence test.
+  Failure policy: no retry, no fallback model; first-time failure falls
+  back to bounded `capped_history`-equivalent behavior, incremental
+  failure retains and reuses the previous valid summary; coverage/
+  timestamp never advance on failure; nothing is exposed as a user-
+  facing error. `derive_chat_references`/`select_eligible_exchanges_
+  for_report` confirmed identical with/without a persisted summary
+  present — neither reads `chat_summary`. No frontend/API response
+  schema changes; no live long-chat evaluation suite added (deferred
+  until real usage shows a genuine coherence/retention problem
+  deterministic tests can't answer). Tests: `tests/test_chat_
+  summarization.py` (+23), `tests/test_qa.py` (+27), `tests/test_
+  curation_chat.py` (+15), `tests/test_curation_api.py` (+7),
+  `tests/test_telemetry_instrumentation.py` (AST coverage-guard module
+  list extended to include the new module's own instrumented call
+  site). Full backend suite: **1811 passed** (1739 before this chunk).
+- **No M3.3 required.** The originally-sketched optional third chunk
+  (standalone-agent `SummarizationMiddleware`) was evaluated and
+  explicitly not built — see the scope decision above; M3.1+M3.2 alone
+  already satisfy M3's own stopping rule (model context always bounded,
+  full stored history intact, summary correctly reused/invalidated,
+  citation/report behavior unchanged, no further complexity without a
+  measured failure).
+- **Explicitly not built**: search-chat summarization, standalone-agent
+  persisted conversation + `SummarizationMiddleware` wiring,
+  `ContextEditingMiddleware`, any frontend summary display/status, a
+  live long-chat evaluation suite, exact token-threshold calibration
+  against real telemetry (thresholds remain topology-derived,
+  provisional), any change to the pre-existing lease/final-save
+  ordering limitation (the lease still releases before
+  `save_curation_session()` — unchanged from M2, not newly claimed
+  fixed).
+- **Location**: see each sub-entry above; full narrative in `docs/
+  architecture.md`'s "Usage Protection M3" section.
+- **Priority**: **M4** (chat/report streaming) is the immediate next
+  phase. Live long-chat evaluation and threshold calibration are real,
+  useful follow-on work, tracked as open items below — neither is
+  scheduled or blocks M4.
+- **Status**: Closed (2026-08-13). Commits: `95fa448` (M3.1), `35572b7`
+  (M3.2).
+
+### M3 follow-on: live long-chat evaluation, threshold calibration (not part of M3)
+- **Goal**: real, useful next-layer work M3 deliberately left open,
+  tracked so it isn't lost, not because it's scheduled.
+- **Items**:
+  - **Live long-chat evaluation** — a small, opt-in-only eval suite
+    (continuity/factual-retention checks across long simulated
+    conversations, explicit cost/latency reporting) was deliberately
+    NOT built in M3 — deterministic testing found no real gap
+    justifying it yet. Build only if real usage surfaces a genuine
+    coherence/retention problem deterministic tests can't answer.
+  - **Token-threshold calibration using real telemetry** — the four
+    M3.1 policy defaults (6000/8/800/4) are topology-derived, not
+    calibrated against real curation-chat token data. Revisit once
+    `usage_telemetry.sqlite` holds enough genuine long-chat traffic,
+    same posture as every other M2 threshold's own open calibration
+    item above.
+  - **Standalone-agent summarization** — only worth reconsidering if a
+    future phase gives `agent.py`'s `create_agent` path real persisted,
+    multi-turn conversation state (a product change, not an M3-scope
+    decision); no such state exists today.
+  - **Session-persistence atomicity** — unchanged from M2's own open
+    item above; M3's summary+exchange save inherits the same read-
+    check-write/lease-releases-before-save limitation, not newly
+    introduced.
+- **Priority**: open, none scheduled — real work, doesn't block M4.
+- **Status**: Open.
+
+**M1/M2/M3 are complete for the current single-user SQLite
+architecture.** None of them claims authentication, distributed rate
+limiting, or response streaming — that's explicitly out of scope here,
+tracked as **M4** (chat/report streaming), the immediate next phase.
+No M5 (or any further milestone) exists anywhere in this project's
+prior roadmap docs as of this checkpoint — none is invented here.
 
 Placeholders below, ready for real entries:
 

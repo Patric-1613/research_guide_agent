@@ -784,6 +784,13 @@ same as `data/history.sqlite`) records operational metadata only — route,
 status, latency, token/call counts — **never** prompt text, chat
 messages, report content, or any other request/response body content.
 
+Long curation-chat conversations preserve their full, visible history —
+nothing is ever deleted or truncated — while automatically bounding what
+actually reaches the model via a persisted, validated summary of older
+turns plus the most recent exchanges. No summary is ever exposed as a
+chat message or as a citable source; see `docs/architecture.md`'s
+"Usage Protection M3" section for the full design.
+
 ## Known limitations
 
 - Abstracts only — no PDF full-text ingestion (out of scope for v1).
