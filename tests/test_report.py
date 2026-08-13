@@ -2053,6 +2053,76 @@ def test_refine_single_mode_revision_needed_revises_exactly_once_and_stops():
     assert len(result["references"]) == 1
 
 
+def test_refine_report_if_requested_progress_callback_defaults_to_none_and_changes_nothing():
+    """Usage Protection M4.3A: progress_callback is a new, optional,
+    keyword-only-in-practice parameter -- every existing call site
+    (which passes no callback at all) must behave byte-identically to
+    before this parameter existed."""
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=88, needs_revision=False),
+    )
+
+    result = refine_report_if_requested(draft, "topic", [p1], [], "analytical", "single", mock_client)
+
+    assert result["refinement"]["rounds"] == 0
+    assert mock_client.chat.completions.parse.call_count == 1
+
+
+def test_refine_report_if_requested_progress_callback_off_mode_never_invoked():
+    draft = _clean_analytical_draft([_paper("1111", "Paper One")])
+    mock_client = MagicMock()
+    calls: list[str] = []
+
+    refine_report_if_requested(draft, "topic", [], [], "analytical", "off", mock_client, progress_callback=calls.append)
+
+    assert calls == []
+
+
+def test_refine_report_if_requested_progress_callback_no_revision_fires_evaluating_only():
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+    mock_client.chat.completions.parse.return_value = _mock_parsed_response(
+        _evaluation(overall_score=88, needs_revision=False),
+    )
+    calls: list[str] = []
+
+    refine_report_if_requested(
+        draft, "topic", [p1], [], "analytical", "single", mock_client, progress_callback=calls.append,
+    )
+
+    assert calls == ["evaluating"]
+
+
+def test_refine_report_if_requested_progress_callback_revision_fires_evaluating_then_revising():
+    p1 = _paper("1111", "Paper One")
+    draft = _clean_analytical_draft([p1])
+    mock_client = MagicMock()
+    schema = _build_report_schema(["1111"], None, REPORT_SECTION_DEFINITIONS)
+    section_cls = schema.model_fields["executive_summary"].annotation
+    revised_parsed = _analytical_parsed(
+        schema, thematic_findings=section_cls(content="Better [Paper 1].", cited_paper_ids=["1111"]),
+    )
+    mock_client.chat.completions.parse.side_effect = [
+        _mock_parsed_response(_evaluation(overall_score=40, needs_revision=True, revision_instructions="fix it")),
+        _mock_parsed_response(revised_parsed),
+    ]
+    calls: list[str] = []
+
+    refine_report_if_requested(
+        draft, "topic", [p1], [], "analytical", "single", mock_client, progress_callback=calls.append,
+    )
+
+    # Exactly this order -- "evaluating" before the evaluate call,
+    # "revising" before the revise call, never after either has already
+    # completed, never a third phase.
+    assert calls == ["evaluating", "revising"]
+    assert mock_client.chat.completions.parse.call_count == 2
+
+
 def test_refine_report_if_requested_stamps_section_scores_when_the_evaluator_returns_them():
     """report-quality Phase R4.2: a non-null section_scores from the
     evaluator survives into the final refinement metadata unchanged --

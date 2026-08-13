@@ -29,7 +29,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Callable, Literal
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 from docx import Document
@@ -1153,6 +1153,22 @@ def generate_report(
     return result
 
 
+def require_synthesize_stage_for_report(session: PaperPoolSession) -> None:
+    """Usage Protection M4.3A: pulled out of generate_report_for_session
+    below (verbatim -- same exact message/condition, zero behavior
+    change) so the streaming report endpoints' own preflight can run
+    this exact check BEFORE opening admission/the lease/constructing a
+    StreamingResponse, without duplicating the condition or its message
+    text. Also reused by _regenerate_report_sections_with_sources below
+    -- both generation and regeneration require the session to actually
+    be in "synthesize" stage."""
+    if session.stage != "synthesize":
+        raise ValueError(
+            f"Session is not ready for report synthesis (stage={session.stage!r}, expected 'synthesize') -- "
+            "curation must finish (target met, user stopped, or topic exhausted) before generating a report."
+        )
+
+
 def generate_report_for_session(
     session: PaperPoolSession, client: OpenAI | None = None, model: str = REPORT_MODEL,
     report_template: str = DEFAULT_REPORT_TEMPLATE,
@@ -1165,11 +1181,7 @@ def generate_report_for_session(
     curation_loop.py -- NOT reconstructed from session.reserve, which
     may no longer contain already-served papers after a refill).
     """
-    if session.stage != "synthesize":
-        raise ValueError(
-            f"Session is not ready for report synthesis (stage={session.stage!r}, expected 'synthesize') -- "
-            "curation must finish (target met, user stopped, or topic exhausted) before generating a report."
-        )
+    require_synthesize_stage_for_report(session)
     return generate_report(session.topic, session.selected_papers, client=client, model=model, report_template=report_template)
 
 
@@ -1258,6 +1270,19 @@ def _restore_dropped_citations(existing_report: dict, section_name: str, cited_p
     return restored
 
 
+def require_existing_report_for_regeneration(session: PaperPoolSession) -> None:
+    """Usage Protection M4.3A: pulled out of _regenerate_report_sections_
+    with_sources below (verbatim -- same exact message/condition, zero
+    behavior change) so the streaming regenerate endpoint's own
+    preflight can run this exact check BEFORE opening admission/the
+    lease/constructing a StreamingResponse, without duplicating the
+    condition or its message text."""
+    if session.report is None:
+        raise ValueError(
+            "Session has no existing report to regenerate -- call generate_report_for_session() first."
+        )
+
+
 def _regenerate_report_sections_with_sources(
     session: PaperPoolSession, web_articles: list[WebArticle], client: OpenAI | None, model: str, caller_name: str,
     report_template: str | None = None, allowed_web_urls: set[str] | None = None,
@@ -1335,15 +1360,8 @@ def _regenerate_report_sections_with_sources(
     upstream by curation_chat.py's resolve_approved_web_articles_for_
     regeneration), just a defensive backstop, not a behavior change.
     """
-    if session.report is None:
-        raise ValueError(
-            "Session has no existing report to regenerate -- call generate_report_for_session() first."
-        )
-    if session.stage != "synthesize":
-        raise ValueError(
-            f"Session is not ready for report synthesis (stage={session.stage!r}, expected 'synthesize') -- "
-            "curation must finish (target met, user stopped, or topic exhausted) before generating a report."
-        )
+    require_existing_report_for_regeneration(session)
+    require_synthesize_stage_for_report(session)
 
     existing_report = session.report
     selected_papers = session.selected_papers
@@ -1901,6 +1919,7 @@ def revise_report(
 def refine_report_if_requested(
     draft: dict, topic: str, selected_papers: list[Paper], web_articles: list[WebArticle],
     report_template: str, refinement_mode: str | None, client: OpenAI, model: str = REPORT_MODEL,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """report-quality Phase R4.1: the one orchestration point every
     report-generating call site that wants refinement goes through --
@@ -1947,10 +1966,32 @@ def refine_report_if_requested(
     evaluator didn't return one (ReportEvaluation's own field is
     optional); an empty/partial dict is also possible and must be
     tolerated, not assumed to cover every section key.
+
+    Usage Protection M4.3A: `progress_callback`, when given, is invoked
+    with a single string argument -- "evaluating" immediately before the
+    one `evaluate_report` call below, and "revising" immediately before
+    the one `revise_report` call, only on the branch where a revision is
+    genuinely needed. Purely an observability hook: this function's own
+    control flow, call count, and one-revision-maximum guarantee are
+    completely unchanged by its presence. `progress_callback=None` (the
+    default) makes every existing caller behave byte-identically to
+    before this parameter existed -- no callback is ever invoked, and
+    nothing else about this function's behavior changes. Never invoked
+    at all once `refinement_mode != "single"` (the pure-passthrough
+    branch above already returned before either call site is reached),
+    and each of the (at most) two call sites below fires at most once,
+    matching the function's own bounded-by-construction shape. A caller
+    that needs to bridge this synchronous callback (this whole function
+    is expected to run inside a worker thread, e.g. via `asyncio.
+    to_thread`) across to an async consumer is responsible for its own
+    thread-safe hand-off -- see research_agent/curation_report_
+    streaming.py for the real one.
     """
     if refinement_mode != "single":
         return draft
 
+    if progress_callback is not None:
+        progress_callback("evaluating")
     evaluation = evaluate_report(draft, topic, selected_papers, web_articles, report_template, client, model)
     initial_score = evaluation["overall_score"]
 
@@ -1959,6 +2000,8 @@ def refine_report_if_requested(
         rounds = 0
         final_score = initial_score
     else:
+        if progress_callback is not None:
+            progress_callback("revising")
         final = revise_report(
             topic, selected_papers, web_articles, draft, evaluation, client, model, report_template,
         )

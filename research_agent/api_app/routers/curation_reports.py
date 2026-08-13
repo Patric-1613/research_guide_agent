@@ -9,6 +9,8 @@ from research_agent.services.curation_report_service import (
     export_active_report,
     get_or_create_report,
     regenerate_report,
+    stream_generate_report,
+    stream_regenerate_report,
 )
 from research_agent.services.errors import ServiceError
 
@@ -50,6 +52,36 @@ def curation_report_regenerate(
             )
         except ServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+# Usage Protection M4.3A: the streaming counterparts -- both existing
+# endpoints above are completely unchanged, still the default for any
+# client that hasn't adopted streaming yet. No _upstream_error_guard on
+# either: like M4.2A's own chat-stream route, nothing either of these
+# routes does BEFORE returning the StreamingResponse ever calls an LLM
+# synchronously (every provider call happens later, inside the streamed
+# generator body, which reports its own safe error events instead -- see
+# curation_report_streaming.py's own docstring).
+@router.post("/curation/{session_id}/report/stream")
+def curation_report_stream(
+    session_id: str, req: CurationGenerateReportRequest = CurationGenerateReportRequest(),
+    cp=Depends(api.get_curation_checkpointer),
+):
+    try:
+        return stream_generate_report(session_id, req, cp)
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/curation/{session_id}/report/regenerate/stream")
+def curation_report_regenerate_stream(
+    session_id: str, req: CurationRegenerateReportRequest = CurationRegenerateReportRequest(),
+    cp=Depends(api.get_curation_checkpointer),
+):
+    try:
+        return stream_regenerate_report(session_id, req, cp)
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/curation/{session_id}/report/export")

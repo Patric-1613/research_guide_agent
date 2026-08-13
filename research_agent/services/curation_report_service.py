@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from typing import AsyncIterator
+
+from fastapi.responses import StreamingResponse
+
 import research_agent.api as api
-from research_agent.api_app.schemas import ReportOut
+import research_agent.telemetry as telemetry
+from research_agent import report
+from research_agent.api_app.schemas import CurationGenerateReportRequest, CurationRegenerateReportRequest, ReportOut
 from research_agent.api_app.serializers import _report_to_out
+from research_agent.curation_report_streaming import (
+    HandledReportStreamFailure,
+    stream_cached_report,
+    stream_generate_report_turn,
+    stream_regenerate_report_turn,
+)
 from research_agent.curation_session import load_curation_session, save_curation_session
+from research_agent.report_streaming import build_done_event, build_error_event
 from research_agent.services.errors import ServiceError
-from research_agent.usage_guard import guard_paid_action
+from research_agent.usage_guard import guard_paid_action, open_admission_and_lease_for_streaming
 
 
 def get_or_create_report(
@@ -71,6 +84,88 @@ def get_or_create_report(
     return _report_to_out(session.report, api.get_active_report_version(session))
 
 
+def stream_generate_report(session_id: str, req: CurationGenerateReportRequest, cp) -> StreamingResponse:
+    """Usage Protection M4.3A: the streaming counterpart to get_or_
+    create_report above -- POST /curation/{session_id}/report/stream.
+    Every pre-guard check below (session existence, and -- for the
+    non-cached branch only -- the synthesize-stage precondition, reused
+    unchanged via report.require_synthesize_stage_for_report) runs
+    BEFORE the guard opens and BEFORE any StreamingResponse is
+    constructed, exactly mirroring get_or_create_report's own ordering.
+
+    Cache-hit detection happens here, synchronously, BEFORE admission/
+    the lease are ever touched -- an existing session.report means this
+    performs NO admission check, NO lease acquisition, and (inside the
+    generator) NO telemetry.paid_action either -- see curation_report_
+    streaming.stream_cached_report's own docstring.
+
+    Uses usage_guard.open_admission_and_lease_for_streaming (NOT
+    guard_paid_action) for the non-cached branch -- admission + the
+    lease are acquired here, before the response is built, and the
+    lease is released later, inside the streaming generator's own
+    finally, once the streamed work (provider calls AND final session
+    persistence) has fully finished. telemetry.paid_action is
+    deliberately opened ENTIRELY inside event_stream() below, via a
+    plain with statement -- never split across this function and the
+    generator -- see usage_guard.open_admission_and_lease_for_
+    streaming's own docstring for the real, empirically-confirmed
+    contextvars hazard that motivates this (identical reasoning to
+    M4.2A's own chat-streaming design; M4.2 itself is unmodified here).
+
+    Lifecycle-hardening pattern (also reused verbatim from M4.2A):
+    `HandledReportStreamFailure` is caught HERE, OUTSIDE the `with
+    telemetry.paid_action(...):` block -- letting it propagate out of
+    that block first is what makes telemetry.paid_action's own `except
+    Exception` branch record the top-level paid_actions row as
+    `outcome="error"`. `asyncio.CancelledError` is not caught here at
+    all: it propagates all the way out of event_stream(), so telemetry.
+    paid_action records `outcome="cancelled"` and no `completed`/`error`
+    event is ever emitted for it.
+    """
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise ServiceError(404, "session_id not found")
+
+    is_cache_hit = session.report is not None
+    lease_handle = None
+    if not is_cache_hit:
+        # Fresh-generation branch only -- a cache hit never reaches this
+        # check (or the guard below) at all, mirroring get_or_create_
+        # report's own cache-first semantics exactly.
+        try:
+            report.require_synthesize_stage_for_report(session)
+        except ValueError as exc:
+            raise ServiceError(400, str(exc)) from exc
+        lease_handle = open_admission_and_lease_for_streaming(
+            "report_generate", subject=("session", session_id), use_lease=True,
+        )
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            if is_cache_hit:
+                async for event in stream_cached_report(session):
+                    yield event.to_sse()
+                return
+            try:
+                with telemetry.paid_action("report_generate", subject_type="session", subject_id=session_id):
+                    async for event in stream_generate_report_turn(
+                        session, session_id, cp, api._state["client"], req.report_template, req.refinement_mode,
+                    ):
+                        yield event.to_sse()
+            except HandledReportStreamFailure as exc:
+                yield build_error_event(exc.reason_code, exc.message).to_sse()
+                yield build_done_event().to_sse()
+        finally:
+            if lease_handle is not None:
+                lease_handle.release()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
 def regenerate_report(
     session_id: str, cp, report_template: str | None = None, refinement_mode: str | None = None,
 ) -> ReportOut:
@@ -123,6 +218,52 @@ def regenerate_report(
     session.report_covered_web_article_count = len(session.web_articles_added)
     save_curation_session(session, session_id, cp)
     return _report_to_out(session.report, api.get_active_report_version(session))
+
+
+def stream_regenerate_report(session_id: str, req: CurationRegenerateReportRequest, cp) -> StreamingResponse:
+    """Usage Protection M4.3A: the streaming counterpart to regenerate_
+    report above -- POST /curation/{session_id}/report/regenerate/
+    stream. Always real paid work, no cache branch (mirrors regenerate_
+    report's own unconditional guard) -- both preconditions (an existing
+    report to regenerate from, and synthesize-stage readiness, both
+    reused unchanged from report.py) are checked BEFORE admission/the
+    lease/any StreamingResponse, same ordering discipline as stream_
+    generate_report above. See that function's own docstring for the
+    full admission/lease/telemetry/cancellation reasoning, identical
+    here.
+    """
+    session = load_curation_session(session_id, cp)
+    if session is None:
+        raise ServiceError(404, "session_id not found")
+    try:
+        report.require_existing_report_for_regeneration(session)
+        report.require_synthesize_stage_for_report(session)
+    except ValueError as exc:
+        raise ServiceError(400, str(exc)) from exc
+
+    lease_handle = open_admission_and_lease_for_streaming(
+        "report_regenerate", subject=("session", session_id), use_lease=True,
+    )
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            try:
+                with telemetry.paid_action("report_regenerate", subject_type="session", subject_id=session_id):
+                    async for event in stream_regenerate_report_turn(
+                        session, session_id, cp, api._state["client"], req.report_template, req.refinement_mode,
+                    ):
+                        yield event.to_sse()
+            except HandledReportStreamFailure as exc:
+                yield build_error_event(exc.reason_code, exc.message).to_sse()
+                yield build_done_event().to_sse()
+        finally:
+            lease_handle.release()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
 
 
 _EXPORT_FORMATS = ("markdown", "docx", "pdf")
