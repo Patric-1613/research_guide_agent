@@ -2,8 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { curationApi } from '../lib/api/client'
 import { ChatStreamTransportError, streamCurationChat } from '../lib/api/chatStream'
 import { getUserFacingErrorMessage } from '../lib/api/errorMessages'
+import { ReportStreamTransportError, streamGenerateReport, streamRegenerateReport } from '../lib/api/reportStream'
 import { ApiError } from '../types'
-import type { ChatStreamPhase, CurationStateResponse, RefinementMode, ReportTemplate } from '../types'
+import type {
+  ChatStreamPhase, CurationGenerateReportRequest, CurationRegenerateReportRequest, CurationStateResponse,
+  RefinementMode, ReportStreamPhase, ReportStreamServerEvent, ReportTemplate,
+} from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
 // deliberately client-only, accumulated as turns happen during THIS page
@@ -143,6 +147,20 @@ interface UseCurationSessionResult {
   // behavior.
   generateReport: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<CurationStateResponse | undefined>
   regenerateReport: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<CurationStateResponse | undefined>
+  // Usage Protection M4.3B: streaming lifecycle state/actions -- the
+  // normal UI Generate/Regenerate path now uses generateReportStreaming/
+  // regenerateReportStreaming (see CurationWorkspacePage.tsx); generate
+  // Report/regenerateReport above remain available unchanged for
+  // backward compatibility.
+  reportStreamActive: boolean
+  reportStreamOperation: 'generate' | 'regenerate' | null
+  reportStreamPhase: ReportStreamPhase | null
+  reportStreamStopping: boolean
+  reportStreamError: string | null
+  reportStreamSyncFailed: boolean
+  generateReportStreaming: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<void>
+  regenerateReportStreaming: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<void>
+  cancelReportStream: () => void
   // report-quality Phase R3: switches which report version is active --
   // same return convention as generate/regenerateReport above.
   activateReportVersion: (versionId: string) => Promise<CurationStateResponse | undefined>
@@ -239,6 +257,50 @@ export function useCurationSession(): UseCurationSessionResult {
     chatStreamAbortRef.current = null
   }, [setChatStreamActive])
 
+  // Usage Protection M4.3B: report-generation/regeneration streaming
+  // lifecycle state, owned here (not inside ReportModePanel) -- same
+  // "hook owns lifecycle, component stays presentational" split M4.2B
+  // established for chat. Unlike chat, no local preview TEXT is ever
+  // held (report content is never streamed) -- reportStreamError is its
+  // own dedicated field, deliberately NOT the shared `error` banner, so
+  // a handled report-stream failure surfaces inline in the report panel
+  // rather than hijacking the app-wide error surface. reportStream
+  // Stopping is a distinct third state (see cancelReportStream's own
+  // docstring below): true only during the "cancellation requested, not
+  // yet settled" window, so the UI can show a stable "Stopping" label
+  // instead of implying cancellation is instantaneous.
+  const [reportStreamActive, setReportStreamActiveState] = useState(false)
+  const [reportStreamOperation, setReportStreamOperation] = useState<'generate' | 'regenerate' | null>(null)
+  const [reportStreamPhase, setReportStreamPhase] = useState<ReportStreamPhase | null>(null)
+  const [reportStreamStopping, setReportStreamStopping] = useState(false)
+  const [reportStreamError, setReportStreamError] = useState<string | null>(null)
+  const [reportStreamSyncFailed, setReportStreamSyncFailed] = useState(false)
+  // Same ref-alongside-state rationale as chatStreamActiveRef above.
+  const reportStreamActiveRef = useRef(false)
+  const reportStreamAbortRef = useRef<AbortController | null>(null)
+
+  const setReportStreamActive = useCallback((active: boolean) => {
+    reportStreamActiveRef.current = active
+    setReportStreamActiveState(active)
+  }, [])
+
+  // Deliberately does NOT reset reportStreamError -- unlike every other
+  // field here, an error message describes something that already
+  // finished; a LATER successful reload (whether from cancellation
+  // cleanup, an unrelated action's own loadState call, or anything
+  // else) doesn't retroactively un-happen the failure, so clearing it
+  // here would silently erase a message the user hasn't acted on yet.
+  // reportStreamError is instead reset only where a NEW report-stream
+  // attempt actually begins (see runReportStreamOperation's own start).
+  const clearReportStreamPreview = useCallback(() => {
+    setReportStreamActive(false)
+    setReportStreamOperation(null)
+    setReportStreamPhase(null)
+    setReportStreamStopping(false)
+    setReportStreamSyncFailed(false)
+    reportStreamAbortRef.current = null
+  }, [setReportStreamActive])
+
   // chat-ux-polish Phase A: called at the start of every chat action
   // (sendChatMessage/deleteExchanges/editExchange/addExchangesToReport)
   // so a success/info notice from a DIFFERENT, earlier action can't keep
@@ -262,13 +324,14 @@ export function useCurationSession(): UseCurationSessionResult {
       setTurnEvents([])
       setLastChatSearchMeta(null)
     }
-    // Usage Protection M4.2B: canonical state is now current -- any
-    // leftover streaming preview (from this call's own caller, or from
-    // an earlier turn) is superseded. Safe to call unconditionally: a
-    // no-op when there was nothing to clear.
+    // Usage Protection M4.2B/M4.3B: canonical state is now current -- any
+    // leftover streaming preview (chat or report, from this call's own
+    // caller, or from an earlier turn) is superseded. Safe to call
+    // unconditionally: a no-op when there was nothing to clear.
     clearChatStreamPreview()
+    clearReportStreamPreview()
     return fresh
-  }, [clearChatStreamPreview])
+  }, [clearChatStreamPreview, clearReportStreamPreview])
 
   const runAction = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
     setLoading(true)
@@ -311,6 +374,15 @@ export function useCurationSession(): UseCurationSessionResult {
   useEffect(() => {
     return () => {
       chatStreamAbortRef.current?.abort()
+    }
+  }, [sessionId])
+
+  // Usage Protection M4.3B: same reasoning as the chat-stream effect
+  // above, for a report-generation/regeneration stream -- a stream
+  // belongs to the session it was started for.
+  useEffect(() => {
+    return () => {
+      reportStreamAbortRef.current?.abort()
     }
   }, [sessionId])
 
@@ -445,7 +517,12 @@ export function useCurationSession(): UseCurationSessionResult {
   // (loading || chatStreamActive) while one is running.
   const sendChatMessageStreaming = useCallback(
     async (message: string): Promise<void> => {
-      if (!sessionId || chatStreamActiveRef.current) return
+      // Usage Protection M4.3B: also refuses to start while a report
+      // stream is active for this session -- the two are mutually
+      // exclusive (same "one paid/blocking action at a time" invariant
+      // `loading` already enforces for every non-streaming action), not
+      // just independently guarded.
+      if (!sessionId || chatStreamActiveRef.current || reportStreamActiveRef.current) return
       clearActionNotices()
       setError(null)
       const controller = new AbortController()
@@ -589,6 +666,197 @@ export function useCurationSession(): UseCurationSessionResult {
     chatStreamAbortRef.current?.abort()
   }, [])
 
+  // Usage Protection M4.3B: shared orchestration for generateReport
+  // Streaming/regenerateReportStreaming below -- identical event-state-
+  // machine/cancellation/reload handling either way; the only difference
+  // between the two public actions is which adapter function to call and
+  // which `generation_reason`-adjacent label ('generate'/'regenerate')
+  // to track. Neither public action duplicates this body, so the two can
+  // never drift apart. Mirrors sendChatMessageStreaming's own shape
+  // closely, with two deliberate differences: (1) failures set the
+  // dedicated reportStreamError field, never the shared `error` banner;
+  // (2) cancellation shows a stable "stopping" window (reportStream
+  // Stopping) while the post-cancellation reload is still in flight,
+  // rather than clearing the preview immediately -- the backend may need
+  // to wait out an active synchronous provider call before releasing its
+  // lease, so pretending cancellation is instantaneous here would be
+  // dishonest.
+  const runReportStreamOperation = useCallback(
+    async (
+      operation: 'generate' | 'regenerate',
+      streamFn: (
+        sessionId: string,
+        req: CurationGenerateReportRequest | CurationRegenerateReportRequest,
+        options: { signal: AbortSignal },
+      ) => AsyncGenerator<ReportStreamServerEvent>,
+      reportTemplate?: ReportTemplate,
+      refinementMode?: RefinementMode,
+    ): Promise<void> => {
+      // Usage Protection M4.3B: mutually exclusive with an active chat
+      // stream too -- same cross-domain guard sendChatMessageStreaming's
+      // own now carries in the other direction.
+      if (!sessionId || reportStreamActiveRef.current || chatStreamActiveRef.current) return
+      setError(null)
+      const controller = new AbortController()
+      reportStreamAbortRef.current = controller
+      setReportStreamActive(true)
+      setReportStreamOperation(operation)
+      setReportStreamPhase(null)
+      setReportStreamStopping(false)
+      setReportStreamError(null)
+      setReportStreamSyncFailed(false)
+
+      const syncMessage = 'Lost the connection while the report was being generated. Checking what was saved…'
+      const reloadBestEffort = async () => {
+        try {
+          await loadState(sessionId)
+        } catch {
+          // Best-effort only -- the next successful action's own
+          // loadState call will catch canonical state up regardless.
+        }
+      }
+      // report-quality Phase R2C/R4.1 parity: the non-streaming generate
+      // Report/regenerateReport actions send report_template/
+      // refinement_mode only when meaningfully set (an explicit template,
+      // and refinementMode !== 'off') -- same omission convention
+      // preserved here so the backend's own None-means-"preserve
+      // existing"/"off" resolution behaves identically either way.
+      const req: CurationGenerateReportRequest | CurationRegenerateReportRequest = {
+        ...(reportTemplate ? { report_template: reportTemplate } : {}),
+        ...(refinementMode && refinementMode !== 'off' ? { refinement_mode: refinementMode } : {}),
+      }
+
+      let sawStarted = false
+      let sawDone = false
+      let sawCompleted = false
+      let sawError = false
+
+      try {
+        for await (const event of streamFn(sessionId, req, { signal: controller.signal })) {
+          if (sawDone) {
+            throw new ReportStreamTransportError('Received data after the stream had already ended.')
+          }
+          if (event.type === 'started') {
+            if (sawStarted) throw new ReportStreamTransportError('Received a duplicate start signal.')
+            sawStarted = true
+            continue
+          }
+          if (!sawStarted) {
+            throw new ReportStreamTransportError('Received data before the stream had started.')
+          }
+          switch (event.type) {
+            case 'phase':
+              setReportStreamPhase(event.data.phase)
+              break
+            case 'completed':
+              if (sawCompleted || sawError) throw new ReportStreamTransportError('Received more than one terminal signal.')
+              sawCompleted = true
+              break
+            case 'error':
+              if (sawCompleted || sawError) throw new ReportStreamTransportError('Received more than one terminal signal.')
+              sawError = true
+              setReportStreamError(event.data.message)
+              break
+            case 'done':
+              sawDone = true
+              break
+          }
+        }
+      } catch (err) {
+        if (controller.signal.aborted) {
+          // Deliberate user/unmount/session-change cancellation -- never
+          // a visible application error. reportStreamStopping stays true
+          // (reportStreamActive/operation/phase all stay as they were)
+          // through the reload below, so the UI can keep showing a
+          // stable "Stopping" state instead of an instant snap back to
+          // idle -- the backend's own M4.3A lifecycle hardening may
+          // still be waiting out an in-flight synchronous provider call
+          // before it can release the lease. clearReportStreamPreview()
+          // only runs once that reload has genuinely settled (success or
+          // failure), which is also the only point controls are safe to
+          // re-enable.
+          setReportStreamStopping(true)
+          await reloadBestEffort()
+          clearReportStreamPreview()
+          return
+        }
+        clearReportStreamPreview()
+        if (err instanceof ApiError) {
+          // A preflight rejection (404/400/409/422/429/503) -- research_
+          // agent/services/curation_report_service.py's own synchronous
+          // checks all run BEFORE any StreamingResponse is constructed,
+          // so nothing was ever started; nothing to reload.
+          setReportStreamError(getUserFacingErrorMessage(err))
+          return
+        }
+        // Any other failure once an attempt to read the stream began --
+        // a ReportStreamTransportError (malformed/truncated SSE) or a
+        // raw transport failure alike -- is the same "something broke
+        // mid-response" bucket: a safe, fixed retry message, never
+        // automatically resending the POST, and a reload to discover
+        // whether anything was actually persisted before the failure.
+        setReportStreamError(syncMessage)
+        await reloadBestEffort()
+        return
+      }
+
+      if (!sawDone || (!sawCompleted && !sawError)) {
+        // The server closed the connection without the one required
+        // clean-termination signal (`done`), or without ever reaching a
+        // terminal outcome at all -- same "malformed/truncated" bucket
+        // as the catch block above.
+        clearReportStreamPreview()
+        setReportStreamError(syncMessage)
+        await reloadBestEffort()
+        return
+      }
+
+      if (sawError) {
+        // A handled SSE error -> done: the backend's own M4.3A hardening
+        // guarantees nothing was persisted for a handled failure, so no
+        // reload is needed here -- the safe message is already set above.
+        clearReportStreamPreview()
+        return
+      }
+
+      // Success: completed -> done. The completed payload's own report
+      // content is deliberately never captured into local state here --
+      // canonical state (loaded fresh below) is authoritative for the
+      // report body, version, active version, refinement metadata,
+      // generation reason, references, and sections; nothing here ever
+      // constructs a report or appends a version client-side.
+      setReportStreamPhase(null)
+      setReportPossiblyStale(false)
+      try {
+        await loadState(sessionId)
+        // loadState's own success path already calls
+        // clearReportStreamPreview() -- see above.
+      } catch {
+        setReportStreamSyncFailed(true)
+        setReportStreamActive(false)
+        setReportStreamOperation(null)
+        setReportStreamPhase(null)
+      }
+    },
+    [sessionId, loadState, clearReportStreamPreview, setReportStreamActive],
+  )
+
+  const generateReportStreaming = useCallback(
+    (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) =>
+      runReportStreamOperation('generate', streamGenerateReport, reportTemplate, refinementMode),
+    [runReportStreamOperation],
+  )
+
+  const regenerateReportStreaming = useCallback(
+    (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) =>
+      runReportStreamOperation('regenerate', streamRegenerateReport, reportTemplate, refinementMode),
+    [runReportStreamOperation],
+  )
+
+  const cancelReportStream = useCallback(() => {
+    reportStreamAbortRef.current?.abort()
+  }, [])
+
   const deleteExchanges = useCallback(
     (exchangeIds: string[]) =>
       runAction(async () => {
@@ -691,7 +959,10 @@ export function useCurationSession(): UseCurationSessionResult {
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion, sendChatMessage,
+    openReview, startReview, submitPicks, generateReport, regenerateReport,
+    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
+    reportStreamSyncFailed, generateReportStreaming, regenerateReportStreaming, cancelReportStream,
+    activateReportVersion, sendChatMessage,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
     deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   }

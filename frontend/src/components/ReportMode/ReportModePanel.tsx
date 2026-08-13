@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { CircleStop } from 'lucide-react'
 import type {
-  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportTemplate,
+  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportStreamPhase, ReportTemplate,
   ReportVersionSummary, CurationStateResponse,
 } from '../../types'
 import { renderContentWithMarkers } from '../../lib/citationMarkers'
@@ -29,6 +30,100 @@ interface ReportModePanelProps {
   // instead of a single direct link. Always exports the active
   // version; there's no per-version export UI here.
   exportUrls: Record<ReportExportFormat, string>
+  // Usage Protection M4.3B: streaming lifecycle -- owned by
+  // useCurationSession, passed straight through. onGenerateReport/
+  // onRegenerateReport above are unchanged in shape (CurationWorkspace
+  // Page now wires them to the streaming actions; this panel doesn't
+  // need to know that -- `disabled` already reflects reportStreamActive
+  // via the parent's own composition, same convention ChatModePanel's
+  // disabled prop already established).
+  reportStreamActive: boolean
+  reportStreamOperation: 'generate' | 'regenerate' | null
+  reportStreamPhase: ReportStreamPhase | null
+  reportStreamStopping: boolean
+  reportStreamError: string | null
+  reportStreamSyncFailed: boolean
+  onCancelReportStream: () => void
+  onRetryReportSync: () => void
+}
+
+// Usage Protection M4.3B: concise, user-facing labels for the backend's
+// own internal phase vocabulary (research_agent/report_streaming.py's
+// ReportStreamPhase) -- never the raw identifier itself. "Stopping" is
+// not a backend phase at all -- it's this panel's own label for the
+// window between a Stop click and the cancellation/reload actually
+// settling (reportStreamStopping), so cancellation is never presented
+// as instantaneous.
+const REPORT_STREAM_PHASE_LABELS: Record<ReportStreamPhase, string> = {
+  generating: 'Generating report',
+  evaluating: 'Evaluating draft',
+  revising: 'Revising report',
+  saving: 'Saving report',
+}
+
+function reportStreamStatusLabel(phase: ReportStreamPhase | null, stopping: boolean): string {
+  if (stopping) return 'Stopping'
+  if (phase) return REPORT_STREAM_PHASE_LABELS[phase]
+  return 'Starting'
+}
+
+// Usage Protection M4.3B: Generate/Regenerate and Stop share this one
+// slot -- never both at once -- so neither view's own layout shifts as a
+// stream starts or ends. No percentages, no progress bar, no animated
+// prose -- a single status label plus a stop control, matching this
+// phase's own explicit "no fake progress" requirement.
+function ReportStreamStopButton({
+  onCancel, stopping, compact,
+}: { onCancel: () => void; stopping: boolean; compact: boolean }) {
+  return (
+    <button
+      type="button"
+      data-testid="report-stream-stop"
+      onClick={onCancel}
+      disabled={stopping}
+      aria-label="Stop generating"
+      title="Stop generating"
+      className={
+        compact
+          ? 'flex items-center justify-center rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-danger hover:text-danger disabled:opacity-60'
+          : 'flex items-center justify-center rounded-md border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:border-danger hover:text-danger disabled:opacity-60'
+      }
+    >
+      <CircleStop className="h-4 w-4" aria-hidden="true" />
+    </button>
+  )
+}
+
+function ReportStreamErrorNotice({ message }: { message: string }) {
+  return (
+    <p data-testid="report-stream-error" role="alert" className="text-xs text-danger">
+      {message}
+    </p>
+  )
+}
+
+// M4.3B: mirrors ChatModePanel's own chat-stream-sync-failed notice --
+// the completed report may already be safely persisted server-side, but
+// the canonical reload that would have shown it here failed. Never
+// resends the generate/regenerate request automatically; onRetry reuses
+// the existing refresh/loadState path.
+function ReportStreamSyncFailedNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p
+      data-testid="report-stream-sync-failed"
+      className="flex items-center justify-center gap-2 text-center text-xs text-text-muted"
+    >
+      <span>The report may have changed, but this view couldn&apos;t sync. </span>
+      <button
+        type="button"
+        data-testid="report-stream-sync-retry"
+        onClick={onRetry}
+        className="shrink-0 underline decoration-dotted hover:text-accent"
+      >
+        Retry
+      </button>
+    </p>
+  )
 }
 
 const TEMPLATE_OPTIONS: { value: ReportTemplate; label: string }[] = [
@@ -59,7 +154,11 @@ const GENERATION_REASON_LABELS: Record<string, string> = {
 // actually shown.
 export function ReportModePanel({
   state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportUrls,
+  reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
+  reportStreamSyncFailed, onCancelReportStream, onRetryReportSync,
 }: ReportModePanelProps) {
+  const generating = reportStreamActive && reportStreamOperation === 'generate'
+  const regenerating = reportStreamActive && reportStreamOperation === 'regenerate'
   // report-quality Phase R2C: initialized from the current report's own
   // template (defaulting to analytical before a first generation), kept
   // in sync whenever the ACTIVE report's template changes underneath
@@ -83,18 +182,33 @@ export function ReportModePanel({
   if (!state.report) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
-        <p className="text-sm text-text-secondary">No report yet for this review.</p>
+        {/* Usage Protection M4.3B: no empty report shell/partial content
+            while generating -- just the phase status in place of the
+            "no report yet" copy, which would otherwise read as stale
+            the instant Generate is clicked. */}
+        {!generating && <p className="text-sm text-text-secondary">No report yet for this review.</p>}
         <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
         <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
-        <button
-          type="button"
-          data-testid="generate-report"
-          onClick={() => onGenerateReport(selectedTemplate, refinementMode)}
-          disabled={disabled}
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
-        >
-          Generate report
-        </button>
+        {generating ? (
+          <div data-testid="report-stream-progress" className="flex flex-col items-center gap-2">
+            <span data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
+              {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
+            </span>
+            <ReportStreamStopButton onCancel={onCancelReportStream} stopping={reportStreamStopping} compact={false} />
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-testid="generate-report"
+            onClick={() => onGenerateReport(selectedTemplate, refinementMode)}
+            disabled={disabled}
+            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
+          >
+            Generate report
+          </button>
+        )}
+        {reportStreamError && <ReportStreamErrorNotice message={reportStreamError} />}
+        {reportStreamSyncFailed && <ReportStreamSyncFailedNotice onRetry={onRetryReportSync} />}
       </div>
     )
   }
@@ -109,6 +223,15 @@ export function ReportModePanel({
           <h2 className="text-sm font-semibold text-text">Literature review report</h2>
           <TemplateBadge template={state.report.report_template ?? 'analytical'} />
           {state.report.refinement && <RefinementBadge refinement={state.report.refinement} />}
+          {/* Usage Protection M4.3B: compact progress status in the
+              header -- the existing report below stays fully visible and
+              unchanged throughout, never dimmed/cleared as though it
+              were invalid. */}
+          {regenerating && (
+            <span data-testid="report-stream-phase-label" className="text-xs italic text-text-secondary">
+              {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <VersionSelector
@@ -119,18 +242,24 @@ export function ReportModePanel({
           />
           <TemplateSelector selected={selectedTemplate} onChange={setSelectedTemplate} disabled={disabled} />
           <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
-          <button
-            type="button"
-            data-testid="regenerate-report"
-            onClick={() => onRegenerateReport(selectedTemplate, refinementMode)}
-            disabled={disabled}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
-          >
-            Regenerate
-          </button>
+          {regenerating ? (
+            <ReportStreamStopButton onCancel={onCancelReportStream} stopping={reportStreamStopping} compact />
+          ) : (
+            <button
+              type="button"
+              data-testid="regenerate-report"
+              onClick={() => onRegenerateReport(selectedTemplate, refinementMode)}
+              disabled={disabled}
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:text-text disabled:opacity-40"
+            >
+              Regenerate
+            </button>
+          )}
           <ExportMenu urls={exportUrls} disabled={disabled} />
         </div>
       </div>
+      {reportStreamError && <ReportStreamErrorNotice message={reportStreamError} />}
+      {reportStreamSyncFailed && <ReportStreamSyncFailedNotice onRetry={onRetryReportSync} />}
       {state.report.refinement && hasEvaluationDetails(state.report.refinement) && (
         <EvaluationDetails refinement={state.report.refinement} sections={sections} />
       )}

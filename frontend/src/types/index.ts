@@ -438,6 +438,58 @@ export type ChatStreamServerEvent =
   | ChatStreamErrorEvent
   | ChatStreamDoneEvent
 
+// Usage Protection M4.3A/M4.3B: the frozen report-generation/regeneration
+// progress streaming event vocabulary research_agent/report_streaming.py
+// defines and research_agent/curation_report_streaming.py emits, in
+// order `started -> phase* -> completed -> done` on success (with NO
+// phase events at all on an initial-generation cache hit), or `started
+// -> phase* -> error -> done` on a handled failure. Deliberately no
+// `delta` type -- report generation never streams prose/partial
+// sections. Entirely independent of the ChatStream* types above (M4.2
+// is closed; these mirror its shape but share no types with it) -- see
+// lib/api/reportStream.ts for the adapter that decodes the raw SSE
+// response into these, and hooks/useCurationSession.ts for the state
+// machine that enforces their ordering.
+export type ReportStreamPhase = 'generating' | 'evaluating' | 'revising' | 'saving'
+
+export type ReportStreamEventType = 'started' | 'phase' | 'completed' | 'error' | 'done'
+
+export interface ReportStreamStartedEvent {
+  type: 'started'
+  data: Record<string, never>
+}
+
+export interface ReportStreamPhaseEvent {
+  type: 'phase'
+  data: { phase: ReportStreamPhase }
+}
+
+// The completed payload is the EXISTING ReportOut shape, unmodified --
+// reused directly (never a narrower/parallel type) so this can never
+// drift from the real API response shape the non-streaming endpoints
+// already return.
+export interface ReportStreamCompletedEvent {
+  type: 'completed'
+  data: ReportOut
+}
+
+export interface ReportStreamErrorEvent {
+  type: 'error'
+  data: { reason_code: string; message: string }
+}
+
+export interface ReportStreamDoneEvent {
+  type: 'done'
+  data: Record<string, never>
+}
+
+export type ReportStreamServerEvent =
+  | ReportStreamStartedEvent
+  | ReportStreamPhaseEvent
+  | ReportStreamCompletedEvent
+  | ReportStreamErrorEvent
+  | ReportStreamDoneEvent
+
 export interface CurationDeleteResponse {
   session_id: string
   deleted: boolean

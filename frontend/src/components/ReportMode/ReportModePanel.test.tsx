@@ -20,7 +20,7 @@ describe('ReportModePanel', () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
     render(
-      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />,
+      <ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />,
     )
 
     expect(screen.getByText('No report yet for this review.')).toBeInTheDocument()
@@ -40,7 +40,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByText('Finding A.')).toBeInTheDocument()
     expect(screen.getByText('Limitation A.')).toBeInTheDocument()
@@ -60,7 +60,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     // The bare pill text (just a title, no citation/link) must not appear
     // on its own anymore -- only inside the References section's full
@@ -87,7 +87,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     const references = screen.getByTestId('report-references')
     expect(references).toBeInTheDocument()
@@ -132,7 +132,7 @@ describe('ReportModePanel', () => {
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByText('Uthor, A. (n.d.). Paper One.')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Uthor, A. (n.d.). Paper One.' })).not.toBeInTheDocument()
@@ -151,7 +151,7 @@ describe('ReportModePanel', () => {
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />),
     ).not.toThrow()
 
     expect(screen.getByText('Old prose, no markers.')).toBeInTheDocument()
@@ -169,7 +169,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: [],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('regenerate-report'))
     expect(onRegenerateReport).toHaveBeenCalledTimes(1)
@@ -184,7 +184,7 @@ describe('ReportModePanel', () => {
         skipped_paper_ids: ['p9'],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByText(/1 selected paper skipped from synthesis/)).toBeInTheDocument()
   })
@@ -206,7 +206,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
     expect(headings).toEqual(['Executive Summary', 'Thematic Findings', 'Gap Analysis', 'Conclusion'])
@@ -232,7 +232,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     const nav = screen.getByTestId('report-section-nav')
     expect(nav).toBeInTheDocument()
@@ -255,7 +255,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
         ],
       },
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#ref-1')
     expect(screen.getByTestId('report-references')).toBeInTheDocument()
@@ -276,7 +276,7 @@ describe('ReportModePanel -- report-quality Phase R2A: dynamic sections', () => 
     })
 
     expect(() =>
-      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />),
+      render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />),
     ).not.toThrow()
 
     expect(screen.getByText('Old findings prose.')).toBeInTheDocument()
@@ -301,7 +301,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   }
 
   it('renders all three template options', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-foundational')).toBeInTheDocument()
     expect(screen.getByTestId('report-template-option-analytical')).toBeInTheDocument()
@@ -309,7 +309,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   })
 
   it('defaults the selector to Analytical when there is no report yet', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('report-template-option-foundational')).toHaveAttribute('aria-checked', 'false')
@@ -317,7 +317,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('initializes the selector from an existing report_template', () => {
     const state = baseState({ report: reportWithTemplate('expert') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-option-expert')).toHaveAttribute('aria-checked', 'true')
   })
@@ -325,7 +325,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
   it('selecting Foundational and clicking Generate calls onGenerateReport("foundational")', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('report-template-option-foundational'))
     await user.click(screen.getByTestId('generate-report'))
@@ -337,7 +337,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const user = userEvent.setup()
     const onRegenerateReport = vi.fn()
     const state = baseState({ report: reportWithTemplate('analytical') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('report-template-option-expert'))
     await user.click(screen.getByTestId('regenerate-report'))
@@ -347,14 +347,14 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
 
   it('shows a template badge for an existing report', () => {
     const state = baseState({ report: reportWithTemplate('foundational') })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Foundational')
   })
 
   it('defaults the badge and selector to Analytical for an old report with no report_template field', () => {
     const state = baseState({ report: reportWithTemplate() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-template-badge')).toHaveTextContent('Analytical')
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -364,7 +364,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     const { rerender } = render(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('analytical') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
       />,
     )
     expect(screen.getByTestId('report-template-option-analytical')).toHaveAttribute('aria-checked', 'true')
@@ -372,7 +372,7 @@ describe('ReportModePanel -- report-quality Phase R2C: report templates', () => 
     rerender(
       <ReportModePanel
         state={baseState({ report: reportWithTemplate('expert') })}
-        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }}
+        disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
       />,
     )
 
@@ -406,7 +406,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
 
   it('hides the version selector when report_versions is empty (old-report fixture, no version metadata)', () => {
     const state = baseState({ report: reportStub(), report_versions: [], active_report_version_id: null })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.queryByTestId('report-version-selector')).not.toBeInTheDocument()
     // Rest of the panel still renders safely without version metadata.
@@ -417,7 +417,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
     expect(select.options).toHaveLength(3)
@@ -427,7 +427,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v2',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     const select = screen.getByTestId('report-version-selector') as HTMLSelectElement
     expect(select.value).toBe('v2')
@@ -437,7 +437,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByText('Version 1 — Analytical — Initial')).toBeInTheDocument()
     expect(screen.getByText('Version 2 — Expert — Regenerate')).toBeInTheDocument()
@@ -453,7 +453,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     render(
       <ReportModePanel
         state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
-        onActivateReportVersion={onActivateReportVersion} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }}
+        onActivateReportVersion={onActivateReportVersion} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
       />,
     )
 
@@ -471,7 +471,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     render(
       <ReportModePanel
         state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport}
-        onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }}
+        onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
       />,
     )
 
@@ -485,7 +485,7 @@ describe('ReportModePanel -- report-quality Phase R3: report version selector', 
     const state = baseState({
       report: reportStub(), report_versions: [V1, V2, V3], active_report_version_id: 'v3',
     })
-    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-version-selector')).toBeDisabled()
   })
@@ -503,7 +503,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   }
 
   it('renders the "Refine once" toggle before a report exists', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
     expect(screen.getByText('Refine once')).toBeInTheDocument()
@@ -511,13 +511,13 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('renders the "Refine once" toggle once a report exists', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
   })
 
   it('the toggle defaults to off (unchecked)', () => {
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('refine-once-toggle')).not.toBeChecked()
   })
@@ -525,7 +525,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   it('clicking Generate with the toggle off calls onGenerateReport with "off"', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('generate-report'))
 
@@ -535,7 +535,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
   it('checking the toggle then clicking Generate calls onGenerateReport(template, "single")', async () => {
     const user = userEvent.setup()
     const onGenerateReport = vi.fn()
-    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={baseState()} disabled={false} onGenerateReport={onGenerateReport} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('refine-once-toggle'))
     await user.click(screen.getByTestId('generate-report'))
@@ -547,7 +547,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
     const user = userEvent.setup()
     const onRegenerateReport = vi.fn()
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={onRegenerateReport} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('refine-once-toggle'))
     await user.click(screen.getByTestId('regenerate-report'))
@@ -557,7 +557,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
 
   it('the toggle is disabled while a report action is in progress', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={true} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('refine-once-toggle')).toBeDisabled()
   })
@@ -571,7 +571,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Refined once · score 40')
   })
@@ -585,14 +585,14 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('report-refinement-badge')).toHaveTextContent('Evaluated · score 88')
   })
 
   it('does not render a refinement badge when the report has no refinement metadata', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.queryByTestId('report-refinement-badge')).not.toBeInTheDocument()
   })
@@ -606,7 +606,7 @@ describe('ReportModePanel -- report-quality Phase R4.1: refinement toggle', () =
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.queryByText(/revision instructions/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/issues/i)).not.toBeInTheDocument()
@@ -626,7 +626,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
 
   it('renders no disclosure toggle when the report has no refinement metadata', () => {
     const state = baseState({ report: reportStub() })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
   })
@@ -640,7 +640,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.queryByTestId('evaluation-details-toggle')).not.toBeInTheDocument()
   })
@@ -655,7 +655,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     expect(screen.getByTestId('evaluation-details-toggle')).toHaveTextContent('Evaluation details')
     expect(screen.queryByTestId('evaluation-details-panel')).not.toBeInTheDocument()
@@ -671,7 +671,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -691,7 +691,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -712,7 +712,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -732,7 +732,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -752,7 +752,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -778,7 +778,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -808,7 +808,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -829,7 +829,7 @@ describe('ReportModePanel -- report-quality Phase R4.2: evaluation details discl
         },
       }),
     })
-    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} />)
+    render(<ReportModePanel state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()} exportUrls={{ markdown: 'http://test.local/curation/s1/report/export?format=markdown', pdf: 'http://test.local/curation/s1/report/export?format=pdf', docx: 'http://test.local/curation/s1/report/export?format=docx' }} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null} reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false} onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()} />)
 
     await user.click(screen.getByTestId('evaluation-details-toggle'))
 
@@ -859,6 +859,9 @@ describe('ReportModePanel -- report-quality Phase R5C.3: Export menu', () => {
       <ReportModePanel
         state={state} disabled={disabled} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()}
         onActivateReportVersion={vi.fn()} exportUrls={EXPORT_URLS}
+        reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+        reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+        onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
       />,
     )
   }
@@ -963,5 +966,288 @@ describe('ReportModePanel -- report-quality Phase R5C.3: Export menu', () => {
     await user.click(trigger)
 
     expect(screen.queryByTestId('export-menu')).not.toBeInTheDocument()
+  })
+})
+
+describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress streaming UI', () => {
+  const EXPORT_URLS = {
+    markdown: 'http://test.local/curation/s1/report/export?format=markdown',
+    pdf: 'http://test.local/curation/s1/report/export?format=pdf',
+    docx: 'http://test.local/curation/s1/report/export?format=docx',
+  }
+
+  function reportStub() {
+    return {
+      findings: { content: 'F', cited_papers: [], cited_web_articles: [] },
+      limitations: { content: 'L', cited_papers: [], cited_web_articles: [] },
+      future_scope: { content: 'S', cited_papers: [], cited_web_articles: [] },
+      skipped_paper_ids: [],
+      report_template: 'analytical' as const,
+      refinement: { enabled: true, rounds: 1, initial_score: 40, final_score: null, issues: ['too shallow'], revision_instructions: '', section_scores: null },
+    }
+  }
+
+  interface StreamingOverrides {
+    state?: CurationStateResponse
+    disabled?: boolean
+    reportStreamActive?: boolean
+    reportStreamOperation?: 'generate' | 'regenerate' | null
+    reportStreamPhase?: string | null
+    reportStreamStopping?: boolean
+    reportStreamError?: string | null
+    reportStreamSyncFailed?: boolean
+  }
+
+  function renderStreaming(overrides: StreamingOverrides = {}) {
+    const onGenerateReport = vi.fn()
+    const onRegenerateReport = vi.fn()
+    const onCancelReportStream = vi.fn()
+    const onRetryReportSync = vi.fn()
+    render(
+      <ReportModePanel
+        state={overrides.state ?? baseState()}
+        disabled={overrides.disabled ?? false}
+        onGenerateReport={onGenerateReport}
+        onRegenerateReport={onRegenerateReport}
+        onActivateReportVersion={vi.fn()}
+        exportUrls={EXPORT_URLS}
+        reportStreamActive={overrides.reportStreamActive ?? false}
+        reportStreamOperation={overrides.reportStreamOperation ?? null}
+        reportStreamPhase={(overrides.reportStreamPhase as never) ?? null}
+        reportStreamStopping={overrides.reportStreamStopping ?? false}
+        reportStreamError={overrides.reportStreamError ?? null}
+        reportStreamSyncFailed={overrides.reportStreamSyncFailed ?? false}
+        onCancelReportStream={onCancelReportStream}
+        onRetryReportSync={onRetryReportSync}
+      />,
+    )
+    return { onGenerateReport, onRegenerateReport, onCancelReportStream, onRetryReportSync }
+  }
+
+  describe('empty (Generate) view', () => {
+    it('shows the progress area with a phase label while generating, and hides the "no report yet" copy', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
+
+      expect(screen.getByTestId('report-stream-progress')).toBeInTheDocument()
+      expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent('Generating report')
+      expect(screen.queryByText('No report yet for this review.')).not.toBeInTheDocument()
+    })
+
+    it('replaces Generate with Stop while active, in the same stable slot', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
+
+      expect(screen.queryByTestId('generate-report')).not.toBeInTheDocument()
+      expect(screen.getByTestId('report-stream-stop')).toBeInTheDocument()
+    })
+
+    it('shows Generate (not Stop) when no stream is active', () => {
+      renderStreaming()
+
+      expect(screen.getByTestId('generate-report')).toBeInTheDocument()
+      expect(screen.queryByTestId('report-stream-stop')).not.toBeInTheDocument()
+    })
+
+    it('keeps template and Refine Once controls visible while generating', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating', disabled: true })
+
+      expect(screen.getByTestId('report-template-selector')).toBeInTheDocument()
+      expect(screen.getByTestId('refine-once-toggle')).toBeInTheDocument()
+    })
+
+    it('renders no partial report content (no findings/sections/references) while generating', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'saving' })
+
+      expect(screen.queryByTestId('report-references')).not.toBeInTheDocument()
+      expect(screen.queryByText('F')).not.toBeInTheDocument()
+    })
+
+    it('shows no percentage/numeric progress indicator anywhere in the progress area', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
+
+      const progress = screen.getByTestId('report-stream-progress')
+      expect(progress.textContent).not.toMatch(/%/)
+    })
+
+    it('clicking Stop calls onCancelReportStream', async () => {
+      const user = userEvent.setup()
+      const { onCancelReportStream } = renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
+
+      await user.click(screen.getByTestId('report-stream-stop'))
+
+      expect(onCancelReportStream).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows "Stopping" while cancellation is settling, and disables the Stop button against a double click', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating', reportStreamStopping: true })
+
+      expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent('Stopping')
+      expect(screen.getByTestId('report-stream-stop')).toBeDisabled()
+    })
+
+    it('shows a safe error message when a handled failure occurs', () => {
+      renderStreaming({ reportStreamError: 'The model provider returned an error.' })
+
+      expect(screen.getByTestId('report-stream-error')).toHaveTextContent('The model provider returned an error.')
+    })
+
+    it('shows a sync-retry notice, and clicking Retry calls onRetryReportSync', async () => {
+      const user = userEvent.setup()
+      const { onRetryReportSync } = renderStreaming({ reportStreamSyncFailed: true })
+
+      expect(screen.getByTestId('report-stream-sync-failed')).toBeInTheDocument()
+      await user.click(screen.getByTestId('report-stream-sync-retry'))
+
+      expect(onRetryReportSync).toHaveBeenCalledTimes(1)
+    })
+
+    it('re-enables Generate once the stream is no longer active', () => {
+      const { rerender } = render(
+        <ReportModePanel
+          state={baseState()} disabled onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="generate" reportStreamPhase="generating"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      expect(screen.getByTestId('report-stream-stop')).toBeInTheDocument()
+
+      rerender(
+        <ReportModePanel
+          state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(screen.getByTestId('generate-report')).toBeEnabled()
+      expect(screen.queryByTestId('report-stream-stop')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('regeneration view: existing report stays visible', () => {
+    it('keeps the existing report fully visible while regenerating, not dimmed or cleared', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'evaluating' })
+
+      expect(screen.getByText('F')).toBeInTheDocument()
+      expect(screen.getByText('L')).toBeInTheDocument()
+      expect(screen.getByText('S')).toBeInTheDocument()
+    })
+
+    it('shows a compact phase label in the header while regenerating', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'revising' })
+
+      expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent('Revising report')
+    })
+
+    it('replaces Regenerate with Stop in the same stable action slot', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'generating' })
+
+      expect(screen.queryByTestId('regenerate-report')).not.toBeInTheDocument()
+      expect(screen.getByTestId('report-stream-stop')).toBeInTheDocument()
+    })
+
+    it('shows Regenerate (not Stop) when no stream is active', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state })
+
+      expect(screen.getByTestId('regenerate-report')).toBeInTheDocument()
+      expect(screen.queryByTestId('report-stream-stop')).not.toBeInTheDocument()
+    })
+
+    it('disables template/refinement/version/export controls while regenerating (disabled prop composition)', () => {
+      const state = baseState({
+        report: reportStub(),
+        report_versions: [{ version_id: 'v1', version_number: 1, created_at: null, report_template: 'analytical', generation_reason: 'initial', is_active: true }],
+        active_report_version_id: 'v1',
+      })
+      renderStreaming({ state, disabled: true, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'generating' })
+
+      expect(screen.getByTestId('report-version-selector')).toBeDisabled()
+      expect(screen.getByTestId('report-template-option-analytical')).toBeDisabled()
+      expect(screen.getByTestId('refine-once-toggle')).toBeDisabled()
+      expect(screen.getByTestId('export-menu-trigger')).toBeDisabled()
+    })
+
+    it('re-enables controls once regeneration is no longer active', () => {
+      const state = baseState({ report: reportStub() })
+      const { rerender } = render(
+        <ReportModePanel
+          state={state} disabled onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="regenerate" reportStreamPhase="saving"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      expect(screen.getByTestId('export-menu-trigger')).toBeDisabled()
+
+      rerender(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(screen.getByTestId('export-menu-trigger')).toBeEnabled()
+      expect(screen.getByTestId('regenerate-report')).toBeInTheDocument()
+    })
+
+    it('preserves existing badges, evaluation details, and references while regenerating', () => {
+      const state = baseState({
+        report: {
+          ...reportStub(),
+          references: [{ number: 1, kind: 'paper', title: 'Paper One', formatted: 'A. Uthor (2024). Paper One.', paper_id: 'p1', link_url: null }],
+        },
+      })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'evaluating' })
+
+      expect(screen.getByTestId('report-template-badge')).toBeInTheDocument()
+      expect(screen.getByTestId('report-refinement-badge')).toBeInTheDocument()
+      expect(screen.getByTestId('evaluation-details-toggle')).toBeInTheDocument()
+      expect(screen.getByTestId('report-references')).toBeInTheDocument()
+    })
+
+    it('shows a safe error message inline in the header area on a handled failure', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamError: 'Failed to save the report.' })
+
+      expect(screen.getByTestId('report-stream-error')).toHaveTextContent('Failed to save the report.')
+    })
+
+    it('shows a sync-retry notice without disturbing the visible report', () => {
+      const state = baseState({ report: reportStub() })
+      const { onRetryReportSync } = renderStreaming({ state, reportStreamSyncFailed: true })
+
+      expect(screen.getByTestId('report-stream-sync-failed')).toBeInTheDocument()
+      expect(screen.getByText('F')).toBeInTheDocument()
+      expect(onRetryReportSync).not.toHaveBeenCalled()
+    })
+
+    it('all four phase labels map to their own concise text', () => {
+      const state = baseState({ report: reportStub() })
+      const cases: Array<[string, string]> = [
+        ['generating', 'Generating report'],
+        ['evaluating', 'Evaluating draft'],
+        ['revising', 'Revising report'],
+        ['saving', 'Saving report'],
+      ]
+      for (const [phase, label] of cases) {
+        const { unmount } = render(
+          <ReportModePanel
+            state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+            exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="regenerate" reportStreamPhase={phase as never}
+            reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+            onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+          />,
+        )
+        expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent(label)
+        unmount()
+      }
+    })
   })
 })

@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCurationSession, getSessionIdFromUrl } from './useCurationSession'
 import { curationApi } from '../lib/api/client'
 import { streamCurationChat, ChatStreamTransportError } from '../lib/api/chatStream'
+import { streamGenerateReport, streamRegenerateReport, ReportStreamTransportError } from '../lib/api/reportStream'
 import { ApiError } from '../types'
-import type { ChatStreamServerEvent, CurationChatResponse, CurationStateResponse, CurationTurnResponse } from '../types'
+import type {
+  ChatStreamServerEvent, CurationChatResponse, CurationStateResponse, CurationTurnResponse, ReportOut, ReportStreamServerEvent,
+} from '../types'
 
 vi.mock('../lib/api/client', () => ({
   curationApi: {
@@ -28,6 +31,15 @@ vi.mock('../lib/api/chatStream', async () => {
   return {
     streamCurationChat: vi.fn(),
     ChatStreamTransportError: actual.ChatStreamTransportError,
+  }
+})
+
+vi.mock('../lib/api/reportStream', async () => {
+  const actual = await vi.importActual<typeof import('../lib/api/reportStream')>('../lib/api/reportStream')
+  return {
+    streamGenerateReport: vi.fn(),
+    streamRegenerateReport: vi.fn(),
+    ReportStreamTransportError: actual.ReportStreamTransportError,
   }
 })
 
@@ -82,6 +94,58 @@ function controllableStream() {
     yield { type: 'phase', data: { phase: 'generating' } }
   }
   return { gen, resume: () => resolveGate?.() }
+}
+
+// Report-stream equivalents of the chat-stream helpers above -- same
+// exact semantics, typed for ReportStreamServerEvent instead.
+async function* fakeReportStream(events: ReportStreamServerEvent[], signal: AbortSignal): AsyncGenerator<ReportStreamServerEvent> {
+  for (const event of events) {
+    if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    await Promise.resolve()
+    yield event
+  }
+}
+
+// eslint-disable-next-line require-yield
+async function* throwingReportStream(err: unknown): AsyncGenerator<ReportStreamServerEvent> {
+  throw err
+}
+
+async function* reportStreamThatFailsMidway(
+  events: ReportStreamServerEvent[],
+  err: unknown,
+): AsyncGenerator<ReportStreamServerEvent> {
+  for (const event of events) {
+    yield event
+  }
+  throw err
+}
+
+function controllableReportStream() {
+  let resolveGate: (() => void) | null = null
+  const gate = new Promise<void>((resolve) => { resolveGate = resolve })
+  async function* gen(signal: AbortSignal): AsyncGenerator<ReportStreamServerEvent> {
+    yield { type: 'started', data: {} }
+    await Promise.race([
+      gate,
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) { reject(new DOMException('The operation was aborted.', 'AbortError')); return }
+        signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
+      }),
+    ])
+    yield { type: 'phase', data: { phase: 'generating' } }
+  }
+  return { gen, resume: () => resolveGate?.() }
+}
+
+function reportOut(overrides: Partial<ReportOut> = {}): ReportOut {
+  return {
+    findings: { content: 'f', cited_papers: [], cited_web_articles: [] },
+    limitations: { content: 'l', cited_papers: [], cited_web_articles: [] },
+    future_scope: { content: 'fs', cited_papers: [], cited_web_articles: [] },
+    skipped_paper_ids: [],
+    ...overrides,
+  }
 }
 
 function fullState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
@@ -906,5 +970,424 @@ describe('useCurationSession -- Usage Protection M4.2B: chat-streaming lifecycle
         { type: 'completed', data: { answer: 'a', answerable: true, cited_papers: [], cited_web_articles: [] } },
       ])
     })
+  })
+})
+
+describe('useCurationSession -- Usage Protection M4.3B: report-streaming lifecycle', () => {
+  async function mountAtS1() {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+    const rendered = renderHook(() => useCurationSession())
+    await waitFor(() => expect(rendered.result.current.state).not.toBeNull())
+    return rendered
+  }
+
+  describe('four valid success sequences', () => {
+    it('cache hit: started -> completed -> done, no phase events at all', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [{ type: 'started', data: {} }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamError).toBeNull()
+      expect(result.current.reportStreamActive).toBe(false)
+      expect(curationApi.getState).toHaveBeenCalledTimes(2)
+    })
+
+    it('refinement off: started -> generating -> saving -> completed -> done', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamError).toBeNull()
+      expect(result.current.reportStreamActive).toBe(false)
+    })
+
+    it('evaluation only: adds an evaluating phase before saving', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'evaluating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      expect(result.current.reportStreamError).toBeNull()
+    })
+
+    it('evaluation plus revision: adds a revising phase before saving', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'evaluating' } },
+            { type: 'phase', data: { phase: 'revising' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      expect(result.current.reportStreamError).toBeNull()
+    })
+  })
+
+  it('phase transitions are observable in real time before completion', async () => {
+    const { result } = await mountAtS1()
+    let releaseDone: (() => void) | null = null
+    const doneGate = new Promise<void>((resolve) => { releaseDone = resolve })
+    vi.mocked(streamGenerateReport).mockImplementation(() =>
+      (async function* () {
+        yield { type: 'started', data: {} } as ReportStreamServerEvent
+        yield { type: 'phase', data: { phase: 'generating' } } as ReportStreamServerEvent
+        await doneGate
+        yield { type: 'phase', data: { phase: 'saving' } } as ReportStreamServerEvent
+        yield { type: 'completed', data: reportOut() } as ReportStreamServerEvent
+        yield { type: 'done', data: {} } as ReportStreamServerEvent
+      })(),
+    )
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.generateReportStreaming()
+    })
+
+    await waitFor(() => expect(result.current.reportStreamPhase).toBe('generating'))
+    expect(result.current.reportStreamActive).toBe(true)
+    expect(result.current.reportStreamOperation).toBe('generate')
+
+    releaseDone!()
+    await act(async () => {
+      await sendPromise
+    })
+  })
+
+  it('completed -> done triggers a canonical reload via the existing loadState path', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+      fakeReportStream(
+        [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+        opts.signal,
+      ),
+    )
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    // Initial mount load (1) + the post-completion canonical reload (2).
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+    expect(result.current.reportStreamActive).toBe(false)
+  })
+
+  it('a handled SSE error -> done sets reportStreamError, clears the preview, and never reloads', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+      fakeReportStream(
+        [
+          { type: 'started', data: {} },
+          { type: 'phase', data: { phase: 'generating' } },
+          { type: 'error', data: { reason_code: 'provider_error', message: 'The model provider returned an error.' } },
+          { type: 'done', data: {} },
+        ],
+        opts.signal,
+      ),
+    )
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    expect(result.current.reportStreamError).toBe('The model provider returned an error.')
+    expect(result.current.reportStreamActive).toBe(false)
+    expect(result.current.error).toBeNull() // the shared banner is untouched -- dedicated field only
+    expect(curationApi.getState).toHaveBeenCalledTimes(1)
+  })
+
+  it('a transport/protocol failure stops locally, shows a safe retryable message, and reloads canonical state', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation(() =>
+      reportStreamThatFailsMidway(
+        [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }],
+        new ReportStreamTransportError('Received a malformed message from the server.'),
+      ),
+    )
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    expect(result.current.reportStreamActive).toBe(false)
+    expect(result.current.reportStreamError).toMatch(/lost the connection/i)
+    expect(result.current.reportStreamError).not.toMatch(/malformed message/i)
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('a preflight ApiError (e.g. 429) uses the existing safe error mapping and never reloads', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation(() =>
+      throwingReportStream(
+        new ApiError(429, {
+          detail: { reason_code: 'session_hourly_limit_reached', message: 'This session has reached its usage limit.' },
+        }),
+      ),
+    )
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    expect(result.current.reportStreamError).toBe('This session has reached its usage limit.')
+    expect(curationApi.getState).toHaveBeenCalledTimes(1)
+  })
+
+  it('reload failure after a successful completed/done sets reportStreamSyncFailed', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+      fakeReportStream(
+        [{ type: 'started', data: {} }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+        opts.signal,
+      ),
+    )
+    vi.mocked(curationApi.getState).mockRejectedValueOnce(new Error('network down'))
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    expect(result.current.reportStreamSyncFailed).toBe(true)
+    expect(result.current.reportStreamActive).toBe(false)
+  })
+
+  it('cancellation: aborts the stream, does not set a visible error, and reloads canonical state', async () => {
+    const { result } = await mountAtS1()
+    const { gen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.generateReportStreaming()
+    })
+    await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+    act(() => {
+      result.current.cancelReportStream()
+    })
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(result.current.reportStreamError).toBeNull()
+    expect(result.current.reportStreamActive).toBe(false)
+    expect(curationApi.getState).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancellation shows a stable "stopping" state until the post-cancellation reload settles', async () => {
+    const { result } = await mountAtS1()
+    const { gen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+    // mountAtS1() already consumed the mount's own initial getState call
+    // against its own (resolved) mock -- reassigning the implementation
+    // here only affects LATER calls, i.e. the one loadState makes as
+    // part of post-cancellation cleanup below.
+    let releaseGetState: (() => void) | null = null
+    vi.mocked(curationApi.getState).mockImplementation(
+      () => new Promise((resolve) => { releaseGetState = () => resolve(fullState({ session_id: 's1', stage: 'synthesize' })) }),
+    )
+
+    let sendPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      sendPromise = result.current.generateReportStreaming()
+    })
+    await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+    act(() => {
+      result.current.cancelReportStream()
+    })
+
+    await waitFor(() => expect(result.current.reportStreamStopping).toBe(true))
+    // Still "active" (not yet cleared) while the reload is in flight --
+    // cancellation is not presented as instantaneous.
+    expect(result.current.reportStreamActive).toBe(true)
+
+    // The post-cancellation reload is now in flight -- wait for it to
+    // actually reach getState() (a real async gap past cancelReport
+    // Stream's own synchronous call) before releasing it.
+    await waitFor(() => expect(releaseGetState).not.toBeNull())
+    releaseGetState!()
+
+    await act(async () => {
+      await sendPromise
+    })
+
+    expect(result.current.reportStreamStopping).toBe(false)
+    expect(result.current.reportStreamActive).toBe(false)
+  })
+
+  it('unmounting the hook aborts an in-flight report stream', async () => {
+    const { gen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+    const { result, unmount } = await mountAtS1()
+
+    act(() => {
+      void result.current.generateReportStreaming()
+    })
+    await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort')
+    unmount()
+
+    expect(abortSpy).toHaveBeenCalled()
+    abortSpy.mockRestore()
+  })
+
+  it('switching to a different session aborts the in-flight report stream for the old one', async () => {
+    const { gen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+    const { result } = await mountAtS1()
+
+    act(() => {
+      void result.current.generateReportStreaming()
+    })
+    await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's2', topic: 'other' }))
+    await act(async () => {
+      await result.current.openReview('s2')
+    })
+
+    expect(abortSpy).toHaveBeenCalled()
+    abortSpy.mockRestore()
+  })
+
+  it('rejects a second concurrent report stream while one is already active', async () => {
+    const { result } = await mountAtS1()
+    const { gen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+    let firstPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      firstPromise = result.current.generateReportStreaming()
+    })
+    await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+    await act(async () => {
+      await result.current.regenerateReportStreaming()
+    })
+
+    expect(streamGenerateReport).toHaveBeenCalledTimes(1)
+    expect(streamRegenerateReport).not.toHaveBeenCalled()
+
+    act(() => {
+      result.current.cancelReportStream()
+    })
+    await act(async () => {
+      await firstPromise
+    })
+  })
+
+  it('a report stream refuses to start while a chat stream is active (cross-domain exclusivity)', async () => {
+    const { result } = await mountAtS1()
+    const { gen: reportGen } = controllableReportStream()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => reportGen(opts.signal))
+    let releaseChat: (() => void) | null = null
+    const chatGate = new Promise<void>((resolve) => { releaseChat = resolve })
+    vi.mocked(streamCurationChat).mockImplementation(() =>
+      (async function* () {
+        yield { type: 'started', data: {} } as ChatStreamServerEvent
+        await chatGate
+        yield { type: 'done', data: {} } as ChatStreamServerEvent
+      })(),
+    )
+
+    let chatPromise: Promise<void> = Promise.resolve()
+    act(() => {
+      chatPromise = result.current.sendChatMessageStreaming('hi')
+    })
+    await waitFor(() => expect(result.current.chatStreamActive).toBe(true))
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    expect(streamGenerateReport).not.toHaveBeenCalled()
+
+    releaseChat!()
+    await act(async () => {
+      await chatPromise
+    })
+  })
+
+  it('never appends a report version client-side -- state.report_versions only ever comes from the canonical reload', async () => {
+    const { result } = await mountAtS1()
+    vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+      fakeReportStream(
+        [{ type: 'started', data: {} }, { type: 'completed', data: reportOut({ version_id: 'v1', version_number: 1 }) }, { type: 'done', data: {} }],
+        opts.signal,
+      ),
+    )
+    const reloadedState = fullState({
+      session_id: 's1', stage: 'synthesize',
+      report: reportOut({ version_id: 'v1', version_number: 1 }),
+      report_versions: [{ version_id: 'v1', version_number: 1, created_at: null, report_template: 'analytical', generation_reason: 'initial', is_active: true }],
+      active_report_version_id: 'v1',
+    })
+    // mountAtS1() already consumed the mount's own initial getState call
+    // against its own mock -- this queues exactly one further response,
+    // for the single reload generateReportStreaming's own success path
+    // triggers.
+    vi.mocked(curationApi.getState).mockResolvedValueOnce(reloadedState)
+
+    await act(async () => {
+      await result.current.generateReportStreaming()
+    })
+
+    // The ONLY source of report_versions is the mocked getState response
+    // above -- nothing in the hook itself ever pushes/appends to it.
+    expect(result.current.state?.report_versions).toEqual(reloadedState.report_versions)
+    expect(result.current.state?.report_versions).toHaveLength(1)
   })
 })

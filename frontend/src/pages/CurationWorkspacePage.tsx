@@ -45,8 +45,10 @@ export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning,
-    openReview, startReview, submitPicks, generateReport, regenerateReport, activateReportVersion,
+    openReview, startReview, submitPicks, activateReportVersion,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
+    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
+    reportStreamSyncFailed, generateReportStreaming, regenerateReportStreaming, cancelReportStream,
     deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   } = useCurationSession()
 
@@ -179,14 +181,29 @@ export default function CurationWorkspacePage() {
     setReviewsRefreshToken((t) => t + 1)
   }
 
+  // Usage Protection M4.3B: streaming is now the normal submission path
+  // for both Generate and Regenerate (ReportModePanel's own onGenerate
+  // Report/onRegenerateReport props, unchanged in shape) -- generate
+  // Report/regenerateReport (non-streaming) remain fully callable on the
+  // hook for backward compatibility, just no longer wired to this UI's
+  // own normal submission path. Neither handler awaits all the way to a
+  // canonical reload the way the old non-streaming versions did in one
+  // shot -- generateReportStreaming/regenerateReportStreaming resolve
+  // once the whole streamed turn (including its own canonical reload)
+  // has settled, so this refresh token bump still lands at the right
+  // time either way.
   async function handleGenerateReport(reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) {
-    await generateReport(reportTemplate, refinementMode)
+    await generateReportStreaming(reportTemplate, refinementMode)
     setReviewsRefreshToken((t) => t + 1)
   }
 
   async function handleRegenerateReport(reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) {
-    await regenerateReport(reportTemplate, refinementMode)
+    await regenerateReportStreaming(reportTemplate, refinementMode)
     setReviewsRefreshToken((t) => t + 1)
+  }
+
+  function handleRetryReportSync() {
+    void refresh()
   }
 
   // report-quality Phase R3: a pure pointer switch -- doesn't change
@@ -361,7 +378,7 @@ export default function CurationWorkspacePage() {
                   {workspaceMode === 'chat' && (
                     <ChatModePanel
                       state={state}
-                      disabled={loading || chatStreamActive}
+                      disabled={loading || chatStreamActive || reportStreamActive}
                       onSendMessage={handleSendMessage}
                       lastSearchMeta={lastChatSearchMeta}
                       onDeleteExchanges={handleDeleteExchanges}
@@ -381,7 +398,7 @@ export default function CurationWorkspacePage() {
                   {workspaceMode === 'report' && (
                     <ReportModePanel
                       state={state}
-                      disabled={loading}
+                      disabled={loading || reportStreamActive || chatStreamActive}
                       onGenerateReport={handleGenerateReport}
                       onRegenerateReport={handleRegenerateReport}
                       onActivateReportVersion={handleActivateReportVersion}
@@ -390,6 +407,14 @@ export default function CurationWorkspacePage() {
                         pdf: curationApi.getReportExportUrl(state.session_id, 'pdf'),
                         docx: curationApi.getReportExportUrl(state.session_id, 'docx'),
                       }}
+                      reportStreamActive={reportStreamActive}
+                      reportStreamOperation={reportStreamOperation}
+                      reportStreamPhase={reportStreamPhase}
+                      reportStreamStopping={reportStreamStopping}
+                      reportStreamError={reportStreamError}
+                      reportStreamSyncFailed={reportStreamSyncFailed}
+                      onCancelReportStream={cancelReportStream}
+                      onRetryReportSync={handleRetryReportSync}
                     />
                   )}
                 </>
