@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import type { CurationStateResponse } from '../../types'
 import type { TurnEvent } from '../../hooks/useCurationSession'
 import { TurnDivider } from '../TurnFeed/TurnBlock'
@@ -24,6 +25,18 @@ interface ReviewModePanelProps {
   // requestRefill (Phase 9d): the explicit "search for more now" action --
   // forces a fresh search even when the pool isn't truly exhausted yet.
   onSubmitPicks: (refinement: string | undefined, stop: boolean, requestRefill?: boolean) => Promise<void>
+  // UXH.2: which of this panel's three submitPicks shapes (plain
+  // Continue, requestRefill, stop) is currently in flight -- each
+  // optional and defaulting to false so every pre-existing render call
+  // in this component's own tests keeps working unchanged. At most one
+  // is ever true at a time (useCurationSession's curationAction is a
+  // single value), but they're passed as three separate booleans, not
+  // one shared enum prop, matching this codebase's existing convention
+  // for per-feature streaming flags (e.g. ChatModePanel's chatStreamActive/
+  // chatStreamPhase as separate props rather than a combined object).
+  continuingReview?: boolean
+  searchingMore?: boolean
+  finishingReview?: boolean
 }
 
 function stopReasonMessage(state: CurationStateResponse): string {
@@ -45,6 +58,9 @@ export function ReviewModePanel({
   onAdd,
   onRemoveStaged,
   onSubmitPicks,
+  continuingReview = false,
+  searchingMore = false,
+  finishingReview = false,
 }: ReviewModePanelProps) {
   const [refinement, setRefinement] = useState('')
   const pendingBatch = state.pending_batch
@@ -187,14 +203,28 @@ export function ReviewModePanel({
           className="rounded-md border border-border bg-panel-alt px-3 py-2 text-sm text-text outline-none focus:border-accent disabled:opacity-60"
         />
         <div className="flex items-center justify-between gap-2">
+          {/* UXH.2: each button's OWN busy label replaces its idle text
+              entirely (never a separate status alongside it) -- wrapped in
+              role="status"/aria-live="polite" only while busy, so an AT
+              hears "Finding next papers…" etc. the moment it appears, but
+              ordinary idle-state changes (e.g. totalSelected ticking up as
+              the user stages picks) are never announced as if they were
+              progress. */}
           <button
             type="button"
             data-testid="review-stop"
             onClick={handleStop}
             disabled={disabled || totalSelected === 0}
-            className="text-xs text-text-secondary underline decoration-dotted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex items-center gap-1.5 text-xs text-text-secondary underline decoration-dotted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
           >
-            I&apos;m done — finish with {totalSelected} selected
+            {finishingReview ? (
+              <span role="status" aria-live="polite" className="flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                Finishing review…
+              </span>
+            ) : (
+              `I'm done — finish with ${totalSelected} selected`
+            )}
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -203,22 +233,36 @@ export function ReviewModePanel({
               onClick={handleRequestRefill}
               disabled={disabled}
               title="Search for more candidates now, even though the current pool isn't empty"
-              className="rounded-md border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Search for more candidates
+              {searchingMore ? (
+                <span role="status" aria-live="polite" className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                  Searching for more papers…
+                </span>
+              ) : (
+                'Search for more candidates'
+              )}
             </button>
             <button
               type="button"
               data-testid="review-continue"
               onClick={handleContinue}
               disabled={disabled}
-              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-40"
             >
-              {stagedPickIds.length > 0
-                ? `Continue with ${stagedPickIds.length} added`
-                : isEmptyBatch
-                  ? 'Try again'
-                  : 'Get next batch'}
+              {continuingReview ? (
+                <span role="status" aria-live="polite" className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                  Finding next papers…
+                </span>
+              ) : stagedPickIds.length > 0 ? (
+                `Continue with ${stagedPickIds.length} added`
+              ) : isEmptyBatch ? (
+                'Try again'
+              ) : (
+                'Get next batch'
+              )}
             </button>
           </div>
         </div>

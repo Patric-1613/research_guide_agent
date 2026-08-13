@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CircleStop } from 'lucide-react'
+import { CircleStop, Loader2 } from 'lucide-react'
 import type {
   ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportStreamPhase, ReportTemplate,
   ReportVersionSummary, CurationStateResponse,
@@ -223,12 +223,24 @@ export function ReportModePanel({
           <h2 className="text-sm font-semibold text-text">Literature review report</h2>
           <TemplateBadge template={state.report.report_template ?? 'analytical'} />
           {state.report.refinement && <RefinementBadge refinement={state.report.refinement} />}
-          {/* Usage Protection M4.3B: compact progress status in the
-              header -- the existing report below stays fully visible and
-              unchanged throughout, never dimmed/cleared as though it
-              were invalid. */}
+          {/* Usage Protection M4.3B / UXH.2: compact but prominent progress
+              status in the header -- the existing report below stays
+              fully visible and unchanged throughout, never dimmed/cleared
+              as though it were invalid. Previously a small italic label,
+              easy to miss against a full report; now a filled pill with
+              its own spinner, matching the visual weight of the
+              template/refinement badges beside it rather than reading as
+              secondary text. role="status"/aria-live="polite" so an AT
+              hears each phase change; Stop stays in its own existing slot
+              (ReportStreamStopButton below), never duplicated here. */}
           {regenerating && (
-            <span data-testid="report-stream-phase-label" className="text-xs italic text-text-secondary">
+            <span
+              role="status"
+              aria-live="polite"
+              data-testid="report-stream-phase-label"
+              className="flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent"
+            >
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
               {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
             </span>
           )}

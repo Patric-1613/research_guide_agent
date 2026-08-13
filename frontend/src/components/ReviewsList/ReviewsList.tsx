@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { curationApi } from '../../lib/api/client'
 import type { CurationReviewSummary } from '../../types'
 import { ReviewCard, statusLabel } from './ReviewCard'
@@ -20,6 +21,14 @@ interface ReviewsListProps {
   workspaceMode: WorkspaceMode
   workspaceUnlocked: boolean
   onWorkspaceModeChange: (mode: WorkspaceMode) => void
+  // UXH.2: true for the whole window between the New Review form's
+  // submit and the new session either landing (via the existing
+  // successful load path elsewhere) or the action failing -- optional,
+  // defaulting to false, so every pre-existing render call in this
+  // component's own tests keeps working unchanged. Drives the one
+  // "Starting new review…" status location and disables the trigger
+  // that would otherwise let a second start be submitted mid-request.
+  startingReview?: boolean
 }
 
 // Fixed section order, most-active-first -- matches the natural
@@ -39,6 +48,7 @@ export function ReviewsList({
   workspaceMode,
   workspaceUnlocked,
   onWorkspaceModeChange,
+  startingReview = false,
 }: ReviewsListProps) {
   const [reviews, setReviews] = useState<CurationReviewSummary[]>([])
   const [showForm, setShowForm] = useState(false)
@@ -67,7 +77,26 @@ export function ReviewsList({
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col gap-3 border-r border-border bg-panel p-3">
-      {showForm ? (
+      {/* UXH.2: the one status location for "starting a new review" --
+          replaces the trigger/form entirely (not just disabling it) while
+          the request is in flight, so there's no interactive affordance
+          left that could submit a second start. The previously open
+          review's own content (rendered by the parent page, untouched
+          here) stays visible underneath but non-interactive via the
+          existing `loading`-driven disabled props already threaded
+          through Review/Chat/Report -- see useCurationSession's own
+          curationAction docstring for why nothing new was needed there. */}
+      {startingReview ? (
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="starting-review-status"
+          className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-2 text-sm font-medium text-text-secondary"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Starting new review…
+        </p>
+      ) : showForm ? (
         <NewReviewForm
           onSubmit={(topic, targetCount) => {
             setShowForm(false)
@@ -78,6 +107,7 @@ export function ReviewsList({
       ) : (
         <button
           type="button"
+          data-testid="new-review-trigger"
           onClick={() => setShowForm(true)}
           className="w-full rounded-lg border border-dashed border-border py-2 text-sm font-medium text-text-secondary hover:border-accent hover:text-accent"
         >

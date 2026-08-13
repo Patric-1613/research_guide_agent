@@ -1570,3 +1570,183 @@ describe('useCurationSession -- Usage Protection M4.3B: report-streaming lifecyc
     expect(result.current.state?.report_versions).toHaveLength(1)
   })
 })
+
+describe('useCurationSession -- UXH.2: curationAction', () => {
+  function deferredTurn() {
+    let resolve!: (value: CurationTurnResponse) => void
+    let reject!: (err: unknown) => void
+    const promise = new Promise<CurationTurnResponse>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+
+  it('starts null with no action running', () => {
+    const { result } = renderHook(() => useCurationSession())
+    expect(result.current.curationAction).toBeNull()
+  })
+
+  it('startReview sets curationAction to starting_review synchronously, and clears it on success', async () => {
+    const { promise, resolve } = deferredTurn()
+    vi.mocked(curationApi.start).mockReturnValue(promise)
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'new-session' }))
+    const { result } = renderHook(() => useCurationSession())
+
+    act(() => {
+      void result.current.startReview('transformers', 10)
+    })
+
+    expect(result.current.curationAction).toBe('starting_review')
+    expect(result.current.loading).toBe(true)
+
+    await act(async () => {
+      resolve({
+        session_id: 'new-session', stage: 'curate', target_count: 10, selected_paper_ids: [],
+        batch: [], stop_reason: null, refilled: false, reserve_remaining: 5, refinement_notes: [],
+      })
+      await promise
+    })
+    await waitFor(() => expect(result.current.curationAction).toBeNull())
+
+    expect(result.current.loading).toBe(false)
+    expect(result.current.state?.session_id).toBe('new-session')
+  })
+
+  it('startReview clears curationAction on failure and preserves the previously loaded session', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', topic: 'existing topic' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    vi.mocked(curationApi.start).mockRejectedValue(new Error('boom'))
+
+    await act(async () => {
+      await result.current.startReview('new topic', 10)
+    })
+
+    expect(result.current.curationAction).toBeNull()
+    expect(result.current.error).toBe('Error: boom')
+    // The previously open, valid session is untouched -- never cleared or
+    // overwritten by the failed attempt to start a different one.
+    expect(result.current.state?.session_id).toBe('s1')
+    expect(result.current.state?.topic).toBe('existing topic')
+    expect(result.current.sessionId).toBe('s1')
+  })
+
+  it('a second startReview call while one is already in flight is a no-op -- curationApi.start is called only once', async () => {
+    const { promise } = deferredTurn()
+    vi.mocked(curationApi.start).mockReturnValue(promise)
+    const { result } = renderHook(() => useCurationSession())
+
+    act(() => {
+      void result.current.startReview('t1', 10)
+      void result.current.startReview('t2', 10)
+    })
+
+    expect(curationApi.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('submitPicks with plain Continue (stop=false, no refill) sets curationAction to continuing_review', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(
+      fullState({ session_id: 's1', pending_batch: [{ paper_id: 'p1' }] as never }),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    const { promise, resolve } = deferredTurn()
+    vi.mocked(curationApi.picks).mockReturnValue(promise)
+
+    act(() => {
+      void result.current.submitPicks(['p1'])
+    })
+    expect(result.current.curationAction).toBe('continuing_review')
+
+    await act(async () => {
+      resolve({
+        session_id: 's1', stage: 'curate', target_count: 10, selected_paper_ids: ['p1'],
+        batch: [], stop_reason: null, refilled: false, reserve_remaining: 5, refinement_notes: [],
+      })
+      await promise
+    })
+    await waitFor(() => expect(result.current.curationAction).toBeNull())
+  })
+
+  it('submitPicks with requestRefill=true sets curationAction to searching_more', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(
+      fullState({ session_id: 's1', pending_batch: [{ paper_id: 'p1' }] as never }),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    const { promise } = deferredTurn()
+    vi.mocked(curationApi.picks).mockReturnValue(promise)
+
+    act(() => {
+      void result.current.submitPicks([], false, undefined, true)
+    })
+
+    expect(result.current.curationAction).toBe('searching_more')
+  })
+
+  it('submitPicks with stop=true sets curationAction to finishing_review', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(
+      fullState({ session_id: 's1', pending_batch: [{ paper_id: 'p1' }] as never, selected_paper_ids: ['p1'] }),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    const { promise } = deferredTurn()
+    vi.mocked(curationApi.picks).mockReturnValue(promise)
+
+    act(() => {
+      void result.current.submitPicks([], true)
+    })
+
+    expect(result.current.curationAction).toBe('finishing_review')
+  })
+
+  it('submitPicks clears curationAction on failure too, and surfaces the existing safe error', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(
+      fullState({ session_id: 's1', pending_batch: [{ paper_id: 'p1' }] as never }),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    vi.mocked(curationApi.picks).mockRejectedValue(new Error('network down'))
+
+    await act(async () => {
+      await result.current.submitPicks(['p1'])
+    })
+
+    expect(result.current.curationAction).toBeNull()
+    expect(result.current.error).toBe('Error: network down')
+  })
+
+  it('a conflicting curation action cannot start while another is already in flight (cross-domain exclusion)', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(
+      fullState({ session_id: 's1', pending_batch: [{ paper_id: 'p1' }] as never }),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state).not.toBeNull())
+
+    const { promise } = deferredTurn()
+    vi.mocked(curationApi.picks).mockReturnValue(promise)
+
+    act(() => {
+      // Continue starts first (continuing_review) -- Search-for-more's
+      // own attempt, fired while it's still in flight, must be rejected
+      // outright rather than starting a second, conflicting request.
+      void result.current.submitPicks(['p1'])
+      void result.current.submitPicks([], false, undefined, true)
+    })
+
+    expect(result.current.curationAction).toBe('continuing_review')
+    expect(curationApi.picks).toHaveBeenCalledTimes(1)
+  })
+})

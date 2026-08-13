@@ -19,6 +19,18 @@ import type {
 // state properties that actually matter for correctness after a refresh
 // (which papers are selected, what's pending, the progress count) all
 // come from the backend via loadState() below, not from this list.
+// UXH.2: the synchronous curation actions (start a review, submit picks in
+// their three distinct shapes) previously shared nothing but the generic
+// `loading` flag -- enough to disable controls, but not enough for a
+// caller to know WHICH action is actually running, so every button either
+// said nothing truthful or fell back to a vague "Loading…". This union
+// names exactly the four actions that can set it; `null` means none is
+// active. Deliberately NOT reused for chat/report streaming, which already
+// have their own richer, longer-lived lifecycle state (chatStream*/
+// reportStream* below) -- this is only for the short request/response
+// curation actions that had no per-action state at all before this phase.
+export type CurationActionKind = 'starting_review' | 'continuing_review' | 'searching_more' | 'finishing_review'
+
 export interface TurnEvent {
   turnNumber: number
   refilled: boolean
@@ -131,6 +143,13 @@ interface UseCurationSessionResult {
   // regenerateReport/addExchangesToReport all clear it on success, since
   // each one just regenerated the report for real).
   dismissReportStaleWarning: () => void
+  // UXH.2: which of the four synchronous curation actions is currently
+  // in flight, or null when none is -- see CurationActionKind's own
+  // docstring above. Set synchronously before the action's request
+  // begins and cleared on every settle path (success or failure), same
+  // guarantee `loading` already provides, just specific enough to drive
+  // a truthful per-action label instead of one generic spinner.
+  curationAction: CurationActionKind | null
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -218,6 +237,19 @@ export function useCurationSession(): UseCurationSessionResult {
   const [reportPossiblyStale, setReportPossiblyStale] = useState(false)
   const [lastAddToReportResult, setLastAddToReportResult] = useAutoClearingState<AddToReportResult>()
   const turnEventsSessionRef = useRef<string | null>(null)
+
+  // UXH.2: see CurationActionKind's own docstring. The ref alongside the
+  // state mirrors chatStreamActiveRef/reportStreamActiveRef's own
+  // rationale below -- runAction's own reentrancy guard (see below) reads
+  // THIS synchronously, not the state, so a rapid double-click can't slip
+  // a second curation action in ahead of a state update that hasn't
+  // re-rendered (and therefore hasn't disabled the button) yet.
+  const [curationAction, setCurationActionState] = useState<CurationActionKind | null>(null)
+  const curationActionRef = useRef<CurationActionKind | null>(null)
+  const setCurationAction = useCallback((action: CurationActionKind | null) => {
+    curationActionRef.current = action
+    setCurationActionState(action)
+  }, [])
 
   // UXH.1 (UX-04): the session id a caller most recently expressed intent
   // to load -- updated synchronously by setSessionId below, at the exact
@@ -383,7 +415,22 @@ export function useCurationSession(): UseCurationSessionResult {
     return fresh
   }, [clearChatStreamPreview, clearReportStreamPreview])
 
-  const runAction = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+  // UXH.2: actionKind is optional -- every OTHER runAction caller
+  // (generateReport, deleteExchanges, deleteReview, etc.) omits it and is
+  // completely unaffected, same before/after behavior as always. Passed,
+  // it does two things: (1) a synchronous reentrancy guard, exactly like
+  // chatStreamActiveRef/reportStreamActiveRef's own guards, so a second
+  // curation action can never start while one is already running, even
+  // across a fast double-click the UI's own disabled-button re-render
+  // hasn't caught up with yet; (2) sets/clears curationAction alongside
+  // the existing loading/error lifecycle, on every settle path (success
+  // or failure alike) via the same finally block already used for
+  // loading.
+  const runAction = useCallback(async <T,>(action: () => Promise<T>, actionKind?: CurationActionKind): Promise<T | undefined> => {
+    if (actionKind) {
+      if (curationActionRef.current) return undefined
+      setCurationAction(actionKind)
+    }
     setLoading(true)
     setError(null)
     try {
@@ -399,8 +446,9 @@ export function useCurationSession(): UseCurationSessionResult {
       return undefined
     } finally {
       setLoading(false)
+      if (actionKind) setCurationAction(null)
     }
-  }, [])
+  }, [setCurationAction])
 
   // THE Phase 6d property: whatever session_id the URL names -- including
   // right after a hard page refresh, which re-runs this effect from
@@ -491,7 +539,7 @@ export function useCurationSession(): UseCurationSessionResult {
         setSessionIdInUrl(response.session_id)
         setSessionId(response.session_id)
         await loadState(response.session_id)
-      }),
+      }, 'starting_review'),
     [runAction, loadState, setSessionId],
   )
 
@@ -509,7 +557,12 @@ export function useCurationSession(): UseCurationSessionResult {
         await curationApi.picks(sessionId, { picked_paper_ids: pickedIds, stop, refinement, request_refill: requestRefill })
         setTurnEvents((prev) => [...prev, completedTurn])
         await loadState(sessionId)
-      }),
+        // UXH.2: stop takes priority over requestRefill in the (today
+        // unreachable via the UI, since ReviewModePanel's own handlers
+        // never combine them) case both are somehow true -- finishing the
+        // review is the more consequential of the two to describe
+        // truthfully.
+      }, stop ? 'finishing_review' : requestRefill ? 'searching_more' : 'continuing_review'),
     [runAction, sessionId, state, turnEvents.length, loadState],
   )
 
@@ -1045,7 +1098,7 @@ export function useCurationSession(): UseCurationSessionResult {
 
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
-    dismissReportStaleWarning,
+    dismissReportStaleWarning, curationAction,
     openReview, startReview, submitPicks, generateReport, regenerateReport,
     reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
     reportStreamSyncFailed, generateReportStreaming, regenerateReportStreaming, cancelReportStream,

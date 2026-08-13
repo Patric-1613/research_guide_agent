@@ -1142,6 +1142,24 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
       expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent('Revising report')
     })
 
+    it('UXH.2: the header status is a prominent, accessible live region -- not the old easy-to-miss italic text', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'revising' })
+
+      const label = screen.getByTestId('report-stream-phase-label')
+      expect(label).toHaveAttribute('role', 'status')
+      expect(label).toHaveAttribute('aria-live', 'polite')
+      expect(label.className).not.toContain('italic')
+    })
+
+    it('UXH.2: Stop remains available in its existing slot throughout regeneration, never duplicated elsewhere', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'revising' })
+
+      expect(screen.getAllByTestId('report-stream-stop')).toHaveLength(1)
+      expect(screen.getAllByTestId('report-stream-phase-label')).toHaveLength(1)
+    })
+
     it('replaces Regenerate with Stop in the same stable action slot', () => {
       const state = baseState({ report: reportStub() })
       renderStreaming({ state, reportStreamActive: true, reportStreamOperation: 'regenerate', reportStreamPhase: 'generating' })

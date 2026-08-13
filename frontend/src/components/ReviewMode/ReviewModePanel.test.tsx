@@ -363,6 +363,82 @@ describe('ReviewModePanel', () => {
     expect(screen.getByTestId('review-target-reached-banner')).toHaveTextContent('reached your target of 2')
   })
 
+  it('UXH.2: continuingReview replaces the Continue label with a truthful, accessible busy status', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+        continuingReview
+      />,
+    )
+
+    const button = screen.getByTestId('review-continue')
+    expect(button).toHaveTextContent('Finding next papers…')
+    expect(button).not.toHaveTextContent('Get next batch')
+    const status = screen.getByRole('status')
+    expect(status).toHaveAttribute('aria-live', 'polite')
+    expect(status).toHaveTextContent('Finding next papers…')
+  })
+
+  it('UXH.2: searchingMore replaces the "Search for more candidates" label, not called streaming', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+        searchingMore
+      />,
+    )
+
+    const button = screen.getByTestId('review-request-refill')
+    expect(button).toHaveTextContent('Searching for more papers…')
+    expect(button).not.toHaveTextContent('Search for more candidates')
+    expect(screen.queryByText(/stream/i)).not.toBeInTheDocument()
+  })
+
+  it('UXH.2: finishingReview replaces the "I\'m done" label with "Finishing review…"', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+        finishingReview
+      />,
+    )
+
+    const button = screen.getByTestId('review-stop')
+    expect(button).toHaveTextContent('Finishing review…')
+    expect(button).not.toHaveTextContent("I'm done")
+  })
+
+  it('UXH.2: only one busy label renders at a time; idle buttons keep their normal text', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+        finishingReview
+      />,
+    )
+
+    expect(screen.getByTestId('review-continue')).toHaveTextContent('Get next batch')
+    expect(screen.getByTestId('review-request-refill')).toHaveTextContent('Search for more candidates')
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+
+  it('UXH.2: no busy status at all when no curation action is active (all three flags default false)', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
   it('a clean finish (target_met) still shows the plain "Curation complete" message', () => {
     const state = baseState({
       stage: 'synthesize', pending_batch: null, stop_reason: 'target_met', target_count: 1,

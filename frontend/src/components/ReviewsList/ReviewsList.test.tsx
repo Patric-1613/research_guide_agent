@@ -168,6 +168,69 @@ describe('ReviewsList', () => {
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 
+  it('UXH.2: startingReview shows an accessible "Starting new review…" status and hides the New Review trigger', async () => {
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+
+    render(
+      <ReviewsList
+        activeSessionId={null} onSelectReview={vi.fn()} onStartReview={vi.fn()} onDeleteReview={vi.fn()} refreshToken={0}
+        workspaceMode="review" workspaceUnlocked={false} onWorkspaceModeChange={vi.fn()}
+        startingReview
+      />,
+    )
+
+    const status = screen.getByTestId('starting-review-status')
+    expect(status).toHaveTextContent('Starting new review…')
+    expect(status).toHaveAttribute('role', 'status')
+    expect(status).toHaveAttribute('aria-live', 'polite')
+    // No interactive affordance left that could submit a second start.
+    expect(screen.queryByTestId('new-review-trigger')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('new-review-start')).not.toBeInTheDocument()
+  })
+
+  it('UXH.2: the New Review trigger is available again once startingReview clears', async () => {
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+
+    const { rerender } = render(
+      <ReviewsList
+        activeSessionId={null} onSelectReview={vi.fn()} onStartReview={vi.fn()} onDeleteReview={vi.fn()} refreshToken={0}
+        workspaceMode="review" workspaceUnlocked={false} onWorkspaceModeChange={vi.fn()}
+        startingReview
+      />,
+    )
+    expect(screen.getByTestId('starting-review-status')).toBeInTheDocument()
+
+    rerender(
+      <ReviewsList
+        activeSessionId={null} onSelectReview={vi.fn()} onStartReview={vi.fn()} onDeleteReview={vi.fn()} refreshToken={0}
+        workspaceMode="review" workspaceUnlocked={false} onWorkspaceModeChange={vi.fn()}
+        startingReview={false}
+      />,
+    )
+
+    expect(screen.queryByTestId('starting-review-status')).not.toBeInTheDocument()
+    expect(screen.getByTestId('new-review-trigger')).toBeInTheDocument()
+  })
+
+  it('starting a new review calls onStartReview with the submitted topic and target count', async () => {
+    const user = userEvent.setup()
+    const onStartReview = vi.fn()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+
+    render(
+      <ReviewsList
+        activeSessionId={null} onSelectReview={vi.fn()} onStartReview={onStartReview} onDeleteReview={vi.fn()} refreshToken={0}
+        workspaceMode="review" workspaceUnlocked={false} onWorkspaceModeChange={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByTestId('new-review-trigger'))
+    await user.type(screen.getByTestId('new-review-topic'), 'parameter-efficient fine-tuning')
+    await user.click(screen.getByTestId('new-review-start'))
+
+    expect(onStartReview).toHaveBeenCalledWith('parameter-efficient fine-tuning', 10)
+  })
+
   it('cancelling the dialog does not call onDeleteReview, and closes the dialog', async () => {
     const user = userEvent.setup()
     const onDeleteReview = vi.fn()
