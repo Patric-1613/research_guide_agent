@@ -331,6 +331,38 @@ describe('ReviewModePanel', () => {
     expect(screen.queryByTestId('review-target-reached-banner')).not.toBeInTheDocument()
   })
 
+  it('UXH.1 (UX-01): "I\'m done" reflects staged picks, deduplicated against persisted ones, not double-counted', () => {
+    const state = baseState({
+      pending_batch: [paper('p1', 'Paper One'), paper('p2', 'Paper Two')],
+      selected_paper_ids: ['x', 'p1'],
+    })
+    render(
+      <ReviewModePanel
+        // p1 is staged again on top of being already-persisted (defensive
+        // case) alongside a genuinely new staged pick p2 -- expect 3
+        // distinct papers (x, p1, p2), not 4.
+        state={state} turnEvents={[]} stagedPickIds={['p1', 'p2']} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("I'm done — finish with 3 selected")).toBeInTheDocument()
+  })
+
+  it('UXH.1 (UX-01): the target-reached nudge banner also counts staged picks toward the target, deduplicated', () => {
+    const state = baseState({
+      pending_batch: [paper('p1', 'Paper One')], target_count: 2, selected_paper_ids: ['a'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={['b']} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('review-target-reached-banner')).toHaveTextContent('reached your target of 2')
+  })
+
   it('a clean finish (target_met) still shows the plain "Curation complete" message', () => {
     const state = baseState({
       stage: 'synthesize', pending_batch: null, stop_reason: 'target_met', target_count: 1,

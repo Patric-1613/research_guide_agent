@@ -60,4 +60,27 @@ describe('PoolSummaryPanel', () => {
     render(<PoolSummaryPanel state={state} stagedPickIds={[]} />)
     expect(screen.getByText(/16 more candidates already fetched/)).toBeInTheDocument()
   })
+
+  it('UXH.1 (UX-01): an id present in both selected_paper_ids and stagedPickIds counts once, in both the header and the stat tile', () => {
+    const state = baseState({
+      selected_paper_ids: ['p0', 'p1'],
+      selected_papers: [paper('p0', 'Already Picked'), paper('p1', 'Also Already Picked')],
+      target_count: 10,
+    })
+    // p1 staged again (structurally shouldn't happen via the real UI, but
+    // the count must stay correct defensively regardless) alongside a
+    // genuinely new staged id p2.
+    render(<PoolSummaryPanel state={state} stagedPickIds={['p1', 'p2']} />)
+
+    // 3 distinct ids (p0, p1, p2), not 4 (2 persisted + 2 staged).
+    expect(screen.getByTestId('stat-selected')).toHaveTextContent('3')
+    expect(screen.getByText('Paper pool — 3/10 target')).toBeInTheDocument()
+  })
+
+  it('UXH.1 (UX-01): the pool header count includes staged picks, not persisted alone (previously under-counted)', () => {
+    const state = baseState({ selected_paper_ids: ['p0'], target_count: 10 })
+    render(<PoolSummaryPanel state={state} stagedPickIds={['p1', 'p2']} />)
+
+    expect(screen.getByText('Paper pool — 3/10 target')).toBeInTheDocument()
+  })
 })

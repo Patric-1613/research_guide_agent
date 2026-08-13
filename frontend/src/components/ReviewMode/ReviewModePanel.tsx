@@ -3,6 +3,7 @@ import type { CurationStateResponse } from '../../types'
 import type { TurnEvent } from '../../hooks/useCurationSession'
 import { TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'
+import { mergeSelectedPaperIds } from '../../lib/selection'
 
 // Mirrors research_agent/query_expansion.py's BATCH_SIZE -- not exposed
 // by the API (nothing currently needs it to be), so kept here as the
@@ -48,7 +49,9 @@ export function ReviewModePanel({
   const [refinement, setRefinement] = useState('')
   const pendingBatch = state.pending_batch
   const stagedSet = new Set(stagedPickIds)
-  const totalSelected = state.selected_paper_ids.length + stagedPickIds.length
+  // UXH.1 (UX-01): deduplicated union -- see mergeSelectedPaperIds' own
+  // docstring for why this replaced plain `a.length + b.length`.
+  const totalSelected = mergeSelectedPaperIds(state.selected_paper_ids, stagedPickIds).length
 
   // Scroll the batch back to the top whenever the SET OF PAPER IDS in
   // pending_batch actually changes (a new batch was served, whether via

@@ -575,6 +575,185 @@ describe('useCurationSession', () => {
   })
 })
 
+describe('useCurationSession -- UXH.1 (UX-04): safe session switching', () => {
+  function deferredState() {
+    let resolve!: (value: CurationStateResponse) => void
+    let reject!: (err: unknown) => void
+    const promise = new Promise<CurationStateResponse>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+
+  it('switching to a different session immediately clears the previous session\'s content -- the neutral loading state, not stale content, shows while the target loads', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', topic: 'topic A' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    const { promise } = deferredState()
+    vi.mocked(curationApi.getState).mockReturnValue(promise)
+
+    act(() => {
+      result.current.openReview('s2')
+    })
+
+    // Cleared synchronously, in the same effect run that kicks off s2's
+    // fetch -- not left showing s1's papers/report as though they
+    // belonged to s2 while the request is still in flight.
+    expect(result.current.state).toBeNull()
+    expect(result.current.loading).toBe(true)
+    expect(result.current.sessionId).toBe('s2')
+  })
+
+  it('the target session\'s state renders once its fetch succeeds', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's2', topic: 'topic B' }))
+    await act(async () => {
+      await result.current.openReview('s2')
+    })
+
+    expect(result.current.state?.session_id).toBe('s2')
+    expect(result.current.state?.topic).toBe('topic B')
+    expect(result.current.loading).toBe(false)
+  })
+
+  it('rapid A -> B switching: a late response for the abandoned session A is ignored, leaving B visible', async () => {
+    window.history.pushState({}, '', '/?session=s0')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's0' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s0'))
+
+    const a = deferredState()
+    const b = deferredState()
+    vi.mocked(curationApi.getState).mockImplementation((id: string) => {
+      if (id === 'a') return a.promise
+      if (id === 'b') return b.promise
+      throw new Error(`unexpected session id ${id}`)
+    })
+
+    act(() => {
+      result.current.openReview('a')
+    })
+    act(() => {
+      result.current.openReview('b')
+    })
+
+    // B (the session actually still open) resolves first.
+    await act(async () => {
+      b.resolve(fullState({ session_id: 'b', topic: 'topic B' }))
+      await b.promise
+    })
+    expect(result.current.state?.session_id).toBe('b')
+
+    // A's response -- for a session the user has since navigated away
+    // from -- arrives late. It must not overwrite B.
+    await act(async () => {
+      a.resolve(fullState({ session_id: 'a', topic: 'topic A' }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(result.current.state?.session_id).toBe('b')
+    expect(result.current.state?.topic).toBe('topic B')
+  })
+
+  it('a stale failure from an abandoned session does not replace the current session\'s state or show an error', async () => {
+    window.history.pushState({}, '', '/?session=s0')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's0' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s0'))
+
+    const a = deferredState()
+    vi.mocked(curationApi.getState).mockImplementation((id: string) => {
+      if (id === 'a') return a.promise
+      return Promise.resolve(fullState({ session_id: 'b', topic: 'topic B' }))
+    })
+
+    act(() => {
+      result.current.openReview('a')
+    })
+    act(() => {
+      result.current.openReview('b')
+    })
+    await waitFor(() => expect(result.current.state?.session_id).toBe('b'))
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      a.reject(new Error('stale session a failed'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(result.current.state?.session_id).toBe('b')
+    expect(result.current.error).toBeNull()
+  })
+
+  it('a genuine failure for the currently open (just-switched-to) session still surfaces the existing safe error message', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    vi.mocked(curationApi.getState).mockRejectedValue(new Error('network down'))
+    act(() => {
+      result.current.openReview('s2')
+    })
+
+    await waitFor(() => expect(result.current.error).toBe('Error: network down'))
+    expect(result.current.loading).toBe(false)
+  })
+
+  it('a same-session canonical refresh does not blank the workspace while it is in flight (unlike a real session switch)', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', topic: 'topic A' }))
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    const { promise, resolve } = deferredState()
+    vi.mocked(curationApi.getState).mockReturnValue(promise)
+
+    act(() => {
+      void result.current.refresh()
+    })
+
+    // sessionId never changed, so this is a same-session refresh, not a
+    // switch -- the still-valid old content must stay on screen while
+    // the refresh is in flight.
+    expect(result.current.state?.topic).toBe('topic A')
+    expect(result.current.state?.session_id).toBe('s1')
+
+    await act(async () => {
+      resolve(fullState({ session_id: 's1', topic: 'topic A (refreshed)' }))
+      await promise
+    })
+
+    expect(result.current.state?.topic).toBe('topic A (refreshed)')
+  })
+
+  it('unmount prevents a late-resolving fetch from publishing state or throwing', async () => {
+    window.history.pushState({}, '', '/?session=s1')
+    const { promise, resolve } = deferredState()
+    vi.mocked(curationApi.getState).mockReturnValue(promise)
+
+    const { unmount } = renderHook(() => useCurationSession())
+    unmount()
+
+    resolve(fullState({ session_id: 's1' }))
+    // Reaching here cleanly (no thrown error, no unhandled rejection) is
+    // the assertion -- isMountedRef stops loadState from publishing to a
+    // hook instance that no longer has a component to receive it.
+    await promise
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+})
+
 describe('useCurationSession -- Usage Protection M4.2B: chat-streaming lifecycle', () => {
   async function mountAtS1() {
     window.history.pushState({}, '', '/?session=s1')

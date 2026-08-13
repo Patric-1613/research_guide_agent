@@ -1,5 +1,6 @@
 import type { CurationStateResponse } from '../../types'
 import { PoolHeader } from '../PaperPool/PoolHeader'
+import { mergeSelectedPaperIds } from '../../lib/selection'
 
 interface PoolSummaryPanelProps {
   state: CurationStateResponse
@@ -16,12 +17,18 @@ export function PoolSummaryPanel({ state, stagedPickIds }: PoolSummaryPanelProps
   const stagedSet = new Set(stagedPickIds)
   const newThisTurn = pendingBatch.filter((p) => !stagedSet.has(p.paper_id)).length
   const stagedTitles = pendingBatch.filter((p) => stagedSet.has(p.paper_id))
-  const selectedTotal = state.selected_paper_ids.length + stagedPickIds.length
+  // UXH.1 (UX-01): deduplicated union, not `a.length + b.length` -- see
+  // mergeSelectedPaperIds' own docstring. Used for BOTH the header's
+  // progress bar/count and the "Selected" stat tile below, so the two
+  // can never disagree with each other the way selectedCount and
+  // selectedTotal previously could (the header used to omit staged
+  // picks entirely).
+  const selectedTotal = mergeSelectedPaperIds(state.selected_paper_ids, stagedPickIds).length
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-l border-border bg-panel">
       <PoolHeader
-        selectedCount={state.selected_paper_ids.length}
+        selectedCount={selectedTotal}
         targetCount={state.target_count}
         reserveRemaining={state.reserve_remaining}
       />

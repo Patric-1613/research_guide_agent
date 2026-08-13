@@ -11,6 +11,7 @@ import { ReportModePanel } from '../components/ReportMode/ReportModePanel'
 import { TurnHistoryBrowser } from '../components/TurnHistory/TurnHistoryBrowser'
 import type { WorkspaceMode } from '../components/WorkspaceMode/WorkspaceModeSwitcher'
 import type { RefinementMode, ReportTemplate } from '../types'
+import { mergeSelectedPaperIds } from '../lib/selection'
 
 const MODE_PARAM = 'mode'
 
@@ -86,6 +87,27 @@ export default function CurationWorkspacePage() {
   useEffect(() => {
     setStagedPickIds([])
   }, [pendingBatchKey])
+
+  // UXH.1 (UX-04): staged picks are also scoped to whichever REVIEW is
+  // open -- opening a different session (or closing the current one)
+  // must not leave a prior session's staged-but-not-submitted picks
+  // bleeding into the newly opened one. This is a separate effect from
+  // the one above (not just relying on pendingBatchKey changing) because
+  // a session switch's pending_batch could coincidentally look the same
+  // shape momentarily during the load; keying directly on sessionId is
+  // unambiguous.
+  useEffect(() => {
+    setStagedPickIds([])
+  }, [sessionId])
+
+  // UXH.1 (UX-01): the one canonical "how many papers has the user
+  // effectively picked" derivation -- persisted (state.selected_paper_ids)
+  // union locally staged (stagedPickIds) picks, deduplicated by id. Every
+  // visible counter that means this reads from here, not from
+  // state.selected_paper_ids alone (which silently ignored staged picks
+  // made from Browse Past Turns while curation was still active) or from
+  // arithmetic addition (which double-counts an id present in both).
+  const effectiveSelectedCount = state ? mergeSelectedPaperIds(state.selected_paper_ids, stagedPickIds).length : 0
 
   function setWorkspaceMode(mode: WorkspaceMode) {
     setWorkspaceModeState(mode)
@@ -323,7 +345,7 @@ export default function CurationWorkspacePage() {
           )}
           {state && (
             <>
-              <TopicHeader topic={state.display_title} selectedCount={state.selected_paper_ids.length} targetCount={state.target_count} />
+              <TopicHeader topic={state.display_title} selectedCount={effectiveSelectedCount} targetCount={state.target_count} />
               {!showHistory && (reopenEligible || (state.turn_history.length > 0 && workspaceMode !== 'report')) && (
                 <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-1.5">
                   <div>

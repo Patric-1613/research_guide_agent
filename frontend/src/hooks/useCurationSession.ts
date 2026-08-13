@@ -219,6 +219,42 @@ export function useCurationSession(): UseCurationSessionResult {
   const [lastAddToReportResult, setLastAddToReportResult] = useAutoClearingState<AddToReportResult>()
   const turnEventsSessionRef = useRef<string | null>(null)
 
+  // UXH.1 (UX-04): the session id a caller most recently expressed intent
+  // to load -- updated synchronously by setSessionId below, at the exact
+  // moment openReview/startReview/deleteReview/popstate change it, NOT
+  // via an effect (which would only catch up after React's next commit,
+  // too late to protect against a response that resolves in that gap).
+  // loadState checks a response's own requested id against this ref
+  // before publishing it: a response for a session the user has since
+  // navigated away from is stale and must never overwrite what's on
+  // screen for the session actually open now (a late success OR a late
+  // failure alike -- see loadState and the sessionId-effect below).
+  const currentSessionIdRef = useRef<string | null>(sessionId)
+  // UXH.1 (UX-04): which session the sessionId-change effect further
+  // below last actually displayed -- see that effect's own comment for
+  // why this is a second, separate ref from currentSessionIdRef above.
+  const lastLoadedSessionIdRef = useRef<string | null>(null)
+  // UXH.1 (UX-04): guards against publishing state after this hook's
+  // owning component has unmounted -- a late-resolving loadState call
+  // (from any caller, not just the sessionId effect below) must not call
+  // setState once there's no component left to receive it.
+  const isMountedRef = useRef(true)
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
+
+  // The one place sessionId is ever assigned -- keeps currentSessionIdRef
+  // perfectly in sync with the state setter, synchronously, so nothing
+  // that reads the ref later can ever observe a stale value React just
+  // hasn't re-rendered yet.
+  const setSessionId = useCallback((id: string | null) => {
+    currentSessionIdRef.current = id
+    setSessionIdState(id)
+  }, [])
+
   // Usage Protection M4.2B: chat-streaming lifecycle state, owned here
   // (not inside ChatModePanel) per this phase's own explicit requirement
   // -- only what's genuinely needed to render/control an in-flight
@@ -318,6 +354,20 @@ export function useCurationSession(): UseCurationSessionResult {
 
   const loadState = useCallback(async (id: string): Promise<CurationStateResponse> => {
     const fresh = await curationApi.getState(id)
+    // UXH.1 (UX-04): id is the session THIS call was requested for -- if
+    // the user has since switched to a different session (or this hook
+    // has unmounted) while the request was in flight, publishing fresh
+    // here would overwrite whatever's actually current on screen with a
+    // stale result. Every caller of loadState (the sessionId-change
+    // effect below, and every action -- submitPicks, chat/report
+    // streaming, deleteExchanges, etc.) shares this one guard, so none of
+    // them need their own staleness check. `fresh` is still returned
+    // either way -- a caller mid-action for the (no longer current)
+    // session it started against may still want the raw response even
+    // though it's not being published to shared state.
+    if (!isMountedRef.current || currentSessionIdRef.current !== id) {
+      return fresh
+    }
     setState(fresh)
     if (turnEventsSessionRef.current !== id) {
       turnEventsSessionRef.current = id
@@ -358,10 +408,47 @@ export function useCurationSession(): UseCurationSessionResult {
   // FROM THE BACKEND here. Nothing in this hook reads from
   // localStorage/sessionStorage or any other browser-only store; the URL
   // plus this one GET call is the entire source of truth on load.
+  //
+  // UXH.1 (UX-04): lastLoadedSessionIdRef records which session this
+  // EFFECT last actually displayed (distinct from currentSessionIdRef,
+  // which setSessionId updates immediately at the moment of intent, well
+  // before this effect gets a chance to run) -- comparing the two tells
+  // this run whether it's a genuine switch AWAY from a different,
+  // already-displayed session (clear state so the old review can't be
+  // mistaken for the new one while the fetch is in flight) versus the
+  // first-ever load for this hook instance or a startReview-style
+  // null -> id transition (state is already null; nothing to clear, and
+  // clearing it here would race startReview's own direct loadState call
+  // for no benefit). A plain `runAction(() => loadState(sessionId))`
+  // (the prior implementation) doesn't distinguish stale from current
+  // here, so it's replaced with logic that only publishes error/loading
+  // completion for the request THIS run actually issued -- loadState
+  // itself already guards the success path the same way for every
+  // caller, not just this one.
   useEffect(() => {
-    if (sessionId) {
-      runAction(() => loadState(sessionId))
+    const previousId = lastLoadedSessionIdRef.current
+    lastLoadedSessionIdRef.current = sessionId
+    if (!sessionId) {
+      if (previousId !== null) setState(null)
+      return
     }
+    const requestedId = sessionId
+    if (previousId !== null && previousId !== requestedId) {
+      setState(null)
+    }
+    setError(null)
+    setLoading(true)
+    loadState(requestedId)
+      .catch((err) => {
+        if (isMountedRef.current && currentSessionIdRef.current === requestedId) {
+          setError(getUserFacingErrorMessage(err))
+        }
+      })
+      .finally(() => {
+        if (isMountedRef.current && currentSessionIdRef.current === requestedId) {
+          setLoading(false)
+        }
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
@@ -387,25 +474,25 @@ export function useCurationSession(): UseCurationSessionResult {
   }, [sessionId])
 
   useEffect(() => {
-    const onPopState = () => setSessionIdState(getSessionIdFromUrl())
+    const onPopState = () => setSessionId(getSessionIdFromUrl())
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
-  }, [])
+  }, [setSessionId])
 
   const openReview = useCallback((id: string) => {
     setSessionIdInUrl(id)
-    setSessionIdState(id)
-  }, [])
+    setSessionId(id)
+  }, [setSessionId])
 
   const startReview = useCallback(
     (topic: string, targetCount: number) =>
       runAction(async () => {
         const response = await curationApi.start({ topic, target_count: targetCount })
         setSessionIdInUrl(response.session_id)
-        setSessionIdState(response.session_id)
+        setSessionId(response.session_id)
         await loadState(response.session_id)
       }),
-    [runAction, loadState],
+    [runAction, loadState, setSessionId],
   )
 
   const submitPicks = useCallback(
@@ -924,11 +1011,11 @@ export function useCurationSession(): UseCurationSessionResult {
         await curationApi.deleteReview(idToDelete)
         if (idToDelete === sessionId) {
           clearSessionIdInUrl()
-          setSessionIdState(null)
+          setSessionId(null)
           setState(null)
         }
       }),
-    [runAction, sessionId],
+    [runAction, sessionId, setSessionId],
   )
 
   // Phase 9c/9f: the SYNTHESIZE-STAGE-ONLY way to add a paper from an

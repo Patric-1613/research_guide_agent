@@ -327,6 +327,35 @@ describe('App', () => {
     expect(screen.queryByTestId('stat-selected')).not.toBeInTheDocument()
   })
 
+  it('UXH.1 (UX-01): the topic header count includes a paper staged from Browse Past Turns during active curation', async () => {
+    const user = userEvent.setup()
+    mockSession(fullState({
+      stage: 'curate',
+      target_count: 10,
+      selected_paper_ids: [],
+      turn_history: [{
+        turn_number: 1, refilled: false,
+        batch: [{
+          paper_id: 'p0', title: 'Historical Paper', authors: [], year: null, venue: null,
+          abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
+          source_urls: {}, score: null,
+        }],
+      }],
+    }))
+    render(<App />)
+
+    expect(screen.getByTestId('progress-count')).toHaveTextContent('0 of 10 selected')
+
+    await user.click(screen.getByTestId('open-turn-history'))
+    await user.click(screen.getByTestId('add-paper-p0'))
+
+    // Staging a pick from history while still curating never calls the
+    // backend (see the TurnHistoryBrowser docstring) -- it's purely
+    // client-local until Continue is clicked -- so the header count must
+    // update from THIS staged pick alone, with no API round trip.
+    expect(screen.getByTestId('progress-count')).toHaveTextContent('1 of 10 selected')
+  })
+
   it('closing turn history returns to the previously-active workspace mode', async () => {
     const user = userEvent.setup()
     mockSession(fullState({
