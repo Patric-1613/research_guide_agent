@@ -306,7 +306,7 @@ describe('useCurationSession', () => {
 
     const { result } = renderHook(() => useCurationSession())
 
-    await waitFor(() => expect(result.current.error).toBe('Error: network down'))
+    await waitFor(() => expect(result.current.error).toBe('Something went wrong. Please try again.'))
     expect(result.current.loading).toBe(false)
   })
 
@@ -317,17 +317,22 @@ describe('useCurationSession', () => {
     const { result } = renderHook(() => useCurationSession())
     await waitFor(() => expect(result.current.state).not.toBeNull())
 
-    vi.mocked(curationApi.chat).mockRejectedValueOnce(new Error('first failure'))
+    // UXH.3: distinct ApiErrors (each with its own safe, distinguishable
+    // message), not two generic Errors -- getUserFacingErrorMessage now
+    // collapses every unexpected Error to the same fixed safe fallback,
+    // so two generic Errors could no longer prove "replaces, not stacks"
+    // by their text alone.
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(new ApiError(404, { detail: 'first failure' }))
     await act(async () => {
       await result.current.sendChatMessage('hello')
     })
-    expect(result.current.error).toBe('Error: first failure')
+    expect(result.current.error).toBe('first failure')
 
-    vi.mocked(curationApi.chat).mockRejectedValueOnce(new Error('second failure'))
+    vi.mocked(curationApi.chat).mockRejectedValueOnce(new ApiError(404, { detail: 'second failure' }))
     await act(async () => {
       await result.current.sendChatMessage('hello again')
     })
-    expect(result.current.error).toBe('Error: second failure')
+    expect(result.current.error).toBe('second failure')
     expect(result.current.error).not.toContain('first failure')
   })
 
@@ -342,7 +347,7 @@ describe('useCurationSession', () => {
     await act(async () => {
       await result.current.sendChatMessage('hello')
     })
-    expect(result.current.error).toBe('Error: boom')
+    expect(result.current.error).toBe('Something went wrong. Please try again.')
 
     vi.mocked(curationApi.chat).mockResolvedValueOnce(chatResponse())
     await act(async () => {
@@ -705,7 +710,7 @@ describe('useCurationSession -- UXH.1 (UX-04): safe session switching', () => {
       result.current.openReview('s2')
     })
 
-    await waitFor(() => expect(result.current.error).toBe('Error: network down'))
+    await waitFor(() => expect(result.current.error).toBe('Something went wrong. Please try again.'))
     expect(result.current.loading).toBe(false)
   })
 
@@ -1626,7 +1631,7 @@ describe('useCurationSession -- UXH.2: curationAction', () => {
     })
 
     expect(result.current.curationAction).toBeNull()
-    expect(result.current.error).toBe('Error: boom')
+    expect(result.current.error).toBe('Something went wrong. Please try again.')
     // The previously open, valid session is untouched -- never cleared or
     // overwritten by the failed attempt to start a different one.
     expect(result.current.state?.session_id).toBe('s1')
@@ -1724,7 +1729,7 @@ describe('useCurationSession -- UXH.2: curationAction', () => {
     })
 
     expect(result.current.curationAction).toBeNull()
-    expect(result.current.error).toBe('Error: network down')
+    expect(result.current.error).toBe('Something went wrong. Please try again.')
   })
 
   it('a conflicting curation action cannot start while another is already in flight (cross-domain exclusion)', async () => {

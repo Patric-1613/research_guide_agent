@@ -1692,3 +1692,137 @@ describe('ChatModePanel -- UXH.1b: stream visibility and scrolling', () => {
     scrollSpy.mockRestore()
   })
 })
+
+describe('ChatModePanel -- UXH.3: focus restoration', () => {
+  function renderAt(streamActive: boolean, overrides: Partial<CurationStateResponse> = {}) {
+    return render(
+      <ChatModePanel
+        state={baseState(overrides)} disabled={streamActive} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={streamActive} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+  }
+
+  // Real browsers blur a focused control the instant it becomes disabled
+  // (HTML spec) -- jsdom doesn't reliably reproduce that specific nuance
+  // for a reused DOM node's attribute change, so each test below sets up
+  // the resulting "focus fell to body" precondition deterministically
+  // (blurring the input while it's still enabled, before the stream
+  // makes it disabled) rather than depending on jsdom to reproduce the
+  // browser's own disabled-blur behavior itself -- that's a platform
+  // concern, not something this component's own code needs to trigger.
+  function focusInputThenBlurToBody() {
+    const input = screen.getByTestId('persistent-input')
+    input.focus()
+    input.blur()
+    expect(document.activeElement).toBe(document.body)
+  }
+
+  it('focus returns to the chat input once a completed stream settles, when focus had fallen to body while the stream was active', () => {
+    const { rerender } = renderAt(false)
+    focusInputThenBlurToBody()
+
+    // The stream starts, runs, and completes.
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(document.activeElement).toBe(document.body)
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(document.activeElement).toBe(screen.getByTestId('persistent-input'))
+  })
+
+  it('focus returns to the chat input after cancellation, the same way it does after a normal completion', () => {
+    const { rerender } = renderAt(false)
+    focusInputThenBlurToBody()
+
+    // ChatModePanel itself can't distinguish completion from
+    // cancellation (both are just chatStreamActive -> false; the
+    // difference lives entirely in useCurationSession), so the stream
+    // starting and then settling inactive again is the one shared shape
+    // either path produces here.
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(document.activeElement).toBe(screen.getByTestId('persistent-input'))
+  })
+
+  it('does not steal focus from a control the user deliberately focused before the stream settled', () => {
+    const references = [
+      { number: 1, kind: 'paper' as const, title: 'Paper One', formatted: 'A. Uthor (2024). Paper One.', paper_id: 'p1', link_url: null },
+    ]
+    const { rerender } = renderAt(true, { chat_references: references })
+    screen.getByTestId('chat-references-toggle').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('chat-references-toggle'))
+
+    rerender(
+      <ChatModePanel
+        state={baseState({ chat_references: references })} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(document.activeElement).toBe(screen.getByTestId('chat-references-toggle'))
+  })
+
+  it('an ordinary background reload (chat_history changing, no stream ever active) never moves focus', () => {
+    const { rerender } = renderAt(false)
+    screen.getByTestId('persistent-input').focus()
+    ;(document.activeElement as HTMLElement).blur()
+    expect(document.activeElement).toBe(document.body)
+
+    rerender(
+      <ChatModePanel
+        state={baseState({ chat_history: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }] })}
+        disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    // The focus effect is keyed purely on the chatStreamActive
+    // true -> false edge -- it never fired here, so body-focus (an
+    // unrelated, pre-existing state) is left exactly as it was.
+    expect(document.activeElement).toBe(document.body)
+  })
+})

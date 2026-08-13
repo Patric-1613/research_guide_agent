@@ -70,9 +70,15 @@ export function getUserFacingErrorMessage(err: unknown): string {
     if (err.safeMessage) return err.safeMessage
     return `Something went wrong (${err.status}). Please try again.`
   }
-  // Unknown/network/parse failure: preserve the app's existing generic
-  // fallback behavior exactly (String(err), the same expression
-  // useCurationSession's own runAction already used) -- not something
-  // this phase changes.
-  return String(err)
+  // UXH.3: every non-ApiError value -- an unexpected Error/TypeError (raw
+  // .message could be an internal exception string, a stack fragment, a
+  // URL, a file path, or a third-party provider's own error text), a raw
+  // string, a plain object, null, undefined, or an AbortError that
+  // reached this far instead of being suppressed by its own caller (chat/
+  // report streaming's own controller.signal.aborted checks already
+  // handle the normal cancellation path before this function is ever
+  // called -- see useCurationSession.ts) -- collapses to this one
+  // concise, generic, safe message. Never String(err): that previously
+  // exposed whatever text the thrown value happened to carry, unfiltered.
+  return 'Something went wrong. Please try again.'
 }

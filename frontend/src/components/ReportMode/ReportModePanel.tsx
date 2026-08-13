@@ -159,6 +159,37 @@ export function ReportModePanel({
 }: ReportModePanelProps) {
   const generating = reportStreamActive && reportStreamOperation === 'generate'
   const regenerating = reportStreamActive && reportStreamOperation === 'regenerate'
+
+  // UXH.3: Generate/Regenerate and Stop share one slot each (a
+  // conditional ternary, not a CSS toggle -- see ReportStreamStopButton's
+  // own docstring above), so React unmounts one real button and mounts a
+  // different one on every start/settle. Stop is also `disabled` for the
+  // whole "Stopping" window (reportStreamStopping), which blurs it to
+  // document.body immediately on click, well before the cancellation
+  // actually finishes settling -- so by the time reportStreamActive
+  // finally flips back to false (completion OR cancellation both route
+  // through the same settle path; see runReportStreamOperation), body is
+  // already the reliable signal that the control which used to hold
+  // focus is gone. generateButtonRef only exists in the no-report view;
+  // if a first-ever Generate just succeeded, that view is replaced
+  // entirely by the with-report view (regenerateButtonRef) before this
+  // effect runs, so a completed 'generate' falls back to Regenerate --
+  // the only comparable command still on screen.
+  const generateButtonRef = useRef<HTMLButtonElement>(null)
+  const regenerateButtonRef = useRef<HTMLButtonElement>(null)
+  const prevReportStreamRef = useRef<{ active: boolean; operation: 'generate' | 'regenerate' | null }>({
+    active: false, operation: null,
+  })
+  useEffect(() => {
+    const prev = prevReportStreamRef.current
+    prevReportStreamRef.current = { active: reportStreamActive, operation: reportStreamOperation }
+    if (prev.active && !reportStreamActive && document.activeElement === document.body) {
+      const target = prev.operation === 'generate'
+        ? (generateButtonRef.current ?? regenerateButtonRef.current)
+        : regenerateButtonRef.current
+      target?.focus()
+    }
+  }, [reportStreamActive, reportStreamOperation])
   // report-quality Phase R2C: initialized from the current report's own
   // template (defaulting to analytical before a first generation), kept
   // in sync whenever the ACTIVE report's template changes underneath
@@ -191,13 +222,18 @@ export function ReportModePanel({
         <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
         {generating ? (
           <div data-testid="report-stream-progress" className="flex flex-col items-center gap-2">
-            <span data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
+            {/* UXH.3: this label was missing role="status"/aria-live=
+                "polite" -- its Regenerate sibling above already carries
+                both. Text/behavior otherwise unchanged; this phase only
+                adds the missing semantics, not new visual treatment. */}
+            <span role="status" aria-live="polite" data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
               {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
             </span>
             <ReportStreamStopButton onCancel={onCancelReportStream} stopping={reportStreamStopping} compact={false} />
           </div>
         ) : (
           <button
+            ref={generateButtonRef}
             type="button"
             data-testid="generate-report"
             onClick={() => onGenerateReport(selectedTemplate, refinementMode)}
@@ -258,6 +294,7 @@ export function ReportModePanel({
             <ReportStreamStopButton onCancel={onCancelReportStream} stopping={reportStreamStopping} compact />
           ) : (
             <button
+              ref={regenerateButtonRef}
               type="button"
               data-testid="regenerate-report"
               onClick={() => onRegenerateReport(selectedTemplate, refinementMode)}

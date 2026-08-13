@@ -83,6 +83,21 @@ export function ChatModePanel({
   // -- no need to handle overlapping optimistic messages.
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // UXH.3: the persistent text input -- also the focus-restoration target
+  // once a stream settles (see the effect below). Send and Stop are both
+  // plain <button> elements at the same ternary slot, so React reuses the
+  // one underlying DOM node across the swap (same host type) -- a click
+  // that focused Send keeps that focus straight through it becoming
+  // Stop, no loss there. The real gap is the persistent input itself:
+  // the common keyboard flow (type a message, press Enter) leaves focus
+  // ON the input, which then goes from enabled to `disabled` for the
+  // whole in-flight window -- real browsers blur a focused control the
+  // instant it becomes disabled (HTML spec), dropping focus to
+  // document.body, and nothing previously restored it once the input
+  // re-enabled. Nothing here acts on the ACTIVE-start transition itself:
+  // the input is legitimately disabled then, so there's nothing useful to
+  // focus back to until the round trip actually finishes.
+  const inputRef = useRef<HTMLInputElement>(null)
   // UXH.1b: the scrollable transcript itself -- read on every scroll event
   // (handleScroll below) to track whether the user is currently near its
   // bottom edge, so the auto-scroll effect further below can tell "the
@@ -259,6 +274,32 @@ export function ChatModePanel({
       bottomRef.current?.scrollIntoView({ block: 'end' })
     }
   }, [state.chat_history.length, pendingMessage, chatStreamActive, chatStreamPhase, chatStreamText])
+
+  // UXH.3: restores keyboard focus to the text input once a stream
+  // settles (completes OR is cancelled) -- chatStreamActive going
+  // true -> false is the one signal common to both, since cancellation
+  // still routes through the same clearChatStreamPreview() that a normal
+  // completion does (see useCurationSession's sendChatMessageStreaming).
+  // Only acts when focus actually fell to document.body -- the same
+  // "operation's own control was what held focus, and it just got
+  // removed/disabled out from under it" signal the Send/Stop button swap
+  // and the input's own `disabled` toggle both produce natively. If the
+  // user had deliberately moved focus somewhere else first (e.g. the
+  // references toggle, which stays enabled during a stream), activeElement
+  // is that element, not body, and this intentionally does nothing --
+  // never steals focus from a control the user chose. wasStreamActiveRef
+  // resets with the component (a session switch away from Chat mode
+  // unmounts this panel entirely -- see CurationWorkspacePage's own
+  // conditional render), so a stale prior session can never trigger a
+  // focus change in a freshly mounted instance.
+  const wasStreamActiveRef = useRef(false)
+  useEffect(() => {
+    const wasActive = wasStreamActiveRef.current
+    wasStreamActiveRef.current = chatStreamActive
+    if (wasActive && !chatStreamActive && document.activeElement === document.body) {
+      inputRef.current?.focus()
+    }
+  }, [chatStreamActive])
 
   // curation-chat-metadata Phase 1: shown once, next to the FIRST
   // web-backed assistant answer only -- purely derived from chat_history
@@ -527,6 +568,7 @@ export function ChatModePanel({
         )}
         <div className="flex items-center gap-2">
           <input
+            ref={inputRef}
             data-testid="persistent-input"
             value={text}
             onChange={(e) => setText(e.target.value)}

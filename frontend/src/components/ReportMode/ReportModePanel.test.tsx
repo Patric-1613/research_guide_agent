@@ -1033,6 +1033,14 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
       expect(screen.queryByText('No report yet for this review.')).not.toBeInTheDocument()
     })
 
+    it('UXH.3: the phase label is a live region -- previously missing here, unlike its Regenerate sibling', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
+
+      const label = screen.getByTestId('report-stream-phase-label')
+      expect(label).toHaveAttribute('role', 'status')
+      expect(label).toHaveAttribute('aria-live', 'polite')
+    })
+
     it('replaces Generate with Stop while active, in the same stable slot', () => {
       renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'generating' })
 
@@ -1122,6 +1130,56 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
 
       expect(screen.getByTestId('generate-report')).toBeEnabled()
       expect(screen.queryByTestId('report-stream-stop')).not.toBeInTheDocument()
+    })
+
+    it('UXH.3: focus returns to Generate once a completed/cancelled stream removes Stop, when Stop had held focus', () => {
+      const { rerender } = render(
+        <ReportModePanel
+          state={baseState()} disabled onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="generate" reportStreamPhase="generating"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      screen.getByTestId('report-stream-stop').focus()
+      expect(document.activeElement).toBe(screen.getByTestId('report-stream-stop'))
+
+      rerender(
+        <ReportModePanel
+          state={baseState()} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(document.activeElement).toBe(screen.getByTestId('generate-report'))
+    })
+
+    it('UXH.3: a completed first-ever Generate falls back to focusing Regenerate once the report view replaces the empty view', () => {
+      const { rerender } = render(
+        <ReportModePanel
+          state={baseState()} disabled onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="generate" reportStreamPhase="generating"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      screen.getByTestId('report-stream-stop').focus()
+
+      // The stream completed WITH a report -- the empty view (and its own
+      // generateButtonRef target) is gone, replaced by the full report
+      // view showing Regenerate instead.
+      rerender(
+        <ReportModePanel
+          state={baseState({ report: reportStub() })} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(document.activeElement).toBe(screen.getByTestId('regenerate-report'))
     })
   })
 
@@ -1266,6 +1324,90 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
         expect(screen.getByTestId('report-stream-phase-label')).toHaveTextContent(label)
         unmount()
       }
+    })
+
+    it('UXH.3: focus returns to Regenerate once a completed/cancelled stream removes Stop, when Stop had held focus', () => {
+      const state = baseState({ report: reportStub() })
+      const { rerender } = render(
+        <ReportModePanel
+          state={state} disabled onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="regenerate" reportStreamPhase="generating"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      screen.getByTestId('report-stream-stop').focus()
+      expect(document.activeElement).toBe(screen.getByTestId('report-stream-stop'))
+
+      rerender(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(document.activeElement).toBe(screen.getByTestId('regenerate-report'))
+    })
+
+    it('UXH.3: does not steal focus from a control the user deliberately focused before the stream settled', () => {
+      const state = baseState({ report: reportStub() })
+      // disabled=false here is a component-level-only combination (the
+      // real app always disables every other control while a report
+      // stream is active) -- used purely to exercise "the user focused
+      // something else and it stayed focusable," which this component's
+      // own effect must still respect regardless of what the real
+      // disabled-prop composition happens to be upstream.
+      const { rerender } = render(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive reportStreamOperation="regenerate" reportStreamPhase="generating"
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      screen.getByTestId('report-template-option-foundational').focus()
+      expect(document.activeElement).toBe(screen.getByTestId('report-template-option-foundational'))
+
+      rerender(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(document.activeElement).toBe(screen.getByTestId('report-template-option-foundational'))
+    })
+
+    it('UXH.3: an ordinary re-render with no stream ever active never moves focus', () => {
+      const state = baseState({ report: reportStub() })
+      const { rerender } = render(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      screen.getByTestId('report-template-option-expert').focus()
+
+      // A re-render triggered by something unrelated (e.g. a version list
+      // update) -- reportStreamActive stays false throughout, so the
+      // focus effect's own true -> false edge never fires.
+      rerender(
+        <ReportModePanel
+          state={{ ...state, report_versions: [{ version_id: 'v1', version_number: 1, created_at: null, report_template: 'analytical', generation_reason: 'initial', is_active: true }] }}
+          disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      expect(document.activeElement).toBe(screen.getByTestId('report-template-option-expert'))
     })
   })
 })

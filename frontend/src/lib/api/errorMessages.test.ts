@@ -115,10 +115,43 @@ describe('getUserFacingErrorMessage', () => {
     expect(getUserFacingErrorMessage(err)).toBe('Something went wrong (500). Please try again.')
   })
 
-  it('preserves the existing generic fallback for a non-ApiError (network failure)', () => {
+  it('UXH.3: an unexpected Error never exposes its raw message text', () => {
     const err = new Error('network down')
-    expect(getUserFacingErrorMessage(err)).toBe(String(err))
-    expect(getUserFacingErrorMessage(err)).toBe('Error: network down')
+    const message = getUserFacingErrorMessage(err)
+    expect(message).toBe('Something went wrong. Please try again.')
+    expect(message).not.toContain('network down')
+  })
+
+  it('UXH.3: a TypeError (e.g. a thrown coding defect) still returns the safe generic fallback', () => {
+    const err = new TypeError("Cannot read properties of undefined (reading 'foo')")
+    expect(getUserFacingErrorMessage(err)).toBe('Something went wrong. Please try again.')
+  })
+
+  it('UXH.3: a raw thrown string never renders verbatim', () => {
+    expect(getUserFacingErrorMessage('/Users/someone/secret/path.ts:42')).toBe('Something went wrong. Please try again.')
+  })
+
+  it('UXH.3: a plain thrown object never stringifies into the message', () => {
+    expect(getUserFacingErrorMessage({ some: 'internal', detail: 'object' })).toBe('Something went wrong. Please try again.')
+  })
+
+  it('UXH.3: null and undefined both return the safe generic fallback', () => {
+    expect(getUserFacingErrorMessage(null)).toBe('Something went wrong. Please try again.')
+    expect(getUserFacingErrorMessage(undefined)).toBe('Something went wrong. Please try again.')
+  })
+
+  it('UXH.3: an AbortError that reaches this function is not presented as a scary failure', () => {
+    const err = new DOMException('The operation was aborted.', 'AbortError')
+    const message = getUserFacingErrorMessage(err)
+    expect(message).toBe('Something went wrong. Please try again.')
+    expect(message).not.toMatch(/abort/i)
+  })
+
+  it('UXH.3: a raw error message containing a URL or file path is never leaked', () => {
+    const err = new Error('fetch failed for https://internal.example.com/api/v9/secret?key=abc123')
+    const message = getUserFacingErrorMessage(err)
+    expect(message).not.toMatch(/https?:\/\//)
+    expect(message).not.toContain('secret')
   })
 
   it('never includes a raw response object/body in the returned message for any case above', () => {
