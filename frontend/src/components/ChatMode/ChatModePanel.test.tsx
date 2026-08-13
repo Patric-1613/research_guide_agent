@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatModePanel } from './ChatModePanel'
@@ -1196,14 +1196,31 @@ describe('ChatModePanel -- curation-chat-edit Phase 5: editing a user question',
   })
 })
 
-describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references panel', () => {
+describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3 / UXH.1b: chat references disclosure', () => {
   it('hides the Chat references panel when chat_references is empty', () => {
     render(<ChatModePanel state={baseState({ chat_references: [] })} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
+    expect(screen.queryByTestId('chat-references-toggle')).not.toBeInTheDocument()
     expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
 
-  it('renders the Chat references panel when chat_references is provided', () => {
+  it('UXH.1b: the toggle shows "References (N)" and is collapsed by default -- the list is not rendered', () => {
+    const state = baseState({
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+        { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    const toggle = screen.getByTestId('chat-references-toggle')
+    expect(toggle).toHaveTextContent('References (2)')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
+  })
+
+  it('UXH.1b: clicking the toggle expands the panel, renders ReferencesList, and its aria-controls target exists', async () => {
+    const user = userEvent.setup()
     const state = baseState({
       chat_history: [
         { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
@@ -1215,13 +1232,43 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
     })
     render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
+    const toggle = screen.getByTestId('chat-references-toggle')
+    await user.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const controlsId = toggle.getAttribute('aria-controls')
+    expect(controlsId).toBeTruthy()
+    expect(document.getElementById(controlsId as string)).toBeInTheDocument()
     const panel = screen.getByTestId('chat-references')
     expect(panel).toBeInTheDocument()
     expect(screen.getByText('Chat references')).toBeInTheDocument()
     expect(screen.getByText('Uthor, A. (2024). Paper One.')).toBeInTheDocument()
+
+    // Collapsing again hides the list.
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
 
-  it('a web chat reference shows the Globe icon; a paper chat reference does not', () => {
+  it('UXH.1b: the expanded panel has a bounded max height with internal scrolling', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+      ],
+    })
+    render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    await user.click(screen.getByTestId('chat-references-toggle'))
+
+    const panel = screen.getByTestId('chat-references')
+    const panelWrapper = panel.parentElement as HTMLElement
+    expect(panelWrapper.className).toContain('max-h-')
+    expect(panelWrapper.className).toContain('overflow-y-auto')
+  })
+
+  it('a web chat reference shows the Globe icon; a paper chat reference does not', async () => {
+    const user = userEvent.setup()
     const state = baseState({
       chat_references: [
         { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
@@ -1229,25 +1276,29 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
       ],
     })
     render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+    await user.click(screen.getByTestId('chat-references-toggle'))
 
     expect(screen.getByTestId('chat-reference-web-icon-2')).toHaveAttribute('aria-label', 'Web source')
     expect(screen.queryByTestId('chat-reference-web-icon-1')).not.toBeInTheDocument()
   })
 
-  it('a chat reference link opens in a new tab, same as report references', () => {
+  it('a chat reference link opens in a new tab, same as report references', async () => {
+    const user = userEvent.setup()
     const state = baseState({
       chat_references: [
         { number: 1, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
       ],
     })
     render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+    await user.click(screen.getByTestId('chat-references-toggle'))
 
     const link = screen.getByRole('link', { name: 'Web Article. x.com.' })
     expect(link).toHaveAttribute('href', 'https://x.com')
     expect(link).toHaveAttribute('target', '_blank')
   })
 
-  it('an inline [N] marker in an assistant message links to its own chat-ref anchor, distinct from a report ref anchor', () => {
+  it('an inline [N] marker in an assistant message links to its own chat-ref anchor, distinct from a report ref anchor', async () => {
+    const user = userEvent.setup()
     const state = baseState({
       chat_history: [
         { role: 'user', content: 'what is RoCoFT?', exchange_id: 'ex-1' },
@@ -1260,7 +1311,59 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
     render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
 
     expect(screen.getByTestId('citation-marker-1')).toHaveAttribute('href', '#chat-ref-1')
+    await user.click(screen.getByTestId('chat-references-toggle'))
     expect(document.getElementById('chat-ref-1')).toBeInTheDocument()
+  })
+
+  it('UXH.1b: opening the disclosure persists across a same-session update (new reference arriving) -- stays open', async () => {
+    const user = userEvent.setup()
+    const state1 = baseState({
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+      ],
+    })
+    const { rerender } = render(<ChatModePanel state={state1} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    const toggle = screen.getByTestId('chat-references-toggle')
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    // Same session_id, a new reference has arrived (e.g. a fresh answer).
+    const state2 = baseState({
+      chat_references: [
+        ...state1.chat_references,
+        { number: 2, kind: 'web', title: 'Web Article', formatted: 'Web Article. x.com.', url: 'https://x.com', link_url: 'https://x.com' },
+      ],
+    })
+    rerender(<ChatModePanel state={state2} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    expect(screen.getByTestId('chat-references-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('chat-references-toggle')).toHaveTextContent('References (2)')
+  })
+
+  it('UXH.1b: switching to a different session resets the disclosure to collapsed', async () => {
+    const user = userEvent.setup()
+    const state1 = baseState({
+      session_id: 's1',
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper One', formatted: 'Uthor, A. (2024). Paper One.', paper_id: 'p1', link_url: null },
+      ],
+    })
+    const { rerender } = render(<ChatModePanel state={state1} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    await user.click(screen.getByTestId('chat-references-toggle'))
+    expect(screen.getByTestId('chat-references-toggle')).toHaveAttribute('aria-expanded', 'true')
+
+    const state2 = baseState({
+      session_id: 's2',
+      chat_references: [
+        { number: 1, kind: 'paper', title: 'Paper Two', formatted: 'Uthor, B. (2024). Paper Two.', paper_id: 'p2', link_url: null },
+      ],
+    })
+    rerender(<ChatModePanel state={state2} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />)
+
+    expect(screen.getByTestId('chat-references-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
 
   it('an old chat fixture with no chat_references field renders safely (pre-Chunk-2 shape reaching the panel)', () => {
@@ -1275,6 +1378,7 @@ describe('ChatModePanel -- report-quality Phase R3.2 Chunk 3: chat references pa
     expect(() =>
       render(<ChatModePanel state={state} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null} onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()} lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()} chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()} />),
     ).not.toThrow()
+    expect(screen.queryByTestId('chat-references-toggle')).not.toBeInTheDocument()
     expect(screen.queryByTestId('chat-references')).not.toBeInTheDocument()
   })
 })
@@ -1425,5 +1529,166 @@ describe('ChatModePanel -- Usage Protection M4.2B: streaming chat UI', () => {
   it('no sync-failed notice when chatStreamSyncFailed is false', () => {
     renderStreaming({ chatStreamSyncFailed: false })
     expect(screen.queryByTestId('chat-stream-sync-failed')).not.toBeInTheDocument()
+  })
+})
+
+describe('ChatModePanel -- UXH.1b: stream visibility and scrolling', () => {
+  function renderPanel(props: {
+    chatStreamActive?: boolean
+    chatStreamPhase?: string | null
+    chatStreamText?: string
+  }) {
+    return render(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={props.chatStreamActive ?? false}
+        chatStreamPhase={(props.chatStreamPhase as never) ?? null}
+        chatStreamText={props.chatStreamText ?? ''}
+        chatStreamSyncFailed={false} onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+  }
+
+  it('shows "Thinking…" before the first phase arrives', () => {
+    renderPanel({ chatStreamActive: true, chatStreamPhase: null })
+    expect(screen.getByTestId('chat-stream-phase')).toHaveTextContent('Thinking')
+  })
+
+  it('the streaming status row is an accessible live region', () => {
+    renderPanel({ chatStreamActive: true, chatStreamPhase: 'generating' })
+    const status = screen.getByRole('status')
+    expect(status).toHaveAttribute('aria-live', 'polite')
+  })
+
+  it('renders only one processing-status location -- not duplicated elsewhere in the panel', () => {
+    renderPanel({ chatStreamActive: true, chatStreamPhase: 'generating' })
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+
+  it('auto-scrolls into view the moment the stream becomes active', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { rerender } = renderPanel({ chatStreamActive: false })
+    scrollSpy.mockClear()
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(scrollSpy).toHaveBeenCalled()
+    scrollSpy.mockRestore()
+  })
+
+  it('keeps following further phase changes and streamed text deltas', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { rerender } = renderPanel({ chatStreamActive: true, chatStreamPhase: null })
+    scrollSpy.mockClear()
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase="generating" chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(scrollSpy).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase="generating" chatStreamText="Hello" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(scrollSpy).toHaveBeenCalledTimes(2)
+    scrollSpy.mockRestore()
+  })
+
+  it('auto-scrolls again once the canonical reload replaces the temporary row with real chat_history', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { rerender } = renderPanel({ chatStreamActive: true, chatStreamPhase: 'generating', chatStreamText: 'Hello' })
+    scrollSpy.mockClear()
+
+    rerender(
+      <ChatModePanel
+        state={baseState({
+          chat_history: [
+            { role: 'user', content: 'hi' },
+            { role: 'assistant', content: 'Hello' },
+          ],
+        })}
+        disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive={false} chatStreamPhase={null} chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+    expect(scrollSpy).toHaveBeenCalled()
+    scrollSpy.mockRestore()
+  })
+
+  it('does not fight a user who has deliberately scrolled up to read earlier turns', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { rerender } = renderPanel({ chatStreamActive: true, chatStreamPhase: null })
+
+    const container = screen.getByTestId('chat-scroll-container')
+    Object.defineProperty(container, 'scrollTop', { value: 0, configurable: true })
+    Object.defineProperty(container, 'scrollHeight', { value: 2000, configurable: true })
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true })
+    fireEvent.scroll(container)
+    scrollSpy.mockClear()
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase="generating" chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(scrollSpy).not.toHaveBeenCalled()
+    scrollSpy.mockRestore()
+  })
+
+  it('resumes auto-scrolling once the user scrolls back near the bottom', () => {
+    const scrollSpy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { rerender } = renderPanel({ chatStreamActive: true, chatStreamPhase: null })
+
+    const container = screen.getByTestId('chat-scroll-container')
+    Object.defineProperty(container, 'scrollTop', { value: 0, configurable: true })
+    Object.defineProperty(container, 'scrollHeight', { value: 2000, configurable: true })
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true })
+    fireEvent.scroll(container) // scrolled away
+
+    Object.defineProperty(container, 'scrollTop', { value: 1650, configurable: true }) // back near bottom
+    fireEvent.scroll(container)
+    scrollSpy.mockClear()
+
+    rerender(
+      <ChatModePanel
+        state={baseState()} disabled={false} onSendMessage={vi.fn()} lastSearchMeta={null}
+        onDeleteExchanges={vi.fn()} reportPossiblyStale={false} onAddExchangesToReport={vi.fn()}
+        lastAddToReportResult={null} onEditExchange={vi.fn()} onDismissReportStaleWarning={vi.fn()}
+        chatStreamActive chatStreamPhase="generating" chatStreamText="" chatStreamSyncFailed={false}
+        onCancelChatStream={vi.fn()} onRetrySync={vi.fn()}
+      />,
+    )
+
+    expect(scrollSpy).toHaveBeenCalled()
+    scrollSpy.mockRestore()
   })
 })

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { CircleStop } from 'lucide-react'
+import { useEffect, useRef, useState, type KeyboardEvent, type UIEvent } from 'react'
+import { ChevronDown, ChevronUp, CircleStop } from 'lucide-react'
 import type { ChatStreamPhase, CurationStateResponse } from '../../types'
 import type { AddToReportResult, ChatSearchMeta } from '../../hooks/useCurationSession'
 import { ChatMessage } from '../TurnFeed/ChatMessage'
@@ -83,6 +83,40 @@ export function ChatModePanel({
   // -- no need to handle overlapping optimistic messages.
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // UXH.1b: the scrollable transcript itself -- read on every scroll event
+  // (handleScroll below) to track whether the user is currently near its
+  // bottom edge, so the auto-scroll effect further below can tell "the
+  // user is following along" apart from "the user deliberately scrolled up
+  // to read earlier turns" and only force-scroll in the former case.
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // UXH.1b: updated synchronously on every real scroll event (including
+  // the ones our own scrollIntoView calls below produce), NOT on a timer
+  // and NOT recomputed inside the auto-scroll effect itself -- computing
+  // it there would already see the just-appended content's height and
+  // wrongly conclude "not near bottom" even when the user was exactly at
+  // the bottom a moment ago. Starts true so the first render (and a fresh
+  // session) auto-scrolls same as before this phase.
+  const pinnedToBottomRef = useRef(true)
+  const NEAR_BOTTOM_THRESHOLD_PX = 80
+
+  function handleScroll(e: UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget
+    pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_THRESHOLD_PX
+  }
+
+  // curation-chat-references disclosure (UXH.1b): collapsed by default,
+  // and reset to collapsed whenever the open session changes -- see the
+  // session-keyed effect below. Otherwise persists across re-renders
+  // (including new references arriving mid-session) since it's plain
+  // state, satisfying "preserve the user's current open/closed choice
+  // within the same session" without any extra code.
+  const [referencesOpen, setReferencesOpen] = useState(false)
+  const referencesPanelId = 'chat-references-panel'
+
+  useEffect(() => {
+    pinnedToBottomRef.current = true
+    setReferencesOpen(false)
+  }, [state.session_id])
 
   // curation-chat-select Phase 2 / curation-chat-delete Phase 3 /
   // curation-chat-add-to-report Phase 4 / curation-chat-edit Phase 5:
@@ -209,9 +243,22 @@ export function ChatModePanel({
     handleClearSelection()
   }
 
+  // UXH.1b: reacts to every visible change in the streaming turn -- the
+  // pending user bubble, the stream becoming active at all, each phase
+  // transition, each accumulated delta, AND the canonical reload that
+  // replaces the temporary row with real chat_history -- not just
+  // chat_history.length/pendingMessage as before. That gap was the root
+  // cause of the temporary status/answer row rendering invisibly below
+  // the fold on any transcript that already needed scrolling: nothing
+  // ever told the viewport to follow it into view until the round trip
+  // had already finished. Only actually scrolls when the user was already
+  // near the bottom (pinnedToBottomRef, tracked by handleScroll above) --
+  // never fights a deliberate scroll up to re-read earlier turns.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [state.chat_history.length, pendingMessage])
+    if (pinnedToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [state.chat_history.length, pendingMessage, chatStreamActive, chatStreamPhase, chatStreamText])
 
   // curation-chat-metadata Phase 1: shown once, next to the FIRST
   // web-backed assistant answer only -- purely derived from chat_history
@@ -265,7 +312,12 @@ export function ChatModePanel({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-3">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        data-testid="chat-scroll-container"
+        className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-3"
+      >
         {state.chat_history.length === 0 && (
           <p className="text-center text-sm text-text-muted">Report ready. Ask a question about the selected papers below.</p>
         )}
@@ -312,7 +364,11 @@ export function ChatModePanel({
             streamed answer text, so the surrounding layout doesn't jump. */}
         {chatStreamActive && (
           <div data-testid="chat-stream-response" className="flex items-start justify-start gap-1.5">
-            <div className="min-h-[2.25rem] max-w-[80%] rounded-lg border border-border bg-panel-alt px-3 py-2 text-sm text-text">
+            <div
+              role="status"
+              aria-live="polite"
+              className="min-h-[2.25rem] max-w-[80%] rounded-lg border border-border bg-panel-alt px-3 py-2 text-sm text-text"
+            >
               {chatStreamText ? (
                 <span data-testid="chat-stream-text" className="whitespace-pre-wrap break-words">
                   {chatStreamText}
@@ -354,15 +410,40 @@ export function ChatModePanel({
             derive_chat_references' own docstring -- so a marker here
             resolving to [2] carries no relationship to a [2] in the
             report. */}
+        {/* UXH.1b: collapsed by default -- the previously always-expanded
+            panel routinely occupied a large share of the viewport above
+            the composer. Toggle state is plain component state (see
+            referencesOpen above): it persists as new references arrive
+            within the same session, and is reset to collapsed only when
+            the open session itself changes. */}
         {state.chat_references.length > 0 && (
           <div className="mb-2">
-            <ReferencesList
-              references={state.chat_references}
-              heading="Chat references"
-              sectionTestId="chat-references"
-              idPrefix="chat-ref"
-              entryTestIdPrefix="chat-reference"
-            />
+            <button
+              type="button"
+              data-testid="chat-references-toggle"
+              onClick={() => setReferencesOpen((open) => !open)}
+              aria-expanded={referencesOpen}
+              aria-controls={referencesPanelId}
+              className="flex w-full items-center justify-between rounded-md border border-border bg-panel-alt px-2.5 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-accent"
+            >
+              <span>References ({state.chat_references.length})</span>
+              {referencesOpen ? (
+                <ChevronUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              )}
+            </button>
+            {referencesOpen && (
+              <div id={referencesPanelId} className="mt-1 max-h-48 overflow-y-auto">
+                <ReferencesList
+                  references={state.chat_references}
+                  heading="Chat references"
+                  sectionTestId="chat-references"
+                  idPrefix="chat-ref"
+                  entryTestIdPrefix="chat-reference"
+                />
+              </div>
+            )}
           </div>
         )}
         {reportPossiblyStale && (
