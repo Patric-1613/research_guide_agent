@@ -791,6 +791,19 @@ turns plus the most recent exchanges. No summary is ever exposed as a
 chat message or as a citable source; see `docs/architecture.md`'s
 "Usage Protection M3" section for the full design.
 
+Curation chat and report generation/regeneration both stream real-time
+progress over Server-Sent Events — phase-first (e.g. "Checking sources",
+"Generating report", "Saving"), never token-by-token, since the current
+OpenAI SDK's own structured-output streaming doesn't expose a smoothly
+growing partial string for this schema shape. Every existing synchronous
+endpoint (`/chat`, `/report`, `/report/regenerate`) is unchanged and
+remains fully available. Cancelling a stream aborts the request and
+reloads the real, persisted state — since the underlying provider/save
+call runs in a thread pool Python cannot forcibly interrupt, cancellation
+waits for that work to genuinely settle rather than claiming to be
+instantaneous. See `docs/architecture.md`'s "Usage Protection M4" section
+for the full design, including live browser validation.
+
 ## Known limitations
 
 - Abstracts only — no PDF full-text ingestion (out of scope for v1).

@@ -2619,12 +2619,206 @@ invented:
 - **Priority**: open, none scheduled — real work, doesn't block M4.
 - **Status**: Open.
 
-**M1/M2/M3 are complete for the current single-user SQLite
+### Usage Protection M4: chat and report response streaming — complete
+- **Goal**: give curation chat and report generation/regeneration real-
+  time progress over Server-Sent Events, phase-first (never token-by-
+  token — see M4.1's own SDK finding below), while every existing
+  synchronous endpoint stays completely unchanged and remains the
+  default for any client that hasn't adopted streaming.
+- **M4.1 — protocol foundation and structured-stream feasibility**
+  (`research_agent/sse.py`, `research_agent/chat_streaming.py`, new;
+  `frontend/src/lib/api/sseDecoder.ts`, new, unwired): pure foundation,
+  no live route yet. Tested directly against the installed
+  `openai==2.44.0` SDK (not assumed): structured-output streaming's own
+  `ContentDeltaEvent.parsed` omits an in-progress string field entirely
+  (via `jiter`'s `partial_mode=True`, hardcoded inside the SDK's own
+  accumulator with no public override) rather than including a
+  truncated prefix — the `answer` field stays `None` almost the entire
+  stream, then appears complete in one jump. This is why M4's own
+  product contract everywhere is "phase-first, answer may arrive as one
+  large delta," never a token-by-token promise. `LangGraph interrupt_
+  before` was tested and rejected as a pause/resume mechanism for the
+  QA graph — confirmed directly that resuming a paused, checkpointer-
+  less graph reruns every preceding node from `START` a second time,
+  not from the interrupt point. `stream_chat_answer` (one real
+  `client.chat.completions.stream(...)` call, a monotonic-suffix delta
+  algorithm, citations read only from the terminal completion) proves
+  the adapter is real and safe even though token-level streaming isn't
+  possible for this schema shape. Tests: `tests/test_sse.py`, `tests/
+  test_chat_streaming.py` (new), `frontend/src/lib/api/sseDecoder.
+  test.ts` (new). Status: complete. Commit: `27e7439`.
+- **M4.2A — curation-chat streaming backend** (`research_agent/
+  curation_chat_streaming.py`, new; `research_agent/usage_guard.py`
+  extended with `open_admission_and_lease_for_streaming`/`Streaming
+  LeaseHandle`; `research_agent/services/curation_chat_service.py`,
+  `research_agent/api_app/routers/curation_chat.py` extended): `POST /
+  curation/{session_id}/chat/stream`, alongside the unchanged `POST /
+  curation/{session_id}/chat`. A real production bug was found
+  empirically during this chunk, not by inspection alone — driving
+  `guard_paid_action`'s combined admission+lease+telemetry context by
+  hand across the route-handler/generator boundary raised a real
+  `contextvars.Token` cross-Context `ValueError` under a genuine
+  `TestClient`-driven test (Starlette's own ASGI-fallback path spawns
+  the streaming generator in a separate Task with a copied `Context`).
+  Fixed by splitting the guard: admission+lease (no `contextvars`
+  involved) acquired synchronously before any `StreamingResponse`
+  exists; `telemetry.paid_action` opened entirely inside the async
+  generator's own body, in one uninterrupted execution frame — proven
+  safe across a genuinely spawned Task boundary by a dedicated
+  regression test. This split-guard pattern is the template both M4.2B
+  and M4.3A reuse identically. Tests: `tests/test_usage_guard_
+  streaming.py`, `tests/test_qa_prepare_turn.py`, `tests/test_curation_
+  chat_streaming.py`, `tests/test_curation_chat_stream_api.py`, `tests/
+  test_curation_chat_stream_service.py` (all new). Full backend suite:
+  **1893 passed**. Status: complete. Commit: `2491322`.
+- **M4.2A lifecycle-hardening fix** (same day): a handled failure
+  previously self-converted to `error`+`done` and returned normally
+  from inside the `telemetry.paid_action` block, leaving the top-level
+  row `outcome="success"` for a turn that actually failed — fixed via a
+  new typed `HandledStreamFailure` that propagates out of that block
+  before being caught and converted, one layer up. A shielded
+  persistence task could previously let the lease release before the
+  save genuinely settled on outer cancellation — fixed by retaining the
+  save as an explicit `asyncio.Task` and `asyncio.wait`-ing it (never a
+  bare re-`await`) before re-raising. Both proven with dedicated tests,
+  including a real `threading.Event`-gated mid-save cancellation.
+  Status: complete. Commit: `9592e4d`.
+- **M4.2B — chat-streaming frontend** (`frontend/src/lib/api/
+  chatStream.ts`, new; `frontend/src/hooks/useCurationSession.ts`,
+  `frontend/src/components/ChatMode/ChatModePanel.tsx` extended):
+  fetch+`AbortController` adapter reusing M4.1's `sseDecoder.ts`
+  unchanged; the hook owns the full chat-stream lifecycle and an
+  explicit event-ordering state machine (any violation becomes the same
+  safe transport-error bucket a malformed/truncated stream gets, never
+  a crash); the panel renders one stable temporary-answer area with
+  Send/Stop sharing a single slot. Streaming is the normal submission
+  path; the non-streaming hook method and endpoint are untouched.
+  Tests: `frontend/src/lib/api/chatStream.test.ts` (new), plus
+  extensions to `useCurationSession.test.ts`/`ChatModePanel.test.tsx`.
+  Frontend suite: **358 passed**. Status: complete. Commit: `912f079`.
+- **M4.3A — report-generation/regeneration progress streaming backend**
+  (`research_agent/report_streaming.py`, `research_agent/curation_
+  report_streaming.py`, new; `research_agent/report.py` — two
+  precondition checks extracted verbatim for preflight reuse, one
+  optional backward-compatible `progress_callback` added to `refine_
+  report_if_requested`; `research_agent/services/curation_report_
+  service.py`, `research_agent/api_app/routers/curation_reports.py`
+  extended): `POST /curation/{session_id}/report/stream` and `POST /
+  curation/{session_id}/report/regenerate/stream`, alongside both
+  unchanged synchronous endpoints. Reuses the identical split-guard
+  pattern M4.2A established. Frozen phases (`generating`/`evaluating`/
+  `revising`/`saving`) map to real execution boundaries only — no
+  `finalizing` phase, since reference/section finalization happens
+  synchronously inside the content-producing calls themselves, not as a
+  separately orchestrable step. Initial-generation cache hit performs
+  zero admission/lease/telemetry/provider work and emits `started ->
+  completed -> done` with no phase events. Cancellation during ANY of
+  the four phases (not just persistence, unlike M4.2's own narrower
+  original scope) retains that phase's own thread task and waits for
+  genuine settlement before releasing the lease — provider-call
+  concurrency, not just mutation safety, is the reason, even though
+  generate/evaluate/revise are confirmed pure relative to `session`.
+  Commit-point mutations run against a `copy.deepcopy` of `session`,
+  exposed only after `save_curation_session` succeeds on the copy.
+  Tests: `tests/test_report_streaming.py`, `tests/test_curation_report_
+  stream_service.py`, `tests/test_curation_report_stream_api.py` (all
+  new), `tests/test_report.py` extended. Full backend suite: **1931
+  passed**. Status: complete. Commit: `c04688d`.
+- **M4.3B — report-streaming frontend** (`frontend/src/lib/api/
+  reportStream.ts`, new; `frontend/src/hooks/useCurationSession.ts`,
+  `frontend/src/components/ReportMode/ReportModePanel.tsx` extended):
+  one shared internal generator, two thin wrappers (`streamGenerate
+  Report`/`streamRegenerateReport`); the one payload check beyond
+  M4.2's own framing-only validation — a `completed` event's four
+  always-required `ReportOut` fields are structurally checked before
+  being trusted. `reportStreamError` is its own dedicated hook field
+  (not the shared error banner M4.2 reuses), so a handled report
+  failure surfaces inline in the report panel. Chat and report streams
+  are mutually exclusive at the hook level, not just via page-level
+  `disabled` composition. The empty (Generate) view shows one stable
+  progress area with no partial report shell; the regenerate view keeps
+  the existing report fully visible and undimmed throughout, with
+  Regenerate/Stop sharing one action slot. Cancellation shows a stable
+  "Stopping" state held through the post-cancellation canonical reload
+  — never presented as instantaneous, since the backend may genuinely
+  still be waiting out an in-flight synchronous provider call. Tests:
+  `frontend/src/lib/api/reportStream.test.ts` (new), plus extensions to
+  `useCurationSession.test.ts`/`ReportModePanel.test.tsx`/`App.test.
+  tsx`. Frontend suite: **411 passed**. Status: complete. Commit:
+  `266102d`.
+- **M4.2C/M4.3C — live browser validation**: a real successful chat
+  turn, a real deliberate chat cancellation, a zero-cost report cache-
+  hit check made directly against the real backend, one real Regenerate
+  (refinement off), and one real cancelled Regenerate attempt — all
+  driven against the actual running dev servers (headless-Chromium
+  Playwright for the UI-driven scenarios) on pre-existing disposable
+  sessions only, never an important user session. Confirmed live in
+  both domains: the streaming endpoint (never the sync one) is what the
+  UI actually calls; existing content stays visible during regeneration/
+  ongoing chat; a genuine phase label and a stable Stop/Stopping
+  sequence; canonical reload replacing any temporary preview with the
+  real persisted result and exactly one new exchange/version, with no
+  duplicate after a page refresh; no raw SSE/JSON, no application-error
+  toast for deliberate cancellation, zero new console errors. One
+  unrelated, pre-existing DOM-nesting console warning was found in
+  `ReviewsList/ReviewCard.tsx` (last touched in `6b16baf`, well before
+  any M4 work) — investigated and confirmed not an M4 defect, not
+  fixed as part of this phase. Full narrative and screenshots-equivalent
+  detail in `docs/architecture.md`'s M4 section.
+- **Explicitly not built**: token-by-token structured-answer streaming
+  (not possible against the current SDK/schema shape); report prose/
+  section streaming (no `delta` event exists for reports; no proven
+  non-prose use); heartbeat events; percentage/numeric progress
+  indicators; production reverse-proxy/load testing of long-lived SSE
+  connections; multi-instance streaming coordination (SQLite leases/
+  admission remain single-instance, unchanged from M2); HITL report
+  approval; targeted-section refinement; any change to R4's own bounded
+  refinement loop; auth/deployment hardening.
+- **Location**: see each sub-entry above; full narrative in `docs/
+  architecture.md`'s "Usage Protection M4" section.
+- **Priority**: M4 is now complete. No further milestone is scheduled
+  or invented here — see "M4 follow-on" below for real, unscheduled
+  next-layer work.
+- **Status**: Closed (2026-08-13). Commits: `27e7439` (M4.1), `2491322`
+  (M4.2A), `9592e4d` (M4.2A hardening), `912f079` (M4.2B), `c04688d`
+  (M4.3A), `266102d` (M4.3B). Tagged `m4-chat-report-streaming`.
+
+### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
+- **Goal**: real, useful next-layer streaming work M4 deliberately left
+  open, tracked so it isn't lost, not because it's scheduled.
+- **Items**:
+  - **Token-level structured-answer streaming** — only worth
+    revisiting if a future OpenAI SDK release exposes `jiter`'s own
+    `partial_mode="trailing-strings"` mode publicly, or if the answer
+    schema itself is redesigned to avoid the single-large-string-field
+    shape that makes `partial_mode=True` unhelpful today. Not a bug in
+    this codebase — a documented SDK/schema-shape limitation.
+  - **Report prose/section streaming** — no proven use case yet;
+    revisit only if a real product need for partial report text
+    emerges, not speculatively.
+  - **Production reverse-proxy/load testing of long-lived SSE
+    connections** — this phase validated only against local dev
+    servers (`uvicorn --reload`, Vite dev server); a real deployment
+    (nginx/similar buffering, connection limits, timeout tuning) was
+    never exercised.
+  - **Multi-instance streaming coordination** — unchanged from M2's own
+    already-documented limitation; SQLite-backed admission/leases are
+    not a distributed mechanism.
+  - **HITL report approval / targeted-section refinement** — both
+    remain explicitly out of scope; no redesign of R4's own bounded
+    draft→evaluate→revise loop was made or is planned here.
+  - **Auth and deployment hardening** — unchanged, out of scope for the
+    current single-user architecture.
+- **Priority**: open, none scheduled — real work, doesn't block anything.
+- **Status**: Open.
+
+**M1/M2/M3/M4 are complete for the current single-user SQLite
 architecture.** None of them claims authentication, distributed rate
-limiting, or response streaming — that's explicitly out of scope here,
-tracked as **M4** (chat/report streaming), the immediate next phase.
-No M5 (or any further milestone) exists anywhere in this project's
-prior roadmap docs as of this checkpoint — none is invented here.
+limiting, or production-scale streaming infrastructure — that's
+explicitly out of scope here, tracked in "M4 follow-on" above as real,
+unscheduled work. No M5 (or any further milestone) exists anywhere in
+this project's prior roadmap docs as of this checkpoint — none is
+invented here.
 
 Placeholders below, ready for real entries:
 
