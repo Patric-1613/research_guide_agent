@@ -2783,6 +2783,49 @@ invented:
   (M4.2A), `9592e4d` (M4.2A hardening), `912f079` (M4.2B), `c04688d`
   (M4.3A), `266102d` (M4.3B). Tagged `m4-chat-report-streaming`.
 
+### Post-M4 UX hardening: user-journey verification and closure — complete
+- **Goal**: close concrete desktop journey gaps discovered after M4 without
+  reopening M4's protocol/backend design or starting another feature phase.
+- **UXH.1 — selection/session consistency** (`1cf6d4c`): one deduplicated
+  persisted+staged selected-paper derivation feeds every visible count;
+  staged picks reset between reviews; stale session successes and failures
+  cannot publish after the user switches away.
+- **UXH.1b — chat progress/references** (`f7d45c8`): optimistic input,
+  phases, streamed answer, and canonical replacement remain visible without
+  duplication; auto-scroll respects deliberate scroll-up. Chat References is
+  collapsed by default, count-labelled, accessible, height-bounded, reset on
+  session change, and stable across same-session refreshes.
+- **UXH.2 — action-specific progress** (`81ca35d`): truthful status for
+  starting, continuing, searching-more, and finishing review mutations, with
+  synchronous duplicate/conflicting-submission exclusion; report regeneration
+  retains the existing report and promotes its truthful phase beside Stop.
+- **UXH.3 — focus/live regions/safe errors** (`634b8ac`): chat and report
+  commands restore focus after completion/cancellation when appropriate;
+  progress surfaces are polite live regions; unexpected technical failures use
+  only `Something went wrong. Please try again.`, while structured `ApiError`
+  messages remain unchanged.
+- **Verification**: committed-range inspection found no objective defect and
+  produced no additional code/test commit. Focused frontend verification: **365
+  passed** (8 files). Full frontend verification: **476 passed** (18 files).
+  Production build clean. Lint exit 0 with the same 3 pre-existing warnings.
+  The pre-HEAD Vite process was restarted and localhost module output confirmed
+  current hardened code was served. Deterministic mocked/delayed requests and
+  SSE sequences cover the required journeys; the configured browser controller
+  had no available browser, so this run claims no new interactive screenshot or
+  browser-control evidence. No backend compatibility run was warranted by the
+  frontend-only diff. No paid provider call, production-session mutation,
+  telemetry change, or evaluation-artifact change occurred.
+- **Deferred/remaining**: responsive/mobile redesign is explicitly deferred;
+  the existing desktop/fixed-sidebar layout is unchanged. No new real-provider
+  timing evidence was gathered beyond M4's already-recorded live-browser pass;
+  the existing thread-pool cancellation-settlement limit remains. Repeat the
+  interactive smoke when a browser surface is available if fresh visual
+  evidence is required.
+- **Priority**: closed; verification checkpoint only, no follow-on feature
+  phase invented.
+- **Status**: Closed (2026-08-13). Tagged
+  `uxh-post-m4-user-journey-hardening` at the documentation closure commit.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
