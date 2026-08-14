@@ -3071,6 +3071,89 @@ invented:
   `paper-keywords-filtering-v2` marks this K4 checkpoint's own
   documentation commit.
 
+### Curation checkpoint safety incident and hardening — complete
+- **Goal**: an urgent safety checkpoint, discovered immediately after K4
+  closed: the K4.3 `--apply` run against session
+  `8fa9857f21fb4a2dbd103ca771e54e7b` (recorded above as fully successful
+  and non-destructive) was itself the actual cause of that session's own
+  pending curation interrupt being silently destroyed. Fix the mechanism,
+  fix the resulting frontend dead end, and correct the record.
+- **Incident**: `save_curation_session()` always writes a fresh
+  checkpoint via `curation_session.py`'s smaller `{"session": dict}`-only
+  graph, via a plain `graph.invoke()` -- this unconditionally becomes a
+  thread's new "latest" checkpoint, silently discarding whatever pending
+  task/interrupt `curation_loop.py`'s own graph held for that thread
+  (both graphs share the same thread_id/checkpoint row by LangGraph's own
+  design), with `session.stage` left untouched at `"curate"` and no error
+  raised. K4.1's original safety model asserted `pending_batch` was
+  simply unreachable by `scripts/re_extract_keywords.py` and therefore
+  safe to leave alone -- wrong: the WRITE itself, not the script's own
+  read path, is what destroys it, and the K4.3 `--apply` run against that
+  session was genuinely mid-interrupt at the time.
+- **Fix 1, `4c230b1` -- zero-selection dead end and frontend honesty**:
+  found and fixed two independent, generalizable gaps while investigating
+  the stuck session. (1) The backend never enforced "no zero-selection
+  finish" -- only the frontend's disabled "I'm done" button did; new
+  `session_limits.check_finish_requires_selection()` (409,
+  `reason_code="zero_selection_finish"`, the existing
+  `SessionCapacityError` convention) closes this. (2) `curationAction`'s
+  "Starting new review…" busy state is one hook-wide flag with no session
+  scoping -- new `startingReviewVisible` scopes it to the session open
+  when the action began. `ReviewModePanel.tsx`'s completion view is now
+  gated on `state.stage === "synthesize"`, never merely `!pendingBatch`
+  -- an anomalous `curate`-stage/no-batch session renders an honest,
+  non-mutating status instead of a fabricated "Curation complete."
+  Full backend suite **1985 passed**, frontend **557 passed**.
+- **Fix 2, `66d9e3d` -- the maintenance command itself**: new
+  `curation_loop.has_unresolved_curation_work()` inspects
+  `curation_loop.py`'s own graph snapshot (pending tasks, queued
+  next-nodes, interrupts, task errors). `scripts/re_extract_keywords.py`
+  now refuses `--apply` whenever `session.stage == "curate"` (catches a
+  session whose interrupt was already lost some other way) OR that
+  snapshot check reports unresolved work -- re-checked immediately before
+  the one `save_curation_session()` call, not only at initial load. A
+  refusal exits non-zero, writes nothing, never prints paper content.
+  `--apply` remains available for a session with no unresolved work,
+  positively proven (not assumed) via a real completed session's
+  genuinely empty graph snapshot -- the same mechanism
+  `curation_history_service.py`'s own `reopen_curation()` already uses in
+  production. Regression tests build a REAL interrupted
+  `curation_loop.py` graph (`start_curation_turn`, not just a saved
+  session) and confirm: refusal fires; the graph snapshot is byte-
+  identical before/after; the pending batch stays normally resumable; no
+  save occurred; an already-corrupted (`stage="curate"`, interrupt
+  already gone) session also refuses; dry-run stays non-mutating; a
+  provably-empty completed session still applies successfully. Full
+  backend suite **1992 passed**.
+- **Deferred, found but not fixed**: LangGraph 1.2.9 replays a rejected
+  node's ORIGINAL resume payload on any later retry against the same
+  still-pending task, rather than the caller's corrected one -- confirmed
+  by direct instrumented tracing during Fix 2's own investigation, not
+  assumed. Affects both `zero_selection_finish` and the pre-existing
+  `selected_paper_limit_reached` rejection paths; the new 409 guard closes
+  the "can a review finish with zero papers" gap but does NOT by itself
+  give a retryable user journey for either. Resolving it needs a
+  LangGraph-version-specific fix or a checkpoint/interrupt-payload
+  redesign -- out of scope for a checkpoint-safety patch scoped to
+  refusing an unsafe write. See this file's own Technical Debt section
+  for the full entry.
+- **Residual, explicit**: session `8fa9857f21fb4a2dbd103ca771e54e7b`
+  remains unrecovered -- its pending interrupt cannot be reconstructed by
+  this or any current tool, and no automatic or manual repair was
+  attempted (repairing a named session requires a separate, explicitly
+  approved decision, not a side effect of a safety patch). Its
+  `reserve`/`selected_papers`/`turn_history` keywords are `yake-v2` (from
+  the K4.3 run); its actual pending batch (10 papers) was never refreshed
+  and is not recoverable by any tool that exists today.
+- **Priority**: closed; no further checkpoint scheduled for this
+  incident specifically -- the LangGraph retry-replay item above remains
+  open technical debt.
+- **Status**: Closed (2026-08-14). Commits: `4c230b1` (zero-selection +
+  frontend fix), `66d9e3d` (maintenance-command safety patch), plus this
+  checkpoint's own docs/publication commit. No new milestone tag --
+  neither `paper-keywords-filtering` nor `paper-keywords-filtering-v2`
+  moved.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
@@ -3190,6 +3273,47 @@ today, cross-referenced to where each item is already tracked in detail:
   Phase 22 ("Config/deployment foundation") is the natural place this
   would eventually get picked up, if the production-readiness arc is
   ever started.
+- **LangGraph 1.2.9 replays a rejected node's ORIGINAL resume payload on
+  retry, not the caller's new one — confirmed directly, not fixed.**
+  Found during the curation-checkpoint-safety patch (`66d9e3d`): when
+  `curation_loop.py`'s `_present_and_apply_node` raises
+  `SessionCapacityError` (either existing reason code,
+  `selected_paper_limit_reached`, or the new `zero_selection_finish`
+  added in `4c230b1`) after `interrupt()` has already returned a resume
+  payload, the pending task is correctly left resumable (`snap.tasks[0].
+  interrupts` still present, confirmed by direct inspection) — but a
+  SUBSEQUENT `resume_curation_turn()`/`Command(resume=...)` call against
+  that SAME still-pending task, even with a genuinely different,
+  corrected `picked_paper_ids`/`stop` payload, silently replays the
+  FIRST (rejected) attempt's payload instead of the new one — reproduced
+  directly with instrumented node-level tracing, using fresh
+  `sqlite_checkpointer` connections per call to rule out same-process
+  caching as the cause. This means: **a client that receives a 409 from
+  either capacity-style guard cannot recover by simply resubmitting a
+  corrected `/curation/{id}/picks` request against the same pending
+  batch** — the retry would replay the original, still-rejected payload
+  and 409 again, identically, no matter what the client actually sends.
+  Not currently known to be reachable through the real UI in the
+  `zero_selection_finish` case (the frontend's own `review-stop` button
+  stays disabled at `totalSelected===0`, so a normal user session cannot
+  construct the rejected request in the first place) — but genuinely
+  reachable for `selected_paper_limit_reached` (a client legitimately
+  picking more papers than the 60-paper cap allows in one request, then
+  retrying with fewer). **The new backend 409 guard added in `4c230b1`
+  closes the "can a review finish with zero papers" gap, but does NOT by
+  itself give a retryable user journey for either rejection path** — that
+  would require either a LangGraph-version-specific fix, a checkpoint/
+  interrupt-payload redesign, or routing corrected resumes through a
+  fresh turn (`start_curation_turn`) instead of `Command(resume=...)`
+  against the same task — all explicitly out of scope for the
+  checkpoint-safety patch that found this, which was scoped to
+  refusing an unsafe write, not redesigning the resume/retry workflow.
+  Not scheduled; no owner assigned. See `research_agent/session_limits.
+  py`'s `check_selected_paper_capacity`/`check_finish_requires_selection`
+  docstrings, `docs/architecture.md`'s matching entry, and `tests/
+  test_curation_loop.py`'s zero-selection tests (which assert only that
+  the interrupt remains present/resumable in principle, never that a
+  differently-shaped retry against it is honored).
 
 ## 4. Explicitly deferred platform work
 
