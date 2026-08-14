@@ -2867,6 +2867,72 @@ invented:
 - **Status**: Closed (2026-08-14). **M4 and UXH remain closed** — this is
   a follow-up fix within their existing scope, not a reopening of either.
 
+### Paper Keywords and Filtering — complete
+- **Goal**: up to 6 useful, deterministic keywords per paper (when a real
+  abstract exists), displayed on each paper card, with a client-side
+  filter over the currently visible candidate batch. Cheap and offline
+  from the start — explicitly no LLM/embedding call, no network call.
+- **K1 — extraction, persistence, API** (`1de6488`):
+  `research_agent/keywords.py::extract_keywords` (YAKE, `n=2, top=12,
+  dedupLim=0.85`), capped at 6, case-insensitively deduplicated, noise-
+  filtered (URLs/DOIs/citation markers/pure numbers/single characters),
+  deterministic. Computed exactly once per deduplicated paper inside
+  `build_candidate_pool()`, immediately after `deduplicate()` — never
+  per-source (would be silently dropped by `dedup.py`'s own `Paper(...)`-
+  rebuilding merge) and never at read time. `Paper.keywords` defaults to
+  `[]`, so every existing persisted Paper dict reconstructs unchanged
+  (`curation_session.py` needed zero code changes, proven by a real-
+  SQLite round-trip test). `PaperOut`/`_paper_to_out` are a pure pass-
+  through.
+- **K2 — display and filtering** (`b0b40d9`): `PaperCard.tsx` renders
+  static keyword chips below the abstract, only when `showAbstract` and
+  `keywords.length > 0` — no placeholder for an abstract-less/legacy
+  paper, and `PoolSummaryPanel`'s compact list is untouched.
+  `ReviewModePanel.tsx` adds a collapsed-by-default, presentation-only
+  filter over `pending_batch`: multi-select, OR semantics, case-
+  insensitive matching with a stable display label, options sorted by
+  count then label, removable-chip + "Showing X of Y" + clear-all UI, a
+  concise empty state for zero matches. Resets on a real session or
+  pending-batch change (not on the array's own changing reference or an
+  unrelated re-render); never touches selection state, counters, or
+  submission payloads.
+- **K3 — validation, docs, publication** (this entry): independent review
+  of the K1/K2 range against a 12-point checklist (post-dedup-only
+  computation, title+abstract input, determinism/offline/cap, backward
+  compatibility, serializer pass-through-only, ranking/dedup/selection/
+  report non-interference, chip/panel absence when empty, presentation-
+  only OR filtering, reset-on-real-change-only, no submission-payload
+  effect, no permanently-visible large panel, bounded/overflow-safe
+  layout) found **no objective defect** — no corrective commit was
+  needed. A bounded, no-network, no-paid-call audit of the real
+  extractor against 12 representative local abstracts (realistic
+  technical prose, noisy-citation, numeric-heavy, case-duplicate-heavy,
+  short/empty/`None`, Unicode-heavy, all-uppercase, long-concatenated,
+  Markdown/LaTeX-noisy) found zero contract violations. Full backend
+  suite **1948 passed**; full frontend suite **524 passed**; build
+  clean; lint unchanged (3 pre-existing warnings, 0 new); `uv.lock`
+  confirmed synchronized with `pyproject.toml`. No browser-control
+  surface was available in this environment and no paid search/refill
+  was made solely to obtain a smoke-test session — component/
+  integration tests are the recorded evidence instead, stated honestly
+  rather than substituted silently.
+- **Explicitly deferred, not part of this feature's own scope**:
+  - Historical-session backfill — an old session's papers stay
+    keyword-less until naturally re-fetched.
+  - Filtering the full selected-paper collection across batches/turns —
+    today's filter only ever covers the current `pending_batch`.
+  - Keyword search across sessions.
+  - Manual keyword editing.
+  - LLM/embedding-based extraction — YAKE only, by design.
+  - Real-world extractor-quality calibration (stop words, thresholds,
+    title-vs-abstract weighting) against genuine usage — the K3 audit's
+    own 12 examples are contract validation, not a quality-calibration
+    dataset; explicitly not attempted from that small a sample.
+- **Priority**: closed; no further checkpoint scheduled.
+- **Status**: Closed (2026-08-14). Commits: `1de6488` (K1), `b0b40d9`
+  (K2), plus this checkpoint's own validation/docs/publication commits.
+  Tagged `paper-keywords-filtering`.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.

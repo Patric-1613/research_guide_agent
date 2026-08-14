@@ -11,7 +11,10 @@ arXiv and Semantic Scholar APIs are used.
 
 Beyond the one-shot flow above, the app also has an interactive
 **curation workflow**: review candidate papers a batch at a time and pick
-which ones matter (`curation_loop.py`), get a synthesized literature-review
+which ones matter (`curation_loop.py`), each shown with up to 6
+deterministic, offline-extracted keywords (`research_agent/keywords.py`,
+no LLM/network call) that the current batch can also be filtered by, get
+a synthesized literature-review
 report with regenerate-on-demand (`report.py`), and chat about the curated
 set with the option to pull in live web context or refresh the report
 mid-conversation (`curation_chat.py`). Chat messages support per-exchange
