@@ -38,6 +38,7 @@ from research_agent.curation_session import _session_to_dict
 from research_agent.qa import sqlite_checkpointer
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.schema import Paper
+from research_agent.session_limits import SessionCapacityError
 from research_agent.telemetry import init_usage_db
 from research_agent.usage_guard import UsageGuardRejection
 from tests._usage_db_fingerprint import fingerprint_usage_db
@@ -239,6 +240,101 @@ def test_user_stops_before_hitting_target():
         assert result["session"]["selected_paper_ids"] == picks
         assert len(result["session"]["selected_paper_ids"]) < 10
         assert result["session"]["stage"] == "synthesize"
+
+
+# --- zero-selection-curation-dead-end fix: the backend must refuse to
+# finish a review with zero selected papers, not just rely on the
+# frontend's own disabled "I'm done" button (invariant: both layers must
+# defend this boundary). Found via a bounded investigation of a real
+# curation session stuck at stage="curate"/0 selected/no pending batch:
+# stop=True with zero picks and zero prior selections was confirmed,
+# empirically, to reach stage="synthesize" anyway before this fix.
+
+
+def test_stop_with_zero_selected_papers_and_zero_new_picks_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+
+            with pytest.raises(SessionCapacityError) as exc_info:
+                resume_curation_turn("s1", cp, picked_paper_ids=[], stop=True)
+
+        assert exc_info.value.reason_code == "zero_selection_finish"
+
+
+def test_stop_with_zero_selected_papers_rejection_leaves_stage_and_selections_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+
+            with pytest.raises(SessionCapacityError):
+                resume_curation_turn("s1", cp, picked_paper_ids=[], stop=True)
+
+            state = get_curation_state("s1", cp)
+
+        assert state["session"].stage == "curate"
+        assert state["session"].selected_paper_ids == []
+        # The rejection must not have silently consumed/lost the pending
+        # interrupt -- confirmed present, same batch, still resumable.
+        assert state["pending_batch"] is not None
+        assert len(state["pending_batch"]) == 10
+
+
+def test_stop_with_at_least_one_new_pick_and_zero_prior_selections_succeeds():
+    """The boundary case: picking a paper AND stopping in the SAME resume
+    call must be allowed -- the check is against the prospective total,
+    not "were there any prior selections before this call.\""""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            batch = result["__interrupt__"][0].value["batch"]
+            real_id = batch[0][0]["paper_id"]
+
+            result2 = resume_curation_turn("s1", cp, picked_paper_ids=[real_id], stop=True)
+
+        assert result2["session"]["stage"] == "synthesize"
+        assert result2["session"]["selected_paper_ids"] == [real_id]
+        assert result2["stop_reason"] == "user_stopped"
+
+
+def test_stop_with_at_least_one_prior_selection_and_zero_new_picks_succeeds():
+    """Existing valid finish flow (pick earlier, stop later with nothing
+    new) must remain completely unaffected by this fix."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+            batch = result["__interrupt__"][0].value["batch"]
+            real_id = batch[0][0]["paper_id"]
+            result = resume_curation_turn("s1", cp, picked_paper_ids=[real_id])
+            assert result["session"]["stage"] == "curate"
+
+            result2 = resume_curation_turn("s1", cp, picked_paper_ids=[], stop=True)
+
+        assert result2["session"]["stage"] == "synthesize"
+        assert result2["session"]["selected_paper_ids"] == [real_id]
+
+
+def test_candidates_remaining_after_zero_selection_rejection_keeps_curation_active():
+    """Invariant: if zero papers are selected but candidates remain, the
+    user must retain a path to continue curation -- confirmed here by
+    resuming normally (picking something real) after a rejected stop,
+    using a FRESH checkpointer connection per call (matching separate
+    HTTP requests) rather than reusing the same one the rejection used."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(15, target_count=5)))
+        with sqlite_checkpointer(db_path) as cp2:
+            with pytest.raises(SessionCapacityError):
+                resume_curation_turn("s1", cp2, picked_paper_ids=[], stop=True)
+        with sqlite_checkpointer(db_path) as cp3:
+            state = get_curation_state("s1", cp3)
+        assert state["session"].stage == "curate"
+        assert state["pending_batch"] is not None
 
 
 def test_target_hit_exactly_on_a_batch_boundary():

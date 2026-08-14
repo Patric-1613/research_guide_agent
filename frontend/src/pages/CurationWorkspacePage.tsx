@@ -45,7 +45,7 @@ function setModeInUrl(mode: WorkspaceMode): void {
 export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
-    dismissReportStaleWarning, curationAction,
+    dismissReportStaleWarning, curationAction, startingReviewVisible,
     openReview, startReview, submitPicks, activateReportVersion,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
     reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
@@ -319,7 +319,7 @@ export default function CurationWorkspacePage() {
           workspaceMode={workspaceMode}
           workspaceUnlocked={unlocked}
           onWorkspaceModeChange={setWorkspaceMode}
-          startingReview={curationAction === 'starting_review'}
+          startingReview={startingReviewVisible}
         />
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">

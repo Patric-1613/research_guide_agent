@@ -2800,6 +2800,34 @@ def test_selected_paper_cap_rejection_leaves_session_unchanged():
     assert state_after["pending_batch"] == state_before["pending_batch"]
 
 
+def test_finish_with_zero_selected_papers_rejected_with_409_at_the_api_layer():
+    """zero-selection-curation-dead-end fix: the same boundary
+    check_selected_paper_capacity already enforces (409 via the shared
+    SessionCapacityError handler), now also covering stop=True with
+    nothing selected -- confirmed here through the real HTTP endpoint,
+    not just curation_loop.py's own node-level tests."""
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, 0)
+        assert selected == []
+
+        resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [], "stop": True})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reason_code"] == "zero_selection_finish"
+
+
+def test_finish_with_one_selected_paper_still_succeeds_with_409_guard_in_place():
+    """Existing valid finish flow (>=1 selected) must remain completely
+    unaffected by the zero-selection guard."""
+    with _client() as client:
+        session_id, selected = _select_up_to_n_papers(client, 1)
+        resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [], "stop": True})
+
+    assert resp.status_code == 200
+    assert resp.json()["stage"] == "synthesize"
+    assert resp.json()["selected_paper_ids"] == selected
+
+
 def test_selected_paper_cap_duplicate_picks_do_not_count_twice():
     with _client() as client:
         session_id, selected = _select_up_to_n_papers(client, 60)

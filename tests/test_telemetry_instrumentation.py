@@ -679,7 +679,12 @@ class TestCurationRefillAction:
              patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
             start = client.post("/curation/start", json={"topic": "t", "target_count": 20}).json()
             session_id = start["session_id"]
-            client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [], "stop": True})
+            # zero-selection-curation-dead-end fix: stopping with nothing
+            # selected is now rejected -- pick one real paper first, same
+            # convention TestCurationChatAction._started_session below
+            # already uses.
+            picked_id = start["batch"][0]["paper_id"]
+            client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": [picked_id], "stop": True})
 
             before = len(_actions(usage_db_path, action_type="curation_refill"))
             with patch.object(qe_module, "build_candidate_pool", side_effect=_fake_build_candidate_pool), \

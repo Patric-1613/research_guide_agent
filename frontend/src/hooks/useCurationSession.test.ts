@@ -2016,6 +2016,55 @@ describe('useCurationSession -- UXH.2: curationAction', () => {
     expect(curationApi.start).toHaveBeenCalledTimes(1)
   })
 
+  it('zero-selection-curation-dead-end fix: startingReviewVisible hides once the user switches to view a different, already-existing session while startReview is still in flight', async () => {
+    // Reproduces the exact combination reported for a real broken session:
+    // "Starting new review…" was visible in the sidebar while an unrelated,
+    // already-existing review's own (unrelated) content was on screen --
+    // caused by curationAction being one hook-wide flag with no notion of
+    // which session the in-flight action actually belongs to.
+    window.history.pushState({}, '', '/?session=s1')
+    vi.mocked(curationApi.getState).mockImplementation((id: string) =>
+      Promise.resolve(fullState({ session_id: id, topic: id === 's1' ? 'topic one' : 'topic two' })),
+    )
+    const { result } = renderHook(() => useCurationSession())
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s1'))
+
+    const { promise, resolve } = deferredTurn()
+    vi.mocked(curationApi.start).mockReturnValue(promise)
+
+    act(() => {
+      void result.current.startReview('transformers', 10)
+    })
+    expect(result.current.curationAction).toBe('starting_review')
+    expect(result.current.startingReviewVisible).toBe(true)
+
+    // The user navigates to a DIFFERENT, already-existing review (e.g.
+    // clicking a review card in the list) before the start resolves.
+    await act(async () => {
+      await result.current.openReview('s2')
+    })
+    await waitFor(() => expect(result.current.state?.session_id).toBe('s2'))
+
+    // curationAction is still 'starting_review' (the original request
+    // genuinely hasn't settled yet) -- but it must no longer be presented
+    // as relevant to what's on screen now.
+    expect(result.current.curationAction).toBe('starting_review')
+    expect(result.current.startingReviewVisible).toBe(false)
+    expect(result.current.state?.session_id).toBe('s2')
+
+    // The original request still completes normally in the background --
+    // switching away must not cancel or corrupt it.
+    await act(async () => {
+      resolve({
+        session_id: 'new-session', stage: 'curate', target_count: 10, selected_paper_ids: [],
+        batch: [], stop_reason: null, refilled: false, reserve_remaining: 5, refinement_notes: [],
+      })
+      await promise
+    })
+    await waitFor(() => expect(result.current.curationAction).toBeNull())
+    expect(result.current.startingReviewVisible).toBe(false)
+  })
+
   it('submitPicks with plain Continue (stop=false, no refill) sets curationAction to continuing_review', async () => {
     window.history.pushState({}, '', '/?session=s1')
     vi.mocked(curationApi.getState).mockResolvedValue(

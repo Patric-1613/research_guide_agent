@@ -157,6 +157,14 @@ interface UseCurationSessionResult {
   // guarantee `loading` already provides, just specific enough to drive
   // a truthful per-action label instead of one generic spinner.
   curationAction: CurationActionKind | null
+  // zero-selection-curation-dead-end fix: whether the "Starting new
+  // review…" indicator is actually truthful for what's CURRENTLY on
+  // screen -- true only while startReview is genuinely in flight AND the
+  // user hasn't since navigated to a different (or no) session. Prefer
+  // this over `curationAction === 'starting_review'` directly wherever
+  // the indicator is rendered outside the specific session it started
+  // for (see this field's own assignment site for the full reasoning).
+  startingReviewVisible: boolean
   openReview: (sessionId: string) => void
   startReview: (topic: string, targetCount: number) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
@@ -577,16 +585,47 @@ export function useCurationSession(): UseCurationSessionResult {
     setSessionId(id)
   }, [setSessionId])
 
+  // zero-selection-curation-dead-end fix (session-switch race, invariant
+  // 5): curationAction is deliberately ONE hook-wide flag (see its own
+  // docstring above) -- correct for submitPicks/generateReport/etc.,
+  // which always act on whatever session is CURRENTLY open, but wrong
+  // for startReview, whose busy indicator is rendered in ReviewsList (a
+  // sidebar element that isn't scoped to any particular open session) and
+  // whose whole point is creating a session that ISN'T open yet. Without
+  // this, switching to view a DIFFERENT, already-existing review while a
+  // startReview() call is still in flight (its own trigger control is
+  // replaced, but existing review cards in the list are still clickable)
+  // leaves curationAction === 'starting_review' visible over that
+  // unrelated review's own now-loaded content -- confirmed directly by
+  // tracing the code, not assumed. Recording which session was open at
+  // the moment startReview began (via currentSessionIdRef, the same
+  // synchronously-updated ref this hook already uses everywhere else for
+  // "what's actually open right now," never sessionId itself, which
+  // startReview's own closure would otherwise see stale) lets a derived
+  // value below hide the stale indicator the instant the user navigates
+  // away, without touching runAction's reentrancy guard (the underlying
+  // request still runs to completion; only the display is scoped).
+  const startReviewOriginSessionIdRef = useRef<string | null>(null)
+
   const startReview = useCallback(
-    (topic: string, targetCount: number) =>
-      runAction(async () => {
+    (topic: string, targetCount: number) => {
+      startReviewOriginSessionIdRef.current = currentSessionIdRef.current
+      return runAction(async () => {
         const response = await curationApi.start({ topic, target_count: targetCount })
         setSessionIdInUrl(response.session_id)
         setSessionId(response.session_id)
         await loadState(response.session_id)
-      }, 'starting_review'),
+      }, 'starting_review')
+    },
     [runAction, loadState, setSessionId],
   )
+
+  // The value ReviewsList's own busy indicator should actually key off of
+  // -- true only while genuinely starting AND the user hasn't since
+  // navigated to a different (or no) session. Recomputed fresh every
+  // render (a plain comparison, not memoized state) so it tracks
+  // sessionId's own changes immediately.
+  const startingReviewVisible = curationAction === 'starting_review' && startReviewOriginSessionIdRef.current === sessionId
 
   const submitPicks = useCallback(
     (pickedIds: string[], stop = false, refinement?: string, requestRefill?: boolean) =>
@@ -1182,7 +1221,7 @@ export function useCurationSession(): UseCurationSessionResult {
 
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
-    dismissReportStaleWarning, curationAction,
+    dismissReportStaleWarning, curationAction, startingReviewVisible,
     openReview, startReview, submitPicks, generateReport, regenerateReport,
     reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
     reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice,

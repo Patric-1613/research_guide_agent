@@ -142,6 +142,61 @@ describe('ReviewModePanel', () => {
     expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument()
   })
 
+  it('zero-selection-curation-dead-end fix: pending_batch===null with stage still "curate" is NOT rendered as completion', () => {
+    // Reproduces a real corrupted session: the backend's own pending
+    // interrupt was lost (e.g. by an out-of-band write) while
+    // stage stayed "curate" and nothing was ever explicitly finished.
+    const state = baseState({
+      stage: 'curate', pending_batch: null, selected_paper_ids: [], selected_papers: [],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/Curation complete/)).not.toBeInTheDocument()
+    expect(screen.getByTestId('review-stalled-banner')).toBeInTheDocument()
+    // No fabricated Report-tab guidance either -- Chat/Report stay locked
+    // (gated on stage==="synthesize" elsewhere), so pointing at them here
+    // would be actively misleading.
+    expect(screen.queryByText(/Switch to the Report tab/)).not.toBeInTheDocument()
+  })
+
+  it('zero-selection-curation-dead-end fix: the stalled state never offers an action that could select, delete, or mutate a paper', () => {
+    const state = baseState({
+      stage: 'curate', pending_batch: null, selected_paper_ids: ['p9'],
+      selected_papers: [paper('p9', 'Already Picked')],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    // The stalled message still honestly reflects existing selections.
+    expect(screen.getByTestId('review-stalled-banner')).toHaveTextContent('1 paper selected so far')
+  })
+
+  it('genuine completion (stage==="synthesize") keeps rendering exactly as before, unaffected by the stalled-state fix', () => {
+    const state = baseState({
+      stage: 'synthesize', pending_batch: null,
+      selected_papers: [paper('p1', 'Paper One')], selected_paper_ids: ['p1'],
+    })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Curation complete/)).toBeInTheDocument()
+    expect(screen.queryByTestId('review-stalled-banner')).not.toBeInTheDocument()
+  })
+
   it('shows only the active/current turn -- past turnEvents no longer stack inline in the main panel', () => {
     const events: TurnEvent[] = [
       { turnNumber: 1, refilled: false, batchSize: 10, reserveRemainingAfter: 5, pickedPaperIds: ['a', 'b'] },

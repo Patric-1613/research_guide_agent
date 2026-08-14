@@ -45,6 +45,7 @@ function mockSession(state: CurationStateResponse | null, overrides: Partial<Ret
     lastAddToReportResult: null,
     dismissReportStaleWarning: vi.fn(),
     curationAction: null,
+    startingReviewVisible: false,
     openReview: vi.fn(),
     startReview: vi.fn(),
     submitPicks: vi.fn(),

@@ -39,7 +39,9 @@ from typing import Literal
 
 from research_agent.config import UsagePolicy
 
-SessionCapacityReasonCode = Literal["selected_paper_limit_reached", "chat_turn_limit_reached"]
+SessionCapacityReasonCode = Literal[
+    "selected_paper_limit_reached", "chat_turn_limit_reached", "zero_selection_finish",
+]
 
 
 class SessionCapacityError(Exception):
@@ -96,6 +98,40 @@ def check_selected_paper_capacity(
         raise SessionCapacityError(
             "selected_paper_limit_reached",
             "This session has reached the maximum number of selected papers.",
+        )
+
+
+def check_finish_requires_selection(prospective_selected_count: int) -> None:
+    """zero-selection-curation-dead-end fix: raises SessionCapacityError if
+    a resume payload requests `stop=True` (finish curation now) while the
+    session would end up with ZERO selected papers -- called from
+    curation_loop.py's `_present_and_apply_node`, in the same "check
+    before any mutation" position `check_selected_paper_capacity` above
+    already uses, so a rejection leaves the session's `selected_paper_ids`/
+    `selected_papers`/`stage` byte-identical to before this resume.
+
+    Found during a bounded investigation of a real curation session stuck
+    with `stage="curate"`/0 selected papers/no pending batch: the
+    FRONTEND already disables the "I'm done" button while
+    `totalSelected === 0` (`ReviewModePanel.tsx`'s `review-stop` button),
+    but nothing on the backend enforced the same rule -- a direct
+    `resume_curation_turn(..., stop=True)` call with zero picks and zero
+    prior selections was confirmed, empirically, to transition
+    `session.stage` to `"synthesize"` anyway, unlocking Chat/Report for a
+    review with nothing to summarize. This closes that gap so the
+    boundary is enforced on both layers, not just hidden behind a
+    disabled button (Usage Protection's own established posture -- see
+    `check_selected_paper_capacity`'s and `check_chat_turn_capacity`'s
+    docstrings for the same "backend is the real enforcement" pattern).
+
+    Reuses `SessionCapacityError`/its existing centralized 409 handler --
+    this is the same shape of rejection (a state-boundary conflict, not a
+    rate limit or a validation error on the request body itself), not a
+    new exception type or a new registered handler."""
+    if prospective_selected_count == 0:
+        raise SessionCapacityError(
+            "zero_selection_finish",
+            "Select at least one paper before finishing this review.",
         )
 
 

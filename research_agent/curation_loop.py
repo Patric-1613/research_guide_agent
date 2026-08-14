@@ -81,7 +81,7 @@ from research_agent.curation_session import (
 from research_agent.config import get_usage_policy
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
 from research_agent.schema import Paper
-from research_agent.session_limits import check_selected_paper_capacity
+from research_agent.session_limits import check_finish_requires_selection, check_selected_paper_capacity
 from research_agent.usage_guard import guard_paid_action
 
 
@@ -245,6 +245,21 @@ def _present_and_apply_node(state: CurationLoopState) -> dict:
     # which never executes if this raises first, so the prior
     # checkpoint is left untouched.
     check_selected_paper_capacity(session.selected_paper_ids, valid_picks, get_usage_policy())
+
+    # zero-selection-curation-dead-end fix: checked in the same
+    # before-any-mutation position as the capacity check above, using the
+    # PROSPECTIVE count (existing selections plus this resume's own
+    # genuinely-new valid picks) -- a resume that picks a paper AND stops
+    # in the same request is allowed; only stop=True with an end result
+    # of zero total selections is rejected. See
+    # session_limits.check_finish_requires_selection's own docstring for
+    # why this exists: the frontend already disables "I'm done" at
+    # totalSelected===0, but nothing previously enforced it here, so a
+    # direct resume_curation_turn(stop=True) call with nothing selected
+    # could reach stage="synthesize" anyway.
+    if stop:
+        prospective_ids = set(session.selected_paper_ids) | set(valid_picks)
+        check_finish_requires_selection(len(prospective_ids))
 
     for pid in valid_picks:
         if pid not in session.selected_paper_ids:

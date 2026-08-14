@@ -141,7 +141,20 @@ export function ReviewModePanel({
     setKeywordSearch('')
   }
 
-  if (!pendingBatch) {
+  // zero-selection-curation-dead-end fix: `pending_batch === null` alone
+  // does NOT mean curation genuinely finished -- that's only true when
+  // the backend has actually recorded stage="synthesize" (reached only
+  // via an explicit stop=True resume, per curation_loop.py's own module
+  // docstring). A real corrupted session was found where pending_batch
+  // was null (its LangGraph interrupt had been destroyed by an
+  // out-of-band checkpoint write while genuinely mid-curation) but
+  // stage was STILL "curate" -- the old code here rendered
+  // stopReasonMessage()'s "Curation complete — 0 papers selected."
+  // regardless, fabricating a completion that never actually happened
+  // and leaving no Continue/Search/Finish control in sight. Splitting on
+  // stage instead makes the honest, distinct case visible rather than
+  // silently misreporting it as success.
+  if (!pendingBatch && state.stage === 'synthesize') {
     // Phase 8, item 3: true both right after curation just finished AND
     // every time an already-completed review is reopened -- state.selected_papers
     // is already in the API response either way, it just wasn't being
@@ -159,6 +172,30 @@ export function ReviewModePanel({
         <p className="border-t border-border bg-panel px-4 py-3 text-center text-sm text-text-muted">
           Switch to the Report tab on the left to generate your literature review.
         </p>
+      </div>
+    )
+  }
+
+  if (!pendingBatch) {
+    // stage is still "curate" (not "synthesize") but the backend has no
+    // batch to present -- this session is stuck, not finished. Never
+    // claim completion here, and never offer any action that would
+    // select/delete/mutate a paper -- there is currently no safe,
+    // generalized recovery for this exact state, so this is honest
+    // status only, not a repair.
+    return (
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          <div data-testid="review-stalled-banner" className="rounded-md border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
+            <p className="font-medium">This review's active batch couldn&apos;t be loaded.</p>
+            <p className="mt-1 text-text-secondary">
+              Curation hasn&apos;t actually finished — {state.selected_paper_ids.length} paper
+              {state.selected_paper_ids.length === 1 ? '' : 's'} selected so far, with candidates still in the pool.
+              This can happen if the session was changed outside the app. Nothing has been changed here; please
+              contact support to resume this review.
+            </p>
+          </div>
+        </div>
       </div>
     )
   }
