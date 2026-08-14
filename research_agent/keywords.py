@@ -60,6 +60,33 @@ dedup) to yake-v2:**
   fragment happens to rank before the longer, complete phrase. Standalone
   uppercase acronyms (2-6 characters, e.g. "RAG") are exempt from this
   drop, so "RAG" survives even when "Agentic RAG" is also present.
+
+**K4.1b -- excluding organization/affiliation candidates.** A paper's
+title/abstract routinely names the authors' own institution (e.g. "...to
+support Information Technology students at Hai Phong University",
+"Scientists and operators at SLAC National Accelerator Laboratory...")
+-- confirmed directly against real production data that this can rank
+highly enough to become a paper's own top keyword (`_resolve_redundancy`
+correctly assembles the COMPLETE institution name, which then survives
+as one of the most relevant candidates precisely because K4.1's own
+completeness fixes work correctly; being complete does not make it a
+topic). `_is_organization_candidate()` rejects any candidate whose
+canonical tokens include an organization/affiliation designator
+(university, college, department, faculty, school, institute,
+laboratory, lab, corporation, corp, company, consortium) as a COMPLETE
+token, applied inside `_filter_candidates()` -- the same per-candidate
+filtering stage `_is_noise_phrase()`/the clause-join check already use,
+never a whole-paper or whole-sentence exclusion. Whole-token matching
+(via the same `_canonical_tokens()` normalization redundancy resolution
+already uses) is deliberate and load-bearing: a naive substring check
+would wrongly reject real candidates like "annotated scientific
+corpora"/"large textual corpora" (contain "corp" as a substring of
+"corpora", never as its own token) and "conversation remains
+labor-intensive" ("lab" as a substring of "labor"), both confirmed
+directly against real production data. The designator list is
+deliberately small, generic, and topic-agnostic -- no institution names,
+no topic-specific terms, no NER model/LLM/embeddings/KeyBERT/new
+dependency of any kind.
 """
 
 from __future__ import annotations
@@ -123,6 +150,20 @@ _DASH_VARIANTS_RE = re.compile("[-‐‑‒–—―−]")
 # emitting both is not redundancy, it is two different useful keywords.
 _ACRONYM_RE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
 
+# K4.1b: organization/affiliation designator tokens -- deliberately small,
+# generic, and topic-agnostic (no institution names, no topic-specific
+# terms). Matched as COMPLETE canonical tokens only (see
+# `_is_organization_candidate` below), never a substring: "corp" must
+# never match inside "corpora"/"corporate"/"incorporating", and "lab"
+# must never match inside "labor"/"labor-intensive" -- both confirmed
+# directly against real production candidate text, not hypothetical.
+# "laboratory" is a separate, whole designator token of its own.
+_ORGANIZATION_DESIGNATOR_TOKENS = frozenset({
+    "university", "college", "department", "faculty", "school",
+    "institute", "laboratory", "lab", "corporation", "corp",
+    "company", "consortium",
+})
+
 _abstract_extractor = yake.KeywordExtractor(lan="en", n=3, top=_ABSTRACT_TOP, dedupLim=0.85)
 _title_extractor = yake.KeywordExtractor(lan="en", n=3, top=_TITLE_TOP, dedupLim=0.85)
 
@@ -174,6 +215,22 @@ def _is_acronym(phrase: str) -> bool:
     return bool(_ACRONYM_RE.match(phrase.strip()))
 
 
+def _is_organization_candidate(phrase: str) -> bool:
+    """K4.1b: True if `phrase` names an organization/affiliation (a
+    university, lab, company, ...) rather than the paper's own topic --
+    its canonical tokens include an organization designator (see
+    `_ORGANIZATION_DESIGNATOR_TOKENS`) as a COMPLETE token. Reuses
+    `_canonical_tokens()` (casefold + Unicode dash-to-space + whitespace
+    collapse + split) so matching is whole-token, never substring --
+    "corpora"/"corpus"/"incorporating" never match "corp", "labor"/
+    "labor-intensive" never match "lab". Applies to exactly the one
+    candidate phrase being checked -- a different candidate from the
+    same abstract that doesn't itself contain a designator token (a
+    paper's own genuine research topic, however close in the source text
+    to a mention of its authors' university) is entirely unaffected."""
+    return any(token in _ORGANIZATION_DESIGNATOR_TOKENS for token in _canonical_tokens(phrase))
+
+
 def _is_contiguous_subsequence(short_tokens: list[str], long_tokens: list[str]) -> bool:
     """True when `short_tokens` appears as a contiguous run inside
     `long_tokens` and is strictly shorter -- the structural test behind
@@ -192,14 +249,17 @@ def _is_contiguous_subsequence(short_tokens: list[str], long_tokens: list[str]) 
 
 
 def _filter_candidates(raw_candidates: list[tuple[str, float]]) -> list[str]:
-    """NFKC-normalizes, strips noise phrases and clause-spanning malformed
-    candidates, preserving YAKE's own relevance order (ascending score)."""
+    """NFKC-normalizes, strips noise phrases, clause-spanning malformed
+    candidates, and organization/affiliation candidates (K4.1b),
+    preserving YAKE's own relevance order (ascending score)."""
     cleaned_candidates: list[str] = []
     for phrase, _score in raw_candidates:
         cleaned = unicodedata.normalize("NFKC", phrase).strip()
         if _is_noise_phrase(cleaned):
             continue
         if _CLAUSE_JOIN_RE.search(cleaned):
+            continue
+        if _is_organization_candidate(cleaned):
             continue
         cleaned_candidates.append(cleaned)
     return cleaned_candidates

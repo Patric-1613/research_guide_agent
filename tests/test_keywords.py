@@ -34,6 +34,7 @@ from research_agent.keywords import (
     _dedup_canonical,
     _is_acronym,
     _is_contiguous_subsequence,
+    _is_organization_candidate,
     _resolve_redundancy,
     extract_keywords,
 )
@@ -404,3 +405,95 @@ def test_generic_word_containment_is_topic_agnostic():
     assert "dynamic" not in lowered
     assert "leveraging" not in lowered
     assert "generation" not in lowered
+
+
+# ---------------------------------------------------------------------------
+# K4.1b: organization/affiliation exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_organization_candidate_university_affiliation_excluded():
+    assert _is_organization_candidate("Hai Phong University")
+    assert _is_organization_candidate("Stanford University")
+    assert _is_organization_candidate("University")  # bare organizational label
+
+
+def test_organization_candidate_department_institute_laboratory_variants_excluded():
+    assert _is_organization_candidate("Department of Computer Science")
+    assert _is_organization_candidate("Max Planck Institute")
+    # Real production example (session 8fa9857f21fb4a2dbd103ca771e54e7b's
+    # own local sample): the affiliation this rule was written for.
+    assert _is_organization_candidate("National Accelerator Laboratory")
+    assert _is_organization_candidate("Accelerator Laboratory rely")
+    assert _is_organization_candidate("Lab")
+    assert _is_organization_candidate("XYZ College")
+    assert _is_organization_candidate("Acme Corporation")
+    assert _is_organization_candidate("Acme Corp")
+    assert _is_organization_candidate("Research Consortium")
+
+
+def test_organization_candidate_complete_token_matching_avoids_substring_false_positives():
+    # Real production candidates (same local sample) that a naive
+    # substring check on "corp"/"lab" would wrongly reject.
+    assert not _is_organization_candidate("annotated scientific corpora")
+    assert not _is_organization_candidate("large textual corpora")
+    assert not _is_organization_candidate("scientific corpus distillation")
+    assert not _is_organization_candidate("conversation remains labor-intensive")
+    assert not _is_organization_candidate("collaborative filtering")
+    assert not _is_organization_candidate("incorporating external knowledge")
+
+
+def test_organization_candidate_retains_valid_application_domains_and_research_tasks():
+    # Explicit product examples this rule must never touch.
+    assert not _is_organization_candidate("Student Support")
+    assert not _is_organization_candidate("Question Answering")
+    assert not _is_organization_candidate("Question Answering Model")
+    assert not _is_organization_candidate("multi-hop question answering")
+    assert not _is_organization_candidate("open-domain question answering")
+
+
+def test_organization_candidate_preserves_technical_acronyms_and_system_names():
+    assert not _is_organization_candidate("RAG")
+    assert not _is_organization_candidate("BERT")
+    assert not _is_organization_candidate("Agentic RAG Chatbot")
+    assert not _is_organization_candidate("SLAC National Accelerator")
+
+
+def test_organization_exclusion_removes_university_affiliation_from_real_extraction():
+    # A non-RAG synthetic abstract genuinely mentioning a university
+    # affiliation, structurally mirroring the real production case this
+    # rule was written for (a course-support system built and evaluated
+    # at a named university) -- confirms the rule fires through the real
+    # extract_keywords() pipeline, not just the isolated helper.
+    abstract = (
+        "We present a novel gradient compression technique for distributed deep "
+        "learning training, developed and evaluated by researchers at Westbrook "
+        "University. Our method reduces communication overhead between workers by "
+        "adaptively quantizing gradient updates before each synchronization step, "
+        "achieving comparable convergence to full-precision baselines while cutting "
+        "network bandwidth usage substantially across large-scale training clusters."
+    )
+    result = extract_keywords("Gradient Compression for Distributed Training", abstract)
+    lowered = [kw.lower() for kw in result]
+    assert not any("university" in kw for kw in lowered)
+    assert not any("westbrook" in kw and "university" in kw for kw in lowered)
+    # The genuine topic still comes through.
+    assert any("gradient" in kw or "compression" in kw or "distributed" in kw for kw in lowered)
+
+
+def test_organization_exclusion_preserves_technical_phrase_when_university_mentioned_nearby():
+    # The SAME sentence names a university AND a genuine technical
+    # phrase -- only the organizational candidate must be rejected; nothing
+    # else from the same text is discarded because of it.
+    abstract = (
+        "Researchers at Blackwood University introduce a federated anomaly "
+        "detection framework for industrial sensor networks. The framework "
+        "combines lightweight autoencoders with a federated averaging protocol "
+        "so that individual sensor sites never share raw measurements, only "
+        "locally trained model updates, reducing bandwidth cost while preserving "
+        "detection accuracy across a large deployment of heterogeneous devices."
+    )
+    result = extract_keywords("Federated Anomaly Detection for Sensor Networks", abstract)
+    lowered = [kw.lower() for kw in result]
+    assert not any("university" in kw for kw in lowered)
+    assert any("federated" in kw or "anomaly" in kw or "autoencoder" in kw for kw in lowered)
