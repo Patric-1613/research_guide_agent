@@ -2826,6 +2826,47 @@ invented:
 - **Status**: Closed (2026-08-13). Tagged
   `uxh-post-m4-user-journey-hardening` at the documentation closure commit.
 
+### Post-UXH follow-up: report progress observability — complete
+- **Goal**: fix a real-browser-confirmed UX gap in the M4.3B/UXH.2 report-
+  progress panel without reopening M4 or UXH's own closed scope.
+- **Finding**: a real Regenerate + Refine Once run captured raw SSE timing
+  (`generating` 13:58:57.753, `evaluating` 13:59:46.149, `saving`
+  13:59:48.590, `completed`/`done` 13:59:48.708), proving the backend
+  streamed every phase correctly and unbuffered. The defect was frontend-
+  only: the panel showed just the single latest phase and discarded it
+  the instant the next one arrived, so `evaluating` (~2.44s) and `saving`
+  (~118ms) were functionally invisible even though both streamed in real
+  time.
+- **Fix** (`d9c018e`, test-coverage correction `f1bf192`):
+  `useCurationSession.ts` now retains `reportStreamPhaseHistory`, the
+  ordered, deduplicated phases genuinely received (a functional `setState`
+  update, immune to same-batch overwrites); `ReportModePanel.tsx` renders
+  one row per observed phase (check = done, spinner = current), never a
+  future/predicted phase, and distinguishes Generate ("Generating
+  report" / "Report generated") from Regenerate ("Regenerating report" /
+  "Report regenerated"). A `reportStreamCompletionNotice` (e.g. "Report
+  regenerated · Evaluated · Saved") replaces the trail once
+  `completed → done` and the canonical reload both genuinely succeed,
+  then auto-clears after `REPORT_STREAM_SUCCESS_NOTICE_MS` (5s) — never
+  shown after cancellation, a handled error, a malformed stream, or a
+  reload failure.
+- **Verification**: independent review of `origin/main..HEAD` found one
+  test-coverage gap (several tests asserted only the completion notice,
+  never `reportStreamPhaseHistory` itself, despite their names) and no
+  implementation defect; closed with one additional test (`f1bf192`).
+  Focused and full frontend suite: **503 passed** (18 files). Production
+  build clean. Lint exit 0 with the same 3 pre-existing warnings, zero
+  new. Already manually confirmed working in a real browser before this
+  checkpoint.
+- **Scope**: frontend-only. No backend route, SSE vocabulary, API
+  contract, provider behavior, persistence, telemetry, or evaluation
+  artifact changed. No artificial delay, fake percentage, or invented
+  phase added. No paid provider call made.
+- **Priority**: closed; visibility fix only, no new feature phase
+  invented.
+- **Status**: Closed (2026-08-14). **M4 and UXH remain closed** — this is
+  a follow-up fix within their existing scope, not a reopening of either.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
