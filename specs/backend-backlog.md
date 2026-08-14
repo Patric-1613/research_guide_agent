@@ -2965,6 +2965,112 @@ invented:
   `paper-keywords-filtering` (unmoved — the tag still marks the K1–K3
   checkpoint on `dcc832b`; this corrective fix lands after it).
 
+### Paper Keyword Quality and Visual Polish (K4) — complete
+- **Goal**: fix the extraction-quality noise the K1–K3 feature's own
+  contract validation had explicitly ruled out of scope (title-position
+  domination, incomplete overlapping fragments, malformed punctuation,
+  hyphen/case surface-variant duplicates, generic single-word noise), an
+  explicit offline re-extraction path for already-persisted sessions, and
+  a visual/filter redesign to make the resulting keywords legible instead
+  of a flat wall of checkboxes.
+- **K4.1 — extractor quality + maintenance tooling** (`f67d876`):
+  `research_agent/keywords.py` bumped `KEYWORD_EXTRACTOR_VERSION` from
+  `yake-v1` to `yake-v2`. Abstract and title are now extracted
+  *separately* (`n=3`, was `n=2`), with the title admitting at most one
+  candidate into the final six, appended last — evidence-backed over
+  simple `abstract + title` reordering, which was directly confirmed
+  insufficient for a self-referential abstract. Added: NFKC
+  normalization; rejection of candidates with an embedded comma/semicolon
+  (reproduces a real production defect, `"Agentic AI,this"`); a canonical
+  comparison key (casefold + Unicode dash-variant-to-space +
+  whitespace-collapse) for both exact-duplicate dedup and a new
+  *bidirectional* redundancy pass that drops a candidate whenever its
+  tokens are a contiguous subsequence of any other candidate's, with a
+  standalone-uppercase-acronym (2–6 chars) exemption. `scripts/
+  re_extract_keywords.py` — a new, explicit, dry-run-by-default,
+  `--apply`-gated maintenance command — recomputes one session's keywords
+  through the exact production session-load/save path, propagating each
+  unique `paper_id`'s recomputed value identically to every occurrence in
+  `reserve`/`selected_papers`/`turn_history`, saving at most once and
+  only if something changed. 30 keyword tests (was 11), 9 new maintenance-
+  command tests. Full backend suite **1977 passed**.
+- **K4.2 — PaperCard hierarchy + Popular/Browse-all filter** (`e907753`):
+  card content reordered to title/badges → keyword chips → metadata →
+  abstract → action (was: metadata → abstract → keywords). Chips restyled
+  to `text-xs font-medium text-accent bg-accent-soft border
+  border-accent/30 rounded-md`, wrapping (`whitespace-normal break-words
+  max-w-full`) instead of truncating. New `frontend/src/lib/keywords.ts`
+  is the canonical frontend aggregation/comparison module (mirrors the
+  backend's own casefold + dash-variant + whitespace rules), with 13
+  direct unit tests. `ReviewModePanel.tsx`'s filter replaced the flat
+  checkbox list with **Popular** (count ≥ 2 across distinct papers,
+  sorted by count desc then label, capped at 12, never backfilled with
+  count-one keywords) and **Browse all** (every keyword, labeled search
+  input matching via the same canonical key, bounded/scrolling results,
+  `"No keywords match your search."` empty state) — mutually exclusive
+  inside one unframed panel, so no option is ever exposed by two visible
+  controls at once. Active filters, OR semantics, source order, and
+  submission payloads are all unaffected by construction. Full frontend
+  suite **553 passed**; build clean; lint unchanged (3 pre-existing
+  warnings, 0 new).
+- **K4.3 — bounded review, read-only audit, approved session refresh,
+  publication** (`09ec80c` + this checkpoint's own docs/publication
+  commits): a range-scoped review against the K4.1/K4.2 contract
+  checklists found one objective defect — `scripts/
+  re_extract_keywords.py` was missing the project-root `sys.path`
+  bootstrap every other `scripts/` file has, so running it exactly as its
+  own usage docstring says failed with `ModuleNotFoundError` (never
+  caught by K4.1's own tests, which all call `main()` in-process). Fixed
+  in `09ec80c` with a subprocess-based regression test; no other
+  checklist item was found violated, and no subjective keyword-quality
+  tuning was performed. A read-only audit of session
+  `8fa9857f21fb4a2dbd103ca771e54e7b`'s 10 originally-served papers
+  confirmed, directly: the `"Agentic AI,this"` artifact is gone; single-
+  word contained fragments no longer survive; complete three-word
+  compounds now do where the source text supports them; title-only
+  domination is structurally bounded (9/10 papers admit zero title-
+  sourced candidates, 1/10 admits exactly one, never more); no URL/DOI/
+  citation/numeric leakage; no canonical duplicates; deterministic;
+  capped at six. With explicit user approval, `--apply` was run once
+  against that session (96 unique papers; 95 changed) — a before/after
+  fingerprint of every non-keyword field confirmed deep equality (the
+  only serialization difference was `seen_paper_ids`/`seen_titles`'
+  pre-existing, unrelated `set`-to-`list` iteration-order non-determinism,
+  confirmed by content, not order); exactly one save; no provider call.
+  The session's currently-pending interrupt batch (10 papers, mid-review)
+  still shows `yake-v1` keywords — `pending_batch` lives in
+  `curation_loop.py`'s own separate interrupt-state thread, outside this
+  script's documented, production-path-only scope — and will pick up
+  `yake-v2` keywords once the user advances to a new batch from the
+  refreshed `reserve`.
+- **Explicitly deferred, not part of this feature's own scope**:
+  - Automatic historical backfill — an old or not-yet-refreshed session's
+    papers keep their stored keyword values (`yake-v1` or otherwise)
+    until the explicit maintenance command is run against them, or until
+    genuinely re-fetched through a new search/refill.
+  - Automatic extractor-version migration — `KEYWORD_EXTRACTOR_VERSION`
+    remains documentation-only; nothing compares a paper's own version
+    against the current one or triggers re-extraction automatically.
+  - Filtering the full selected-paper collection across batches/turns —
+    the filter (Popular/Browse-all alike) only ever covers the current
+    `pending_batch`.
+  - Semantic acronym/full-form merging — `RAG` and `Retrieval-Augmented
+    Generation` are deliberately kept as two distinct keywords, on both
+    backend and frontend; only literal hyphen/space/case surface variants
+    of the *same* phrase merge.
+  - Real-world, human-labelled keyword-quality evaluation — the K4.3
+    audit is real-session contract/regression verification (has the
+    known defect class gone, is the extractor deterministic/bounded/
+    clean), not a scored quality benchmark against human judgments;
+    explicitly not attempted from one session's worth of examples.
+- **Priority**: closed; no further checkpoint scheduled.
+- **Status**: Closed (2026-08-14). Commits: `f67d876` (K4.1), `e907753`
+  (K4.2), `09ec80c` (K4.3 corrective fix), plus this checkpoint's own
+  docs/publication commit. The existing `paper-keywords-filtering` tag is
+  unmoved (still marks the K1–K3 checkpoint); a new annotated tag
+  `paper-keywords-filtering-v2` marks this K4 checkpoint's own
+  documentation commit.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
