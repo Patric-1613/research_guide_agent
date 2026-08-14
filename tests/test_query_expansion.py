@@ -578,6 +578,68 @@ def test_build_candidate_pool_computes_keywords_exactly_once_per_deduped_paper()
     assert result[0].keywords != []
 
 
+def test_real_initial_curation_path_keeps_keywords_through_rank_full_pool():
+    """Paper Keywords and Filtering, K1 follow-up regression: reproduces
+    the REAL sequence services/curation_core_service.py::start_curation
+    actually runs for a brand-new review -- build_candidate_pool() THEN
+    rank_full_pool() on its output, in that order, exactly like the real
+    initial-curation-start path does. build_candidate_pool() alone (see
+    the K1 test directly above) was never the whole story: rank_full_pool()
+    calls embed_and_index_papers() then semantic_search(), and
+    semantic_search() never returns the original in-memory Paper objects
+    -- only ones reconstructed from whatever Chroma metadata was written,
+    via research_agent.embeddings._paper_from_metadata(). Before this
+    fix, that reconstruction silently dropped `keywords` (never written
+    to metadata in the first place), so every paper coming out of
+    rank_full_pool() -- and therefore session.reserve/pending_batch for
+    every brand-new review -- had keywords=[] regardless of what
+    build_candidate_pool() had genuinely computed. Real ephemeral Chroma
+    (not mocked) + a fake embedding client (no network/LLM call) is used
+    deliberately, since a mocked collection/semantic_search would hide
+    exactly the metadata-round-trip defect this test exists to catch.
+    """
+    real_abstract = (
+        "We present a comprehensive study of graph neural networks for molecular "
+        "property prediction. Our method combines message passing with attention "
+        "mechanisms to capture long-range dependencies between atoms, evaluated "
+        "across five real benchmark datasets against strong prior baselines."
+    )
+    raw = Paper(
+        title="Graph Neural Networks for Molecular Property Prediction", authors=["A"], year=2024, venue="X",
+        abstract=real_abstract, url="http://a", doi=None, citation_count=None,
+        source="arxiv", paper_id="arxiv:gnn-molecular",
+    )
+
+    async def _fake_search_pair(*args, **kwargs):
+        return [raw], []
+
+    with patch.object(qe_module, "_search_pair", side_effect=_fake_search_pair), \
+         patch.object(qe_module, "suggest_related_titles", return_value=[]):
+        deduped = build_candidate_pool("graph neural networks", k=5, client=MagicMock())
+
+    # Control: build_candidate_pool's own output genuinely has keywords --
+    # if this fails, the regression is upstream of rank_full_pool and this
+    # test would be testing the wrong boundary.
+    assert len(deduped) == 1
+    assert deduped[0].keywords != []
+    expected_keywords = deduped[0].keywords
+
+    collection = chromadb.EphemeralClient().get_or_create_collection("initial-curation-kw", metadata={"hnsw:space": "cosine"})
+    client = _fake_client({})  # no seeded vectors needed -- ranking quality is not what's under test here
+
+    ranked, _stats = rank_full_pool("graph neural networks", deduped, client=client, collection=collection)
+
+    assert len(ranked) == 1
+    ranked_paper, _score = ranked[0]
+    assert ranked_paper.paper_id == "arxiv:gnn-molecular"
+    # The actual regression: the paper coming OUT of rank_full_pool() --
+    # what session.reserve/pending_batch are built from in the real
+    # start_curation() path -- must still carry the SAME keywords
+    # build_candidate_pool() computed, not [].
+    assert ranked_paper.keywords == expected_keywords
+    assert ranked_paper.keywords != []
+
+
 if __name__ == "__main__":
     test_rank_full_pool_returns_every_candidate_not_just_k()
     test_rank_full_pool_empty_input_returns_empty_without_touching_chroma()
@@ -607,4 +669,5 @@ if __name__ == "__main__":
     test_canonicalize_topic_falls_back_to_raw_topic_on_an_empty_parsed_result()
     test_canonicalize_topic_never_mutates_the_raw_topic_it_was_given()
     test_build_candidate_pool_computes_keywords_exactly_once_per_deduped_paper()
+    test_real_initial_curation_path_keeps_keywords_through_rank_full_pool()
     print("All query_expansion tests passed.")

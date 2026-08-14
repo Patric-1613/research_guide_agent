@@ -148,6 +148,16 @@ def _serialize_metadata(paper: Paper, used_title_fallback: bool) -> dict:
         "source_urls_json": json.dumps(paper.source_urls),
         "paper_id": paper.paper_id,
         "used_title_fallback": used_title_fallback,
+        # Paper Keywords and Filtering, K1 follow-up fix: unconditional,
+        # same convention as authors_json/source_urls_json above (a list
+        # field, never optional/None the way year/venue/etc. are -- an
+        # empty list round-trips as "[]", not silent absence). Without
+        # this, every paper that passes through rank_full_pool()'s own
+        # embed_and_index_papers() -> semantic_search() round trip lost
+        # its K1-computed keywords entirely: semantic_search() never
+        # returns the original in-memory Paper objects, only ones
+        # reconstructed from whatever this function wrote to Chroma.
+        "keywords_json": json.dumps(paper.keywords),
     }
     if paper.year is not None:
         meta["year"] = paper.year
@@ -178,6 +188,11 @@ def _paper_from_metadata(metadata: dict) -> Paper:
         paper_id=metadata.get("paper_id", ""),
     )
     paper.source_urls = json.loads(metadata.get("source_urls_json", "{}"))
+    # K1 follow-up fix: .get(..., "[]") makes this backward-compatible
+    # with metadata already indexed before this fix (no "keywords_json"
+    # key at all) -- reconstructs as [], the same safe default the field
+    # already has everywhere else, never a KeyError.
+    paper.keywords = json.loads(metadata.get("keywords_json", "[]"))
     return paper
 
 
