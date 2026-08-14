@@ -3154,6 +3154,79 @@ invented:
   neither `paper-keywords-filtering` nor `paper-keywords-filtering-v2`
   moved.
 
+### K4.1b: exclude organization/affiliation entities from paper keywords — complete
+- **Goal**: a narrowly bounded keyword-quality correction — a paper's own
+  institutional affiliation was found ranking highly enough to become
+  one of its top keywords, confirmed real, not hypothetical.
+- **Evidence**: a read-only local-sample review (session
+  `8fa9857f21fb4a2dbd103ca771e54e7b`, 96 papers) found `"Hai Phong
+  University"` (the real institution named in both a paper's title and
+  abstract) and `"SLAC National Accelerator Laboratory"` (a different,
+  non-RAG paper) both surviving as genuine top-ranked candidates —
+  K4.1's own completeness fixes (n=3, bidirectional redundancy
+  resolution) correctly assemble the FULL institution name, which then
+  ranks well precisely because it's complete; being complete does not
+  make it a topic. No recurring author-name or venue-leakage pattern was
+  found in the same sample (one isolated venue-title case from an
+  atypical "workshop report" document is not a pattern, zero genuine
+  author-name cases) — per instruction, no general rule was added for
+  either.
+- **Fix** (`7d8d304`): `_is_organization_candidate()`, wired into
+  `_filter_candidates()` (the same per-candidate stage the existing
+  noise/clause-join checks already use — never a whole-paper or
+  whole-sentence exclusion), rejects any candidate whose canonical
+  tokens include an organization/affiliation designator as a **complete
+  token**: `university`, `college`, `department`, `faculty`, `school`,
+  `institute`, `laboratory`, `lab`, `corporation`, `corp`, `company`,
+  `consortium` — small, generic, topic-agnostic, no institution names
+  hardcoded. Whole-token matching (via the same `_canonical_tokens()`
+  normalization redundancy resolution already uses) is load-bearing,
+  confirmed against real local data: a substring check would wrongly
+  reject `"annotated scientific corpora"`/`"large textual corpora"`
+  (`corp` only inside `corpora`) and `"conversation remains
+  labor-intensive"` (`lab` only inside `labor`). Verified across the
+  full 96-paper local sample: only the 2 genuinely affected papers
+  changed output; no designator token survives anywhere afterward;
+  `"Student Support"`, `"Question Answering"`, `"Question Answering
+  Model"`, and existing acronyms/system names (`RAG`, `BERT`, `"Agentic
+  RAG Chatbot"`) are untouched, none blacklisted by exact string. No NER
+  model, LLM, embeddings, KeyBERT, author/venue database, or semantic
+  classifier — a plain token-set membership check, same dependency
+  footprint as before.
+- **Bounded review confirmed unchanged**: K4.1/K4.2 extraction
+  parameters, title-quota logic, redundancy resolution, canonical
+  normalization, and every K4.1a maintenance/checkpoint-safety
+  constraint (`4c230b1`/`66d9e3d`) — re-ran the active-session-refusal
+  regression tests directly, all still passing. Full backend suite
+  **1999 passed** (1992 pre-K4.1b, +7 new organization-exclusion tests).
+- **Known, accepted residual gap**: a designator-less institutional
+  fragment (e.g. `"SLAC National Accelerator"`, or `"Hai Phong"` — the
+  city name, not `"University"`) can still survive, since it never
+  contains a listed designator token. Not fixed — closing it would need
+  a gazetteer/NER-style approach, explicitly out of scope for this
+  narrowly bounded, topic-agnostic rule.
+- **Explicitly deferred, not part of this checkpoint's own scope**:
+  - Semantic keyword typing (classifying a surviving keyword as
+    method/technology/task/dataset/domain) — this checkpoint only
+    excludes affiliation entities, never classifies what remains.
+  - Author/venue classification beyond the demonstrated structural
+    rules here — no recurring pattern was found to justify one; not
+    speculatively built.
+  - Automatic historical refresh — an old or not-yet-refreshed session's
+    papers keep their stored keyword values until the explicit
+    maintenance command is run against them, or genuinely re-fetched.
+  - Recovery of the damaged curation session
+    (`8fa9857f21fb4a2dbd103ca771e54e7b`) — remains unrecovered; not
+    attempted here, requires a separate, explicitly approved decision.
+  - Human-labelled, real-world keyword-quality evaluation — this
+    checkpoint's own local-sample review is contract/regression
+    verification, not a scored benchmark against human judgments.
+- **Priority**: closed; no further checkpoint scheduled.
+- **Status**: Closed (2026-08-14). Commit: `7d8d304`, plus this
+  checkpoint's own docs/publication commit. No new milestone tag --
+  neither `paper-keywords-filtering` nor `paper-keywords-filtering-v2`
+  moved.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
