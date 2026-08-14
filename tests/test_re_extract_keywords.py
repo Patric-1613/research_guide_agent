@@ -70,6 +70,37 @@ def _run(db_path: Path, argv: list[str]) -> int:
         return re_extract_keywords.main(argv)
 
 
+def test_script_is_directly_invocable_as_documented_without_pythonpath_help():
+    # K4.3 bounded review: regression for a real defect found by actually
+    # running the script exactly as its own usage docstring says
+    # (`python scripts/re_extract_keywords.py SESSION_ID`) -- unlike every
+    # other script in scripts/, this one was missing the sys.path
+    # bootstrap for the project root, so Python's own script-directory
+    # sys.path[0] behavior made `import research_agent` fail with
+    # ModuleNotFoundError the moment it was run as a file rather than
+    # imported by a test harness that already has the repo root on
+    # sys.path. A subprocess, run from the repo root with no PYTHONPATH
+    # set, is the only way to actually exercise this -- calling main()
+    # in-process (every other test in this file) can never catch it.
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "scripts/re_extract_keywords.py", "no-such-session-id"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert "ModuleNotFoundError" not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.returncode == 1
+    assert "no session found" in result.stderr
+
+
 def test_dry_run_never_saves(db_path, capsys):
     paper = _paper("p1", keywords=["stale", "old kw"])
     session = PaperPoolSession(topic="graph neural networks", reserve=[(paper, 0.9)], cursor=1)

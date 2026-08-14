@@ -67,9 +67,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from copy import deepcopy
 from dataclasses import replace
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.keywords import KEYWORD_EXTRACTOR_VERSION, extract_keywords
