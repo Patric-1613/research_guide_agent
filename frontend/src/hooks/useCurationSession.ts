@@ -6,7 +6,7 @@ import { ReportStreamTransportError, streamGenerateReport, streamRegenerateRepor
 import { ApiError } from '../types'
 import type {
   ChatStreamPhase, CurationGenerateReportRequest, CurationRegenerateReportRequest, CurationStateResponse,
-  RefinementMode, ReportStreamPhase, ReportStreamServerEvent, ReportTemplate,
+  RefinementMode, ReportStreamCompletionNotice, ReportStreamPhase, ReportStreamServerEvent, ReportTemplate,
 } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
@@ -75,7 +75,14 @@ export interface AddToReportResult {
 //     newer, unrelated one
 const NOTICE_AUTO_CLEAR_MS = 5000
 
-function useAutoClearingState<T>(): [T | null, (value: T | null) => void] {
+// report-progress-observability: the report-stream completion notice
+// (see reportStreamCompletionNotice below) reuses this same auto-clearing
+// mechanic but names its own duration -- a distinct constant, even though
+// it happens to share NOTICE_AUTO_CLEAR_MS's value, so each call site's
+// intent reads clearly on its own.
+const REPORT_STREAM_SUCCESS_NOTICE_MS = 5000
+
+function useAutoClearingState<T>(clearAfterMs: number = NOTICE_AUTO_CLEAR_MS): [T | null, (value: T | null) => void] {
   const [value, setValue] = useState<T | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -89,9 +96,9 @@ function useAutoClearingState<T>(): [T | null, (value: T | null) => void] {
       timeoutRef.current = setTimeout(() => {
         timeoutRef.current = null
         setValue(null)
-      }, NOTICE_AUTO_CLEAR_MS)
+      }, clearAfterMs)
     }
-  }, [])
+  }, [clearAfterMs])
 
   useEffect(
     () => () => {
@@ -174,9 +181,18 @@ interface UseCurationSessionResult {
   reportStreamActive: boolean
   reportStreamOperation: 'generate' | 'regenerate' | null
   reportStreamPhase: ReportStreamPhase | null
+  // report-progress-observability: the ordered, deduplicated phases
+  // genuinely observed so far for the current active stream -- see this
+  // field's own state declaration above for the full "why alongside
+  // reportStreamPhase, not instead of it" reasoning.
+  reportStreamPhaseHistory: ReportStreamPhase[]
   reportStreamStopping: boolean
   reportStreamError: string | null
   reportStreamSyncFailed: boolean
+  // report-progress-observability: set once, briefly, after a genuinely
+  // completed report-stream turn's canonical reload has succeeded -- see
+  // ReportStreamCompletionNotice's own docstring above.
+  reportStreamCompletionNotice: ReportStreamCompletionNotice | null
   generateReportStreaming: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<void>
   regenerateReportStreaming: (reportTemplate?: ReportTemplate, refinementMode?: RefinementMode) => Promise<void>
   cancelReportStream: () => void
@@ -340,9 +356,32 @@ export function useCurationSession(): UseCurationSessionResult {
   const [reportStreamActive, setReportStreamActiveState] = useState(false)
   const [reportStreamOperation, setReportStreamOperation] = useState<'generate' | 'regenerate' | null>(null)
   const [reportStreamPhase, setReportStreamPhase] = useState<ReportStreamPhase | null>(null)
+  // report-progress-observability: the ordered, deduplicated phases
+  // genuinely observed so far for the CURRENT active stream -- unlike
+  // reportStreamPhase (the single latest phase, kept unchanged for any
+  // existing caller/test that only needs that), this accumulates so
+  // ReportModePanel can render every phase that actually happened, not
+  // just the most recent one. Reset to [] wherever clearReportStreamPreview
+  // already runs (a new operation starting, or existing settle/cleanup
+  // paths) -- see runReportStreamOperation below for where entries are
+  // appended via a functional update (so back-to-back phase events within
+  // the same React batch can never overwrite one another).
+  const [reportStreamPhaseHistory, setReportStreamPhaseHistory] = useState<ReportStreamPhase[]>([])
   const [reportStreamStopping, setReportStreamStopping] = useState(false)
   const [reportStreamError, setReportStreamError] = useState<string | null>(null)
   const [reportStreamSyncFailed, setReportStreamSyncFailed] = useState(false)
+  // report-progress-observability: a temporary, completed-status-only
+  // confirmation ("Report regenerated · Evaluated · Saved") -- same
+  // auto-clearing mechanic as lastChatSearchMeta/lastAddToReportResult
+  // above, just with its own named duration (REPORT_STREAM_SUCCESS_
+  // NOTICE_MS). Deliberately NOT reset by clearReportStreamPreview (see
+  // that function's own comment below) -- it is set explicitly, once,
+  // only after loadState's own post-stream reload has already succeeded,
+  // and cleared explicitly wherever a NEW report action starts or the
+  // session changes (see runReportStreamOperation and the session-change
+  // effect below).
+  const [reportStreamCompletionNotice, setReportStreamCompletionNotice] =
+    useAutoClearingState<ReportStreamCompletionNotice>(REPORT_STREAM_SUCCESS_NOTICE_MS)
   // Same ref-alongside-state rationale as chatStreamActiveRef above.
   const reportStreamActiveRef = useRef(false)
   const reportStreamAbortRef = useRef<AbortController | null>(null)
@@ -364,6 +403,7 @@ export function useCurationSession(): UseCurationSessionResult {
     setReportStreamActive(false)
     setReportStreamOperation(null)
     setReportStreamPhase(null)
+    setReportStreamPhaseHistory([])
     setReportStreamStopping(false)
     setReportStreamSyncFailed(false)
     reportStreamAbortRef.current = null
@@ -515,11 +555,16 @@ export function useCurationSession(): UseCurationSessionResult {
   // Usage Protection M4.3B: same reasoning as the chat-stream effect
   // above, for a report-generation/regeneration stream -- a stream
   // belongs to the session it was started for.
+  // report-progress-observability: also clears a still-showing completion
+  // notice on the same edge -- it describes a report-stream turn that
+  // finished for the session being LEFT, and must not keep sitting on
+  // screen once the user has switched (or the hook itself unmounts).
   useEffect(() => {
     return () => {
       reportStreamAbortRef.current?.abort()
+      setReportStreamCompletionNotice(null)
     }
-  }, [sessionId])
+  }, [sessionId, setReportStreamCompletionNotice])
 
   useEffect(() => {
     const onPopState = () => setSessionId(getSessionIdFromUrl())
@@ -842,9 +887,15 @@ export function useCurationSession(): UseCurationSessionResult {
       setReportStreamActive(true)
       setReportStreamOperation(operation)
       setReportStreamPhase(null)
+      setReportStreamPhaseHistory([])
       setReportStreamStopping(false)
       setReportStreamError(null)
       setReportStreamSyncFailed(false)
+      // report-progress-observability: a NEW report action starting always
+      // clears a still-showing completion notice from an EARLIER turn --
+      // same "something new is happening" rule clearActionNotices already
+      // applies to the chat-side success/info notices.
+      setReportStreamCompletionNotice(null)
 
       const syncMessage = 'Lost the connection while the report was being generated. Checking what was saved…'
       const reloadBestEffort = async () => {
@@ -870,6 +921,18 @@ export function useCurationSession(): UseCurationSessionResult {
       let sawDone = false
       let sawCompleted = false
       let sawError = false
+      // report-progress-observability: a plain local array, NOT read from
+      // reportStreamPhaseHistory React state -- this async function's own
+      // closure would otherwise see whatever value was current at CALL
+      // time, never the state's later updates (the same reason sawStarted/
+      // sawDone/etc. above are local variables, not state). Used at the
+      // very end, once completed -> done has genuinely succeeded, to seed
+      // the completion notice with exactly the phases this turn actually
+      // observed. setReportStreamPhaseHistory (React-visible, for the
+      // active trail) is still updated via a FUNCTIONAL update below, so
+      // rapid consecutive phase events within the same React batch can
+      // never overwrite one another.
+      const observedPhases: ReportStreamPhase[] = []
 
       try {
         for await (const event of streamFn(sessionId, req, { signal: controller.signal })) {
@@ -885,9 +948,16 @@ export function useCurationSession(): UseCurationSessionResult {
             throw new ReportStreamTransportError('Received data before the stream had started.')
           }
           switch (event.type) {
-            case 'phase':
-              setReportStreamPhase(event.data.phase)
+            case 'phase': {
+              const phase = event.data.phase
+              setReportStreamPhase(phase)
+              // Defensive dedup -- see this block's own comment above and
+              // the ReportStreamCompletionNotice docstring for why a
+              // repeated phase must never appear twice or reorder history.
+              if (!observedPhases.includes(phase)) observedPhases.push(phase)
+              setReportStreamPhaseHistory((prev) => (prev.includes(phase) ? prev : [...prev, phase]))
               break
+            }
             case 'completed':
               if (sawCompleted || sawError) throw new ReportStreamTransportError('Received more than one terminal signal.')
               sawCompleted = true
@@ -971,6 +1041,20 @@ export function useCurationSession(): UseCurationSessionResult {
         await loadState(sessionId)
         // loadState's own success path already calls
         // clearReportStreamPreview() -- see above.
+        // report-progress-observability: set the completion notice only
+        // now -- after loadState has genuinely succeeded, per this
+        // phase's own "mark successful completion only after the existing
+        // valid completed -> done contract AND a successful reload" rule.
+        // Guarded against the session having changed while this reload
+        // was in flight (loadState itself already guards its OWN state
+        // publish the same way) -- without this, a session switch that
+        // raced ahead of this await would otherwise resurrect a notice
+        // for a turn that belongs to a review the user has since left,
+        // moments after the session-change effect above already cleared
+        // it.
+        if (currentSessionIdRef.current === sessionId) {
+          setReportStreamCompletionNotice({ operation, phases: observedPhases })
+        }
       } catch {
         setReportStreamSyncFailed(true)
         setReportStreamActive(false)
@@ -978,7 +1062,7 @@ export function useCurationSession(): UseCurationSessionResult {
         setReportStreamPhase(null)
       }
     },
-    [sessionId, loadState, clearReportStreamPreview, setReportStreamActive],
+    [sessionId, loadState, clearReportStreamPreview, setReportStreamActive, setReportStreamCompletionNotice],
   )
 
   const generateReportStreaming = useCallback(
@@ -1100,8 +1184,9 @@ export function useCurationSession(): UseCurationSessionResult {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning, curationAction,
     openReview, startReview, submitPicks, generateReport, regenerateReport,
-    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
-    reportStreamSyncFailed, generateReportStreaming, regenerateReportStreaming, cancelReportStream,
+    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
+    reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice,
+    generateReportStreaming, regenerateReportStreaming, cancelReportStream,
     activateReportVersion, sendChatMessage,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
     deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,

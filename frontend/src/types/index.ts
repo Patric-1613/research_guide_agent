@@ -452,6 +452,18 @@ export type ChatStreamServerEvent =
 // machine that enforces their ordering.
 export type ReportStreamPhase = 'generating' | 'evaluating' | 'revising' | 'saving'
 
+// report-progress-observability: the operation + ordered, deduplicated
+// phases genuinely observed for a report-stream turn that just completed
+// -- captured by useCurationSession.ts (see reportStreamCompletionNotice
+// there) once a completed -> done sequence and its canonical reload have
+// both succeeded, and formatted into user-facing text by ReportModePanel.
+// tsx (never pre-formatted here -- this type carries only raw, observed
+// data).
+export interface ReportStreamCompletionNotice {
+  operation: 'generate' | 'regenerate'
+  phases: ReportStreamPhase[]
+}
+
 export type ReportStreamEventType = 'started' | 'phase' | 'completed' | 'error' | 'done'
 
 export interface ReportStreamStartedEvent {

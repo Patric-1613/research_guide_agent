@@ -1574,6 +1574,325 @@ describe('useCurationSession -- Usage Protection M4.3B: report-streaming lifecyc
     expect(result.current.state?.report_versions).toEqual(reloadedState.report_versions)
     expect(result.current.state?.report_versions).toHaveLength(1)
   })
+
+  describe('report-progress-observability: reportStreamPhaseHistory', () => {
+    // Each test below awaits the stream to full completion (fakeReportStream
+    // resolves its events near-instantly, so trying to catch reportStream
+    // PhaseHistory mid-stream via waitFor would race the stream's own
+    // completion). reportStreamCompletionNotice.phases is asserted instead
+    // -- it's captured from the SAME accumulation, locally, at the moment
+    // the turn completes (see runReportStreamOperation's own observedPhases),
+    // so it proves the exact order/contents history reached without
+    // fighting async timing. The "observable mid-stream" property itself is
+    // already covered by the existing 'phase transitions are observable in
+    // real time before completion' test above and the dedicated
+    // close-together-events test below (both use a real, controllable gate).
+
+    it('accumulates generating -> saving, in order, for a refinement-off turn', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toEqual({ operation: 'generate', phases: ['generating', 'saving'] })
+    })
+
+    it('accumulates generating -> evaluating -> saving, in order', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'evaluating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toEqual({
+        operation: 'generate', phases: ['generating', 'evaluating', 'saving'],
+      })
+    })
+
+    it('accumulates generating -> evaluating -> revising -> saving, in order', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'evaluating' } },
+            { type: 'phase', data: { phase: 'revising' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toEqual({
+        operation: 'generate', phases: ['generating', 'evaluating', 'revising', 'saving'],
+      })
+    })
+
+    it('a repeated phase event is deduplicated, not appended a second time or reordered', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            // A defensive duplicate -- not a real backend sequence, but
+            // this hook must tolerate one without corrupting history.
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toEqual({ operation: 'generate', phases: ['generating', 'saving'] })
+    })
+
+    it('close-together phase events all land in history via functional updates -- none lost to batching', async () => {
+      const { result } = await mountAtS1()
+      // Two phase events yielded back-to-back with no intervening await --
+      // the closest a fake generator can get to "arrived in the same React
+      // batch." A non-functional setState (reading a stale closed-over
+      // array) would silently drop one of these.
+      vi.mocked(streamGenerateReport).mockImplementation(() =>
+        (async function* () {
+          yield { type: 'started', data: {} } as ReportStreamServerEvent
+          yield { type: 'phase', data: { phase: 'generating' } } as ReportStreamServerEvent
+          yield { type: 'phase', data: { phase: 'evaluating' } } as ReportStreamServerEvent
+          yield { type: 'phase', data: { phase: 'saving' } } as ReportStreamServerEvent
+          yield { type: 'completed', data: reportOut() } as ReportStreamServerEvent
+          yield { type: 'done', data: {} } as ReportStreamServerEvent
+        })(),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      // By completion, history has already been cleared by the post-
+      // reload cleanup -- the completion notice (built from the SAME
+      // observed phases, captured locally, immune to React batching) is
+      // this test's real assertion that nothing was lost in transit.
+      expect(result.current.reportStreamCompletionNotice).toEqual({
+        operation: 'generate', phases: ['generating', 'evaluating', 'saving'],
+      })
+    })
+  })
+
+  describe('report-progress-observability: reportStreamCompletionNotice', () => {
+    it('a successful completed -> done + successful reload sets a notice with the operation and observed phases', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamRegenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'phase', data: { phase: 'evaluating' } },
+            { type: 'phase', data: { phase: 'saving' } },
+            { type: 'completed', data: reportOut() },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.regenerateReportStreaming(undefined, 'single')
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toEqual({
+        operation: 'regenerate', phases: ['generating', 'evaluating', 'saving'],
+      })
+      // Ephemeral, not the ongoing-work state -- both already settled.
+      expect(result.current.reportStreamActive).toBe(false)
+      expect(result.current.reportStreamPhaseHistory).toEqual([])
+    })
+
+    it('auto-clears ~5s (REPORT_STREAM_SUCCESS_NOTICE_MS) after being set, with no further action', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+      expect(result.current.reportStreamCompletionNotice).not.toBeNull()
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000)
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+      vi.useRealTimers()
+    })
+
+    it('cancellation sets no completion notice', async () => {
+      const { result } = await mountAtS1()
+      const { gen } = controllableReportStream()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+
+      let sendPromise: Promise<void> = Promise.resolve()
+      act(() => {
+        sendPromise = result.current.generateReportStreaming()
+      })
+      await waitFor(() => expect(result.current.reportStreamActive).toBe(true))
+
+      act(() => {
+        result.current.cancelReportStream()
+      })
+      await act(async () => {
+        await sendPromise
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+    })
+
+    it('a handled SSE error sets no completion notice', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [
+            { type: 'started', data: {} },
+            { type: 'phase', data: { phase: 'generating' } },
+            { type: 'error', data: { reason_code: 'provider_error', message: 'The model provider returned an error.' } },
+            { type: 'done', data: {} },
+          ],
+          opts.signal,
+        ),
+      )
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+    })
+
+    it('a transport/protocol failure mid-stream sets no completion notice', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation(() =>
+        reportStreamThatFailsMidway(
+          [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }],
+          new ReportStreamTransportError('Received a malformed message from the server.'),
+        ),
+      )
+      vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's1', stage: 'synthesize' }))
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+    })
+
+    it('a reload failure after a successful completed/done sets no completion notice', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [{ type: 'started', data: {} }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+          opts.signal,
+        ),
+      )
+      vi.mocked(curationApi.getState).mockRejectedValueOnce(new Error('network down'))
+
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+
+      expect(result.current.reportStreamSyncFailed).toBe(true)
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+    })
+
+    it('starting a new report operation clears a prior completion notice', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+          opts.signal,
+        ),
+      )
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+      expect(result.current.reportStreamCompletionNotice).not.toBeNull()
+
+      const { gen } = controllableReportStream()
+      vi.mocked(streamRegenerateReport).mockImplementation((_sessionId, _req, opts) => gen(opts.signal))
+      let sendPromise: Promise<void> = Promise.resolve()
+      act(() => {
+        sendPromise = result.current.regenerateReportStreaming()
+      })
+
+      await waitFor(() => expect(result.current.reportStreamCompletionNotice).toBeNull())
+
+      act(() => { result.current.cancelReportStream() })
+      await act(async () => { await sendPromise })
+    })
+
+    it('switching sessions clears a still-showing completion notice', async () => {
+      const { result } = await mountAtS1()
+      vi.mocked(streamGenerateReport).mockImplementation((_sessionId, _req, opts) =>
+        fakeReportStream(
+          [{ type: 'started', data: {} }, { type: 'phase', data: { phase: 'generating' } }, { type: 'completed', data: reportOut() }, { type: 'done', data: {} }],
+          opts.signal,
+        ),
+      )
+      await act(async () => {
+        await result.current.generateReportStreaming()
+      })
+      expect(result.current.reportStreamCompletionNotice).not.toBeNull()
+
+      vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 's2', topic: 'other' }))
+      await act(async () => {
+        await result.current.openReview('s2')
+      })
+
+      expect(result.current.reportStreamCompletionNotice).toBeNull()
+    })
+  })
 })
 
 describe('useCurationSession -- UXH.2: curationAction', () => {

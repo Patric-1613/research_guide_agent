@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ReportModePanel } from './ReportModePanel'
-import type { CurationStateResponse } from '../../types'
+import type { CurationStateResponse, ReportStreamCompletionNotice } from '../../types'
 
 function baseState(overrides: Partial<CurationStateResponse> = {}): CurationStateResponse {
   return {
@@ -993,9 +993,11 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
     reportStreamActive?: boolean
     reportStreamOperation?: 'generate' | 'regenerate' | null
     reportStreamPhase?: string | null
+    reportStreamPhaseHistory?: string[]
     reportStreamStopping?: boolean
     reportStreamError?: string | null
     reportStreamSyncFailed?: boolean
+    reportStreamCompletionNotice?: ReportStreamCompletionNotice | null
   }
 
   function renderStreaming(overrides: StreamingOverrides = {}) {
@@ -1014,9 +1016,11 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
         reportStreamActive={overrides.reportStreamActive ?? false}
         reportStreamOperation={overrides.reportStreamOperation ?? null}
         reportStreamPhase={(overrides.reportStreamPhase as never) ?? null}
+        reportStreamPhaseHistory={overrides.reportStreamPhaseHistory as never}
         reportStreamStopping={overrides.reportStreamStopping ?? false}
         reportStreamError={overrides.reportStreamError ?? null}
         reportStreamSyncFailed={overrides.reportStreamSyncFailed ?? false}
+        reportStreamCompletionNotice={overrides.reportStreamCompletionNotice ?? null}
         onCancelReportStream={onCancelReportStream}
         onRetryReportSync={onRetryReportSync}
       />,
@@ -1304,10 +1308,14 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
       expect(onRetryReportSync).not.toHaveBeenCalled()
     })
 
-    it('all four phase labels map to their own concise text', () => {
+    it('all four phase labels map to their own concise text, using regenerate-specific wording for "generating"', () => {
       const state = baseState({ report: reportStub() })
+      // report-progress-observability: "generating" now reads "Regenerating
+      // report" for a regenerate operation (distinct from "Generating
+      // report" for a fresh generate) -- see the empty-view case below for
+      // the generate-operation wording.
       const cases: Array<[string, string]> = [
-        ['generating', 'Generating report'],
+        ['generating', 'Regenerating report'],
         ['evaluating', 'Evaluating draft'],
         ['revising', 'Revising report'],
         ['saving', 'Saving report'],
@@ -1408,6 +1416,193 @@ describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress 
       )
 
       expect(document.activeElement).toBe(screen.getByTestId('report-template-option-expert'))
+    })
+  })
+
+  describe('report-progress-observability: accumulated phase trail + completion notice', () => {
+    it('empty (Generate) view: renders one row per observed phase, checks for completed ones, spinner for the active one', () => {
+      renderStreaming({
+        reportStreamActive: true, reportStreamOperation: 'generate',
+        reportStreamPhase: 'evaluating', reportStreamPhaseHistory: ['generating', 'evaluating'],
+      })
+
+      const trail = screen.getByTestId('report-stream-phase-label')
+      expect(trail).toHaveTextContent('Report generated')
+      expect(trail).toHaveTextContent('Evaluating draft')
+      // Only two rows -- 'saving'/'revising' never happened, so they never render.
+      expect(screen.queryByTestId('report-stream-phase-row-saving')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('report-stream-phase-row-revising')).not.toBeInTheDocument()
+    })
+
+    it('Generate uses "Generating report"/"Report generated"', () => {
+      renderStreaming({
+        reportStreamActive: true, reportStreamOperation: 'generate',
+        reportStreamPhase: 'saving', reportStreamPhaseHistory: ['generating', 'saving'],
+      })
+      const trail = screen.getByTestId('report-stream-phase-label')
+      expect(trail).toHaveTextContent('Report generated')
+      expect(trail).not.toHaveTextContent('Report regenerated')
+    })
+
+    it('Regenerate uses "Regenerating report"/"Report regenerated"', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({
+        state, reportStreamActive: true, reportStreamOperation: 'regenerate',
+        reportStreamPhase: 'saving', reportStreamPhaseHistory: ['generating', 'saving'],
+      })
+      const trail = screen.getByTestId('report-stream-phase-label')
+      expect(trail).toHaveTextContent('Report regenerated')
+    })
+
+    it('a completed phase shows a check icon; the active (last) phase shows a spinner, never both for the same row', () => {
+      renderStreaming({
+        reportStreamActive: true, reportStreamOperation: 'generate',
+        reportStreamPhase: 'saving', reportStreamPhaseHistory: ['generating', 'evaluating', 'saving'],
+      })
+
+      const generatingRow = screen.getByTestId('report-stream-phase-row-generating')
+      const evaluatingRow = screen.getByTestId('report-stream-phase-row-evaluating')
+      const savingRow = screen.getByTestId('report-stream-phase-row-saving')
+
+      expect(generatingRow.querySelector('svg[aria-hidden="true"]')).toBeInTheDocument()
+      expect(generatingRow).toHaveTextContent('Report generated')
+      expect(evaluatingRow).toHaveTextContent('Draft evaluated')
+      // The active row shows an animated spinner, distinguishing it from
+      // the completed rows above (jsdom doesn't compute a real spin
+      // animation, so the class name itself is the observable signal).
+      expect(savingRow.querySelector('.animate-spin')).toBeInTheDocument()
+      expect(generatingRow.querySelector('.animate-spin')).not.toBeInTheDocument()
+      expect(evaluatingRow.querySelector('.animate-spin')).not.toBeInTheDocument()
+    })
+
+    it('never renders a "Revised"/revising row unless a revising event was actually received', () => {
+      renderStreaming({
+        reportStreamActive: true, reportStreamOperation: 'generate',
+        reportStreamPhase: 'saving', reportStreamPhaseHistory: ['generating', 'evaluating', 'saving'],
+      })
+
+      expect(screen.queryByTestId('report-stream-phase-row-revising')).not.toBeInTheDocument()
+      expect(screen.queryByText(/revised/i)).not.toBeInTheDocument()
+    })
+
+    it('renders a revising row, in order, once a revising event was received', () => {
+      renderStreaming({
+        reportStreamActive: true, reportStreamOperation: 'generate',
+        reportStreamPhase: 'saving', reportStreamPhaseHistory: ['generating', 'evaluating', 'revising', 'saving'],
+      })
+
+      const rows = screen.getAllByTestId(/report-stream-phase-row-/).map((el) => el.dataset.testid)
+      expect(rows).toEqual([
+        'report-stream-phase-row-generating', 'report-stream-phase-row-evaluating',
+        'report-stream-phase-row-revising', 'report-stream-phase-row-saving',
+      ])
+      expect(screen.getByTestId('report-stream-phase-row-revising')).toHaveTextContent('Report revised')
+    })
+
+    it('regeneration header: exactly one live region, whether showing the trail or nothing at all', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({
+        state, reportStreamActive: true, reportStreamOperation: 'regenerate',
+        reportStreamPhase: 'evaluating', reportStreamPhaseHistory: ['generating', 'evaluating'],
+      })
+
+      expect(screen.getAllByTestId('report-stream-phase-label')).toHaveLength(1)
+      const region = screen.getByTestId('report-stream-phase-label')
+      expect(region).toHaveAttribute('role', 'status')
+      expect(region).toHaveAttribute('aria-live', 'polite')
+    })
+
+    it('regeneration header: shows the completion notice once the stream is no longer active', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({
+        state, reportStreamActive: false, reportStreamOperation: null,
+        reportStreamCompletionNotice: { operation: 'regenerate', phases: ['generating', 'evaluating', 'saving'] },
+      })
+
+      const notice = screen.getByTestId('report-stream-completion-notice')
+      expect(notice).toHaveTextContent('Report regenerated · Evaluated · Saved')
+      expect(notice).toHaveAttribute('role', 'status')
+      expect(notice).toHaveAttribute('aria-live', 'polite')
+      // The trail and the notice are never shown at the same time.
+      expect(screen.queryByTestId('report-stream-phase-label')).not.toBeInTheDocument()
+    })
+
+    it('the notice text is derived only from the operation and phases actually received (generate, no evaluation)', () => {
+      // A generate-operation notice only ever shows once state.report is
+      // populated (the reload that precedes it just set it) -- same
+      // "with report" header the regenerate case renders in.
+      const state = baseState({ report: reportStub() })
+      renderStreaming({
+        state, reportStreamActive: false, reportStreamOperation: null,
+        reportStreamCompletionNotice: { operation: 'generate', phases: ['generating', 'saving'] },
+      })
+
+      expect(screen.getByTestId('report-stream-completion-notice')).toHaveTextContent('Report generated · Saved')
+    })
+
+    it('the notice text includes "Revised" only when a revising event was part of the completed turn', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({
+        state, reportStreamActive: false, reportStreamOperation: null,
+        reportStreamCompletionNotice: { operation: 'regenerate', phases: ['generating', 'evaluating', 'revising', 'saving'] },
+      })
+
+      expect(screen.getByTestId('report-stream-completion-notice')).toHaveTextContent(
+        'Report regenerated · Evaluated · Revised · Saved',
+      )
+    })
+
+    it('a still-showing notice disappears once the hook clears it (simulated via re-render, under fake timers)', () => {
+      vi.useFakeTimers()
+      const state = baseState({ report: reportStub() })
+      const { rerender } = render(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          reportStreamCompletionNotice={{ operation: 'regenerate', phases: ['generating', 'saving'] }}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+      expect(screen.getByTestId('report-stream-completion-notice')).toBeInTheDocument()
+
+      // The real 5s auto-clear timer lives in useCurationSession.ts (see
+      // its own REPORT_STREAM_SUCCESS_NOTICE_MS-driven test) -- this panel
+      // holds no timer of its own, only whatever prop it's given. Advancing
+      // fake time here is a no-op for THIS component; what actually flips
+      // the prop, exactly as the real hook eventually does, is this re-
+      // render passing reportStreamCompletionNotice={null}.
+      vi.advanceTimersByTime(5000)
+      rerender(
+        <ReportModePanel
+          state={state} disabled={false} onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+          exportUrls={EXPORT_URLS} reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+          reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+          reportStreamCompletionNotice={null}
+          onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+        />,
+      )
+
+      // No permanent empty status container left behind in its place.
+      expect(screen.queryByTestId('report-stream-completion-notice')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('report-stream-phase-label')).not.toBeInTheDocument()
+      vi.useRealTimers()
+    })
+
+    it('no permanent empty status container renders when neither a stream nor a notice is active', () => {
+      const state = baseState({ report: reportStub() })
+      renderStreaming({ state })
+
+      expect(screen.queryByTestId('report-stream-phase-label')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('report-stream-completion-notice')).not.toBeInTheDocument()
+    })
+
+    it('falls back to a single-row trail from reportStreamPhase alone when reportStreamPhaseHistory is omitted (back-compat)', () => {
+      renderStreaming({ reportStreamActive: true, reportStreamOperation: 'generate', reportStreamPhase: 'evaluating' })
+
+      const trail = screen.getByTestId('report-stream-phase-label')
+      expect(trail).toHaveTextContent('Evaluating draft')
+      expect(screen.queryByTestId('report-stream-phase-row-generating')).not.toBeInTheDocument()
     })
   })
 })

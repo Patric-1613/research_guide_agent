@@ -48,8 +48,9 @@ export default function CurationWorkspacePage() {
     dismissReportStaleWarning, curationAction,
     openReview, startReview, submitPicks, activateReportVersion,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
-    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
-    reportStreamSyncFailed, generateReportStreaming, regenerateReportStreaming, cancelReportStream,
+    reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
+    reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice,
+    generateReportStreaming, regenerateReportStreaming, cancelReportStream,
     deleteExchanges, addExchangesToReport, editExchange, deleteReview, selectFromHistory, reopenReview, refresh,
   } = useCurationSession()
 
@@ -436,9 +437,11 @@ export default function CurationWorkspacePage() {
                       reportStreamActive={reportStreamActive}
                       reportStreamOperation={reportStreamOperation}
                       reportStreamPhase={reportStreamPhase}
+                      reportStreamPhaseHistory={reportStreamPhaseHistory}
                       reportStreamStopping={reportStreamStopping}
                       reportStreamError={reportStreamError}
                       reportStreamSyncFailed={reportStreamSyncFailed}
+                      reportStreamCompletionNotice={reportStreamCompletionNotice}
                       onCancelReportStream={cancelReportStream}
                       onRetryReportSync={handleRetryReportSync}
                     />

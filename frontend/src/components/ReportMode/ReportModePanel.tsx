@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { CircleStop, Loader2 } from 'lucide-react'
+import { Check, CircleStop, Loader2 } from 'lucide-react'
 import type {
-  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportStreamPhase, ReportTemplate,
-  ReportVersionSummary, CurationStateResponse,
+  ReportOut, ReportRefinementOut, ReportSection, RefinementMode, ReportExportFormat, ReportStreamCompletionNotice,
+  ReportStreamPhase, ReportTemplate, ReportVersionSummary, CurationStateResponse,
 } from '../../types'
 import { renderContentWithMarkers } from '../../lib/citationMarkers'
 import { ReferencesList } from '../shared/ReferencesList'
@@ -40,31 +40,161 @@ interface ReportModePanelProps {
   reportStreamActive: boolean
   reportStreamOperation: 'generate' | 'regenerate' | null
   reportStreamPhase: ReportStreamPhase | null
+  // report-progress-observability: the ordered, deduplicated phases
+  // genuinely observed so far for the current active stream -- optional
+  // and additive: every existing call site that only ever set
+  // reportStreamPhase keeps compiling and rendering exactly as before
+  // (see reportStreamHistory's own fallback in the component body below),
+  // so this is a strictly additive prop, not a replacement for
+  // reportStreamPhase.
+  reportStreamPhaseHistory?: ReportStreamPhase[]
   reportStreamStopping: boolean
   reportStreamError: string | null
   reportStreamSyncFailed: boolean
+  // report-progress-observability: set only once a report-stream turn has
+  // genuinely completed and its canonical reload has succeeded -- a
+  // temporary, completed-status confirmation (never presented as ongoing
+  // work). Optional/nullable so every existing call site that never
+  // passes it renders exactly as before (no notice).
+  reportStreamCompletionNotice?: ReportStreamCompletionNotice | null
   onCancelReportStream: () => void
   onRetryReportSync: () => void
 }
 
-// Usage Protection M4.3B: concise, user-facing labels for the backend's
-// own internal phase vocabulary (research_agent/report_streaming.py's
-// ReportStreamPhase) -- never the raw identifier itself. "Stopping" is
-// not a backend phase at all -- it's this panel's own label for the
-// window between a Stop click and the cancellation/reload actually
-// settling (reportStreamStopping), so cancellation is never presented
-// as instantaneous.
-const REPORT_STREAM_PHASE_LABELS: Record<ReportStreamPhase, string> = {
-  generating: 'Generating report',
+// report-progress-observability: concise, user-facing labels for the
+// backend's own internal phase vocabulary (research_agent/report_
+// streaming.py's ReportStreamPhase) -- never the raw identifier itself.
+// Three separate label sets, since the SAME phase reads differently
+// depending on whether it's the one currently running, one that already
+// finished (a row in the accumulated trail), or a segment in the brief
+// completion notice:
+//   ACTIVE:  "Evaluating draft"   (this phase is running right now)
+//   DONE:    "Draft evaluated"    (a completed row in the trail)
+//   NOTICE:  "Evaluated"          (a terse segment in the 5s confirmation)
+// "generating"'s own label additionally depends on the operation
+// (generate vs regenerate) -- see generatingLabel() below; the other
+// three phases never vary by operation, so they're plain lookup tables.
+const PHASE_ACTIVE_LABEL: Record<Exclude<ReportStreamPhase, 'generating'>, string> = {
   evaluating: 'Evaluating draft',
   revising: 'Revising report',
   saving: 'Saving report',
 }
+const PHASE_DONE_LABEL: Record<Exclude<ReportStreamPhase, 'generating'>, string> = {
+  evaluating: 'Draft evaluated',
+  revising: 'Report revised',
+  saving: 'Report saved',
+}
+const PHASE_NOTICE_LABEL: Record<Exclude<ReportStreamPhase, 'generating'>, string> = {
+  evaluating: 'Evaluated',
+  revising: 'Revised',
+  saving: 'Saved',
+}
 
-function reportStreamStatusLabel(phase: ReportStreamPhase | null, stopping: boolean): string {
-  if (stopping) return 'Stopping'
-  if (phase) return REPORT_STREAM_PHASE_LABELS[phase]
-  return 'Starting'
+// "generating"/"regenerating" is the one phase whose own wording depends
+// on which operation is running -- kept === 'generating'-only for the
+// DONE/NOTICE variant too ("Report generated"/"Report regenerated" reads
+// naturally as both a completed trail row AND the notice's first segment,
+// so the same string serves both).
+function generatingLabel(operation: 'generate' | 'regenerate' | null, kind: 'active' | 'done'): string {
+  const isRegenerate = operation === 'regenerate'
+  if (kind === 'active') return isRegenerate ? 'Regenerating report' : 'Generating report'
+  return isRegenerate ? 'Report regenerated' : 'Report generated'
+}
+
+function phaseRowLabel(phase: ReportStreamPhase, operation: 'generate' | 'regenerate' | null, kind: 'active' | 'done'): string {
+  if (phase === 'generating') return generatingLabel(operation, kind)
+  return kind === 'active' ? PHASE_ACTIVE_LABEL[phase] : PHASE_DONE_LABEL[phase]
+}
+
+function phaseNoticeSegment(phase: ReportStreamPhase, operation: 'generate' | 'regenerate' | null): string {
+  if (phase === 'generating') return generatingLabel(operation, 'done')
+  return PHASE_NOTICE_LABEL[phase]
+}
+
+// report-progress-observability: falls back to treating a single
+// reportStreamPhase as a one-item history when reportStreamPhaseHistory
+// isn't supplied -- keeps every pre-existing call site (which only ever
+// set reportStreamPhase) rendering exactly as it did before this phase
+// (a single active-phase row, nothing accumulated), with zero call-site
+// churn required.
+function resolvePhaseHistory(phase: ReportStreamPhase | null, history: ReportStreamPhase[] | undefined): ReportStreamPhase[] {
+  if (history) return history
+  return phase ? [phase] : []
+}
+
+// report-progress-observability: the accumulated, truthful phase trail --
+// one row per phase actually observed so far, in order, never a
+// predetermined/future phase. The LAST row is the one currently running
+// (Loader2, active-phase wording); every earlier row already finished
+// (Check, done-phase wording). ONE live region for the whole trail, not
+// one per row -- a row's icon/text changing (spinner -> check, "Evaluating
+// draft" -> "Draft evaluated") is one coherent update, not several.
+// "Stopping" (not a backend phase) overrides the whole trail, matching
+// this panel's pre-existing "cancellation is never instantaneous" rule.
+function ReportStreamPhaseTrail({
+  operation, phase, history, stopping,
+}: {
+  operation: 'generate' | 'regenerate' | null
+  phase: ReportStreamPhase | null
+  history?: ReportStreamPhase[]
+  stopping: boolean
+}) {
+  const phases = resolvePhaseHistory(phase, history)
+  if (stopping) {
+    return (
+      <span role="status" aria-live="polite" data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
+        Stopping
+      </span>
+    )
+  }
+  if (phases.length === 0) {
+    return (
+      <span role="status" aria-live="polite" data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
+        Starting
+      </span>
+    )
+  }
+  const lastIndex = phases.length - 1
+  return (
+    <div role="status" aria-live="polite" data-testid="report-stream-phase-label" className="flex flex-col items-start gap-0.5 text-xs text-text-secondary">
+      {phases.map((p, i) => {
+        const isActive = i === lastIndex
+        return (
+          <span key={p} data-testid={`report-stream-phase-row-${p}`} className="flex items-center gap-1.5">
+            {isActive ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+            ) : (
+              <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+            )}
+            {phaseRowLabel(p, operation, isActive ? 'active' : 'done')}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+// report-progress-observability: the brief, completed-status-only
+// confirmation shown once a report-stream turn has genuinely finished
+// (see reportStreamCompletionNotice's own docstring in useCurationSession.
+// ts) -- auto-cleared by the hook after REPORT_STREAM_SUCCESS_NOTICE_MS,
+// so this component itself holds no timer/visibility logic of its own,
+// only presentation. Announced once, via its own single live region --
+// never the ongoing-work trail's region (the two are never rendered at
+// the same time: the caller swaps one for the other).
+function ReportStreamCompletionNoticeView({ notice }: { notice: ReportStreamCompletionNotice }) {
+  const text = notice.phases.map((phase) => phaseNoticeSegment(phase, notice.operation)).join(' · ')
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      data-testid="report-stream-completion-notice"
+      className="flex items-center gap-1.5 text-xs text-text-secondary"
+    >
+      <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+      {text}
+    </span>
+  )
 }
 
 // Usage Protection M4.3B: Generate/Regenerate and Stop share this one
@@ -154,8 +284,8 @@ const GENERATION_REASON_LABELS: Record<string, string> = {
 // actually shown.
 export function ReportModePanel({
   state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportUrls,
-  reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamStopping, reportStreamError,
-  reportStreamSyncFailed, onCancelReportStream, onRetryReportSync,
+  reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
+  reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice, onCancelReportStream, onRetryReportSync,
 }: ReportModePanelProps) {
   const generating = reportStreamActive && reportStreamOperation === 'generate'
   const regenerating = reportStreamActive && reportStreamOperation === 'regenerate'
@@ -222,13 +352,9 @@ export function ReportModePanel({
         <RefineOnceToggle checked={refineOnce} onChange={setRefineOnce} disabled={disabled} />
         {generating ? (
           <div data-testid="report-stream-progress" className="flex flex-col items-center gap-2">
-            {/* UXH.3: this label was missing role="status"/aria-live=
-                "polite" -- its Regenerate sibling above already carries
-                both. Text/behavior otherwise unchanged; this phase only
-                adds the missing semantics, not new visual treatment. */}
-            <span role="status" aria-live="polite" data-testid="report-stream-phase-label" className="text-xs text-text-secondary">
-              {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
-            </span>
+            <ReportStreamPhaseTrail
+              operation="generate" phase={reportStreamPhase} history={reportStreamPhaseHistory} stopping={reportStreamStopping}
+            />
             <ReportStreamStopButton onCancel={onCancelReportStream} stopping={reportStreamStopping} compact={false} />
           </div>
         ) : (
@@ -259,27 +385,21 @@ export function ReportModePanel({
           <h2 className="text-sm font-semibold text-text">Literature review report</h2>
           <TemplateBadge template={state.report.report_template ?? 'analytical'} />
           {state.report.refinement && <RefinementBadge refinement={state.report.refinement} />}
-          {/* Usage Protection M4.3B / UXH.2: compact but prominent progress
-              status in the header -- the existing report below stays
-              fully visible and unchanged throughout, never dimmed/cleared
-              as though it were invalid. Previously a small italic label,
-              easy to miss against a full report; now a filled pill with
-              its own spinner, matching the visual weight of the
-              template/refinement badges beside it rather than reading as
-              secondary text. role="status"/aria-live="polite" so an AT
-              hears each phase change; Stop stays in its own existing slot
-              (ReportStreamStopButton below), never duplicated here. */}
-          {regenerating && (
-            <span
-              role="status"
-              aria-live="polite"
-              data-testid="report-stream-phase-label"
-              className="flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent"
-            >
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-              {reportStreamStatusLabel(reportStreamPhase, reportStreamStopping)}
-            </span>
-          )}
+          {/* report-progress-observability: the existing report below
+              stays fully visible and unchanged throughout, never dimmed/
+              cleared as though it were invalid. While regenerating, an
+              unframed accumulated phase trail (every phase genuinely
+              observed so far, not just the latest) -- no card/pill, per
+              this phase's own "visual restraint" requirement. Once the
+              turn completes, a brief completed-status confirmation takes
+              the same slot instead, then auto-clears itself. */}
+          {regenerating ? (
+            <ReportStreamPhaseTrail
+              operation="regenerate" phase={reportStreamPhase} history={reportStreamPhaseHistory} stopping={reportStreamStopping}
+            />
+          ) : reportStreamCompletionNotice ? (
+            <ReportStreamCompletionNoticeView notice={reportStreamCompletionNotice} />
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <VersionSelector
