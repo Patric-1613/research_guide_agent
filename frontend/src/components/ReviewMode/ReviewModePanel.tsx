@@ -80,6 +80,26 @@ export function ReviewModePanel({
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0
   }, [batchKey])
 
+  // Paper Keywords and Filtering, K2: presentation-only keyword filter for
+  // the CURRENT pending batch -- lower-cased keyword -> its own display
+  // label (first-seen casing wins), never a Set of raw strings, so a
+  // removable chip/checkbox can show the same label a user actually saw
+  // without a second lookup. Reset whenever the batch this filter applies
+  // to is genuinely no longer the same one: state.session_id (switching
+  // reviews) or batchKey (a new batch served, reusing the SAME stable key
+  // the scroll-reset effect above already established) -- deliberately
+  // NOT pendingBatch itself, whose array reference changes on every fresh
+  // fetch even when its own paper-id set (and therefore batchKey) is
+  // unchanged; keying off the array reference would silently clear a
+  // still-valid filter on an ordinary same-batch refresh (staging a pick,
+  // a loading-state toggle, etc.).
+  const [selectedKeywords, setSelectedKeywords] = useState<Map<string, string>>(new Map())
+  const [keywordFilterOpen, setKeywordFilterOpen] = useState(false)
+  useEffect(() => {
+    setSelectedKeywords(new Map())
+    setKeywordFilterOpen(false)
+  }, [state.session_id, batchKey])
+
   if (!pendingBatch) {
     // Phase 8, item 3: true both right after curation just finished AND
     // every time an already-completed review is reopened -- state.selected_papers
@@ -140,6 +160,46 @@ export function ReviewModePanel({
         ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
         : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
 
+  // Paper Keywords and Filtering, K2: derived fresh from pendingBatch every
+  // render -- cheap (at most BATCH_SIZE papers, a handful of keywords
+  // each), so a plain computation rather than a memoized one; nothing
+  // here writes to state, so there's no risk of it feeding back into the
+  // reset effect above. lower -> {label, count}: the label is whichever
+  // casing this keyword was FIRST seen in, across pendingBatch in its own
+  // existing order -- matching/counting is always case-insensitive
+  // (paper.keywords.some(...).toLowerCase()), but the label a user
+  // actually reads never silently changes case underneath them.
+  const keywordCountsByLower = new Map<string, { label: string; count: number }>()
+  for (const paper of pendingBatch) {
+    for (const keyword of paper.keywords) {
+      const lower = keyword.toLowerCase()
+      const existing = keywordCountsByLower.get(lower)
+      if (existing) existing.count += 1
+      else keywordCountsByLower.set(lower, { label: keyword, count: 1 })
+    }
+  }
+  const keywordOptions = Array.from(keywordCountsByLower.entries())
+    .map(([lower, { label, count }]) => ({ lower, label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+
+  const visibleBatch = selectedKeywords.size === 0
+    ? pendingBatch
+    : pendingBatch.filter((paper) => paper.keywords.some((keyword) => selectedKeywords.has(keyword.toLowerCase())))
+  const noKeywordFilterMatches = selectedKeywords.size > 0 && visibleBatch.length === 0
+
+  function toggleKeywordFilter(lower: string, label: string) {
+    setSelectedKeywords((prev) => {
+      const next = new Map(prev)
+      if (next.has(lower)) next.delete(lower)
+      else next.set(lower, label)
+      return next
+    })
+  }
+
+  function clearKeywordFilter() {
+    setSelectedKeywords(new Map())
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div ref={scrollContainerRef} data-testid="review-batch-scroll" className="flex-1 overflow-y-auto px-4 py-3">
@@ -164,11 +224,97 @@ export function ReviewModePanel({
             </>
           )}
         </p>
+        {/* Paper Keywords and Filtering, K2: only worth showing at all when
+            there's at least one real keyword to filter by -- an empty
+            batch, or a batch where every paper has keywords:[] (no
+            abstract, or a too-short one), gets no filter control rather
+            than an empty, useless one. Collapsed by default: the checkbox
+            panel itself only renders while keywordFilterOpen, never a
+            permanent list of every keyword above the paper list. */}
+        {!isEmptyBatch && keywordOptions.length > 0 && (
+          <div className="mb-3 flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="keyword-filter-toggle"
+                aria-expanded={keywordFilterOpen}
+                aria-controls="keyword-filter-panel"
+                onClick={() => setKeywordFilterOpen((v) => !v)}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary hover:border-accent hover:text-accent"
+              >
+                Filter keywords{selectedKeywords.size > 0 ? ` (${selectedKeywords.size})` : ''}
+              </button>
+              {selectedKeywords.size > 0 && (
+                <>
+                  {Array.from(selectedKeywords.entries()).map(([lower, label]) => (
+                    <button
+                      key={lower}
+                      type="button"
+                      onClick={() => toggleKeywordFilter(lower, label)}
+                      aria-label={`Remove ${label} filter`}
+                      className="flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent"
+                    >
+                      {label}
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  ))}
+                  <span data-testid="keyword-filter-summary" className="text-xs text-text-muted">
+                    Showing {visibleBatch.length} of {pendingBatch.length} papers
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="keyword-filter-clear"
+                    onClick={clearKeywordFilter}
+                    className="text-xs text-text-secondary underline decoration-dotted hover:text-text"
+                  >
+                    Clear filters
+                  </button>
+                </>
+              )}
+            </div>
+            {keywordFilterOpen && (
+              <div
+                id="keyword-filter-panel"
+                data-testid="keyword-filter-panel"
+                aria-label="Filter by keyword"
+                className="flex max-h-48 flex-col gap-0.5 overflow-y-auto rounded-md border border-border p-2"
+              >
+                {keywordOptions.map((option) => (
+                  <label
+                    key={option.lower}
+                    data-testid={`keyword-filter-option-${option.lower}`}
+                    className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-text-secondary hover:bg-panel-alt"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedKeywords.has(option.lower)}
+                      onChange={() => toggleKeywordFilter(option.lower, option.label)}
+                      className="h-3.5 w-3.5 rounded border-border"
+                    />
+                    {option.label}
+                    <span className="text-text-muted">({option.count})</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {isEmptyBatch ? (
           <p className="text-center text-sm italic text-text-muted">No candidates to show for this search.</p>
+        ) : noKeywordFilterMatches ? (
+          <div data-testid="keyword-filter-empty-state" className="text-center text-sm text-text-muted">
+            <p className="mb-2">No papers match the selected keywords.</p>
+            <button
+              type="button"
+              onClick={clearKeywordFilter}
+              className="text-xs text-text-secondary underline decoration-dotted hover:text-text"
+            >
+              Clear filters
+            </button>
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {pendingBatch.map((paper) =>
+            {visibleBatch.map((paper) =>
               stagedSet.has(paper.paper_id) ? (
                 <PaperCard
                   key={paper.paper_id}

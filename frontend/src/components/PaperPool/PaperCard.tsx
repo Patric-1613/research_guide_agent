@@ -45,6 +45,30 @@ export function PaperCard({ paper, isNew, showAbstract, action }: PaperCardProps
           {paper.abstract || 'No abstract available.'}
         </p>
       )}
+      {/* Paper Keywords and Filtering, K2: pure display of whatever
+          PaperOut.keywords already contains -- never derived/computed
+          here. Gated on showAbstract (same surfaces that show the
+          abstract) AND a non-empty list -- no placeholder, no container
+          at all, for a paper with none (a missing/too-short abstract, or
+          a legacy paper from before K1 existed). Static <span>s, not
+          buttons -- this card has no notion of filtering; that lives one
+          level up, in ReviewModePanel. max-w-full + truncate on each
+          chip keeps one unusually long keyword phrase from blowing out
+          the row on a narrow screen; flex-wrap lets normal-length chips
+          wrap onto additional lines instead. */}
+      {showAbstract && paper.keywords.length > 0 && (
+        <div data-testid={`paper-keywords-${paper.paper_id}`} className="flex flex-wrap gap-1">
+          {paper.keywords.map((keyword) => (
+            <span
+              key={keyword}
+              title={keyword}
+              className="max-w-full truncate rounded-full bg-panel-alt px-1.5 py-0.5 text-[10px] text-text-muted"
+            >
+              {keyword}
+            </span>
+          ))}
+        </div>
+      )}
       {action.kind === 'add' && (
         <button
           type="button"
