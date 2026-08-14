@@ -1715,6 +1715,51 @@ describe('useCurationSession -- Usage Protection M4.3B: report-streaming lifecyc
         operation: 'generate', phases: ['generating', 'evaluating', 'saving'],
       })
     })
+
+    it('reportStreamPhaseHistory itself (not only the eventual completion notice) accumulates in order at real checkpoints mid-stream', async () => {
+      // The tests above all assert the FINAL reportStreamCompletionNotice,
+      // which is built from a plain local array immune to React state
+      // timing by construction -- on its own that never actually exercises
+      // reportStreamPhaseHistory's own functional setState. This test uses
+      // real, controllable gates (the same pattern 'phase transitions are
+      // observable in real time before completion' above already
+      // establishes) to assert the PUBLIC reportStreamPhaseHistory field
+      // itself, directly, at two real intermediate checkpoints -- proving
+      // the accumulation callers/the panel actually render is correct, not
+      // just the notice built alongside it.
+      const { result } = await mountAtS1()
+      let releaseEvaluating: (() => void) | null = null
+      let releaseSaving: (() => void) | null = null
+      const evaluatingGate = new Promise<void>((resolve) => { releaseEvaluating = resolve })
+      const savingGate = new Promise<void>((resolve) => { releaseSaving = resolve })
+      vi.mocked(streamGenerateReport).mockImplementation(() =>
+        (async function* () {
+          yield { type: 'started', data: {} } as ReportStreamServerEvent
+          yield { type: 'phase', data: { phase: 'generating' } } as ReportStreamServerEvent
+          await evaluatingGate
+          yield { type: 'phase', data: { phase: 'evaluating' } } as ReportStreamServerEvent
+          await savingGate
+          yield { type: 'phase', data: { phase: 'saving' } } as ReportStreamServerEvent
+          yield { type: 'completed', data: reportOut() } as ReportStreamServerEvent
+          yield { type: 'done', data: {} } as ReportStreamServerEvent
+        })(),
+      )
+
+      let sendPromise: Promise<void> = Promise.resolve()
+      act(() => {
+        sendPromise = result.current.generateReportStreaming(undefined, 'single')
+      })
+
+      await waitFor(() => expect(result.current.reportStreamPhaseHistory).toEqual(['generating']))
+
+      releaseEvaluating!()
+      await waitFor(() => expect(result.current.reportStreamPhaseHistory).toEqual(['generating', 'evaluating']))
+
+      releaseSaving!()
+      await act(async () => {
+        await sendPromise
+      })
+    })
   })
 
   describe('report-progress-observability: reportStreamCompletionNotice', () => {
