@@ -2916,9 +2916,39 @@ invented:
   was made solely to obtain a smoke-test session — component/
   integration tests are the recorded evidence instead, stated honestly
   rather than substituted silently.
+- **K3-follow-up — real-session keyword-loss regression, fixed** (`cfa4fdd`):
+  a user's brand-new (post-K1) curation session showed abstracts but no
+  keywords and no filter control. Investigation (read-only session load,
+  a direct no-cost `extract_keywords()` control run against the actual
+  affected paper, and the dev server's own reload log) ruled out both a
+  stale backend and a broken extractor before touching any code. Root
+  cause: `research_agent/embeddings.py::_serialize_metadata`/
+  `_paper_from_metadata` — the Chroma metadata round trip inside
+  `rank_full_pool()`'s own `embed_and_index_papers()` → `semantic_search()`
+  sequence, which every real `/curation/start` call runs immediately
+  after `build_candidate_pool()` — never learned about `Paper.keywords`.
+  `semantic_search()` never returns the original in-memory `Paper`
+  objects, only ones reconstructed from Chroma metadata, so every paper
+  leaving `rank_full_pool()` lost its just-computed keywords one call
+  after `build_candidate_pool()` set them. Fixed by adding
+  `keywords_json` to both metadata functions (same JSON-list convention
+  as the existing `authors_json`/`source_urls_json`), with a safe `"[]"`
+  default for metadata indexed before this fix. Regression test
+  (`tests/test_query_expansion.py::
+  test_real_initial_curation_path_keeps_keywords_through_rank_full_pool`)
+  runs the real `build_candidate_pool()` → `rank_full_pool()` sequence
+  against a real, unmocked ephemeral Chroma collection — confirmed to
+  fail without the fix and pass with it. No ranking score, embedding
+  text, dedup, paper-id, or selection behavior changed; no backfill —
+  sessions/Chroma entries indexed before this fix keep `keywords: []`
+  until genuinely re-fetched. Full backend suite **1949 passed** (1948 +
+  this one new test); focused embeddings/query-expansion re-run **41
+  passed** at this checkpoint's own review.
 - **Explicitly deferred, not part of this feature's own scope**:
   - Historical-session backfill — an old session's papers stay
-    keyword-less until naturally re-fetched.
+    keyword-less until naturally re-fetched (also true of sessions
+    created between K1 and the K3-follow-up fix above, for the same
+    reason).
   - Filtering the full selected-paper collection across batches/turns —
     today's filter only ever covers the current `pending_batch`.
   - Keyword search across sessions.
@@ -2930,8 +2960,10 @@ invented:
     dataset; explicitly not attempted from that small a sample.
 - **Priority**: closed; no further checkpoint scheduled.
 - **Status**: Closed (2026-08-14). Commits: `1de6488` (K1), `b0b40d9`
-  (K2), plus this checkpoint's own validation/docs/publication commits.
-  Tagged `paper-keywords-filtering`.
+  (K2), `cfa4fdd` (K3-follow-up corrective fix), plus this checkpoint's
+  own validation/docs/publication commits. Tagged
+  `paper-keywords-filtering` (unmoved — the tag still marks the K1–K3
+  checkpoint on `dcc832b`; this corrective fix lands after it).
 
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
