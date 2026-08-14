@@ -455,3 +455,49 @@ def get_curation_state(session_id: str, checkpointer: BaseCheckpointSaver) -> di
     if snap.tasks and snap.tasks[0].interrupts and (snap.next or snap.tasks[0].error):
         pending_batch = snap.tasks[0].interrupts[0].value["batch"]
     return {"session": session, "pending_batch": pending_batch, "refilled": snap.values.get("refilled", False)}
+
+
+def has_unresolved_curation_work(session_id: str, checkpointer: BaseCheckpointSaver) -> bool:
+    """curation-checkpoint-safety: True if this graph's OWN checkpoint for
+    `session_id` has ANY sign of a run that hasn't reached a real stop
+    (`END`) -- a pending task, a node still queued in `snap.next`, an
+    unresolved interrupt, or a task that errored out mid-node. Written
+    for exactly one purpose: letting a caller OUTSIDE the normal
+    HTTP request/resume cycle (a maintenance script, not
+    resume_curation_turn/submit_picks) refuse to touch a thread this
+    graph still considers active, before ever calling
+    curation_session.save_curation_session() against it.
+
+    **Why this matters, proven, not assumed** (see scripts/
+    re_extract_keywords.py's own safety-patch changelog and
+    docs/architecture.md's matching entry): save_curation_session() always
+    writes a FRESH checkpoint via curation_session.py's own smaller
+    `CurationSessionState = {"session": dict}` graph, via a plain
+    `graph.invoke()` (never `Command(resume=...)`) -- this unconditionally
+    becomes the new "latest" checkpoint for the thread, and since that
+    smaller graph has no `current_batch`/interrupt/task channels at all,
+    it silently discards whatever pending task/interrupt THIS graph's own
+    latest checkpoint held, with no error and no warning. Confirmed
+    directly against a real corrupted session: `session.stage` stayed
+    "curate" (untouched, since the smaller graph never touches it) while
+    `get_curation_state()`'s own `pending_batch` silently became `None`
+    the moment such a write landed.
+
+    Deliberately conservative: `snap.tasks` non-empty OR `snap.next`
+    non-empty is treated as unresolved regardless of whether the task
+    specifically carries an interrupt or an error -- any task at all
+    means a super-step genuinely hasn't finished settling. A session with
+    NO checkpoint at all for this graph (never started via
+    start_curation_turn) has empty `snap.values` and is reported as
+    having no unresolved work -- there is nothing here to protect,
+    though such a session also would not appear via
+    curation_session.load_curation_session() as "not found" in the first
+    place, since these two graphs share the same thread_id/checkpoint
+    row once EITHER has written to it.
+    """
+    graph = build_curation_loop_graph(checkpointer)
+    config = {"configurable": {"thread_id": curation_thread_id(session_id)}}
+    snap = graph.get_state(config)
+    if not snap.values:
+        return False
+    return bool(snap.next) or bool(snap.tasks)

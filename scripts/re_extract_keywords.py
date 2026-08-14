@@ -50,18 +50,54 @@ inspection of `curation_session.py`/`query_expansion.py`, not assumed):
   (`snap.tasks[0].interrupts[0].value["batch"]`), a different checkpoint
   thread this script deliberately does not touch, since the task this
   script exists for is scoped to the production checkpointer/session
-  loader (`load_curation_session`/`save_curation_session`) and going
-  around it to reach into interrupt state would be exactly the kind of
-  hand-rolled, non-production-path mutation this script's safety model
-  is designed to avoid. Practical effect: if a session is mid-interrupt
-  (stage == "curate" with an unresolved pending batch) when this script
-  runs, that specific in-flight batch's keywords are NOT refreshed by
-  this run -- only reserve/selected_papers/turn_history are. This is a
-  real, known scope limit, not a silent gap.
+  loader (`load_curation_session`/`save_curation_session`).
+
+**Curation-checkpoint safety patch (post-incident, see docs/architecture.md
+and specs/backend-backlog.md for the full record).** A real session was
+corrupted by an EARLIER version of this script: it called
+`save_curation_session()` against a session that was genuinely
+mid-interrupt (`stage == "curate"`, a batch presented but not yet
+picked). `save_curation_session()` always writes a FRESH checkpoint via
+`curation_session.py`'s own smaller `{"session": dict}`-only graph, via a
+plain `graph.invoke()` (never `Command(resume=...)`) -- this
+unconditionally became the thread's new "latest" checkpoint, silently
+discarding `curation_loop.py`'s own pending task/interrupt, with
+`session.stage` left at `"curate"` (untouched, since the smaller graph
+never touches it) and no error raised anywhere. The frontend then
+misread the resulting `pending_batch == None` as "curation complete,"
+though it genuinely was not -- see `fix: prevent zero-selection curation
+dead ends` for the frontend-side correction. That real, still-unrecovered
+session is `8fa9857f21fb4a2dbd103ca771e54e7b`; this script is NOT used to
+repair it.
+
+This script now REFUSES `--apply` for any session with unresolved
+curation work, checked via `research_agent.curation_loop.
+has_unresolved_curation_work()` (this graph's OWN checkpoint snapshot --
+pending tasks, queued next-nodes, interrupts, or task errors) PLUS a
+plain `session.stage == "curate"` check (catching a session whose
+interrupt was ALREADY destroyed by some other cause, where the graph
+snapshot alone would show nothing pending) -- checked immediately before
+the write, not only at initial load, since this script's own read-diff-
+save flow itself takes real (if brief) wall-clock time. Dry-run remains
+fully available and read-only for ANY session regardless of this check
+-- only `--apply`'s actual write is gated. A refused apply writes
+NOTHING, exits non-zero, and never attempts to repair or resume graph
+state itself -- that remains a product decision, not something this
+maintenance command decides unilaterally.
+
+**Provably safe for a genuinely completed session.** Confirmed directly
+(not assumed): a session that reached `stage == "synthesize"` via a real
+`stop=True` resume has an EMPTY graph snapshot for `curation_loop.py`'s
+own thread (`snap.tasks == ()`, `snap.next == ()`) -- there is nothing
+left for `save_curation_session()`'s overwrite to destroy, and this is
+the exact same "plain `graph.invoke()`, no pending task needed" mechanism
+`curation_history_service.py`'s own `reopen_curation()` already performs
+routinely in production against a completed thread. `--apply` remains
+available for a session with no unresolved curation work, on that basis.
 
 Usage:
     python scripts/re_extract_keywords.py SESSION_ID              # dry-run (default)
-    python scripts/re_extract_keywords.py SESSION_ID --apply       # write changes, if any
+    python scripts/re_extract_keywords.py SESSION_ID --apply       # write changes, if any (refused for active/interrupted curation)
 """
 
 from __future__ import annotations
@@ -74,10 +110,26 @@ from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from research_agent.curation_loop import has_unresolved_curation_work
 from research_agent.curation_session import load_curation_session, save_curation_session
 from research_agent.keywords import KEYWORD_EXTRACTOR_VERSION, extract_keywords
 from research_agent.qa import QA_CHECKPOINT_DB_PATH, sqlite_checkpointer
 from research_agent.schema import Paper
+
+
+def _is_active_curation(session_stage: str, session_id: str, checkpointer) -> bool:
+    """True if this session must never be written to by save_curation_session()
+    right now -- either it's still in the curate stage at all (whether or
+    not a live interrupt currently exists for it -- a stage=="curate"
+    session whose interrupt was already lost some other way is exactly as
+    unsafe to overwrite as one that still has a live one, since the ONLY
+    path back to a resumable state is a real product action, never this
+    script), or curation_loop.py's own graph snapshot shows unresolved
+    work (a pending task, a queued next-node, an interrupt, or a task
+    error) regardless of what `stage` claims."""
+    if session_stage == "curate":
+        return True
+    return has_unresolved_curation_work(session_id, checkpointer)
 
 
 def _compute_keyword_map(papers_by_id: dict[str, Paper]) -> dict[str, list[str]]:
@@ -162,6 +214,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"extractor version: {KEYWORD_EXTRACTOR_VERSION}")
         print(f"unique papers found: {len(papers_by_id)}")
 
+        # Informational only here -- dry-run reporting stays fully
+        # available and read-only regardless of this session's curation
+        # state. The ENFORCED refusal is the freshly-re-checked gate
+        # immediately before save_curation_session() below, not this one.
+        if _is_active_curation(session.stage, args.session_id, checkpointer):
+            print(
+                f"note: session stage is {session.stage!r} with unresolved curation work -- "
+                "--apply will be refused for this session (see below).",
+            )
+
         if not changed_paper_ids:
             print("no changes: recomputed keywords already match stored keywords for every paper. Nothing to save.")
             return 0
@@ -197,6 +259,29 @@ def main(argv: list[str] | None = None) -> int:
         if not args.apply:
             print("dry-run: pass --apply to write these changes.")
             return 0
+
+        # ENFORCED gate, re-checked fresh here -- immediately before the
+        # one and only save_curation_session() call in this script, not
+        # reused from the informational check above. This script's own
+        # read-diff-verify sequence above takes real (if brief) wall-clock
+        # time, and this is the actual point past which a write happens,
+        # so this is where "immediately before writing" has to mean.
+        # Never prints paper titles/abstracts/keywords -- only the
+        # session_id and stage already used elsewhere in this script's own
+        # output.
+        current_session = load_curation_session(args.session_id, checkpointer)
+        if current_session is None:
+            print(f"error: session {args.session_id!r} no longer exists -- refusing to save.", file=sys.stderr)
+            return 1
+        if _is_active_curation(current_session.stage, args.session_id, checkpointer):
+            print(
+                f"refused: session {args.session_id!r} has active/interrupted curation "
+                f"(stage={current_session.stage!r}) and cannot be updated by this command. "
+                "Nothing was changed. This command never writes to a session with unresolved "
+                "curation work -- see this script's own module docstring for why.",
+                file=sys.stderr,
+            )
+            return 3
 
         save_curation_session(session, args.session_id, checkpointer)
         print("saved.")
