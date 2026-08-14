@@ -24,6 +24,17 @@ class Paper:
     # dedup (phase 2) merges these so a collapsed record keeps every
     # source's link instead of dropping all but one.
     source_urls: dict[str, str] = field(default_factory=dict)
+    # Paper Keywords and Filtering, K1: up to research_agent.keywords.
+    # MAX_KEYWORDS deterministic, offline-extracted keywords -- see that
+    # module's own docstring for the extractor and its one computation
+    # boundary (query_expansion.py::build_candidate_pool, once per
+    # deduplicated paper). Defaulting to `[]` is what makes every existing
+    # persisted Paper dict (none of which has a "keywords" key)
+    # reconstruct via `Paper(**paper_dict)` unchanged across every call
+    # site in curation_session.py -- no session-format migration, no
+    # backfill, nothing else in this codebase needs to know this field is
+    # new.
+    keywords: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.paper_id:

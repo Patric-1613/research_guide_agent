@@ -18,6 +18,11 @@ export interface PaperOut {
   source: string
   source_urls: Record<string, string>
   score: number | null
+  // Paper Keywords and Filtering, K1: up to 6 deterministic, offline-
+  // extracted keywords (research_agent/keywords.py). Always an array
+  // (never null/undefined) -- [] for a paper with no abstract or one too
+  // short for meaningful extraction. Not yet rendered anywhere (K3/K4).
+  keywords: string[]
 }
 
 export interface WebArticleOut {

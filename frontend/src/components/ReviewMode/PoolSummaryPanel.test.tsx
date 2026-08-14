@@ -7,7 +7,7 @@ function paper(id: string, title: string): PaperOut {
   return {
     paper_id: id, title, authors: ['A'], year: 2024, venue: 'arXiv',
     abstract: null, url: null, doi: null, citation_count: 10, source: 'arxiv',
-    source_urls: {}, score: null,
+    source_urls: {}, score: null, keywords: [],
   }
 }
 

@@ -28,8 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import chromadb
 import pytest
 
+import research_agent.query_expansion as qe_module
 from research_agent.embeddings import _init_cache_db, _serialize_metadata, semantic_search
-from research_agent.query_expansion import expanded_search, rank_full_pool, suggest_related_titles
+from research_agent.query_expansion import build_candidate_pool, expanded_search, rank_full_pool, suggest_related_titles
 from research_agent.schema import Paper
 
 QUERY_VECTOR = [1.0, 0.0]
@@ -535,6 +536,48 @@ def test_canonicalize_topic_never_mutates_the_raw_topic_it_was_given():
     assert raw_topic == "cars cooling system"
 
 
+def test_build_candidate_pool_computes_keywords_exactly_once_per_deduped_paper():
+    """Paper Keywords and Filtering, K1: proves the ONE computation
+    boundary claim directly against the real build_candidate_pool -- two
+    raw, pre-dedup candidates (as arXiv/Semantic Scholar would both
+    return for the same real paper) collapse to ONE deduped Paper, and
+    extract_keywords is called exactly once, against that ONE merged
+    paper's own title/abstract, never once per raw pre-dedup candidate.
+    Network/LLM boundaries (_search_pair, suggest_related_titles) are
+    mocked away -- the same "never a real network/LLM call in this test
+    file" convention every other test here already follows -- while
+    deduplicate() and extract_keywords() themselves run for real, since
+    the wiring between them is exactly what's under test.
+    """
+    raw_a = Paper(
+        title="Same Real Paper", authors=["A"], year=2024, venue="X",
+        abstract="A real, sufficiently long abstract describing a study of graph "
+        "neural networks for molecular property prediction across several benchmarks.",
+        url="http://a", doi=None, citation_count=None, source="arxiv", paper_id="arxiv:same real paper",
+    )
+    raw_b = Paper(
+        title="Same Real Paper", authors=["A"], year=2024, venue="X",
+        abstract="A real, sufficiently long abstract describing a study of graph "
+        "neural networks for molecular property prediction across several benchmarks.",
+        url="http://a", doi=None, citation_count=None, source="s2", paper_id="s2:same real paper",
+    )
+
+    async def _fake_search_pair(*args, **kwargs):
+        return [raw_a], [raw_b]
+
+    with patch.object(qe_module, "_search_pair", side_effect=_fake_search_pair), \
+         patch.object(qe_module, "suggest_related_titles", return_value=[]), \
+         patch.object(qe_module, "extract_keywords", side_effect=qe_module.extract_keywords) as spy_extract:
+        result = build_candidate_pool("graph neural networks", k=5, client=MagicMock())
+
+    # The two raw, same-paper candidates genuinely merged into one.
+    assert len(result) == 1
+    # extract_keywords ran exactly once -- for the ONE deduped paper, not
+    # twice for the two raw pre-dedup candidates that fed into it.
+    spy_extract.assert_called_once_with(result[0].title, result[0].abstract)
+    assert result[0].keywords != []
+
+
 if __name__ == "__main__":
     test_rank_full_pool_returns_every_candidate_not_just_k()
     test_rank_full_pool_empty_input_returns_empty_without_touching_chroma()
@@ -563,4 +606,5 @@ if __name__ == "__main__":
     test_canonicalize_topic_falls_back_to_raw_topic_when_the_model_refuses()
     test_canonicalize_topic_falls_back_to_raw_topic_on_an_empty_parsed_result()
     test_canonicalize_topic_never_mutates_the_raw_topic_it_was_given()
+    test_build_candidate_pool_computes_keywords_exactly_once_per_deduped_paper()
     print("All query_expansion tests passed.")

@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 import research_agent.telemetry as telemetry
 from research_agent.dedup import deduplicate
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, semantic_search
+from research_agent.keywords import extract_keywords
 from research_agent.ingestion import (
     get_rate_limited_call_count,
     reset_rate_limit_tracking,
@@ -511,6 +512,19 @@ def build_candidate_pool(
 
     combined_raw = original_results + suggested_results
     deduped = deduplicate(combined_raw)
+
+    # Paper Keywords and Filtering, K1: the ONE computation boundary --
+    # exactly once per deduplicated paper, here and nowhere else (never
+    # per-source in ingestion.py, which would compute keywords for
+    # candidates later discarded/merged away by deduplicate() above, and
+    # never at read/serialization time, which would recompute the same
+    # deterministic result on every single API response). Both callers of
+    # this function (expanded_search()'s one-shot search/summarize path
+    # and refill_candidate_pool()'s curation refill) inherit this for
+    # free. Mutates each already-fresh Paper object in place -- these are
+    # this call's own newly-built objects, not shared/cached state.
+    for paper in deduped:
+        paper.keywords = extract_keywords(paper.title, paper.abstract)
 
     logger.info(
         "build_candidate_pool(%r, k=%d): %d suggested title(s), %d raw result(s) "

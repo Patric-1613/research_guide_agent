@@ -140,7 +140,7 @@ describe('App', () => {
       selected_papers: [{
         paper_id: 'p1', title: 'Already Selected', authors: [], year: null, venue: null,
         abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
-        source_urls: {}, score: null,
+        source_urls: {}, score: null, keywords: [],
       }],
       selected_paper_ids: ['p1'],
     }))
@@ -313,7 +313,7 @@ describe('App', () => {
         batch: [{
           paper_id: 'p0', title: 'Historical Paper', authors: [], year: null, venue: null,
           abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
-          source_urls: {}, score: null,
+          source_urls: {}, score: null, keywords: [],
         }],
       }],
     }))
@@ -341,7 +341,7 @@ describe('App', () => {
         batch: [{
           paper_id: 'p0', title: 'Historical Paper', authors: [], year: null, venue: null,
           abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
-          source_urls: {}, score: null,
+          source_urls: {}, score: null, keywords: [],
         }],
       }],
     }))
@@ -401,7 +401,7 @@ describe('App', () => {
           selected_papers: [{
             paper_id: 'p1', title: 'Still Selected', authors: [], year: null, venue: null,
             abstract: null, url: null, doi: null, citation_count: null, source: 'arxiv',
-            source_urls: {}, score: null,
+            source_urls: {}, score: null, keywords: [],
           }],
           selected_paper_ids: ['p1'],
           report: {

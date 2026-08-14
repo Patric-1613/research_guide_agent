@@ -151,6 +151,33 @@ def test_curation_start_returns_a_batch_and_a_fresh_session_id():
     assert isinstance(body["session_id"], str) and len(body["session_id"]) > 0
 
 
+def test_curation_start_batch_papers_include_keywords_including_empty_for_legacy_shaped_papers():
+    """Paper Keywords and Filtering, K1: PaperOut's own keywords field
+    surfaces over HTTP, for BOTH a paper build_candidate_pool already
+    populated keywords for (the real K1 wiring's own output shape) and a
+    paper with none (a legacy-shaped Paper, same as one loaded from a
+    session persisted before K1 existed -- see tests/test_schema.py /
+    tests/test_curation_session.py for the reconstruction side of that
+    same claim). build_candidate_pool itself is mocked here (matching
+    every other test in this file), so this test is deliberately about
+    the serialization contract, not re-proving build_candidate_pool's own
+    keyword-computation wiring (already covered in tests/
+    test_query_expansion.py)."""
+    with_keywords = _paper("p0", "Paper 0")
+    with_keywords.keywords = ["graph neural networks", "molecular property prediction"]
+    without_keywords = _paper("p1", "Paper 1")  # default Paper.keywords == []
+    papers = [with_keywords, without_keywords] + [_paper(f"p{i}", f"Paper {i}") for i in range(2, 12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        resp = client.post("/curation/start", json={"topic": "test topic", "target_count": 5})
+
+    assert resp.status_code == 200
+    batch_by_id = {p["paper_id"]: p for p in resp.json()["batch"]}
+    assert batch_by_id["p0"]["keywords"] == ["graph neural networks", "molecular property prediction"]
+    assert batch_by_id["p1"]["keywords"] == []
+
+
 def test_curation_start_with_no_papers_returns_404():
     with _client() as client, \
          patch.object(api, "build_candidate_pool", return_value=[]), \

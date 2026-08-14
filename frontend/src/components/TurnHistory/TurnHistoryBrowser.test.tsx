@@ -8,7 +8,7 @@ function paper(id: string, title: string, abstract: string | null = null): Paper
   return {
     paper_id: id, title, authors: ['A'], year: 2024, venue: 'arXiv',
     abstract, url: null, doi: null, citation_count: 10, source: 'arxiv',
-    source_urls: {}, score: null,
+    source_urls: {}, score: null, keywords: [],
   }
 }
 

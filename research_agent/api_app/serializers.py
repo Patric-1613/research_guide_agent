@@ -36,6 +36,10 @@ def _paper_to_out(paper: Paper, score: float | None = None) -> PaperOut:
         year=paper.year, venue=paper.venue, abstract=paper.abstract,
         url=paper.url, doi=paper.doi, citation_count=paper.citation_count,
         source=paper.source, source_urls=paper.source_urls, score=score,
+        # K1: pure pass-through -- paper.keywords is already fully computed
+        # (or already [], for a legacy paper) by the time it reaches here;
+        # this serializer never extracts, never mutates.
+        keywords=paper.keywords,
     )
 
 

@@ -852,6 +852,43 @@ def test_old_session_without_web_article_provenance_key_loads_with_empty_dict():
         assert loaded.web_article_provenance_by_url == {}
 
 
+def test_old_session_with_paper_dicts_missing_keywords_key_loads_with_empty_list():
+    """Paper Keywords and Filtering, K1 backward compatibility: a real
+    session saved before this phase has Paper dicts (in selected_papers/
+    reserve, same shape everywhere Paper.to_dict() was ever called) with
+    no "keywords" key at all -- must load cleanly through the REAL
+    save/load path (not just Paper(**dict) in isolation, see tests/
+    test_schema.py for that direct version) with keywords == [], the
+    same dataclass-default mechanism already proven there. No
+    curation_session.py code change was needed to make this pass."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        old_paper_dict = {
+            "title": "An Old Paper", "authors": ["A"], "year": 2023, "venue": "X",
+            "abstract": "An old abstract.", "url": None, "doi": None, "citation_count": None,
+            "source": "arxiv", "paper_id": "arxiv:an old paper", "source_urls": {},
+            # deliberately no "keywords" key
+        }
+        old_format_dict = {
+            "topic": "old style session", "reserve": [[old_paper_dict, 0.9]], "cursor": 0,
+            "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+            "selected_paper_ids": ["arxiv:an old paper"], "selected_papers": [old_paper_dict],
+            "report": None, "chat_history": [], "web_articles_added": [], "pending_web_offer": None,
+            "pending_report_update": None, "refinement_notes": [], "report_covered_web_article_count": 0,
+        }
+
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-no-keywords-id")}}
+            graph.invoke({"session": old_format_dict}, config=config)
+
+            loaded = load_curation_session("old-no-keywords-id", cp)
+
+        assert loaded is not None
+        assert loaded.selected_papers[0].keywords == []
+        assert loaded.reserve[0][0].keywords == []
+
+
 def test_report_versions_round_trip_through_real_sqlite():
     p0 = _paper("p0")
     v1_report = {

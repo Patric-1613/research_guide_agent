@@ -53,6 +53,13 @@ class PaperOut(BaseModel):
     source: str
     source_urls: dict[str, str]
     score: float | None = None
+    # Paper Keywords and Filtering, K1: pure pass-through of Paper.keywords
+    # (see research_agent/keywords.py) -- never computed here. Defaults to
+    # [] so a legacy Paper persisted before this field existed (which
+    # reconstructs with keywords=[] per schema.py's own dataclass default)
+    # serializes identically to a paper this phase genuinely found no
+    # keywords for -- both mean "nothing to show," not "an error."
+    keywords: list[str] = Field(default_factory=list)
 
 
 class WebArticleOut(BaseModel):
