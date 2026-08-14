@@ -83,4 +83,20 @@ describe('PoolSummaryPanel', () => {
 
     expect(screen.getByText('Paper pool — 3/10 target')).toBeInTheDocument()
   })
+
+  it('Paper Keywords and Filtering, K4.2: the compact selected-paper list never renders keywords', () => {
+    const withKeywords = { ...paper('p1', 'Staged Paper'), keywords: ['graph neural networks', 'RAG'] }
+    const state = baseState({
+      pending_batch: [withKeywords],
+      selected_papers: [{ ...paper('p0', 'Confirmed Paper'), keywords: ['molecular property prediction'] }],
+      selected_paper_ids: ['p0'],
+    })
+    render(<PoolSummaryPanel state={state} stagedPickIds={['p1']} />)
+
+    expect(screen.getByText('Staged Paper')).toBeInTheDocument()
+    expect(screen.getByText('Confirmed Paper')).toBeInTheDocument()
+    expect(screen.queryByText('graph neural networks')).not.toBeInTheDocument()
+    expect(screen.queryByText('RAG')).not.toBeInTheDocument()
+    expect(screen.queryByText('molecular property prediction')).not.toBeInTheDocument()
+  })
 })

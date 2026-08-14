@@ -5,6 +5,19 @@ import type { TurnEvent } from '../../hooks/useCurationSession'
 import { TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'
 import { mergeSelectedPaperIds } from '../../lib/selection'
+import { aggregateKeywords, canonicalKeywordKey, type KeywordOption } from '../../lib/keywords'
+
+// Paper Keywords and Filtering, K4.2: "Popular" is capped and gated so the
+// filter UI never becomes the flat wall-of-checkboxes it replaced --
+// count-one keywords (the overwhelming majority in a 10-paper batch) never
+// occupy a Popular slot, and Popular never grows past this even if more
+// than 12 keywords genuinely appear on 2+ papers.
+const POPULAR_MIN_PAPER_COUNT = 2
+const POPULAR_MAX_OPTIONS = 12
+
+function sortKeywordOptions(options: KeywordOption[]): KeywordOption[] {
+  return [...options].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+}
 
 // Mirrors research_agent/query_expansion.py's BATCH_SIZE -- not exposed
 // by the API (nothing currently needs it to be), so kept here as the
@@ -80,12 +93,13 @@ export function ReviewModePanel({
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0
   }, [batchKey])
 
-  // Paper Keywords and Filtering, K2: presentation-only keyword filter for
-  // the CURRENT pending batch -- lower-cased keyword -> its own display
-  // label (first-seen casing wins), never a Set of raw strings, so a
-  // removable chip/checkbox can show the same label a user actually saw
-  // without a second lookup. Reset whenever the batch this filter applies
-  // to is genuinely no longer the same one: state.session_id (switching
+  // Paper Keywords and Filtering, K4.2: presentation-only keyword filter
+  // for the CURRENT pending batch -- canonical keyword key (see
+  // lib/keywords.ts's canonicalKeywordKey, which merges hyphen/space/case
+  // surface variants) -> its own display label, never a Set of raw
+  // strings, so a removable chip/checkbox can show a stable label without
+  // a second lookup. Reset whenever the batch this filter applies to is
+  // genuinely no longer the same one: state.session_id (switching
   // reviews) or batchKey (a new batch served, reusing the SAME stable key
   // the scroll-reset effect above already established) -- deliberately
   // NOT pendingBatch itself, whose array reference changes on every fresh
@@ -95,10 +109,37 @@ export function ReviewModePanel({
   // a loading-state toggle, etc.).
   const [selectedKeywords, setSelectedKeywords] = useState<Map<string, string>>(new Map())
   const [keywordFilterOpen, setKeywordFilterOpen] = useState(false)
+  // Browse-all mode (search across every keyword, including count-one
+  // ones) replaces the Popular checkbox list in place, rather than the
+  // two ever rendering side by side -- see the panel JSX below.
+  const [browseAllOpen, setBrowseAllOpen] = useState(false)
+  const [keywordSearch, setKeywordSearch] = useState('')
   useEffect(() => {
     setSelectedKeywords(new Map())
     setKeywordFilterOpen(false)
+    setBrowseAllOpen(false)
+    setKeywordSearch('')
   }, [state.session_id, batchKey])
+
+  // Closing the outer disclosure resets browse/search back to Popular's
+  // default view (the simplest predictable behavior -- reopening always
+  // starts from the same place) but deliberately leaves selectedKeywords
+  // alone, so active filters survive a close/reopen within the same batch.
+  function toggleKeywordFilterOpen() {
+    setKeywordFilterOpen((prev) => {
+      const next = !prev
+      if (!next) {
+        setBrowseAllOpen(false)
+        setKeywordSearch('')
+      }
+      return next
+    })
+  }
+
+  function toggleBrowseAll() {
+    setBrowseAllOpen((prev) => !prev)
+    setKeywordSearch('')
+  }
 
   if (!pendingBatch) {
     // Phase 8, item 3: true both right after curation just finished AND
@@ -160,38 +201,32 @@ export function ReviewModePanel({
         ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
         : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
 
-  // Paper Keywords and Filtering, K2: derived fresh from pendingBatch every
-  // render -- cheap (at most BATCH_SIZE papers, a handful of keywords
-  // each), so a plain computation rather than a memoized one; nothing
-  // here writes to state, so there's no risk of it feeding back into the
-  // reset effect above. lower -> {label, count}: the label is whichever
-  // casing this keyword was FIRST seen in, across pendingBatch in its own
-  // existing order -- matching/counting is always case-insensitive
-  // (paper.keywords.some(...).toLowerCase()), but the label a user
-  // actually reads never silently changes case underneath them.
-  const keywordCountsByLower = new Map<string, { label: string; count: number }>()
-  for (const paper of pendingBatch) {
-    for (const keyword of paper.keywords) {
-      const lower = keyword.toLowerCase()
-      const existing = keywordCountsByLower.get(lower)
-      if (existing) existing.count += 1
-      else keywordCountsByLower.set(lower, { label: keyword, count: 1 })
-    }
-  }
-  const keywordOptions = Array.from(keywordCountsByLower.entries())
-    .map(([lower, { label, count }]) => ({ lower, label, count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+  // Paper Keywords and Filtering, K4.2: derived fresh from pendingBatch
+  // every render -- cheap (at most BATCH_SIZE papers, a handful of
+  // keywords each), so a plain computation rather than a memoized one;
+  // nothing here writes to state, so there's no risk of it feeding back
+  // into the reset effect above. aggregateKeywords does the canonical
+  // (hyphen/space/case-insensitive) grouping and per-paper-once counting
+  // -- see lib/keywords.ts for the exact rules.
+  const keywordOptions = aggregateKeywords(pendingBatch)
+  const popularOptions = sortKeywordOptions(keywordOptions.filter((o) => o.count >= POPULAR_MIN_PAPER_COUNT)).slice(
+    0,
+    POPULAR_MAX_OPTIONS,
+  )
+  const allOptionsSorted = sortKeywordOptions(keywordOptions)
+  const searchKey = canonicalKeywordKey(keywordSearch)
+  const browseAllResults = searchKey ? allOptionsSorted.filter((o) => o.key.includes(searchKey)) : allOptionsSorted
 
   const visibleBatch = selectedKeywords.size === 0
     ? pendingBatch
-    : pendingBatch.filter((paper) => paper.keywords.some((keyword) => selectedKeywords.has(keyword.toLowerCase())))
+    : pendingBatch.filter((paper) => paper.keywords.some((keyword) => selectedKeywords.has(canonicalKeywordKey(keyword))))
   const noKeywordFilterMatches = selectedKeywords.size > 0 && visibleBatch.length === 0
 
-  function toggleKeywordFilter(lower: string, label: string) {
+  function toggleKeywordFilter(key: string, label: string) {
     setSelectedKeywords((prev) => {
       const next = new Map(prev)
-      if (next.has(lower)) next.delete(lower)
-      else next.set(lower, label)
+      if (next.has(key)) next.delete(key)
+      else next.set(key, label)
       return next
     })
   }
@@ -224,13 +259,18 @@ export function ReviewModePanel({
             </>
           )}
         </p>
-        {/* Paper Keywords and Filtering, K2: only worth showing at all when
-            there's at least one real keyword to filter by -- an empty
-            batch, or a batch where every paper has keywords:[] (no
+        {/* Paper Keywords and Filtering, K4.2: only worth showing at all
+            when there's at least one real keyword to filter by -- an
+            empty batch, or a batch where every paper has keywords:[] (no
             abstract, or a too-short one), gets no filter control rather
-            than an empty, useless one. Collapsed by default: the checkbox
+            than an empty, useless one. Collapsed by default: the options
             panel itself only renders while keywordFilterOpen, never a
-            permanent list of every keyword above the paper list. */}
+            permanent list of every keyword above the paper list -- and
+            it stays unframed/plain (no nested card), a bare flex column,
+            same as before. Active-filter chips/summary/clear live in
+            this OUTER row, outside the collapsible panel, so they stay
+            visible regardless of open/closed state or Popular/Browse-all
+            mode. */}
         {!isEmptyBatch && keywordOptions.length > 0 && (
           <div className="mb-3 flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -239,18 +279,18 @@ export function ReviewModePanel({
                 data-testid="keyword-filter-toggle"
                 aria-expanded={keywordFilterOpen}
                 aria-controls="keyword-filter-panel"
-                onClick={() => setKeywordFilterOpen((v) => !v)}
+                onClick={toggleKeywordFilterOpen}
                 className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary hover:border-accent hover:text-accent"
               >
                 Filter keywords{selectedKeywords.size > 0 ? ` (${selectedKeywords.size})` : ''}
               </button>
               {selectedKeywords.size > 0 && (
                 <>
-                  {Array.from(selectedKeywords.entries()).map(([lower, label]) => (
+                  {Array.from(selectedKeywords.entries()).map(([key, label]) => (
                     <button
-                      key={lower}
+                      key={key}
                       type="button"
-                      onClick={() => toggleKeywordFilter(lower, label)}
+                      onClick={() => toggleKeywordFilter(key, label)}
                       aria-label={`Remove ${label} filter`}
                       className="flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent"
                     >
@@ -277,24 +317,77 @@ export function ReviewModePanel({
                 id="keyword-filter-panel"
                 data-testid="keyword-filter-panel"
                 aria-label="Filter by keyword"
-                className="flex max-h-48 flex-col gap-0.5 overflow-y-auto rounded-md border border-border p-2"
+                className="flex w-full max-w-full flex-col gap-2 rounded-md border border-border p-2"
               >
-                {keywordOptions.map((option) => (
-                  <label
-                    key={option.lower}
-                    data-testid={`keyword-filter-option-${option.lower}`}
-                    className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-text-secondary hover:bg-panel-alt"
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                    {browseAllOpen ? 'All keywords' : 'Popular keywords'}
+                  </p>
+                  <button
+                    type="button"
+                    data-testid="keyword-browse-all-toggle"
+                    aria-expanded={browseAllOpen}
+                    aria-controls="keyword-browse-all-panel"
+                    onClick={toggleBrowseAll}
+                    className="text-xs text-text-secondary underline decoration-dotted hover:text-text"
                   >
-                    <input
-                      type="checkbox"
-                      checked={selectedKeywords.has(option.lower)}
-                      onChange={() => toggleKeywordFilter(option.lower, option.label)}
-                      className="h-3.5 w-3.5 rounded border-border"
-                    />
-                    {option.label}
-                    <span className="text-text-muted">({option.count})</span>
-                  </label>
-                ))}
+                    {browseAllOpen ? 'Back to popular keywords' : `Browse all keywords (${keywordOptions.length})`}
+                  </button>
+                </div>
+
+                {!browseAllOpen && (
+                  popularOptions.length > 0 ? (
+                    <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+                      {popularOptions.map((option) => (
+                        <KeywordCheckbox
+                          key={option.key}
+                          option={option}
+                          checked={selectedKeywords.has(option.key)}
+                          onToggle={toggleKeywordFilter}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p data-testid="keyword-no-popular" className="text-xs text-text-muted">
+                      No keyword appears in more than one paper in this batch yet.
+                    </p>
+                  )
+                )}
+
+                {browseAllOpen && (
+                  <div id="keyword-browse-all-panel" data-testid="keyword-browse-all-panel" className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-1">
+                      <label htmlFor="keyword-search-input" className="text-xs text-text-secondary">
+                        Search keywords
+                      </label>
+                      <input
+                        id="keyword-search-input"
+                        data-testid="keyword-search-input"
+                        type="text"
+                        value={keywordSearch}
+                        onChange={(e) => setKeywordSearch(e.target.value)}
+                        placeholder="e.g. retrieval augmented"
+                        className="w-full max-w-full rounded-md border border-border bg-panel-alt px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                      />
+                    </div>
+                    <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+                      {browseAllResults.length === 0 ? (
+                        <p data-testid="keyword-search-empty" className="text-xs text-text-muted">
+                          No keywords match your search.
+                        </p>
+                      ) : (
+                        browseAllResults.map((option) => (
+                          <KeywordCheckbox
+                            key={option.key}
+                            option={option}
+                            checked={selectedKeywords.has(option.key)}
+                            onToggle={toggleKeywordFilter}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -414,5 +507,36 @@ export function ReviewModePanel({
         </div>
       </div>
     </div>
+  )
+}
+
+// Paper Keywords and Filtering, K4.2: shared row markup for BOTH the
+// Popular list and the Browse-all results list -- the two never render at
+// the same time (see the panel JSX above), so reusing the same
+// data-testid pattern for both never produces two simultaneous controls
+// for one option.
+function KeywordCheckbox({
+  option,
+  checked,
+  onToggle,
+}: {
+  option: KeywordOption
+  checked: boolean
+  onToggle: (key: string, label: string) => void
+}) {
+  return (
+    <label
+      data-testid={`keyword-filter-option-${option.key}`}
+      className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-text-secondary hover:bg-panel-alt"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onToggle(option.key, option.label)}
+        className="h-3.5 w-3.5 shrink-0 rounded border-border"
+      />
+      <span className="max-w-full whitespace-normal break-words">{option.label}</span>
+      <span className="shrink-0 text-text-muted">({option.count})</span>
+    </label>
   )
 }

@@ -456,7 +456,7 @@ describe('ReviewModePanel', () => {
   })
 })
 
-describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', () => {
+describe('ReviewModePanel -- Paper Keywords and Filtering, K4.2: Popular/Browse-all filter', () => {
   function renderPanel(overrides: Partial<CurationStateResponse> = {}, props: Partial<ComponentProps<typeof ReviewModePanel>> = {}) {
     const onAdd = vi.fn()
     const onRemoveStaged = vi.fn()
@@ -472,6 +472,11 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     return { ...utils, onAdd, onRemoveStaged, onSubmitPicks, state }
   }
 
+  async function openFilterAndBrowseAll(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
+  }
+
   it('the filter control is absent when no paper in the batch has any keywords', () => {
     renderPanel({ pending_batch: [paper('p1', 'Paper One'), paper('p2', 'Paper Two')] })
 
@@ -484,24 +489,103 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     expect(screen.getByTestId('keyword-filter-toggle')).toBeInTheDocument()
   })
 
-  it('keyword options are deduplicated case-insensitively, counted across both casings', async () => {
+  it('Popular contains only keywords appearing on at least 2 distinct papers', async () => {
     const user = userEvent.setup()
     renderPanel({
       pending_batch: [
-        paper('p1', 'Paper One', null, ['Neural Networks']),
-        paper('p2', 'Paper Two', null, ['neural networks']),
-        paper('p3', 'Paper Three', null, ['neural networks']),
+        paper('p1', 'Paper One', null, ['shared topic', 'lonely topic']),
+        paper('p2', 'Paper Two', null, ['shared topic']),
       ],
     })
 
     await user.click(screen.getByTestId('keyword-filter-toggle'))
 
-    // Exactly one option for the case-varied keyword, count 3 -- not two
-    // separate options ("Neural Networks" (1) and "neural networks" (2)).
+    expect(screen.getByTestId('keyword-filter-option-shared topic')).toBeInTheDocument()
+    expect(screen.queryByTestId('keyword-filter-option-lonely topic')).not.toBeInTheDocument()
+  })
+
+  it('Popular contains at most 12 options even when more than 12 keywords qualify', async () => {
+    const user = userEvent.setup()
+    // 15 distinct keywords, each appearing on exactly 2 distinct papers --
+    // all 15 qualify as "popular" (count >= 2), but only 12 may show.
+    const batch = Array.from({ length: 15 }, (_, i) => [
+      paper(`p${i}a`, `Paper ${i}a`, null, [`topic ${i}`]),
+      paper(`p${i}b`, `Paper ${i}b`, null, [`topic ${i}`]),
+    ]).flat()
+    renderPanel({ pending_batch: batch })
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+
+    const options = screen.getAllByTestId(/^keyword-filter-option-/)
+    expect(options.length).toBeLessThanOrEqual(12)
+  })
+
+  it('count-one options do not appear in Popular but ARE reachable via Browse all', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['shared topic', 'lonely topic']),
+        paper('p2', 'Paper Two', null, ['shared topic']),
+      ],
+    })
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.queryByTestId('keyword-filter-option-lonely topic')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
+    expect(screen.getByTestId('keyword-filter-option-lonely topic')).toBeInTheDocument()
+    expect(screen.getByTestId('keyword-filter-option-shared topic')).toBeInTheDocument()
+  })
+
+  it('Browse all does not duplicate a visible Popular control -- only one list is ever in the DOM at once', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['shared topic']),
+        paper('p2', 'Paper Two', null, ['shared topic']),
+      ],
+    })
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.getAllByTestId('keyword-filter-option-shared topic')).toHaveLength(1)
+
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
+    expect(screen.getAllByTestId('keyword-filter-option-shared topic')).toHaveLength(1)
+  })
+
+  it('if no keyword appears on 2+ papers, Popular shows a concise message but Browse all remains reachable', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['topic a']),
+        paper('p2', 'Paper Two', null, ['topic b']),
+      ],
+    })
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.getByTestId('keyword-no-popular')).toBeInTheDocument()
+    expect(screen.getByTestId('keyword-browse-all-toggle')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
+    expect(screen.getByTestId('keyword-filter-option-topic a')).toBeInTheDocument()
+    expect(screen.getByTestId('keyword-filter-option-topic b')).toBeInTheDocument()
+  })
+
+  it('canonical hyphen/space/case variants merge into one option with a per-paper (not per-occurrence) count', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['Retrieval-Augmented Generation']),
+        paper('p2', 'Paper Two', null, ['retrieval augmented generation', 'Retrieval Augmented Generation']),
+      ],
+    })
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+
     const options = screen.getAllByTestId(/^keyword-filter-option-/)
     expect(options).toHaveLength(1)
-    expect(options[0]).toHaveTextContent('Neural Networks') // first-seen casing wins as the display label
-    expect(options[0]).toHaveTextContent('(3)')
+    // 2 distinct papers, not 3 occurrences.
+    expect(options[0]).toHaveTextContent('(2)')
   })
 
   it('options are sorted by descending paper count, then alphabetically by label for ties', async () => {
@@ -515,15 +599,59 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     })
 
     await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
 
     const options = screen.getAllByTestId(/^keyword-filter-option-/)
     const labels = options.map((el) => el.textContent)
-    // "common topic" (count 3) first; then the two count-1 ties break
-    // alphabetically: "apple topic" before "zebra topic".
     expect(labels[0]).toContain('common topic')
     expect(labels[0]).toContain('(3)')
     expect(labels[1]).toContain('apple topic')
     expect(labels[2]).toContain('zebra topic')
+  })
+
+  it('Browse-all search matches case-insensitively and hyphen/space-insensitively', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [paper('p1', 'Paper One', null, ['Retrieval-Augmented Generation'])],
+    })
+    await openFilterAndBrowseAll(user)
+
+    const search = screen.getByTestId('keyword-search-input')
+    await user.type(search, 'RETRIEVAL AUGMENTED')
+    expect(screen.getByTestId('keyword-filter-option-retrieval augmented generation')).toBeInTheDocument()
+
+    await user.clear(search)
+    await user.type(search, 'retrieval-augmented')
+    expect(screen.getByTestId('keyword-filter-option-retrieval augmented generation')).toBeInTheDocument()
+  })
+
+  it('an empty search result shows the exact required message', async () => {
+    const user = userEvent.setup()
+    renderPanel({ pending_batch: [paper('p1', 'Paper One', null, ['topic a'])] })
+    await openFilterAndBrowseAll(user)
+
+    await user.type(screen.getByTestId('keyword-search-input'), 'no such keyword at all')
+
+    expect(screen.getByTestId('keyword-search-empty')).toHaveTextContent('No keywords match your search.')
+  })
+
+  it('clearing the search restores the complete list', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['topic a']),
+        paper('p2', 'Paper Two', null, ['topic b']),
+      ],
+    })
+    await openFilterAndBrowseAll(user)
+
+    const search = screen.getByTestId('keyword-search-input')
+    await user.type(search, 'topic a')
+    expect(screen.queryByTestId('keyword-filter-option-topic b')).not.toBeInTheDocument()
+
+    await user.clear(search)
+    expect(screen.getByTestId('keyword-filter-option-topic a')).toBeInTheDocument()
+    expect(screen.getByTestId('keyword-filter-option-topic b')).toBeInTheDocument()
   })
 
   it('one selected keyword filters the visible batch correctly, preserving original order', async () => {
@@ -535,14 +663,12 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
         paper('p3', 'Paper Three', null, ['topic a']),
       ],
     })
-
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
 
     expect(screen.getByText('Paper One')).toBeInTheDocument()
     expect(screen.getByText('Paper Three')).toBeInTheDocument()
     expect(screen.queryByText('Paper Two')).not.toBeInTheDocument()
-    // Source order preserved: p1 before p3, not re-sorted.
     const cards = screen.getAllByTestId(/^paper-card-/)
     expect(cards.map((el) => el.dataset.testid)).toEqual(['paper-card-p1', 'paper-card-p3'])
   })
@@ -556,8 +682,7 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
         paper('p3', 'Paper Three', null, ['topic c']),
       ],
     })
-
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     await user.click(within(screen.getByTestId('keyword-filter-option-topic b')).getByRole('checkbox'))
 
@@ -588,8 +713,7 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
         paper('p2', 'Paper Two', null, ['topic b']),
       ],
     })
-
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     expect(screen.queryByText('Paper Two')).not.toBeInTheDocument()
 
@@ -609,8 +733,7 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
         paper('p3', 'Paper Three', null, ['topic c']),
       ],
     })
-
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     await user.click(within(screen.getByTestId('keyword-filter-option-topic b')).getByRole('checkbox'))
     expect(screen.getByText('Paper One')).toBeInTheDocument()
@@ -628,14 +751,10 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     const { rerender, state } = renderPanel({
       pending_batch: [paper('p1', 'Paper One', null, ['topic a', 'topic b'])],
     })
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     expect(screen.getByText('Paper One')).toBeInTheDocument()
 
-    // Same batchKey (still just p1) but its OWN keywords shrink to no
-    // longer include "topic a" -- a same-session, same-paper-id-set
-    // update (a re-render this filter's own reset effect does NOT fire
-    // for, since batchKey is paper-id-based, not keyword-based).
     rerender(
       <ReviewModePanel
         state={{ ...state, pending_batch: [paper('p1', 'Paper One', null, ['topic b'])] }}
@@ -648,12 +767,13 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     expect(screen.getByText('No papers match the selected keywords.')).toBeInTheDocument()
   })
 
-  it('the filter resets when the session changes, even with the same paper IDs', async () => {
+  it('the filter (including Browse-all mode and search text) resets when the session changes, even with the same paper IDs', async () => {
     const user = userEvent.setup()
     const { rerender, state } = renderPanel({
       session_id: 's1', pending_batch: [paper('p1', 'Paper One', null, ['topic a'])],
     })
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
+    await user.type(screen.getByTestId('keyword-search-input'), 'topic')
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
 
@@ -666,6 +786,11 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
 
     expect(screen.queryByTestId('keyword-filter-summary')).not.toBeInTheDocument()
     expect(screen.queryByTestId('keyword-filter-panel')).not.toBeInTheDocument()
+
+    // Reopening after a session change starts fresh in Popular mode, not
+    // still in Browse-all with the old search text.
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.queryByTestId('keyword-browse-all-panel')).not.toBeInTheDocument()
   })
 
   it('the filter resets when the pending-batch paper-id set genuinely changes', async () => {
@@ -673,7 +798,7 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     const { rerender, state } = renderPanel({
       pending_batch: [paper('p1', 'Paper One', null, ['topic a'])],
     })
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
 
@@ -696,12 +821,10 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
         paper('p2', 'Paper Two', null, ['topic b']),
       ],
     })
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
     expect(screen.queryByText('Paper Two')).not.toBeInTheDocument()
 
-    // Same batchKey (p1,p2 unchanged) -- only stagedPickIds changed, the
-    // same kind of re-render staging a pick already causes today.
     rerender(
       <ReviewModePanel
         state={state} turnEvents={[]} stagedPickIds={['p1']} disabled={false}
@@ -711,6 +834,31 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
 
     expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
     expect(screen.queryByText('Paper Two')).not.toBeInTheDocument()
+  })
+
+  it('closing and reopening the outer filter within the same batch preserves the active filter', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['topic a']),
+        paper('p2', 'Paper Two', null, ['topic b']),
+      ],
+    })
+    await openFilterAndBrowseAll(user)
+    await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
+    expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
+
+    // Close the outer disclosure, then reopen it.
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.queryByTestId('keyword-filter-panel')).not.toBeInTheDocument()
+    // Active filter chip/summary (outside the collapsible panel) stays visible while closed.
+    expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(screen.getByTestId('keyword-filter-summary')).toBeInTheDocument()
+    expect(screen.queryByText('Paper Two')).not.toBeInTheDocument()
+    // Reopening lands back in Popular mode, not still in Browse-all.
+    expect(screen.queryByTestId('keyword-browse-all-panel')).not.toBeInTheDocument()
   })
 
   it('filtering never changes selected counts, target progress, or the Continue/Stop submission payload', async () => {
@@ -725,12 +873,9 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
 
     expect(screen.getByText("I'm done — finish with 2 selected")).toBeInTheDocument()
 
-    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    await openFilterAndBrowseAll(user)
     await user.click(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox'))
 
-    // Filtering hid Paper Two, but the counts/banner (derived from
-    // selected_paper_ids/stagedPickIds, never from the filtered view) are
-    // unchanged, and Continue still submits the same payload regardless.
     expect(screen.getByText("I'm done — finish with 2 selected")).toBeInTheDocument()
     expect(screen.getByTestId('review-target-reached-banner')).toHaveTextContent('reached your target of 2')
 
@@ -738,9 +883,14 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
     expect(onSubmitPicks).toHaveBeenCalledWith(undefined, false)
   })
 
-  it('the disclosure and checkboxes expose correct accessible state', async () => {
+  it('the outer disclosure and checkboxes expose correct accessible state', async () => {
     const user = userEvent.setup()
-    renderPanel({ pending_batch: [paper('p1', 'Paper One', null, ['topic a'])] })
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['topic a']),
+        paper('p2', 'Paper Two', null, ['topic a']),
+      ],
+    })
 
     const toggle = screen.getByTestId('keyword-filter-toggle')
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -757,5 +907,58 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K2: keyword filter', 
 
     await user.click(checkbox)
     expect(checkbox).toBeChecked()
+  })
+
+  it('the Browse-all disclosure exposes truthful aria-expanded/aria-controls state', async () => {
+    const user = userEvent.setup()
+    renderPanel({ pending_batch: [paper('p1', 'Paper One', null, ['topic a'])] })
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+
+    const browseToggle = screen.getByTestId('keyword-browse-all-toggle')
+    expect(browseToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(browseToggle).toHaveAttribute('aria-controls', 'keyword-browse-all-panel')
+    expect(screen.queryByTestId('keyword-browse-all-panel')).not.toBeInTheDocument()
+
+    await user.click(browseToggle)
+
+    expect(browseToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('keyword-browse-all-panel')).toHaveAttribute('id', 'keyword-browse-all-panel')
+  })
+
+  it('the search input has a real accessible label, not placeholder-only naming', async () => {
+    const user = userEvent.setup()
+    renderPanel({ pending_batch: [paper('p1', 'Paper One', null, ['topic a'])] })
+    await openFilterAndBrowseAll(user)
+
+    // getByLabelText only succeeds with a genuine label association
+    // (htmlFor/id or aria-label) -- placeholder text alone would fail this.
+    expect(screen.getByLabelText('Search keywords')).toBe(screen.getByTestId('keyword-search-input'))
+  })
+
+  it('checkboxes remain native labeled inputs in both Popular and Browse-all modes', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      pending_batch: [
+        paper('p1', 'Paper One', null, ['topic a']),
+        paper('p2', 'Paper Two', null, ['topic a']),
+      ],
+    })
+    await user.click(screen.getByTestId('keyword-filter-toggle'))
+    expect(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('keyword-browse-all-toggle'))
+    expect(within(screen.getByTestId('keyword-filter-option-topic a')).getByRole('checkbox')).toBeInTheDocument()
+  })
+
+  it('the filter panel and search input use bounded/wrapping layout classes, not fixed-width overflow-prone ones', async () => {
+    const user = userEvent.setup()
+    renderPanel({ pending_batch: [paper('p1', 'Paper One', null, ['topic a'])] })
+    await openFilterAndBrowseAll(user)
+
+    const panel = screen.getByTestId('keyword-filter-panel')
+    expect(panel.className).toContain('max-w-full')
+    const search = screen.getByTestId('keyword-search-input')
+    expect(search.className).toContain('w-full')
+    expect(search.className).toContain('max-w-full')
   })
 })

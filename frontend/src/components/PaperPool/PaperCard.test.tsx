@@ -12,7 +12,7 @@ function paper(overrides: Partial<PaperOut> = {}): PaperOut {
   }
 }
 
-describe('PaperCard -- Paper Keywords and Filtering, K2', () => {
+describe('PaperCard -- Paper Keywords and Filtering, K4.2', () => {
   it('renders the keywords PaperOut already supplied, as plain chips', () => {
     render(
       <PaperCard
@@ -49,15 +49,54 @@ describe('PaperCard -- Paper Keywords and Filtering, K2', () => {
     expect(screen.queryByRole('checkbox', { name: 'graph neural networks' })).not.toBeInTheDocument()
   })
 
-  it('a long keyword phrase renders with a bounded, truncating layout, not raw overflow', () => {
+  it('keyword chips use the readable accent treatment, not K2\'s muted 10px styling', () => {
+    render(
+      <PaperCard paper={paper({ keywords: ['graph neural networks'] })} showAbstract action={{ kind: 'none' }} />,
+    )
+
+    const chip = screen.getByText('graph neural networks')
+    expect(chip.className).toContain('text-xs')
+    expect(chip.className).toContain('font-medium')
+    expect(chip.className).toContain('text-accent')
+    expect(chip.className).toContain('bg-accent-soft')
+    expect(chip.className).toContain('border-accent/30')
+    expect(chip.className).toContain('rounded-md')
+    expect(chip.className).not.toContain('text-[10px]')
+    expect(chip.className).not.toContain('text-text-muted')
+  })
+
+  it('a long keyword phrase wraps safely instead of truncating or overflowing', () => {
     const longKeyword = 'a very long keyword phrase that could otherwise overflow a narrow mobile card width'
     render(
       <PaperCard paper={paper({ keywords: [longKeyword] })} showAbstract action={{ kind: 'none' }} />,
     )
 
     const chip = screen.getByText(longKeyword)
-    expect(chip.className).toContain('truncate')
     expect(chip.className).toContain('max-w-full')
+    expect(chip.className).toContain('whitespace-normal')
+    expect(chip.className).toContain('break-words')
+    expect(chip.className).not.toContain('truncate')
+  })
+
+  it('keywords render after the title and before source/year/citation metadata', () => {
+    render(
+      <PaperCard
+        paper={paper({ keywords: ['graph neural networks'], venue: 'arXiv', year: 2024, citation_count: 5 })}
+        showAbstract action={{ kind: 'none' }}
+      />,
+    )
+
+    const card = screen.getByTestId('paper-card-p1')
+    const title = screen.getByText('Paper One')
+    const keywordsContainer = screen.getByTestId('paper-keywords-p1')
+    const metadata = screen.getByText(/arXiv/)
+
+    // DOM order check: title, then keywords, then metadata.
+    // eslint-disable-next-line no-bitwise
+    expect(title.compareDocumentPosition(keywordsContainer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // eslint-disable-next-line no-bitwise
+    expect(keywordsContainer.compareDocumentPosition(metadata) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(card).toContainElement(keywordsContainer)
   })
 
   it('keywords do not affect Add/Remove actions or citation-adjacent rendering', async () => {
