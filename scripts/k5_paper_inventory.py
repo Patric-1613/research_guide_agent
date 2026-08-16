@@ -36,8 +36,10 @@ from research_agent.qa import QA_CHECKPOINT_DB_PATH, sqlite_checkpointer
 from research_agent.schema import Paper
 
 INVENTORY_SCHEMA_VERSION = "k5b1a-inventory-v2"
-SAMPLE_SCHEMA_VERSION = "k5b1a-sample-v2"
-SELECTION_RULE_VERSION = "k5b1a-v2"
+SCREENING_SELECTION_RULE_VERSION = "k5b1a-v2"
+SAMPLE_SCHEMA_VERSION = "k5b1b-bounded-sample-v1"
+SELECTION_RULE_VERSION = "k5b1b-bounded-v1"
+SOURCE_SNAPSHOT_SCHEMA_VERSION = "k5b1b-bounded-source-v1"
 SCREENING_MANIFEST_SCHEMA_VERSION = "k5b1a-failure-screening-manifest-v1"
 
 K5_RANDOM_SEED = 5202608
@@ -48,10 +50,16 @@ SAMPLE_PATH = EVAL_WORKING_DIR / "proposed_sample.jsonl"
 RULES_PATH = EVAL_WORKING_DIR / "selection_rules.json"
 SCREENING_WORKBOOK_PATH = EVAL_WORKING_DIR / "failure_screening.xlsx"
 SCREENING_MANIFEST_PATH = EVAL_WORKING_DIR / "failure_screening_manifest.json"
+SOURCE_SNAPSHOT_PATH = EVAL_WORKING_DIR / "bounded_source_snapshot.jsonl"
 
-STRATA_TARGETS = {"known_failure": 8, "product_local_diversity": 8, "local_edge_case": 4}
-PILOT_COUNT = 5
-DOUBLE_REVIEW_COUNT = 5
+STRATA_TARGETS = {"confirmed_failure": 4, "product_local_diversity": 4, "local_edge_case": 2}
+PILOT_COUNT = 2
+DOUBLE_REVIEW_COUNT = 3
+
+EXPECTED_SCREENING_ROW_COUNT = 21
+EXPECTED_SCREENING_PAPER_COUNT = 16
+EXPECTED_SCREENING_DECISIONS = {"yes": 21}
+EXPECTED_SCREENING_REASONS = {"fragment": 20, "too_broad": 1}
 
 CONFIRMED_FAILURE_VALUES = ("yes", "no", "uncertain")
 REASON_CODES = (
@@ -398,7 +406,7 @@ def _screening_manifest_payload(
 ) -> dict[str, Any]:
     return {
         "schema_version": SCREENING_MANIFEST_SCHEMA_VERSION,
-        "selection_rule_version": SELECTION_RULE_VERSION,
+        "selection_rule_version": SCREENING_SELECTION_RULE_VERSION,
         "generated_at": generated_at,
         "workbook_filename": SCREENING_WORKBOOK_PATH.name,
         "screening_sheet": "Failure screening",
@@ -547,16 +555,43 @@ def _read_screening_workbook_rows() -> tuple[list[dict[str, Any]], list[str]]:
     return rows, violations
 
 
-def validate_failure_screening(*, require_complete: bool = True, validate_sources: bool = True) -> tuple[list[str], set[str]]:
+def _load_screening_manifest() -> tuple[dict[str, Any] | None, list[str]]:
+    if not SCREENING_MANIFEST_PATH.exists():
+        return None, ["screening manifest is required"]
+    try:
+        return json.loads(SCREENING_MANIFEST_PATH.read_text(encoding="utf-8")), []
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"screening manifest could not be read: {type(exc).__name__}"]
+
+
+def validate_failure_screening(
+    *, require_complete: bool = True, inventory: list[dict[str, Any]] | None = None,
+) -> tuple[list[str], set[str]]:
+    """Validate the frozen screening snapshot without consulting live sessions.
+
+    The workbook evidence is hash-bound by the screening manifest and resolved
+    against the frozen inventory.  Current session additions/removals/changes
+    are intentionally outside this validity decision; use
+    :func:`audit_live_screening_drift` to report them informationally.
+    """
     violations: list[str] = []
     confirmed_paper_ids: set[str] = set()
-    if not SCREENING_MANIFEST_PATH.exists() or not SCREENING_WORKBOOK_PATH.exists():
-        return ["screening workbook and manifest are required"], confirmed_paper_ids
+    if not SCREENING_WORKBOOK_PATH.exists():
+        return ["screening workbook is required"], confirmed_paper_ids
+    manifest, manifest_read_violations = _load_screening_manifest()
+    if manifest is None:
+        return manifest_read_violations, confirmed_paper_ids
+    violations.extend(manifest_read_violations)
 
-    try:
-        manifest = json.loads(SCREENING_MANIFEST_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return [f"screening manifest could not be read: {type(exc).__name__}"], confirmed_paper_ids
+    if inventory is None:
+        if not INVENTORY_PATH.exists():
+            return ["manifest-bound inventory is required"], confirmed_paper_ids
+        try:
+            inventory = load_inventory()
+        except (OSError, json.JSONDecodeError) as exc:
+            return [f"manifest-bound inventory could not be read: {type(exc).__name__}"], confirmed_paper_ids
+    violations.extend(_inventory_contract_violations(inventory))
+    inventory_by_id = {record["paper_id"]: record for record in inventory}
 
     manifest_copy = dict(manifest)
     claimed_manifest_hash = manifest_copy.pop("manifest_sha256", None)
@@ -564,12 +599,16 @@ def validate_failure_screening(*, require_complete: bool = True, validate_source
         violations.append("screening manifest_sha256 mismatch")
     if manifest.get("schema_version") != SCREENING_MANIFEST_SCHEMA_VERSION:
         violations.append("screening manifest schema_version is not current")
-    if manifest.get("selection_rule_version") != SELECTION_RULE_VERSION:
+    if manifest.get("selection_rule_version") != SCREENING_SELECTION_RULE_VERSION:
         violations.append("screening manifest selection_rule_version is not current")
+    if manifest.get("workbook_filename") != SCREENING_WORKBOOK_PATH.name:
+        violations.append("screening manifest workbook filename does not identify the canonical workbook")
+    if manifest.get("screening_sheet") != "Failure screening":
+        violations.append("screening manifest sheet name does not match the frozen contract")
     if manifest.get("allowed_confirmed_failure_values") != list(CONFIRMED_FAILURE_VALUES):
-        violations.append("screening manifest decision values do not match the current contract")
+        violations.append("screening manifest decision values do not match the frozen contract")
     if manifest.get("allowed_reason_codes") != list(REASON_CODES):
-        violations.append("screening manifest reason codes do not match the current contract")
+        violations.append("screening manifest reason codes do not match the frozen contract")
 
     workbook_rows, workbook_violations = _read_screening_workbook_rows()
     violations.extend(workbook_violations)
@@ -577,13 +616,39 @@ def validate_failure_screening(*, require_complete: bool = True, validate_source
     if len(workbook_rows) != manifest.get("row_count") or len(workbook_rows) != len(manifest_rows):
         violations.append("screening workbook row count does not match the manifest")
 
+    workbook_paper_ids = {str(row.get("paper_id")) for row in workbook_rows}
+    manifest_sources = manifest.get("source_records", {})
+    if workbook_paper_ids != set(manifest_sources):
+        violations.append("screening workbook paper set does not match manifest source records")
+
+    source_payloads: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(workbook_rows, start=2):
+        paper_id = str(row.get("paper_id"))
         manifest_row = manifest_rows[index - 2] if index - 2 < len(manifest_rows) else {}
-        if manifest_row.get("worksheet_row") != index or manifest_row.get("paper_id") != row.get("paper_id"):
+        if manifest_row.get("worksheet_row") != index or manifest_row.get("paper_id") != paper_id:
             violations.append(f"screening row {index} identity does not match the manifest")
-        actual_hash = _sha256_payload(_screening_evidence_payload(row))
-        if manifest_row.get("evidence_sha256") != actual_hash:
+        if manifest_row.get("evidence_sha256") != _sha256_payload(_screening_evidence_payload(row)):
             violations.append(f"screening row {index} prefilled evidence hash mismatch")
+
+        if _source_hash(str(row.get("title") or ""), row.get("abstract")) != row.get("source_hash"):
+            violations.append(f"screening row {index} source_hash does not match title/abstract evidence")
+        inventory_record = inventory_by_id.get(paper_id)
+        if inventory_record is None:
+            violations.append(f"{paper_id}: screened paper is absent from the manifest-bound inventory")
+        else:
+            if inventory_record.get("source_hash") != row.get("source_hash"):
+                violations.append(f"{paper_id}: screening source_hash does not match manifest-bound inventory")
+            for field in ("title", "source", "external_id"):
+                if inventory_record.get(field) != row.get(field):
+                    violations.append(f"{paper_id}: screening {field} does not match manifest-bound inventory")
+
+        source_payload = {header: row.get(header) for header in (
+            "paper_id", "title", "abstract", "source", "external_id",
+            "source_hash", "provenance_count", "stored_keyword_version",
+        )}
+        prior_payload = source_payloads.setdefault(paper_id, source_payload)
+        if prior_payload != source_payload:
+            violations.append(f"{paper_id}: repeated screening rows disagree on protected source evidence")
 
         decision = row.get("confirmed_failure")
         reason = row.get("reason_code")
@@ -593,23 +658,76 @@ def validate_failure_screening(*, require_complete: bool = True, validate_source
             violations.append(f"screening row {index} has an invalid human decision")
         if reason not in (None, "") and reason not in REASON_CODES:
             violations.append(f"screening row {index} has an invalid reason_code")
+        if decision == "yes" and reason not in REASON_CODES:
+            violations.append(f"screening row {index} confirmed yes without a valid reason_code")
         if decision == "yes":
-            confirmed_paper_ids.add(str(row.get("paper_id")))
+            confirmed_paper_ids.add(paper_id)
 
-    if validate_sources:
-        current_rows, current_source_hashes = build_screening_rows()
-        expected_sources = manifest.get("source_records", {})
-        if set(expected_sources) != set(current_source_hashes):
-            violations.append("screening source-record paper set no longer matches local source records")
-        for paper_id, digest in current_source_hashes.items():
-            if expected_sources.get(paper_id, {}).get("source_record_sha256") != digest:
-                violations.append(f"{paper_id}: screening source-record hash mismatch")
-        current_hashes = [_sha256_payload(_screening_evidence_payload(row)) for row in current_rows]
-        manifest_hashes = [row.get("evidence_sha256") for row in manifest_rows]
-        if current_hashes != manifest_hashes:
-            violations.append("screening rows no longer match the current local heuristic scan")
-
+    for paper_id, source_payload in source_payloads.items():
+        expected_hash = manifest_sources.get(paper_id, {}).get("source_record_sha256")
+        if expected_hash != _sha256_payload(source_payload):
+            violations.append(f"{paper_id}: protected source-record hash does not match screening manifest")
     return violations, confirmed_paper_ids
+
+
+def _screening_summary() -> dict[str, Any]:
+    rows, _violations = _read_screening_workbook_rows()
+    return {
+        "row_count": len(rows),
+        "paper_count": len({str(row.get("paper_id")) for row in rows}),
+        "decision_counts": dict(Counter(row.get("confirmed_failure") for row in rows)),
+        "reason_counts": dict(Counter(row.get("reason_code") for row in rows)),
+    }
+
+
+def _canonical_screening_violations(confirmed_ids: set[str]) -> list[str]:
+    summary = _screening_summary()
+    violations: list[str] = []
+    if summary["row_count"] != EXPECTED_SCREENING_ROW_COUNT:
+        violations.append(f"screening row count {summary['row_count']} != {EXPECTED_SCREENING_ROW_COUNT}")
+    if summary["paper_count"] != EXPECTED_SCREENING_PAPER_COUNT:
+        violations.append(f"screening paper count {summary['paper_count']} != {EXPECTED_SCREENING_PAPER_COUNT}")
+    decision_counts = {key: value for key, value in summary["decision_counts"].items() if value}
+    reason_counts = {key: value for key, value in summary["reason_counts"].items() if value}
+    if decision_counts != EXPECTED_SCREENING_DECISIONS:
+        violations.append(f"screening decision totals {decision_counts} != {EXPECTED_SCREENING_DECISIONS}")
+    if reason_counts != EXPECTED_SCREENING_REASONS:
+        violations.append(f"screening reason totals {reason_counts} != {EXPECTED_SCREENING_REASONS}")
+    if reason_counts.get("redundant_fragment", 0):
+        violations.append("screening still contains redundant_fragment")
+    if len(confirmed_ids) < STRATA_TARGETS["confirmed_failure"]:
+        violations.append("fewer than four distinct human-confirmed failure papers are available")
+    return violations
+
+
+def audit_live_screening_drift() -> dict[str, Any]:
+    """Compare live heuristic records to the frozen manifest, informationally."""
+    manifest, violations = _load_screening_manifest()
+    if manifest is None:
+        return {"status": "unavailable", "errors": violations}
+    try:
+        live_rows, live_source_hashes = build_screening_rows()
+    except Exception as exc:
+        return {"status": "unavailable", "errors": [type(exc).__name__]}
+    frozen_sources = {
+        paper_id: value.get("source_record_sha256")
+        for paper_id, value in manifest.get("source_records", {}).items()
+    }
+    added = sorted(set(live_source_hashes) - set(frozen_sources))
+    removed = sorted(set(frozen_sources) - set(live_source_hashes))
+    changed = sorted(
+        paper_id for paper_id in set(frozen_sources) & set(live_source_hashes)
+        if frozen_sources[paper_id] != live_source_hashes[paper_id]
+    )
+    return {
+        "status": "drift_observed" if added or removed or changed else "no_drift",
+        "informational_only": True,
+        "added_paper_ids": added,
+        "removed_paper_ids": removed,
+        "changed_paper_ids": changed,
+        "frozen_phrase_row_count": manifest.get("row_count"),
+        "live_phrase_row_count": len(live_rows),
+    }
 
 
 def _inventory_contract_violations(inventory: list[dict[str, Any]]) -> list[str]:
@@ -636,9 +754,10 @@ def _inventory_contract_violations(inventory: list[dict[str, Any]]) -> list[str]
 
 
 def _local_diversity_group(record: dict[str, Any]) -> str:
-    if record["domain_bucket_status"] == "unambiguous":
-        return record["domain_bucket_guess"]
-    return record["domain_bucket_status"]
+    status = record.get("domain_bucket_status")
+    if status == "unambiguous":
+        return record.get("domain_bucket_guess") or "unclassified"
+    return status or "unclassified"
 
 
 def _round_robin_local_diversity(pool: list[dict[str, Any]], target: int, seed: int) -> list[dict[str, Any]]:
@@ -668,36 +787,30 @@ def select_sample(
     inventory: list[dict[str, Any]],
     seed: int = K5_RANDOM_SEED,
     confirmed_screening_ids: set[str] | None = None,
-    screening_complete: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]], list[str], list[str]]:
-    """Select a current-contract sample without promoting suspected cases."""
+    """Select the deterministic 4/4/2 bounded product-evaluation sample."""
     contract_violations = _inventory_contract_violations(inventory)
     if contract_violations:
         raise ValueError("inventory does not satisfy current contract: " + "; ".join(contract_violations[:3]))
     by_id = {record["paper_id"]: record for record in inventory}
     confirmed_screening_ids = confirmed_screening_ids or set()
-    documented_ids = sorted(
-        record["paper_id"] for record in inventory
-        if record.get("failure_status") == "known_failure" and record.get("failure_evidence")
-    )
-    human_confirmed_ids = sorted(
-        paper_id for paper_id in confirmed_screening_ids
-        if paper_id in by_id and by_id[paper_id].get("failure_status") == "suspected_failure"
-    )
-    known_failure_ids = (documented_ids + [pid for pid in human_confirmed_ids if pid not in documented_ids])[
-        :STRATA_TARGETS["known_failure"]
-    ]
-    suspected_ids = [] if screening_complete else sorted(
-        record["paper_id"] for record in inventory if record.get("failure_status") == "suspected_failure"
-    )[:STRATA_TARGETS["known_failure"]]
-
     shortfalls: dict[str, list[str]] = {}
-    if len(known_failure_ids) < STRATA_TARGETS["known_failure"]:
-        shortfalls["known_failure"] = [
-            f"requested {STRATA_TARGETS['known_failure']}, found {len(known_failure_ids)} locally evidenced confirmed paper(s)"
+    confirmed_pool = sorted(
+        paper_id for paper_id in confirmed_screening_ids
+        if paper_id in by_id and by_id[paper_id].get("usable_abstract")
+    )
+    confirmed_target = STRATA_TARGETS["confirmed_failure"]
+    if len(confirmed_pool) < confirmed_target:
+        shortfalls["confirmed_failure"] = [
+            f"requested {confirmed_target}, found {len(confirmed_pool)} human-confirmed usable paper(s)"
         ]
+        confirmed_failure_ids = confirmed_pool
+    else:
+        confirmed_failure_ids = sorted(Random(seed).sample(confirmed_pool, confirmed_target))
 
-    used_ids = set(known_failure_ids) | set(suspected_ids)
+    # Papers screened as genuine failures belong only to the failure pool,
+    # including confirmed papers not drawn into the bounded four.
+    used_ids = set(confirmed_screening_ids)
     eligible_edges = [
         record for record in inventory
         if record["usable_abstract"] and record["paper_id"] not in used_ids
@@ -723,6 +836,8 @@ def select_sample(
     )
     edge_notes: list[str] = []
     for subtype, picker in edge_pickers:
+        if len(local_edge_ids) >= STRATA_TARGETS["local_edge_case"]:
+            break
         selected = picker()
         if selected is None:
             edge_notes.append(f"local edge subtype {subtype!r}: no qualifying local paper")
@@ -737,13 +852,16 @@ def select_sample(
         record for record in inventory
         if record["usable_abstract"] and record["paper_id"] not in used_ids
     ]
-    diversity_records = _round_robin_local_diversity(
-        diversity_pool, STRATA_TARGETS["product_local_diversity"], seed,
+    diversity_target = STRATA_TARGETS["product_local_diversity"]
+    diversity_records = (
+        sorted(Random(seed + 1).sample(sorted(diversity_pool, key=lambda item: item["paper_id"]), diversity_target),
+               key=lambda item: item["paper_id"])
+        if len(diversity_pool) >= diversity_target else sorted(diversity_pool, key=lambda item: item["paper_id"])
     )
     diversity_ids = [record["paper_id"] for record in diversity_records]
-    if len(diversity_ids) < STRATA_TARGETS["product_local_diversity"]:
+    if len(diversity_ids) < diversity_target:
         shortfalls["product_local_diversity"] = [
-            f"requested {STRATA_TARGETS['product_local_diversity']}, found {len(diversity_ids)} usable unused local paper(s)"
+            f"requested {diversity_target}, found {len(diversity_ids)} usable unused local paper(s)"
         ]
 
     selected_rows: list[dict[str, Any]] = []
@@ -755,22 +873,25 @@ def select_sample(
             "stratum": stratum,
             "local_edge_subtype": edge_subtypes.get(paper_id),
             "measured_signals": source["stress_signals"] if stratum == "local_edge_case" else None,
+            "selection_basis": (
+                "relative extreme within the frozen product-local inventory; not a universal threshold"
+                if stratum == "local_edge_case" else None
+            ),
+            "confirmation_source": "human_screening" if stratum == "confirmed_failure" else None,
             "domain_bucket_matches": source["domain_bucket_matches"],
             "domain_bucket_guess": source["domain_bucket_guess"],
             "domain_bucket_status": source["domain_bucket_status"],
             "source_hash": source["source_hash"],
         })
 
-    for paper_id in known_failure_ids:
-        append_row(paper_id, "known_failure")
-    for paper_id in suspected_ids:
-        append_row(paper_id, "suspected_failure")
+    for paper_id in confirmed_failure_ids:
+        append_row(paper_id, "confirmed_failure")
     for paper_id in diversity_ids:
         append_row(paper_id, "product_local_diversity")
     for paper_id in local_edge_ids:
         append_row(paper_id, "local_edge_case")
 
-    final_strata = ("known_failure", "product_local_diversity", "local_edge_case")
+    final_strata = ("confirmed_failure", "product_local_diversity", "local_edge_case")
 
     def spread_pick(count: int, excluded: set[str]) -> list[str]:
         pools = {
@@ -798,11 +919,51 @@ def select_sample(
     return selected_rows, shortfalls, pilot_ids, double_review_ids
 
 
+def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
+    return "".join(json.dumps(record, sort_keys=True) + "\n" for record in records).encode("utf-8")
+
+
+def _resolve_source_snapshot(
+    selected: list[dict[str, Any]], snapshot_at: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    live_records = _collect_local_papers()
+    violations: list[str] = []
+    snapshot: list[dict[str, Any]] = []
+    for selected_row in sorted(selected, key=lambda item: item["paper_id"]):
+        paper_id = selected_row["paper_id"]
+        local = live_records.get(paper_id)
+        if local is None:
+            violations.append(f"{paper_id}: selected source record cannot be resolved")
+            continue
+        paper = local.paper
+        actual_hash = _source_hash(paper.title, paper.abstract)
+        if actual_hash != selected_row["source_hash"]:
+            violations.append(f"{paper_id}: resolved source hash does not match frozen inventory")
+            continue
+        snapshot.append({
+            "schema_version": SOURCE_SNAPSHOT_SCHEMA_VERSION,
+            "paper_id": paper_id,
+            "title": paper.title,
+            "abstract": paper.abstract,
+            "source": paper.source,
+            "external_id": _external_id(paper),
+            "source_hash": actual_hash,
+            "snapshotted_at": snapshot_at,
+        })
+    return snapshot, violations
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(data)
+    os.replace(temporary, path)
+
+
 def freeze_sample(replace: bool = False) -> int:
     if not INVENTORY_PATH.exists():
         print("error: current inventory is missing; run inventory first.", file=sys.stderr)
         return 1
-    if (SAMPLE_PATH.exists() or RULES_PATH.exists()) and not replace:
+    if any(path.exists() for path in (SAMPLE_PATH, RULES_PATH, SOURCE_SNAPSHOT_PATH)) and not replace:
         print("refused: sample output exists; pass --replace to overwrite deliberately.", file=sys.stderr)
         return 3
 
@@ -812,18 +973,25 @@ def freeze_sample(replace: bool = False) -> int:
         print("refused: inventory does not satisfy the current K5B.1a contract.", file=sys.stderr)
         return 4
 
-    screening_violations, confirmed_ids = validate_failure_screening(require_complete=True, validate_sources=True)
-    screening_complete = not screening_violations
+    screening_violations, confirmed_ids = validate_failure_screening(require_complete=True, inventory=inventory)
+    screening_violations.extend(_canonical_screening_violations(confirmed_ids))
+    if screening_violations:
+        print("refused: frozen screening snapshot failed validation; sample artifacts were not replaced.", file=sys.stderr)
+        return 4
     selected, shortfalls, pilot_ids, double_review_ids = select_sample(
         inventory,
         seed=K5_RANDOM_SEED,
-        confirmed_screening_ids=confirmed_ids if screening_complete else set(),
-        screening_complete=screening_complete,
+        confirmed_screening_ids=confirmed_ids,
     )
-    enough_confirmed = len({row["paper_id"] for row in selected if row["stratum"] == "known_failure"}) >= STRATA_TARGETS["known_failure"]
-    final_ready = screening_complete and enough_confirmed and not shortfalls
-    status = "approved" if final_ready else "awaiting_human_screening"
+    if shortfalls or len(selected) != sum(STRATA_TARGETS.values()):
+        print("refused: bounded sample targets cannot be satisfied; sample artifacts were not replaced.", file=sys.stderr)
+        return 4
     selected_at = _now_iso()
+
+    source_snapshot, snapshot_violations = _resolve_source_snapshot(selected, selected_at)
+    if snapshot_violations or len(source_snapshot) != sum(STRATA_TARGETS.values()):
+        print("refused: a selected paper could not be resolved with its expected source hash; nothing was replaced.", file=sys.stderr)
+        return 4
 
     strata_actual = dict(Counter(row["stratum"] for row in selected))
     observed_domain_composition = dict(Counter(
@@ -831,53 +999,65 @@ def freeze_sample(replace: bool = False) -> int:
         for row in selected
         if row["stratum"] == "product_local_diversity"
     ))
+    for row in selected:
+        row["schema_version"] = SAMPLE_SCHEMA_VERSION
+        row["selection_rule_version"] = SELECTION_RULE_VERSION
+        row["status"] = "frozen_bounded_sample"
+        row["selected_at"] = selected_at
+    selected_sorted = sorted(selected, key=lambda item: item["paper_id"])
+    sample_bytes = _jsonl_bytes(selected_sorted)
+    snapshot_bytes = _jsonl_bytes(source_snapshot)
+    screening_summary = _screening_summary()
+    limitations = [
+        "product-local corpus",
+        "only 10 papers",
+        "pilot papers excluded from headline metrics",
+        "not an external benchmark",
+        "not evidence of universal superiority",
+    ]
     rules = {
         "schema_version": SAMPLE_SCHEMA_VERSION,
         "selection_rule_version": SELECTION_RULE_VERSION,
-        "status": status,
+        "status": "frozen_bounded_sample",
         "random_seed": K5_RANDOM_SEED,
-        "generated_at": selected_at,
-        "selected_at": selected_at,
+        "selection_timestamp": selected_at,
         "strata_targets": STRATA_TARGETS,
         "strata_actual": strata_actual,
         "observed_product_local_domain_composition": observed_domain_composition,
         "total_selected": len(selected),
-        "shortfalls": shortfalls,
-        "screening_violations": screening_violations,
         "pilot_ids": sorted(pilot_ids),
         "double_review_ids": sorted(double_review_ids),
         "paper_ids": sorted(row["paper_id"] for row in selected),
         "source_hashes": {row["paper_id"]: row["source_hash"] for row in selected},
+        "sample_sha256": hashlib.sha256(sample_bytes).hexdigest(),
+        "screening_workbook_sha256": _file_sha256(SCREENING_WORKBOOK_PATH),
+        "screening_manifest_sha256": _file_sha256(SCREENING_MANIFEST_PATH),
+        "inventory_sha256": _file_sha256(INVENTORY_PATH),
+        "bounded_source_snapshot_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+        "screening_snapshot": screening_summary,
+        "informational_live_drift": audit_live_screening_drift(),
+        "limitations": limitations,
     }
     rules["manifest_sha256"] = _sha256_payload(rules)
-    for row in selected:
-        row["schema_version"] = SAMPLE_SCHEMA_VERSION
-        row["selection_rule_version"] = SELECTION_RULE_VERSION
-        row["status"] = status
-        row["selected_at"] = selected_at
-
     EVAL_WORKING_DIR.mkdir(parents=True, exist_ok=True)
-    with SAMPLE_PATH.open("w", encoding="utf-8") as handle:
-        for row in sorted(selected, key=lambda item: item["paper_id"]):
-            handle.write(json.dumps(row, sort_keys=True) + "\n")
-    with RULES_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(rules, handle, sort_keys=True, indent=2)
-        handle.write("\n")
-
-    print(f"sample status: {status}; selected {len(selected)} paper(s)")
-    if not final_ready:
-        print("final approval blocked: complete and validate human screening and meet confirmed-failure target.")
-        return 4
+    rules_bytes = (json.dumps(rules, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    _write_atomic(SOURCE_SNAPSHOT_PATH, snapshot_bytes)
+    _write_atomic(SAMPLE_PATH, sample_bytes)
+    _write_atomic(RULES_PATH, rules_bytes)
+    print(f"sample status: frozen_bounded_sample; selected {len(selected)} paper(s)")
     return 0
 
 
 def validate_frozen_sample() -> list[str]:
     violations: list[str] = []
-    if not RULES_PATH.exists() or not SAMPLE_PATH.exists():
+    if not RULES_PATH.exists() or not SAMPLE_PATH.exists() or not SOURCE_SNAPSHOT_PATH.exists():
         return ["no sample found"]
     try:
         rules = json.loads(RULES_PATH.read_text(encoding="utf-8"))
         sample = [json.loads(line) for line in SAMPLE_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+        source_snapshot = [
+            json.loads(line) for line in SOURCE_SNAPSHOT_PATH.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
         inventory = load_inventory()
     except (OSError, json.JSONDecodeError) as exc:
         return [f"sample evidence could not be read: {type(exc).__name__}"]
@@ -891,6 +1071,24 @@ def validate_frozen_sample() -> list[str]:
     claimed_hash = rules_copy.pop("manifest_sha256", None)
     if claimed_hash != _sha256_payload(rules_copy):
         violations.append("sample manifest_sha256 mismatch")
+    if rules.get("status") != "frozen_bounded_sample":
+        violations.append("sample status is not frozen_bounded_sample")
+    if rules.get("strata_targets") != STRATA_TARGETS:
+        violations.append("sample strata targets do not match bounded contract")
+    if rules.get("total_selected") != sum(STRATA_TARGETS.values()):
+        violations.append("sample total does not match bounded contract")
+    hash_bindings = (
+        ("sample_sha256", SAMPLE_PATH, "sample file"),
+        ("bounded_source_snapshot_sha256", SOURCE_SNAPSHOT_PATH, "bounded source snapshot"),
+        ("screening_workbook_sha256", SCREENING_WORKBOOK_PATH, "screening workbook"),
+        ("screening_manifest_sha256", SCREENING_MANIFEST_PATH, "screening manifest file"),
+        ("inventory_sha256", INVENTORY_PATH, "inventory"),
+    )
+    for field, path, label in hash_bindings:
+        if not path.exists():
+            violations.append(f"{label} is missing")
+        elif rules.get(field) != _file_sha256(path):
+            violations.append(f"{label} hash does not match rules manifest")
 
     ids = [row.get("paper_id") for row in sample]
     if len(ids) != len(set(ids)):
@@ -898,14 +1096,15 @@ def validate_frozen_sample() -> list[str]:
     if sorted(ids) != rules.get("paper_ids"):
         violations.append("sample paper IDs do not match rules manifest")
     inventory_by_id = {record["paper_id"]: record for record in inventory}
-    valid_strata = {"known_failure", "suspected_failure", "product_local_diversity", "local_edge_case"}
-    screening_result: tuple[list[str], set[str]] | None = None
-
-    def validated_screening() -> tuple[list[str], set[str]]:
-        nonlocal screening_result
-        if screening_result is None:
-            screening_result = validate_failure_screening(require_complete=True, validate_sources=True)
-        return screening_result
+    if len(ids) != sum(STRATA_TARGETS.values()):
+        violations.append("sample does not contain exactly 10 rows")
+    actual_strata = dict(Counter(row.get("stratum") for row in sample))
+    if actual_strata != STRATA_TARGETS or rules.get("strata_actual") != STRATA_TARGETS:
+        violations.append("sample does not have exact 4/4/2 composition")
+    valid_strata = set(STRATA_TARGETS)
+    screening_violations, confirmed_ids = validate_failure_screening(require_complete=True, inventory=inventory)
+    screening_violations.extend(_canonical_screening_violations(confirmed_ids))
+    violations.extend(f"frozen screening: {item}" for item in screening_violations)
 
     for row in sample:
         paper_id = row.get("paper_id")
@@ -918,36 +1117,71 @@ def validate_frozen_sample() -> list[str]:
             violations.append(f"{paper_id}: absent from current inventory")
         elif source.get("source_hash") != row.get("source_hash"):
             violations.append(f"{paper_id}: source_hash does not match inventory")
-        if row.get("stratum") == "known_failure" and source and not (
-            source.get("failure_evidence") or paper_id in validated_screening()[1]
-        ):
-            violations.append(f"{paper_id}: known_failure is not locally evidenced or human-confirmed")
+        if row.get("status") != "frozen_bounded_sample":
+            violations.append(f"{paper_id}: row status is not frozen_bounded_sample")
+        if row.get("stratum") == "confirmed_failure" and paper_id not in confirmed_ids:
+            violations.append(f"{paper_id}: confirmed_failure is not human-confirmed")
         if row.get("stratum") == "local_edge_case" and not row.get("measured_signals"):
             violations.append(f"{paper_id}: local_edge_case lacks measured signals")
         forbidden = {"keywords", "candidates", "abstract", "abstract_text"} & set(row)
         if forbidden:
             violations.append(f"{paper_id}: forbidden embedded candidate/source text")
 
-    if rules.get("status") == "approved":
-        screening_violations, _confirmed = validated_screening()
-        violations.extend(f"approved sample screening: {item}" for item in screening_violations)
-        if rules.get("strata_actual", {}).get("known_failure", 0) < STRATA_TARGETS["known_failure"]:
-            violations.append("approved sample has a confirmed-failure shortfall")
-        if rules.get("shortfalls"):
-            violations.append("approved sample reports selection shortfalls")
-    elif rules.get("status") != "awaiting_human_screening":
-        violations.append("sample status must be approved or awaiting_human_screening")
+    snapshot_ids = [row.get("paper_id") for row in source_snapshot]
+    if len(snapshot_ids) != len(set(snapshot_ids)) or sorted(snapshot_ids) != sorted(ids):
+        violations.append("bounded source snapshot IDs do not exactly match sample IDs")
+    sample_by_id = {row["paper_id"]: row for row in sample}
+    for row in source_snapshot:
+        paper_id = row.get("paper_id")
+        if row.get("schema_version") != SOURCE_SNAPSHOT_SCHEMA_VERSION:
+            violations.append(f"{paper_id}: source snapshot row uses an obsolete contract")
+        actual_hash = _source_hash(str(row.get("title") or ""), row.get("abstract"))
+        if actual_hash != row.get("source_hash") or sample_by_id.get(paper_id, {}).get("source_hash") != actual_hash:
+            violations.append(f"{paper_id}: bounded source snapshot source_hash mismatch")
+
+    pilot_ids = set(rules.get("pilot_ids", []))
+    double_review_ids = set(rules.get("double_review_ids", []))
+    if len(pilot_ids) != PILOT_COUNT or not pilot_ids <= set(ids):
+        violations.append("pilot role count or membership is invalid")
+    if len(double_review_ids) != DOUBLE_REVIEW_COUNT or not double_review_ids <= set(ids):
+        violations.append("double-review role count or membership is invalid")
+    if pilot_ids & double_review_ids:
+        violations.append("pilot and double-review IDs overlap")
+    by_sample_id = {row["paper_id"]: row for row in sample}
+    if any(by_sample_id[paper_id].get("metrics_role") != "pilot_only" for paper_id in pilot_ids):
+        violations.append("pilot metrics roles are inconsistent")
+    if any(by_sample_id[paper_id].get("metrics_role") != "headline" for paper_id in double_review_ids):
+        violations.append("double-review papers must be headline papers")
+    if any(not by_sample_id[paper_id].get("is_double_reviewed") for paper_id in double_review_ids):
+        violations.append("double-review flags are inconsistent")
+    if len({by_sample_id[paper_id]["stratum"] for paper_id in pilot_ids}) < 2:
+        violations.append("pilot papers do not span at least two strata")
+    if len({by_sample_id[paper_id]["stratum"] for paper_id in double_review_ids}) < 2:
+        violations.append("double-review papers do not span at least two strata")
+
+    observed = dict(Counter(
+        _local_diversity_group(row) for row in sample if row.get("stratum") == "product_local_diversity"
+    ))
+    if rules.get("observed_product_local_domain_composition") != observed:
+        violations.append("observed product-local domain composition is inconsistent")
+    expected_limitations = {
+        "product-local corpus", "only 10 papers", "pilot papers excluded from headline metrics",
+        "not an external benchmark", "not evidence of universal superiority",
+    }
+    if set(rules.get("limitations", [])) != expected_limitations:
+        violations.append("bounded-sample limitations are incomplete")
     return violations
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="K5B.1a local paper screening and sample-gate tooling.")
+    parser = argparse.ArgumentParser(description="K5B.1 screening and bounded-sample tooling.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("inventory")
     screening_parser = subparsers.add_parser("export-failure-screening")
     screening_parser.add_argument("--replace", action="store_true")
     freeze_parser = subparsers.add_parser("freeze-sample")
     freeze_parser.add_argument("--replace", action="store_true")
+    subparsers.add_parser("audit-live-drift")
     subparsers.add_parser("validate")
     args = parser.parse_args(argv)
 
@@ -960,6 +1194,10 @@ def main(argv: list[str] | None = None) -> int:
         return export_failure_screening(replace=args.replace)
     if args.command == "freeze-sample":
         return freeze_sample(replace=args.replace)
+    if args.command == "audit-live-drift":
+        audit = audit_live_screening_drift()
+        print(json.dumps(audit, sort_keys=True))
+        return 0 if audit.get("status") != "unavailable" else 1
     if args.command == "validate":
         violations = validate_frozen_sample()
         if violations:
