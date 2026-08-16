@@ -29,3 +29,10 @@ eval_results/runs/
 # never auto-tracked, separate from eval_data/report_refinement/'s
 # tracked synthetic fixtures. See docs/evaluation.md's "R6D.4b" section.
 eval_results/captures/
+# K5B.1: local paper-keyword-evaluation working directory
+# (scripts/k5_paper_inventory.py's own inventory/sample-freeze output,
+# and the future annotation workbook) — a local working area only, never
+# auto-tracked. The frozen, adjudicated benchmark this eventually
+# produces is exported separately under a tracked eval_data/paper_keywords/
+# directory once it exists (see the K5A design report).
+eval_working/
