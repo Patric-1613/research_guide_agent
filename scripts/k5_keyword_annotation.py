@@ -636,6 +636,7 @@ def _validation_specs(candidate_row_count: int) -> set[tuple[str, str]]:
 
 def validate_annotation_workbook(
     require_pilots_complete: bool = False,
+    require_all_complete: bool = False,
     workbook_path: Path = WORKBOOK_PATH,
     mapping_path: Path = MAPPING_PATH,
     manifest_path: Path = MANIFEST_PATH,
@@ -768,8 +769,12 @@ def validate_annotation_workbook(
         nonblank = [value for value in concepts_entered if value]
         if len(nonblank) != len({value.casefold() for value in nonblank}):
             violations.append(f"{code}: concept entries must be distinct")
-        if require_pilots_complete and stages_by_code.get(code) == "pilot" and not 3 <= len(nonblank) <= 5:
-            violations.append(f"{code}: pilot requires 3–5 completed concepts")
+        completion_required = require_all_complete or (
+            require_pilots_complete and stages_by_code.get(code) == "pilot"
+        )
+        if completion_required and not 3 <= len(nonblank) <= 5:
+            label = "paper" if require_all_complete else "pilot"
+            violations.append(f"{code}: {label} requires 3–5 completed concepts")
 
     completed_candidate_codes: set[str] = set()
     for row_number in range(2, review.max_row + 1):
@@ -790,8 +795,12 @@ def validate_annotation_workbook(
         if not decision:
             if reason or matched or confidence:
                 violations.append(f"{candidate_id}: annotation fields entered without a decision")
-            if require_pilots_complete and stages_by_code.get(code) == "pilot":
-                violations.append(f"{candidate_id}: pilot candidate decision is incomplete")
+            completion_required = require_all_complete or (
+                require_pilots_complete and stages_by_code.get(code) == "pilot"
+            )
+            if completion_required:
+                label = "candidate" if require_all_complete else "pilot candidate"
+                violations.append(f"{candidate_id}: {label} decision is incomplete")
             continue
         completed_candidate_codes.add(code)
         if not confidence:
@@ -884,6 +893,7 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument("--replace", action="store_true")
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--require-pilots-complete", action="store_true")
+    validate_parser.add_argument("--require-all-complete", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "generate":
@@ -891,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate":
         violations = validate_annotation_workbook(
             require_pilots_complete=args.require_pilots_complete,
+            require_all_complete=args.require_all_complete,
             workbook_path=WORKBOOK_PATH,
             mapping_path=MAPPING_PATH,
             manifest_path=MANIFEST_PATH,

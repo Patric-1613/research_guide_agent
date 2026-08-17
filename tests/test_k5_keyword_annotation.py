@@ -97,9 +97,10 @@ def _write_frozen_inputs(paths: dict[str, Path], count: int = 10) -> None:
     paths["rules"].write_text(json.dumps(rules, sort_keys=True, indent=2) + "\n")
 
 
-def _validate(paths: dict[str, Path], require_pilots_complete: bool = False) -> list[str]:
+def _validate(paths: dict[str, Path], require_pilots_complete: bool = False, require_all_complete: bool = False) -> list[str]:
     return annotation.validate_annotation_workbook(
         require_pilots_complete=require_pilots_complete,
+        require_all_complete=require_all_complete,
         workbook_path=paths["workbook"],
         mapping_path=paths["mapping"],
         manifest_path=paths["manifest"],
@@ -255,6 +256,12 @@ def test_pilot_completion_can_be_required_while_headline_remains_blank(artifact_
         for row in range(2, review.max_row + 1)
         if review.cell(row=row, column=2).value not in pilot_codes
     )
+
+
+def test_full_completion_mode_rejects_blank_headline_annotations(artifact_paths, monkeypatch):
+    _generate(artifact_paths, monkeypatch)
+    violations = _validate(artifact_paths, require_all_complete=True)
+    assert any("paper requires 3–5" in item or "candidate decision is incomplete" in item for item in violations)
 
 
 def test_protected_workbook_and_mapping_tampering_are_rejected(artifact_paths, monkeypatch):
