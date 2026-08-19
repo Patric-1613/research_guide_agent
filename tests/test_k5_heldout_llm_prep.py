@@ -237,9 +237,14 @@ def test_run_live_requires_explicit_approval():
 
 
 def test_run_live_makes_exactly_six_calls_no_retries_and_never_touches_real_paths(tmp_path, monkeypatch):
+    """Path isolation: a run against a tmp_path raw_path must never read or
+    write the module's real, canonical RAW_PATH -- regardless of whether
+    that real path currently holds the genuine, already-completed K5D.1
+    live-run result (it does, after human approval) or nothing at all."""
     raw_path = tmp_path / "heldout_llm_raw_results.json"
     checkpoint_before = fingerprint_usage_db(QA_CHECKPOINT_DB_PATH)
     telemetry_before = fingerprint_usage_db(USAGE_DB_PATH)
+    real_raw_before = prep.file_hash(prep.RAW_PATH) if prep.RAW_PATH.exists() else None
     monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network call")))
 
     client = _FakeClient(decision_by_id={})
@@ -253,7 +258,8 @@ def test_run_live_makes_exactly_six_calls_no_retries_and_never_touches_real_path
     assert raw["no_retries"] is True
     assert prep.self_hash_valid(raw, "raw_results_sha256")
 
-    assert not prep.RAW_PATH.exists()  # the real, canonical raw-results path was never touched
+    real_raw_after = prep.file_hash(prep.RAW_PATH) if prep.RAW_PATH.exists() else None
+    assert real_raw_after == real_raw_before  # the real, canonical raw-results path was not touched
     assert fingerprint_usage_db(QA_CHECKPOINT_DB_PATH) == checkpoint_before
     assert fingerprint_usage_db(USAGE_DB_PATH) == telemetry_before
 
