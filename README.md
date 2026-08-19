@@ -13,8 +13,11 @@ Beyond the one-shot flow above, the app also has an interactive
 **curation workflow**: review candidate papers a batch at a time and pick
 which ones matter (`curation_loop.py`), each shown with up to 6
 deterministic, offline-extracted keywords (`research_agent/keywords.py`,
-no LLM/network call) that the current batch can also be filtered by, get
-a synthesized literature-review
+no LLM/network call by default) that the current batch can also be
+filtered by — an optional, off-by-default LLM narrowing pass
+(`research_agent/keyword_filter.py`, `KEYWORD_FILTER_POLICY_C_ENABLED`)
+exists but is not active unless explicitly opted into; see
+`docs/architecture.md`'s K5 section — get a synthesized literature-review
 report with regenerate-on-demand (`report.py`), and chat about the curated
 set with the option to pull in live web context or refresh the report
 mid-conversation (`curation_chat.py`). Chat messages support per-exchange

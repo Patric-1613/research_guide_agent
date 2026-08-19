@@ -62,6 +62,45 @@ writes an incremental `eval_results/runs/raw_<timestamp>.jsonl` turn-by-
 turn during generation (so already-paid-for generation data survives
 even if scoring itself later crashes or rate-limits).
 
+### Keyword-quality evaluation (K5, `scripts/k5_*.py`) — complete, closed
+
+Evaluates whether an LLM-based narrowing pass ("Policy C": remove only
+`malformed_fragment`/`sentence_fragment`, retain `keep`/`uncertain`,
+fail open on any failure) improves on the deterministic YAKE-v2 keyword
+extractor enough to justify production use — see `docs/architecture.md`'s
+K5 section for the full narrative and `specs/backend-backlog.md`'s K5
+entry for the complete checkpoint-by-checkpoint commit record. Unlike
+the two harnesses above (one command each), K5 is a chain of small,
+single-purpose, human-gated scripts — each one validates its own frozen
+inputs before doing any new work, and every paid step requires an
+explicit `--approve-paid-calls`-style flag:
+
+```bash
+# K5B/K5C: original 8-headline-paper evaluation (YAKE-v1 vs v2, then
+# broad LLM filtering, then post-hoc narrowed-policy re-analysis)
+uv run python -m scripts.k5_paper_inventory validate
+uv run python -m scripts.k5_keyword_annotation validate
+uv run python -m scripts.k5_keyword_metrics validate-frozen
+uv run python -m scripts.k5_llm_filter_eval validate
+uv run python -m scripts.k5_llm_filter_policy_analysis validate
+
+# K5D.1: independent 6-paper held-out validation (new papers, frozen
+# disjoint from every K5B/K5C paper before any candidate was examined)
+uv run python -m scripts.k5_heldout_selection validate
+uv run python -m scripts.k5_heldout_annotation_freeze validate
+uv run python -m scripts.k5_heldout_llm_prep validate
+```
+
+Every script's own `--help` lists its full flag reference. All evidence
+(candidate hashes, per-paper annotation worksheets, raw provider
+responses, frozen metrics) is written under gitignored
+`eval_working/paper_keywords/` — never committed, since it retains
+extracted keyword phrases. K5 is closed: the production integration
+(`research_agent/keyword_filter.py`, off by default) and the one
+approved production pilot are documented in `docs/architecture.md`, not
+here — this section only covers the offline evaluation harness that
+validated the policy before any production code existed.
+
 ### Latency measurement — currently a documented gap, not a command
 
 Root `README.md`'s "Search-call parallelization" section links to

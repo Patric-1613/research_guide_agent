@@ -3227,6 +3227,154 @@ invented:
   neither `paper-keywords-filtering` nor `paper-keywords-filtering-v2`
   moved.
 
+### K5: keyword-quality evaluation and guarded Policy C production pilot — complete
+- **Goal**: settle, with real evidence rather than assumption, whether an
+  LLM-based keyword filter improves on the K4-era deterministic YAKE-v2
+  extractor enough to justify production use, and if so, exactly how
+  narrowly scoped it must be.
+- **K5A/K5B -- baseline confirmed, YAKE-v2 unchanged**: YAKE-v2 vs the
+  YAKE-v1 reference implementation, AI-assisted human-approved annotation
+  over 8 headline product-local papers. YAKE-v2 wins descriptively
+  (35.4% vs 29.2% resolved precision; 38.1% vs 32.5% macro concept
+  coverage) -- recommendation "keep production YAKE-v2 unchanged."
+  Nothing in K5 touched `research_agent/keywords.py`; it remains the
+  default, deterministic, offline extractor throughout.
+- **K5C -- broad LLM filtering, rejected**: one `gpt-4.1-mini` call per
+  paper's full candidate set (decisions keep/remove/uncertain) over the
+  same 8 headline papers. Precision improved (+24.6pp) but FAILED the
+  frozen provisional gate on two of five conditions -- accepted-keyword
+  retention 70.6% (< 90% threshold) and macro concept-coverage retention
+  86.9% (< 90% threshold). Recommendation: "do not integrate."
+- **K5C.1 -- post-hoc narrowing, Policy C identified**: a zero-cost,
+  zero-provider-call re-analysis of the SAME K5C responses under four
+  fixed candidate-removal policies (A: `malformed_fragment` only; B:
+  `sentence_fragment` only; C: both; D: both plus `redundant_variant`).
+  Policy C (and B) pass the frozen gate; Policy C's own precision
+  improvement +17.9pp. Explicitly labelled post-hoc exploratory --
+  suggestive, not independent confirmation.
+- **K5D.1 -- independent 6-paper held-out validation**: 6 NEW
+  product-local papers, selected by a deterministic, documented seed,
+  disjoint from all 10 prior K5B/K5C papers, frozen BEFORE any candidate
+  was examined. Human-approved annotation frozen BEFORE the one live
+  `gpt-4.1-mini` call per paper (6 calls total) that ran the SAME frozen
+  prompt/schema/Policy C definition validated in K5C.1. Result: 36 -> 19
+  candidates; resolved precision 30.56% -> 52.63% (+22.08pp);
+  accepted-keyword retention 90.91%; rejected-keyword removal 64.00%;
+  false-removal rate 9.09%; macro concept coverage 37.78% -> 34.44%
+  (coverage retention 91.18%); 2 `uncertain` decisions, both retained; 0
+  provider failures -- ALL 5 frozen gate conditions pass, independently
+  of K5C/K5C.1. Conclusion: "Policy C may proceed to a guarded,
+  off-by-default production pilot."
+- **K5D.2 -- production implementation, off by default**:
+  `research_agent/keyword_filter.py` (new, production-owned; copies the
+  validated prompt/schema/policy semantics verbatim; never imports
+  `scripts/`, proven by a dedicated AST-level regression test) wired into
+  `curation_loop.py`'s `_serve_batch_node` (after `serve_next_batch()`,
+  before the serialized batch is returned/appended to `turn_history`),
+  gated on new `KEYWORD_FILTER_POLICY_C_ENABLED`
+  (`research_agent/config/settings.py`, default `False`, strict boolean
+  parsing, never read at all when the feature is off). One bounded call
+  per newly displayed paper (<=10/turn) -- never one call for a whole
+  batch, never the reserve, never a deterministic "suspicious candidate"
+  pre-filter (none of those were validated). Content-hashed SQLite cache
+  (`data/cache/keyword_filter_cache.sqlite`, WAL + busy_timeout, same
+  convention as `telemetry.py`/`embeddings.py`) keyed on the EXACT
+  ordered candidate list (never sorted) plus model/prompt-version/
+  policy-version. Bounded concurrency (default 3, clamped to `[1,
+  provider_fan_out_limit]` only once the feature is confirmed on) via
+  `asyncio.Semaphore`/`asyncio.to_thread`, with `asyncio.run()` only at
+  the existing synchronous node boundary (mirrors
+  `query_expansion.py`'s own bounded-concurrency pattern) -- never turns
+  the graph or public API async. Reuses `guard_paid_action`/
+  `timed_child_call` unchanged: a cache-only batch opens zero admission/
+  lease/telemetry; an uncached batch opens exactly one
+  `curation_keyword_filter` paid action for the whole turn (new action
+  type added to `telemetry.ACTION_TYPES`), one child-call telemetry
+  record per real provider call, content-free by construction (call
+  type/provider/model/tokens/cache-hit/latency/outcome/error-type only
+  -- no phrase, title, abstract, paper ID, session ID, or prompt text has
+  a field to go into). Complete fail-open: any provider error, timeout,
+  malformed response, missing/duplicate/invented candidate ID, or
+  malformed CACHE row retains the paper's complete original YAKE-v2 list
+  untouched -- **K5D.2a** (Codex-reviewed correction) added strict
+  cache-row validation (exact candidate-ID set, every decision a string
+  in the frozen four-value set) after finding a malformed cache row could
+  otherwise crash curation or silently under-filter; also moved
+  concurrency-limit parsing out of the always-called `get_settings()`
+  into a separate function only reached once the flag is confirmed on,
+  and changed an over-limit concurrency request from a hard reject to a
+  clamp. Never mutates `session.reserve`'s live `Paper` objects or Chroma
+  metadata -- only the serialized batch dict handed to
+  `current_batch`/`turn_history` is ever rewritten, confirmed directly
+  against a real session (see K5D.3 below).
+- **K5D.2c/2d -- pre-existing test-isolation gaps found and fixed**:
+  `tests/test_curation_api.py` and `tests/test_api.py` each had a real
+  (not simulated) `TestClient(api.app)`-triggered FastAPI lifespan that
+  opened the real, gitignored Chroma database without ever inserting a
+  document -- discovered while validating K5D.2a, not introduced by it.
+  Fixed by patching `api.get_chroma_collection` in every such fixture
+  (`_client()` and `_client_with_usage_db()` in each file), with a hard
+  `chromadb.PersistentClient` tripwire proving no real client is ever
+  constructed. **Residual, explicit, tracked separately (see this file's
+  own Technical Debt section)**: the complete K5-focused test group
+  still shows Chroma-fingerprint drift when the ~12 pre-existing test
+  files that use `TestClient` run together, even though every one of
+  them passes cleanly and repeatedly in isolation -- a distinct,
+  pre-existing multi-file interaction, deliberately not chased down
+  inside K5.
+- **K5D.3 -- one bounded, explicitly approved production pilot**: one
+  disposable, zero-selection curation session; one already-ranked
+  10-paper batch (no refill/search/ranking/embeddings triggered); 10
+  approved / 10 actual `gpt-4.1-mini` calls, no retries, no model
+  substitution, concurrency 3. Wall-clock 6.90s; summed per-call provider
+  latency 19.28s; 4,359 input / 681 output / 5,040 total tokens. 60
+  candidates -> 29 retained (31 `sentence_fragment` removed, 0
+  `malformed_fragment`, 0 `uncertain`, 0 failures). Verified directly
+  against the real session: paper IDs and ranking order unchanged; only
+  the displayed batch was filtered (the reserve `Paper` objects for the
+  served papers, and the unserved tail, both still held their original,
+  unfiltered keywords); `current_batch` and the persisted `turn_history`
+  entry held identical filtered lists; selected-paper count unaffected
+  (0 before and after); telemetry and cache contained no phrase/title/
+  abstract/paper-ID/session-ID content; a cache replay of the exact same
+  10 candidate lists against a provider tripwire returned 10/10 hits with
+  zero further provider calls and zero new paid-action rows. The flag was
+  restored to off immediately afterward via a graceful backend restart,
+  confirmed via the worker process's own environment. **The pilot's
+  60 -> 29 result is operational-behavior evidence only -- the live
+  pilot's own papers were never human-labelled, so it is never read as a
+  quality-improvement measurement**; that claim rests entirely on K5D.1's
+  independent held-out result above.
+- **Final product decision**: Policy C is implemented and validated but
+  remains **off by default**; eligible for explicit opt-in use; this
+  evidence alone does not make it the default. YAKE-v2 remains the
+  default extractor and the universal fail-open/rollback behavior for
+  every failure class this feature can hit.
+- **Explicit limitations**: small (8-10-paper) product-local samples at
+  every stage; AI-assisted, human-approved labels, not independent
+  third-party annotation; no external benchmark or statistical-
+  significance claim anywhere in K5; one model (`gpt-4.1-mini`) and one
+  frozen prompt version evaluated throughout; the K5D.3 live pilot batch
+  itself is unlabelled (see above); no manual browser/UI verification was
+  performed during the pilot (no browser-automation tool was available in
+  that session; relies on existing frontend contract tests); disabling
+  the flag stops filtering FUTURE batches immediately but does not
+  retroactively rewrite keywords already persisted into a session's
+  `turn_history`/`selected_papers` from while it was on; the K5D.2c/2d
+  multi-file Chroma test interaction remains open, tracked in this file's
+  Technical Debt section.
+- **Priority**: closed; no further keyword-quality checkpoint scheduled.
+  The next roadmap item, whenever picked up, is not another keyword-
+  quality experiment.
+- **Status**: Closed (2026-08-19). Commits: `53244d7`..`070b9c0` (K5A-C.1
+  evaluation harness and evidence), `7d907f6`..`40a9ac6` (K5D.1 held-out
+  validation), `4d89ba3` (K5D.2 implementation), `d77a6de` (K5D.2a
+  correction), `0c1074f`/`695f1f1` (K5D.2c/2d test isolation), plus this
+  checkpoint's own docs/publication commit. New annotated milestone tag
+  `k5-keyword-quality-evaluation-pilot` marks this checkpoint's
+  documentation commit; `paper-keywords-filtering` and
+  `paper-keywords-filtering-v2` are both unmoved.
+
 ### M4 follow-on: token-level streaming revisit, report prose streaming, production streaming hardening (not part of M4)
 - **Goal**: real, useful next-layer streaming work M4 deliberately left
   open, tracked so it isn't lost, not because it's scheduled.
@@ -3387,6 +3535,26 @@ today, cross-referenced to where each item is already tracked in detail:
   test_curation_loop.py`'s zero-selection tests (which assert only that
   the interrupt remains present/resumable in principle, never that a
   differently-shaped retry against it is honored).
+- **Multi-file Chroma-fingerprint test interaction (found during K5D.2c/
+  2d).** `tests/test_curation_api.py` and `tests/test_api.py` each had a
+  real `TestClient(api.app)` lifespan that opened the real, gitignored
+  `data/chroma_db/` without patching `api.get_chroma_collection` -- both
+  fixed (see `docs/architecture.md`'s K5 section). Every file that uses
+  `TestClient` (those two, plus `tests/test_curation_chat.py`'s own
+  extensive `get_chroma_collection` patching) is now confirmed clean,
+  repeatedly, in isolation: zero Chroma-fingerprint drift. Running the
+  ~12-file subset of the K5-focused group that includes them TOGETHER
+  still shows drift, even though no single file in that subset drifts
+  alone -- a genuine cross-file interaction (most likely shared,
+  module-level mutable state in `research_agent.api._state`, a plain
+  dict, persisting across test files within one pytest process; not
+  confirmed further). Bisection was deliberately stopped once this shape
+  was established, per explicit instruction not to open another repair
+  chain during K5's own closure. Not fixed, not scheduled, no owner
+  assigned. The dedicated K5D.2 production test files themselves (`tests/
+  test_keyword_filter.py`, `tests/test_config_settings.py`, `tests/
+  test_curation_loop_keyword_filter.py`) are unaffected and pass cleanly
+  on their own.
 
 ## 4. Explicitly deferred platform work
 
