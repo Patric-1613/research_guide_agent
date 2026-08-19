@@ -41,6 +41,16 @@ _REAL_USAGE_DB_PATH = telemetry.USAGE_DB_PATH
 _REAL_USAGE_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_USAGE_DB_PATH)
 _REAL_KEYWORD_CACHE_PATH = kf.CACHE_DB_PATH
 _REAL_KEYWORD_CACHE_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_KEYWORD_CACHE_PATH)
+# K5D.2a (Codex MEDIUM finding): a prior version of
+# test_turn_history_current_batch_and_selected_papers_share_the_filtered_keywords
+# exhausted a too-small reserve and fell into a real refill/search/
+# embedding path, touching this real, ignored Chroma database. Fixed
+# (see that test's own docstring); this fingerprint proves it stays
+# untouched by every test in this file going forward.
+_REAL_CHROMA_DB_PATH = Path("data/chroma_db/chroma.sqlite3")
+_REAL_CHROMA_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_CHROMA_DB_PATH)
+_REAL_QA_CHECKPOINT_DB_PATH = Path("data/qa_checkpoints.sqlite")
+_REAL_QA_CHECKPOINT_DB_FINGERPRINT_BEFORE = fingerprint_usage_db(_REAL_QA_CHECKPOINT_DB_PATH)
 
 
 @pytest.fixture(autouse=True)
@@ -206,14 +216,41 @@ def test_ranking_order_and_scores_are_unaffected(enabled):
 # ---------------------------------------------------------------------------
 
 def test_turn_history_current_batch_and_selected_papers_share_the_filtered_keywords(enabled):
+    """K5D.2a fix (Codex MEDIUM finding): the original version of this
+    test served only 3 papers, so resuming (without stopping) exhausted
+    the reserve (remaining() == 0) and routed into a REAL refill turn --
+    real arXiv/Semantic Scholar HTTP calls and a real embeddings.create
+    attempt against the fake client (confirmed by reproducing the exact
+    failure before this fix: an AttributeError deep inside
+    embeddings.py, with real arxiv request logs above it). Fixed by
+    using 15 papers (5 remain in reserve after the first 10-paper batch,
+    same margin test_only_displayed_papers_are_filtered_reserve_keeps_
+    originals already uses), PLUS hard spies that fail the test
+    immediately -- rather than quietly making a real network call again
+    -- if refill/search/ranking/embedding is ever reached regardless."""
+    from research_agent import query_expansion as qe_module
+
+    def _must_not_be_called(name):
+        def _raise(*_a, **_k):
+            raise AssertionError(f"{name} must not be called: this test must stay inside the selected-state path")
+        return _raise
+
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "checkpoints.sqlite"
-        papers = [_paper(f"p{i}", keywords=["one", "two"]) for i in range(3)]
-        with sqlite_checkpointer(db_path) as cp:
+        papers = [_paper(f"p{i}", keywords=["one", "two"]) for i in range(15)]
+        with patch.object(qe_module, "build_candidate_pool", side_effect=_must_not_be_called("build_candidate_pool")), \
+             patch.object(qe_module, "rank_full_pool", side_effect=_must_not_be_called("rank_full_pool")), \
+             patch("socket.create_connection", side_effect=AssertionError("network call attempted")), \
+             sqlite_checkpointer(db_path) as cp:
             result = start_curation_turn("s1", cp, _session_to_dict(_session(papers)), config={"client": _fake_client()})
             current_batch = result["__interrupt__"][0].value["batch"]
+            assert len(current_batch) == 10
             pick_id = current_batch[0][0]["paper_id"]
             result = resume_curation_turn("s1", cp, picked_paper_ids=[pick_id], config={"client": _fake_client()})
+            # Confirms the reserve genuinely was not exhausted (no refill
+            # branch taken) -- the real proof is the patches above never
+            # firing, but this also documents the margin directly.
+            assert result["refilled"] is False
 
         session_dict = result["session"]
         turn_history_batch = session_dict["turn_history"][0]["batch"]
@@ -409,9 +446,143 @@ def test_privacy_safe_telemetry_no_phrases_titles_ids_or_prompt_text(enabled, us
 
 
 # ---------------------------------------------------------------------------
+# Additional focused gaps from the K5D.2a review
+# ---------------------------------------------------------------------------
+
+def test_provider_timeout_retains_original_keywords(enabled):
+    """A timeout is just one more Exception subclass to _call_provider_
+    for_paper's own fail-open try/except -- proven explicitly, by name,
+    since the review called it out separately from a generic provider
+    error."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        papers = [_paper("p0", keywords=["one", "two"])]
+
+        class _TimingOutCompletions:
+            def parse(self, **kwargs):
+                raise TimeoutError("simulated provider timeout")
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=_TimingOutCompletions()))
+        with sqlite_checkpointer(db_path) as cp:
+            result = start_curation_turn("s1", cp, _session_to_dict(_session(papers)), config={"client": client})
+    batch = result["__interrupt__"][0].value["batch"]
+    assert batch[0][0]["keywords"] == ["one", "two"]
+
+
+def test_token_aggregation_sums_only_the_successful_child_call(enabled, usage_db_path):
+    """One paper succeeds (real usage numbers), one paper's provider call
+    raises (usage=None, per telemetry.timed_child_call's own contract) --
+    the paid_actions row's aggregate token totals must reflect only the
+    successful call, per telemetry._sum_nullable's documented "sum the
+    non-None entries, never treat a missing one as 0" behavior."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        papers = [_paper("p0", keywords=["kw0 one", "kw0 two"]), _paper("p1", keywords=["kw1 one", "kw1 two"])]
+
+        class _MixedCompletions:
+            def __init__(self):
+                self.calls = 0
+
+            def parse(self, **kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("simulated failure on the second paper")
+                payload = json.loads(kwargs["messages"][1]["content"])
+                rows = [{"candidate_id": c["candidate_id"], "decision": "keep"} for c in payload["candidates"]]
+                parsed = kwargs["response_format"](results=rows)
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed, refusal=None))], usage=_Usage())
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=_MixedCompletions()))
+        with sqlite_checkpointer(db_path) as cp:
+            start_curation_turn("s1", cp, _session_to_dict(_session(papers)), config={"client": client})
+
+    rows = _paid_action_rows(usage_db_path)
+    assert len(rows) == 1
+    row = rows[0]
+    child_calls = json.loads(row["child_calls_json"])
+    assert len(child_calls) == 2
+    outcomes = sorted(c["outcome"] for c in child_calls)
+    assert outcomes == ["error", "success"]
+    # Exactly one successful call's usage (_Usage: 12/4/16) is reflected;
+    # the failed call's None usage never contributes a phantom 0.
+    assert row["input_tokens"] == 12
+    assert row["output_tokens"] == 4
+    assert row["total_tokens"] == 16
+
+
+def test_service_level_admission_rejection_yields_the_truthful_existing_error_not_a_fail_open_bypass(enabled, usage_db_path):
+    """Confirms the existing UsageGuardRejection contract already
+    correctly covers the NEW curation_keyword_filter guard call site,
+    without redesigning anything: a session-scoped admission rejection
+    during _serve_batch_node must propagate as UsageGuardRejection all
+    the way out of research_agent.services.curation_core_service.
+    start_curation (the same exception the API layer's existing
+    centralized handler already maps to 429/409/503) -- never silently
+    swallowed into a 200-shaped response with unfiltered keywords."""
+    import research_agent.api as api  # must import before curation_core_service -- see api.py's own create_app() -> routers -> services import chain
+    import research_agent.usage_guard as usage_guard_module
+    from research_agent.admission import AdmissionDecision
+    from research_agent.api_app.schemas import CurationStartRequest
+    from research_agent.services import curation_core_service
+    from research_agent.services.curation_helpers import _curation_config
+
+    papers = [_paper(f"p{i}", keywords=["one", "two"]) for i in range(3)]
+
+    def _reject_session_hourly(*_a, **_k):
+        return AdmissionDecision(allowed=False, reason_code="session_hourly_limit_reached", retry_after_seconds=60)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        # usage_guard.py does `from research_agent.admission import ...
+        # check_session_hourly_budget` (a by-value import, same gotcha
+        # test_curation_api.py's own _client() docstring already notes
+        # for USAGE_DB_PATH) -- must patch usage_guard's own bound name,
+        # not admission.py's, or this silently never fires.
+        with patch.object(curation_core_service.api, "build_candidate_pool", return_value=papers), \
+             patch.object(curation_core_service.api, "rank_full_pool", return_value=([(p, 1.0) for p in papers], {})), \
+             patch.object(curation_core_service.api, "canonicalize_topic", side_effect=lambda topic, client=None: topic), \
+             patch.object(usage_guard_module, "check_session_hourly_budget", side_effect=_reject_session_hourly), \
+             patch.object(curation_core_service, "_curation_config", side_effect=lambda: {**_curation_config(), "client": _fake_client()}), \
+             sqlite_checkpointer(db_path) as cp:
+            curation_core_service.api._state["client"] = _fake_client()
+            curation_core_service.api._state["collection"] = None
+            with pytest.raises(UsageGuardRejection, match="session_hourly_limit_reached"):
+                curation_core_service.start_curation(CurationStartRequest(topic="t", target_count=10), cp)
+
+    # The rejected action was never a fail-open "keep going" -- no
+    # curation_keyword_filter row was ever persisted for it.
+    assert [row for row in _paid_action_rows(usage_db_path) if row["action_type"] == "curation_keyword_filter"] == []
+
+
+# ---------------------------------------------------------------------------
 # Regression: no real network call, real DBs untouched
 # ---------------------------------------------------------------------------
 
 def test_real_usage_and_keyword_cache_dbs_untouched():
     assert fingerprint_usage_db(_REAL_USAGE_DB_PATH) == _REAL_USAGE_DB_FINGERPRINT_BEFORE
     assert fingerprint_usage_db(_REAL_KEYWORD_CACHE_PATH) == _REAL_KEYWORD_CACHE_FINGERPRINT_BEFORE
+
+
+def test_real_qa_checkpoint_db_untouched():
+    assert fingerprint_usage_db(_REAL_QA_CHECKPOINT_DB_PATH) == _REAL_QA_CHECKPOINT_DB_FINGERPRINT_BEFORE
+
+
+def test_real_chroma_db_untouched():
+    """Separate from the QA-checkpoint/usage/keyword-cache checks above:
+    on a developer machine with a live `uvicorn --reload` process already
+    serving research_agent.api:app (a real, independently-running dev
+    server -- not started by this test suite, and not something a test
+    suite should ever stop/restart), that server's own lifespan holds an
+    open real Chroma connection and can legitimately touch this file's
+    bytes (observed: identical size, different content/mtime -- consistent
+    with routine WAL-checkpoint housekeeping, not new data) independently
+    of anything any test here does. This assertion is still meaningful --
+    in the common case (no such server racing this file) it's a real,
+    exact regression guard -- but a failure here alone, with the other
+    three real-DB fingerprint tests in this file passing, points at that
+    external process, not at this test suite's own hermeticity. Every
+    other proof in this file (the hard _must_not_be_called network/
+    refill/rank spies, the disabled/empty-batch no-op tests, the
+    cache-only-batch tests) is what actually establishes this test
+    suite never reaches Chroma on its own."""
+    assert fingerprint_usage_db(_REAL_CHROMA_DB_PATH) == _REAL_CHROMA_DB_FINGERPRINT_BEFORE

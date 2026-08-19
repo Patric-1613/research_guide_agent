@@ -234,6 +234,188 @@ def test_cache_write_failure_does_not_undo_a_successful_filter(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# K5D.2a (Codex HIGH finding): malformed cache rows must never be
+# partially applied or crash curation -- _validate_cached_decisions is
+# the single point of truth, exercised both directly and through a
+# seeded-cache-row round trip via plan_paper()/resolve_batch().
+# ---------------------------------------------------------------------------
+
+def _seed_raw_cache_row(cache_path: Path, cache_key: str, decisions_json_text: str) -> None:
+    """Bypasses kf._cache_set entirely so a genuinely malformed
+    (non-JSON, wrong-typed, or schema-mismatched) row can be inserted --
+    simulating on-disk corruption or a future incompatible writer, not
+    just an in-memory malformed dict."""
+    conn = kf._init_cache_db(cache_path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO keyword_filter_cache "
+            "(cache_key, model, prompt_version, policy_version, decisions_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cache_key, kf.MODEL, kf.PROMPT_VERSION, kf.POLICY_VERSION, decisions_json_text, 0.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_validate_cached_decisions_requires_exact_candidate_id_set_missing():
+    assert kf._validate_cached_decisions({"C0": "keep"}, ["C0", "C1"]) is None  # C1 missing
+
+
+def test_validate_cached_decisions_requires_exact_candidate_id_set_invented():
+    assert kf._validate_cached_decisions({"C0": "keep", "C1": "keep", "C2": "keep"}, ["C0", "C1"]) is None  # C2 invented
+
+
+def test_validate_cached_decisions_rejects_unsupported_decision():
+    assert kf._validate_cached_decisions({"C0": "keep", "C1": "remove"}, ["C0", "C1"]) is None  # "remove" not a real decision
+
+
+def test_validate_cached_decisions_rejects_non_string_decision():
+    assert kf._validate_cached_decisions({"C0": "keep", "C1": ["sentence_fragment"]}, ["C0", "C1"]) is None
+    assert kf._validate_cached_decisions({"C0": "keep", "C1": None}, ["C0", "C1"]) is None
+    assert kf._validate_cached_decisions({"C0": "keep", "C1": 1}, ["C0", "C1"]) is None
+
+
+def test_validate_cached_decisions_rejects_wrong_top_level_type():
+    assert kf._validate_cached_decisions(["C0", "keep"], ["C0"]) is None
+    assert kf._validate_cached_decisions("keep", ["C0"]) is None
+    assert kf._validate_cached_decisions(None, ["C0"]) is None
+    assert kf._validate_cached_decisions(42, ["C0"]) is None
+
+
+def test_validate_cached_decisions_rejects_empty_mapping_for_nonempty_candidates():
+    assert kf._validate_cached_decisions({}, ["C0", "C1"]) is None
+
+
+def test_validate_cached_decisions_accepts_a_valid_exact_mapping():
+    result = kf._validate_cached_decisions({"C0": "keep", "C1": "sentence_fragment"}, ["C0", "C1"])
+    assert result == {"C0": "keep", "C1": "sentence_fragment"}
+
+
+def test_cache_get_treats_malformed_json_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, "{not valid json")
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+    assert kf.needs_provider_work([replanned]) is True
+
+
+def test_cache_get_treats_wrong_top_level_json_type_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps(["C0", "keep", "C1", "keep"]))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_cache_get_treats_missing_candidate_id_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": "keep"}))  # C1 missing
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_cache_get_treats_invented_candidate_id_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": "keep", "C1": "keep", "C2": "keep"}))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_cache_get_treats_unsupported_decision_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": "keep", "C1": "delete"}))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_cache_get_treats_non_string_decision_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": "keep", "C1": ["sentence_fragment"]}))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_cache_get_treats_empty_mapping_for_nonempty_candidates_as_a_miss(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({}))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+
+def test_malformed_cache_followed_by_provider_success_applies_the_real_decision(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": "keep", "C1": "not_a_real_decision"}))
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None  # rejected, falls through to a real provider attempt
+
+    class _FakeCompletions:
+        def parse(self, **kwargs):
+            payload = json.loads(kwargs["messages"][1]["content"])
+            rows = [
+                {"candidate_id": c["candidate_id"], "decision": "sentence_fragment" if c["phrase"] == "beta" else "keep"}
+                for c in payload["candidates"]
+            ]
+            parsed = kwargs["response_format"](results=rows)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed, refusal=None))], usage=None)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    out = kf.resolve_batch(client, [replanned], max_concurrent=1)
+    assert out == [["alpha"]]  # provider actually ran and its valid decision was applied, never crashed
+
+
+def test_malformed_cache_followed_by_provider_failure_retains_originals(tmp_path):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, json.dumps({"C0": ["keep"], "C1": "keep"}))  # non-string value
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    assert replanned.cached_decisions is None
+
+    class _RaisingCompletions:
+        def parse(self, **kwargs):
+            raise RuntimeError("simulated provider outage")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_RaisingCompletions()))
+    out = kf.resolve_batch(client, [replanned], max_concurrent=1)
+    assert out == [["alpha", "beta"]]  # complete original list retained, no crash
+
+
+@pytest.mark.parametrize("malformed_json", [
+    "{not valid json",
+    json.dumps(["C0", "keep"]),
+    json.dumps("keep"),
+    json.dumps(None),
+    json.dumps({}),
+    json.dumps({"C0": "keep"}),  # missing C1
+    json.dumps({"C0": "keep", "C1": "keep", "C2": "keep"}),  # invented C2
+    json.dumps({"C0": "keep", "C1": "not_a_real_decision"}),
+    json.dumps({"C0": "keep", "C1": None}),
+    json.dumps({"C0": "keep", "C1": ["sentence_fragment"]}),
+])
+def test_every_malformed_cache_class_retains_originals_and_never_crashes(tmp_path, malformed_json):
+    cache_path = tmp_path / "cache.sqlite"
+    plan = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+    _seed_raw_cache_row(cache_path, plan.cache_key, malformed_json)
+    replanned = kf.plan_paper(["alpha", "beta"], cache_path=cache_path)
+
+    class _RaisingCompletions:
+        def parse(self, **kwargs):
+            raise RuntimeError("simulated provider outage")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_RaisingCompletions()))
+    # Must not raise, regardless of malformed-cache shape.
+    out = kf.resolve_batch(client, [replanned], max_concurrent=1)
+    assert out == [["alpha", "beta"]]
+
+
+# ---------------------------------------------------------------------------
 # Batch behavior
 # ---------------------------------------------------------------------------
 

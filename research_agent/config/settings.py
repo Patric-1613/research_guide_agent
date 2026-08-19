@@ -41,8 +41,6 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-from research_agent.config.limits import get_usage_policy
-
 load_dotenv()
 
 
@@ -67,19 +65,22 @@ class Settings:
     # research_agent/keyword_filter.py's own module docstring and
     # tests/test_keyword_filter.py's rollback test for the same point
     # proven in code rather than only asserted here.
+    #
+    # K5D.2a fix (Codex MEDIUM finding): this is the ONLY keyword_filter
+    # field left on Settings -- a cheap, always-safe os.getenv() + strict
+    # bool parse. KEYWORD_FILTER_MAX_CONCURRENT_CALLS deliberately does
+    # NOT live here (see get_keyword_filter_max_concurrent_calls below):
+    # computing it required get_usage_policy().provider_fan_out_limit,
+    # which meant EVERY call to get_settings() -- including every
+    # request on the old, disabled curation path, which has nothing to
+    # do with keyword filtering -- silently depended on UsagePolicy
+    # parsing successfully, and a malformed/out-of-range
+    # KEYWORD_FILTER_MAX_CONCURRENT_CALLS could break curation even
+    # while this flag was False. get_settings() now stays a lightweight
+    # "is the feature even on" check; the full filter-only configuration
+    # is loaded lazily, only by a caller that already confirmed this
+    # field is True.
     keyword_filter_policy_c_enabled: bool
-    # Bounded concurrency for keyword_filter.py's per-paper provider
-    # calls within one served batch. Clamped at read time (not merely
-    # documented) to [1, provider_fan_out_limit] -- provider_fan_out_limit
-    # already exists in UsagePolicy as this project's one general
-    # cross-feature fan-out ceiling, so this setting can never silently
-    # authorize more concurrency than that policy already allows,
-    # without this module needing to own or duplicate that ceiling
-    # itself. A further per-batch clamp (never more workers than
-    # uncached papers in that specific turn, at most 10) happens in
-    # research_agent/keyword_filter.py, since that number isn't known
-    # until a real batch exists.
-    keyword_filter_max_concurrent_calls: int
 
 
 def _strict_bool(name: str, default: bool) -> bool:
@@ -100,27 +101,59 @@ def _strict_bool(name: str, default: bool) -> bool:
     raise ValueError(f"{name}={raw!r} is not a valid boolean (use true/false or 1/0)")
 
 
-def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    """Same fail-loud posture as `_positive_int` in config/limits.py: a
-    set, invalid, or out-of-[minimum, maximum] value raises rather than
-    being silently clamped -- clamping would let a real misconfiguration
-    (e.g. asking for more concurrency than provider_fan_out_limit
-    permits) pass silently instead of surfacing at startup."""
+def _positive_int(name: str, default: int) -> int:
+    """Fail-loud like config/limits.py's own `_positive_int`: unset/empty
+    falls back to `default`; a SET but non-integer or non-positive value
+    always raises. Deliberately has NO upper bound of its own -- clamping
+    against provider_fan_out_limit is
+    get_keyword_filter_max_concurrent_calls's job below, kept separate so
+    parsing this env var never needs UsagePolicy."""
     raw = os.getenv(name)
     if raw is None or raw == "":
-        value = default
-    else:
-        try:
-            value = int(raw)
-        except ValueError:
-            raise ValueError(f"{name}={raw!r} is not a valid integer") from None
-    if value < minimum or value > maximum:
-        raise ValueError(f"{name}={value} must be between {minimum} and {maximum}")
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a valid integer") from None
+    if value <= 0:
+        raise ValueError(f"{name}={value} must be a positive integer")
     return value
 
 
+def get_keyword_filter_max_concurrent_calls(fan_out_limit: int) -> int:
+    """K5D.2a fix (Codex MEDIUM finding): the effective, ready-to-use
+    concurrency bound for keyword_filter.py's per-paper provider calls --
+    deliberately NOT part of Settings/get_settings() (see that
+    dataclass's own field comment for why). Callers (research_agent.
+    curation_loop's _serve_batch_node) must only call this after already
+    confirming Settings.keyword_filter_policy_c_enabled is True, and
+    must supply `fan_out_limit` themselves (typically
+    get_usage_policy().provider_fan_out_limit) -- fetching UsagePolicy
+    is the caller's decision to make on the already-enabled path, never
+    something this module reaches for on its own.
+
+    KEYWORD_FILTER_MAX_CONCURRENT_CALLS: malformed or <= 0 always raises
+    clearly -- a real misconfiguration must surface, not silently
+    default. A valid positive value (explicit, or the provisional
+    default of 3, same "conservative given this project's own rate-
+    limiting history" judgment call as query_expansion.py's
+    _MAX_CONCURRENT_TITLE_PAIRS) that EXCEEDS `fan_out_limit` is CLAMPED
+    down to it, never rejected -- fan_out_limit is this project's one
+    general cross-feature concurrency ceiling, not a per-feature
+    configuration error to reject a perfectly valid request over. The
+    result is always >= 1.
+    """
+    requested = _positive_int("KEYWORD_FILTER_MAX_CONCURRENT_CALLS", 3)
+    return max(1, min(requested, fan_out_limit))
+
+
 def get_settings() -> Settings:
-    fan_out_limit = get_usage_policy().provider_fan_out_limit
+    """Deliberately lightweight and UsagePolicy-free -- called on every
+    request regardless of whether the keyword-filter feature is on, so
+    it must never be able to fail (or do meaningfully more work) because
+    of a keyword-filter-only misconfiguration while the feature is off.
+    See get_keyword_filter_max_concurrent_calls above for the
+    concurrency setting this deliberately excludes."""
     return Settings(
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
@@ -128,11 +161,4 @@ def get_settings() -> Settings:
         frontend_origin=os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
         openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
         keyword_filter_policy_c_enabled=_strict_bool("KEYWORD_FILTER_POLICY_C_ENABLED", False),
-        # Provisional default of 3, same "conservative given this
-        # project's own rate-limiting history" judgment call as
-        # query_expansion.py's _MAX_CONCURRENT_TITLE_PAIRS, well under
-        # provider_fan_out_limit's own default of 20.
-        keyword_filter_max_concurrent_calls=_bounded_int(
-            "KEYWORD_FILTER_MAX_CONCURRENT_CALLS", 3, 1, fan_out_limit,
-        ),
     )

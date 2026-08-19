@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.config import get_settings
+from research_agent.config import get_keyword_filter_max_concurrent_calls, get_settings
 from research_agent.config.settings import Settings
 
 
@@ -28,7 +28,6 @@ def test_defaults_with_no_env_vars_set():
         frontend_origin="http://localhost:5173",
         openalex_mailto=None,
         keyword_filter_policy_c_enabled=False,
-        keyword_filter_max_concurrent_calls=3,
     )
 
 
@@ -102,50 +101,87 @@ def test_keyword_filter_enabled_invalid_value_fails_clearly():
             assert "enabled-ish" in str(exc)
 
 
+# --- K5D.2a: get_keyword_filter_max_concurrent_calls is a SEPARATE,
+# lazily-called function -- get_settings() itself must never touch
+# KEYWORD_FILTER_MAX_CONCURRENT_CALLS or provider_fan_out_limit at all
+# (see test_get_settings_never_reads_keyword_filter_concurrency_env_var
+# and test_disabled_path_equivalence.py's own proof of the same point at
+# the curation_loop integration level).
+
+def test_get_settings_has_no_concurrency_field_at_all():
+    with patch.dict(os.environ, {}, clear=True):
+        assert not hasattr(get_settings(), "keyword_filter_max_concurrent_calls")
+
+
+def test_get_settings_never_reads_keyword_filter_concurrency_env_var(monkeypatch):
+    """A malformed KEYWORD_FILTER_MAX_CONCURRENT_CALLS must never even be
+    LOOKED AT by get_settings() -- proven by making os.getenv raise for
+    that one name specifically and confirming get_settings() still
+    succeeds."""
+    real_getenv = os.environ.get
+
+    def _boom_on_concurrency_var(name, default=None):
+        if name == "KEYWORD_FILTER_MAX_CONCURRENT_CALLS":
+            raise AssertionError("get_settings() must never read this env var")
+        return real_getenv(name, default)
+
+    monkeypatch.setattr(os, "getenv", _boom_on_concurrency_var)
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "not-an-int"}, clear=True):
+        settings = get_settings()
+    assert settings.keyword_filter_policy_c_enabled is False
+
+
 def test_keyword_filter_max_concurrent_calls_default_is_three():
     with patch.dict(os.environ, {}, clear=True):
-        assert get_settings().keyword_filter_max_concurrent_calls == 3
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=20) == 3
 
 
 def test_keyword_filter_max_concurrent_calls_override_within_bounds():
     with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "5"}, clear=True):
-        assert get_settings().keyword_filter_max_concurrent_calls == 5
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=20) == 5
 
 
-def test_keyword_filter_max_concurrent_calls_rejects_below_minimum():
-    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "0"}, clear=True):
-        try:
-            get_settings()
-            assert False, "expected ValueError"
-        except ValueError as exc:
-            assert "between 1" in str(exc)
-
-
-def test_keyword_filter_max_concurrent_calls_rejects_above_provider_fan_out_limit():
-    with patch.dict(os.environ, {
-        "KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "21", "USAGE_PROVIDER_FAN_OUT_LIMIT": "20",
-    }, clear=True):
-        try:
-            get_settings()
-            assert False, "expected ValueError"
-        except ValueError as exc:
-            assert "between 1 and 20" in str(exc)
-
-
-def test_keyword_filter_max_concurrent_calls_clamp_tracks_provider_fan_out_limit():
-    with patch.dict(os.environ, {
-        "KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "8", "USAGE_PROVIDER_FAN_OUT_LIMIT": "8",
-    }, clear=True):
-        assert get_settings().keyword_filter_max_concurrent_calls == 8
+def test_keyword_filter_max_concurrent_calls_rejects_zero_or_negative():
+    for bad in ("0", "-1"):
+        with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": bad}, clear=True):
+            try:
+                get_keyword_filter_max_concurrent_calls(fan_out_limit=20)
+                assert False, "expected ValueError"
+            except ValueError as exc:
+                assert "positive integer" in str(exc)
 
 
 def test_keyword_filter_max_concurrent_calls_non_integer_fails_clearly():
     with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "three"}, clear=True):
         try:
-            get_settings()
+            get_keyword_filter_max_concurrent_calls(fan_out_limit=20)
             assert False, "expected ValueError"
         except ValueError as exc:
             assert "not a valid integer" in str(exc)
+
+
+def test_default_concurrency_is_clamped_not_rejected_when_fan_out_limit_is_two():
+    """Codex MEDIUM finding, reproduced directly: a low
+    provider_fan_out_limit (2) must CLAMP the default requested
+    concurrency (3) down to 2, never raise."""
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=2) == 2
+
+
+def test_explicit_valid_concurrency_above_fan_out_limit_is_clamped_not_rejected():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "21"}, clear=True):
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=20) == 20
+
+
+def test_concurrency_at_or_below_fan_out_limit_is_unchanged():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "8"}, clear=True):
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=8) == 8
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=100) == 8
+
+
+def test_effective_concurrency_is_always_at_least_one():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_keyword_filter_max_concurrent_calls(fan_out_limit=1) == 1
 
 
 if __name__ == "__main__":

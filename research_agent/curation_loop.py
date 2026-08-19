@@ -79,7 +79,7 @@ from research_agent.curation_session import (
     _session_to_dict,
     curation_thread_id,
 )
-from research_agent.config import get_settings, get_usage_policy
+from research_agent.config import get_keyword_filter_max_concurrent_calls, get_settings, get_usage_policy
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
 from research_agent.schema import Paper
 from research_agent.session_limits import check_finish_requires_selection, check_selected_paper_capacity
@@ -183,12 +183,22 @@ def _serve_batch_node(state: CurationLoopState, config) -> dict:
     # research_agent/keyword_filter.py's own module docstring for the
     # full fail-open contract and the stated (not backfilled) rollback
     # limitation.
+    # K5D.2a fix (Codex MEDIUM finding): get_settings() itself is cheap
+    # and UsagePolicy-free (see its own docstring) -- safe to call
+    # unconditionally. Everything past this `if`, including
+    # get_usage_policy()/get_keyword_filter_max_concurrent_calls, only
+    # ever runs once the flag is confirmed on AND there's a non-empty
+    # batch, so the old, disabled/empty-batch path never reads or
+    # validates provider_fan_out_limit or
+    # KEYWORD_FILTER_MAX_CONCURRENT_CALLS, and never initializes the
+    # cache, a client, admission, a lease, telemetry, or asyncio.
     settings = get_settings()
     if settings.keyword_filter_policy_c_enabled and serialized_batch:
         configurable = config["configurable"]
         plans = keyword_filter.plan_batch([paper_dict["keywords"] for paper_dict, _score in serialized_batch])
         if keyword_filter.needs_provider_work(plans):
             session_id = configurable["thread_id"][len(THREAD_ID_PREFIX):]
+            max_concurrent = get_keyword_filter_max_concurrent_calls(get_usage_policy().provider_fan_out_limit)
             # Usage Protection convention (mirrors _refill_node above):
             # admission + lease are checked here regardless of whether a
             # paid_action is already open higher up the call stack (e.g.
@@ -199,17 +209,16 @@ def _serve_batch_node(state: CurationLoopState, config) -> dict:
             with guard_paid_action(
                 "curation_keyword_filter", subject=("session", session_id), use_lease=True, discard_if_empty=True,
             ):
-                filtered_lists = keyword_filter.resolve_batch(
-                    configurable["client"], plans, settings.keyword_filter_max_concurrent_calls,
-                )
+                filtered_lists = keyword_filter.resolve_batch(configurable["client"], plans, max_concurrent)
         else:
             # Every displayed paper was a cache hit (or had nothing to
             # filter) -- resolved entirely offline, so no admission
-            # check, no lease, and no paid_action/child-call telemetry
-            # row is opened at all.
-            filtered_lists = keyword_filter.resolve_batch(
-                configurable["client"], plans, settings.keyword_filter_max_concurrent_calls,
-            )
+            # check, no lease, no paid_action/child-call telemetry row,
+            # and (since resolve_batch never spins up asyncio when there
+            # is no uncached work) no need to read provider_fan_out_limit
+            # or KEYWORD_FILTER_MAX_CONCURRENT_CALLS at all here either;
+            # the concurrency argument is provably unused on this branch.
+            filtered_lists = keyword_filter.resolve_batch(configurable["client"], plans, 1)
         for (paper_dict, _score), filtered_keywords in zip(serialized_batch, filtered_lists):
             paper_dict["keywords"] = filtered_keywords
 

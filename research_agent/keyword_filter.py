@@ -139,10 +139,46 @@ def cache_key_for(ordered_phrases: list[str]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _cache_get(cache_key: str, path: Path | None = None) -> dict[str, str] | None:
+def _validate_cached_decisions(raw: Any, expected_candidate_ids: list[str]) -> dict[str, str] | None:
+    """K5D.2a fix (Codex HIGH finding): the single point of truth for
+    whether a cached row is trustworthy enough to ever reach
+    apply_policy_c. Returns the validated {candidate_id: decision} dict
+    only when ALL of the following hold; otherwise returns None (a cache
+    MISS, never a partial application, never a raise):
+
+    - `raw` is a dict (not a list, string, number, null, ...).
+    - its key set is EXACTLY `expected_candidate_ids` -- no missing ID
+      (which would silently under-remove) and no invented/extra ID
+      (which would silently accept a stale or corrupted mapping).
+    - every value is a `str` that is one of the four frozen DECISIONS --
+      never applied as a truthy/falsy shortcut, and never a type
+      (list/dict/int/None) that would raise inside apply_policy_c's own
+      `in REMOVE_DECISIONS` frozenset membership check (unhashable
+      values raise TypeError there, which is exactly the "crashes
+      curation" failure mode this closes).
+
+    Never logs `raw` or any candidate phrase -- only ever returns a
+    dict or None to its caller.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if set(raw.keys()) != set(expected_candidate_ids):
+        return None
+    validated: dict[str, str] = {}
+    for candidate_id, decision in raw.items():
+        if not isinstance(decision, str) or decision not in DECISIONS:
+            return None
+        validated[candidate_id] = decision
+    return validated
+
+
+def _cache_get(cache_key: str, expected_candidate_ids: list[str], path: Path | None = None) -> dict[str, str] | None:
     """Fail-open: ANY error here (locked file, corrupt row, missing
-    table, bad JSON) is a cache MISS, never raised -- a cache problem
-    must never prevent filtering from attempting the provider call."""
+    table, malformed JSON, or a row that fails _validate_cached_decisions)
+    is a cache MISS, never raised, and never partially applied -- a cache
+    problem must never prevent filtering from attempting the provider
+    call, and a corrupted/incomplete row is never trusted just because
+    it parsed as JSON."""
     try:
         conn = _init_cache_db(path)
         try:
@@ -155,10 +191,10 @@ def _cache_get(cache_key: str, path: Path | None = None) -> dict[str, str] | Non
             conn.close()
         if row is None:
             return None
-        decisions = json.loads(row[0])
-        return decisions if isinstance(decisions, dict) else None
+        raw = json.loads(row[0])
     except Exception:  # noqa: BLE001 -- deliberate: a cache read must never block filtering.
         return None
+    return _validate_cached_decisions(raw, expected_candidate_ids)
 
 
 def _cache_set(cache_key: str, decisions: dict[str, str], path: Path | None = None) -> None:
@@ -273,7 +309,7 @@ def plan_paper(keywords: list[str], cache_path: Path | None = None) -> PaperFilt
         return PaperFilterPlan(original_keywords=list(keywords), cache_path=cache_path)
     candidate_ids = _candidate_ids(len(trimmed))
     cache_key = cache_key_for(trimmed)
-    cached = _cache_get(cache_key, cache_path)
+    cached = _cache_get(cache_key, candidate_ids, cache_path)
     return PaperFilterPlan(
         original_keywords=list(keywords), candidate_ids=candidate_ids,
         cache_key=cache_key, cached_decisions=cached, cache_path=cache_path,
