@@ -91,11 +91,35 @@ def _make_test_checkpointer_override(cp_db_path: Path):
 
 @contextmanager
 def _client():
-    """Same isolation rationale as test_api.py's own _client(): a fresh
-    temp SQLite file per test for storage.py's search history, PLUS
-    (new here) a fresh temp SQLite file per test for the curation
-    checkpointer — genuinely real persistence, isolated per test, not
-    shared with the real dev database or other tests."""
+    """Isolated on every boundary this fixture's own real
+    TestClient(api.app) lifespan touches -- storage.py's search history
+    and the curation checkpointer (fresh temp SQLite files per test, see
+    _make_test_db_override/_make_test_checkpointer_override below),
+    telemetry/admission/leases (redirected to a fresh temp usage DB,
+    Usage Protection M1.1/M2.2A -- see the inline comment on that patch
+    for why all three, not just telemetry.USAGE_DB_PATH, must be
+    patched), and -- K5D.2c fix -- Chroma.
+
+    K5D.2c: lifespan() (research_agent/api_app/app.py) unconditionally
+    calls `api._state["collection"] = api.get_chroma_collection()` on
+    every real TestClient(api.app) startup in this file. Before this
+    fix, that call was NOT intercepted, so every one of this file's 133
+    tests opened a REAL chromadb.PersistentClient against the real,
+    gitignored data/chroma_db/ -- confirmed as the exact, sole cause of
+    real Chroma database drift observed across K5D.2a/b/c's own
+    fingerprint validation (this file's tests never insert/query
+    documents -- build_candidate_pool/rank_full_pool are mocked per-test
+    below -- so the drift was routine internal WAL/connection
+    housekeeping from the OPEN itself, not new embeddings; still a real,
+    unwanted touch of a shared, non-test resource). Patching
+    api.get_chroma_collection with a MagicMock (this file already mocks
+    candidate building and ranking, and no test here exercises real
+    Chroma read/write behavior) closes that gap the same way
+    api.OpenAI/api.search_web are already mocked -- one more real
+    provider/persistence boundary this file was never meant to touch.
+    See test_client_fixture_never_opens_the_real_chroma_database below
+    for the regression proof, not just this comment's own claim.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
@@ -118,10 +142,18 @@ def _client():
              patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()), \
+             patch.object(api, "get_chroma_collection", return_value=MagicMock(name="fake_chroma_collection")), \
              patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
             api.app.dependency_overrides[api.get_curation_checkpointer] = _make_test_checkpointer_override(cp_db_path)
             try:
+                # get_chroma_collection is patched for the ENTIRE lifespan
+                # of this `with TestClient(...)` block -- lifespan()'s own
+                # startup call happens on __enter__ below, and any future
+                # shutdown-path Chroma access (none exists today, but the
+                # patch's scope covers it regardless) would be intercepted
+                # too, since the patch isn't exited until this whole `with`
+                # chain (opened above, before TestClient) exits.
                 with TestClient(api.app) as client:
                     yield client
             finally:
@@ -130,6 +162,68 @@ def _client():
 
 def _ranked(papers: list[Paper]) -> list[tuple[Paper, float]]:
     return [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)]
+
+
+# --- K5D.2c: Chroma isolation regression proof (not just the fixture's own claim) ---
+
+def test_client_fixture_never_opens_the_real_chroma_database():
+    """Proves _client()'s K5D.2c fix in three independent ways:
+
+    1. api.get_chroma_collection really is invoked (and therefore really
+       intercepted, not just present-but-unreachable) during a real
+       TestClient(api.app) lifespan startup -- api._state["collection"]
+       ends up holding the patched MagicMock, not a real Collection.
+    2. chromadb.PersistentClient -- the actual constructor
+       get_chroma_collection's real body would call -- is never invoked
+       by anything this fixture triggers, patched here as a hard
+       tripwire independent of the fixture's own patch.
+    3. The real, gitignored data/chroma_db/chroma.sqlite3 (+ -wal/-shm
+       sidecars) are byte-identical before and after a full
+       TestClient startup + one request + shutdown cycle.
+    """
+    import chromadb
+    from tests._usage_db_fingerprint import fingerprint_usage_db
+
+    real_chroma_path = Path("data/chroma_db/chroma.sqlite3")
+    before = fingerprint_usage_db(real_chroma_path)
+
+    with patch.object(
+        chromadb, "PersistentClient",
+        side_effect=AssertionError("real chromadb.PersistentClient must never be constructed by this test file"),
+    ) as persistent_client_spy:
+        with _client() as client:
+            assert isinstance(api._state.get("collection"), MagicMock)
+            resp = client.get("/health")
+            assert resp.status_code == 200
+        persistent_client_spy.assert_not_called()
+
+    after = fingerprint_usage_db(real_chroma_path)
+    assert after == before
+
+
+def test_client_with_usage_db_fixture_never_opens_the_real_chroma_database():
+    """Same proof, for _client_with_usage_db() -- found to have the
+    identical unpatched-Chroma gap as _client() (see that function's own
+    fixed docstring); a single fix in only _client() would have left
+    this file only partially isolated."""
+    import chromadb
+    from tests._usage_db_fingerprint import fingerprint_usage_db
+
+    real_chroma_path = Path("data/chroma_db/chroma.sqlite3")
+    before = fingerprint_usage_db(real_chroma_path)
+
+    with patch.object(
+        chromadb, "PersistentClient",
+        side_effect=AssertionError("real chromadb.PersistentClient must never be constructed by this test file"),
+    ) as persistent_client_spy:
+        with _client_with_usage_db() as (client, _usage_db_path):
+            assert isinstance(api._state.get("collection"), MagicMock)
+            resp = client.get("/health")
+            assert resp.status_code == 200
+        persistent_client_spy.assert_not_called()
+
+    after = fingerprint_usage_db(real_chroma_path)
+    assert after == before
 
 
 # --- /curation/start + /curation/{id}/picks: the real interrupt/resume loop ---
@@ -2482,12 +2576,17 @@ def test_curation_report_endpoint_sets_report_covered_web_article_count():
 
 @contextmanager
 def _client_with_usage_db():
-    """Same isolation/mocking as _client() above, but also yields the
-    per-test usage_telemetry.sqlite path so a test can seed budget-
-    exhaustion state directly rather than making 20-30 real round-trip
-    HTTP calls just to trip a limit. A separate helper (not a changed
-    _client() signature) so the other call sites in this file that
-    already use `with _client() as client:` stay untouched."""
+    """Same isolation/mocking as _client() above -- K5D.2c's
+    get_chroma_collection patch included, since this helper ALSO opens a
+    real TestClient(api.app) lifespan and was found to have the exact
+    same unpatched-Chroma gap _client() did (this file's full test run
+    is what caught it: fixing only _client() left this one real Chroma
+    touch remaining) -- but also yields the per-test usage_telemetry.sqlite
+    path so a test can seed budget-exhaustion state directly rather than
+    making 20-30 real round-trip HTTP calls just to trip a limit. A
+    separate helper (not a changed _client() signature) so the other
+    call sites in this file that already use `with _client() as client:`
+    stay untouched."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.sqlite"
         cp_db_path = Path(tmp) / "test_checkpoints.sqlite"
@@ -2498,6 +2597,7 @@ def _client_with_usage_db():
              patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
              patch.object(api, "search_web", return_value=[]), \
              patch.object(api, "OpenAI", return_value=MagicMock()), \
+             patch.object(api, "get_chroma_collection", return_value=MagicMock(name="fake_chroma_collection")), \
              patch.object(api, "canonicalize_topic", side_effect=lambda topic, client=None: topic):
             api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
             api.app.dependency_overrides[api.get_curation_checkpointer] = _make_test_checkpointer_override(cp_db_path)
