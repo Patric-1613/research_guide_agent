@@ -74,6 +74,11 @@ USAGE_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "usage_telemet
 ACTION_TYPES = (
     "search", "summarize", "search_chat", "curation_start", "curation_refill",
     "curation_chat", "report_generate", "report_regenerate",
+    # K5D.2: opened by research_agent.curation_loop._serve_batch_node only
+    # when the off-by-default keyword_filter_policy_c_enabled flag is on
+    # AND at least one displayed paper misses the keyword_filter.py cache
+    # -- see that node for the admission/lease wrapping.
+    "curation_keyword_filter",
 )
 
 HttpOutcome = Literal["success", "error", "cancelled"]

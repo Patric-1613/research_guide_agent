@@ -27,6 +27,8 @@ def test_defaults_with_no_env_vars_set():
         tavily_api_key=None,
         frontend_origin="http://localhost:5173",
         openalex_mailto=None,
+        keyword_filter_policy_c_enabled=False,
+        keyword_filter_max_concurrent_calls=3,
     )
 
 
@@ -67,6 +69,83 @@ def test_get_settings_is_uncached_and_reflects_env_changes_between_calls():
         with patch.dict(os.environ, {"FRONTEND_ORIGIN": "https://changed.example.org"}):
             assert get_settings().frontend_origin == "https://changed.example.org"
         assert get_settings().frontend_origin == "http://localhost:5173"
+
+
+# --- K5D.2: keyword_filter_policy_c_enabled / keyword_filter_max_concurrent_calls ---
+
+def test_keyword_filter_disabled_by_default():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_settings().keyword_filter_policy_c_enabled is False
+
+
+def test_keyword_filter_enabled_true_false_parsing():
+    for truthy in ("true", "True", "TRUE", "1"):
+        with patch.dict(os.environ, {"KEYWORD_FILTER_POLICY_C_ENABLED": truthy}, clear=True):
+            assert get_settings().keyword_filter_policy_c_enabled is True
+    for falsy in ("false", "False", "FALSE", "0"):
+        with patch.dict(os.environ, {"KEYWORD_FILTER_POLICY_C_ENABLED": falsy}, clear=True):
+            assert get_settings().keyword_filter_policy_c_enabled is False
+
+
+def test_keyword_filter_enabled_empty_string_is_treated_as_unset():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_POLICY_C_ENABLED": ""}, clear=True):
+        assert get_settings().keyword_filter_policy_c_enabled is False
+
+
+def test_keyword_filter_enabled_invalid_value_fails_clearly():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_POLICY_C_ENABLED": "enabled-ish"}, clear=True):
+        try:
+            get_settings()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "KEYWORD_FILTER_POLICY_C_ENABLED" in str(exc)
+            assert "enabled-ish" in str(exc)
+
+
+def test_keyword_filter_max_concurrent_calls_default_is_three():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_settings().keyword_filter_max_concurrent_calls == 3
+
+
+def test_keyword_filter_max_concurrent_calls_override_within_bounds():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "5"}, clear=True):
+        assert get_settings().keyword_filter_max_concurrent_calls == 5
+
+
+def test_keyword_filter_max_concurrent_calls_rejects_below_minimum():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "0"}, clear=True):
+        try:
+            get_settings()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "between 1" in str(exc)
+
+
+def test_keyword_filter_max_concurrent_calls_rejects_above_provider_fan_out_limit():
+    with patch.dict(os.environ, {
+        "KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "21", "USAGE_PROVIDER_FAN_OUT_LIMIT": "20",
+    }, clear=True):
+        try:
+            get_settings()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "between 1 and 20" in str(exc)
+
+
+def test_keyword_filter_max_concurrent_calls_clamp_tracks_provider_fan_out_limit():
+    with patch.dict(os.environ, {
+        "KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "8", "USAGE_PROVIDER_FAN_OUT_LIMIT": "8",
+    }, clear=True):
+        assert get_settings().keyword_filter_max_concurrent_calls == 8
+
+
+def test_keyword_filter_max_concurrent_calls_non_integer_fails_clearly():
+    with patch.dict(os.environ, {"KEYWORD_FILTER_MAX_CONCURRENT_CALLS": "three"}, clear=True):
+        try:
+            get_settings()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "not a valid integer" in str(exc)
 
 
 if __name__ == "__main__":

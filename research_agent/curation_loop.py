@@ -72,13 +72,14 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+from research_agent import keyword_filter
 from research_agent.curation_session import (
     THREAD_ID_PREFIX,
     _dict_to_session,
     _session_to_dict,
     curation_thread_id,
 )
-from research_agent.config import get_usage_policy
+from research_agent.config import get_settings, get_usage_policy
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
 from research_agent.schema import Paper
 from research_agent.session_limits import check_finish_requires_selection, check_selected_paper_capacity
@@ -167,10 +168,51 @@ def _refill_node(state: CurationLoopState, config) -> dict:
     return {"session": _session_to_dict(session), "refilled": True}
 
 
-def _serve_batch_node(state: CurationLoopState) -> dict:
+def _serve_batch_node(state: CurationLoopState, config) -> dict:
     session = _dict_to_session(state["session"])
     batch = serve_next_batch(session, batch_size=BATCH_SIZE)
     serialized_batch = [[paper.to_dict(), score] for paper, score in batch]
+
+    # K5D.2: optional, off-by-default Policy C keyword filtering -- ONLY
+    # ever touches these <=10 already-serialized dicts (paper.to_dict()
+    # is a deep copy; see schema.py's Paper.to_dict), never the live
+    # `batch`/session.reserve Paper objects, never Chroma metadata, never
+    # ranking scores/order, never paper IDs. Disabled (the default) or an
+    # empty batch takes this exact same no-op path as before this
+    # feature existed -- byte-identical behavior. See
+    # research_agent/keyword_filter.py's own module docstring for the
+    # full fail-open contract and the stated (not backfilled) rollback
+    # limitation.
+    settings = get_settings()
+    if settings.keyword_filter_policy_c_enabled and serialized_batch:
+        configurable = config["configurable"]
+        plans = keyword_filter.plan_batch([paper_dict["keywords"] for paper_dict, _score in serialized_batch])
+        if keyword_filter.needs_provider_work(plans):
+            session_id = configurable["thread_id"][len(THREAD_ID_PREFIX):]
+            # Usage Protection convention (mirrors _refill_node above):
+            # admission + lease are checked here regardless of whether a
+            # paid_action is already open higher up the call stack (e.g.
+            # during curation_start's first turn) -- only telemetry's own
+            # "first active action wins" rule rolls this node's child
+            # calls up into that outer action; admission/lease are never
+            # skipped just because something else opened first.
+            with guard_paid_action(
+                "curation_keyword_filter", subject=("session", session_id), use_lease=True, discard_if_empty=True,
+            ):
+                filtered_lists = keyword_filter.resolve_batch(
+                    configurable["client"], plans, settings.keyword_filter_max_concurrent_calls,
+                )
+        else:
+            # Every displayed paper was a cache hit (or had nothing to
+            # filter) -- resolved entirely offline, so no admission
+            # check, no lease, and no paid_action/child-call telemetry
+            # row is opened at all.
+            filtered_lists = keyword_filter.resolve_batch(
+                configurable["client"], plans, settings.keyword_filter_max_concurrent_calls,
+            )
+        for (paper_dict, _score), filtered_keywords in zip(serialized_batch, filtered_lists):
+            paper_dict["keywords"] = filtered_keywords
+
     # curation-turn-history Phase 9b: this node has no interrupt() inside
     # it, so (unlike present_and_apply below) it only ever runs ONCE per
     # real turn -- never re-executed on resume -- safe to append here
