@@ -273,8 +273,19 @@ def test_mapping_self_hash_tampering_is_rejected(tmp_path):
     assert any("mapping self-hash" in v for v in violations)
 
 
-def test_require_all_complete_rejects_blank_workbook():
-    violations = k5d1.validate_annotation_workbook(require_all_complete=True)
+def test_require_all_complete_rejects_an_incomplete_workbook(tmp_path):
+    """The canonical workbook may legitimately be blank (freshly generated,
+    K5D.1a) or fully annotated (post human review, K5D.1b) depending on
+    where the checkpoint pipeline currently stands -- this test proves the
+    require_all_complete gate itself, on a copy, regardless of which state
+    the real canonical workbook is in right now."""
+    incomplete = tmp_path / "incomplete.xlsx"
+    workbook = load_workbook(k5d1.WORKBOOK_PATH)
+    workbook["Candidate review"]["D2"] = None  # blank out one decision
+    workbook.save(incomplete)
+    violations = k5d1.validate_annotation_workbook(
+        require_all_complete=True, workbook_path=incomplete, mapping_path=k5d1.MAPPING_PATH, manifest_path=k5d1.MANIFEST_PATH,
+    )
     assert any("candidate decision is incomplete" in v or "paper requires 3-5" in v for v in violations)
 
 
