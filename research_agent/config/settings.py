@@ -232,6 +232,9 @@ def get_auth_config() -> AuthConfig:
       image/commit (or otherwise fixing the credentials), never flipping
       auth off.
     - AUTH_ENABLED=true (in either APP_ENV) with AUTH_USERNAME empty
+    - AUTH_ENABLED=true (in either APP_ENV) with AUTH_USERNAME containing
+      ':' -- ambiguous under RFC 7617's own username/password delimiter;
+      AUTH_PASSWORD may still contain ':' (see the check's own comment)
     - AUTH_ENABLED=true (in either APP_ENV) with AUTH_PASSWORD missing or
       shorter than MIN_AUTH_PASSWORD_LENGTH
 
@@ -259,6 +262,18 @@ def get_auth_config() -> AuthConfig:
     username = os.getenv("AUTH_USERNAME") or ""
     if not username:
         raise RuntimeError("AUTH_USERNAME must be set (non-empty) when AUTH_ENABLED=true.")
+    # PR2B.1: ':' is the wire-format delimiter between the username and
+    # password fields of a decoded Basic-Auth header (RFC 7617) -- a
+    # configured username containing one is not a value any standard
+    # Basic-Auth client can address unambiguously (a colon typed into a
+    # username field is indistinguishable, on the wire, from the same
+    # colon marking the username/password boundary). Rejected here,
+    # at startup, rather than left to surface as a confusing runtime
+    # auth failure. Passwords may still contain ':' -- auth_middleware.py's
+    # _parse_basic_credentials only ever splits on the FIRST colon, so a
+    # colon anywhere in the password is unambiguous.
+    if ":" in username:
+        raise RuntimeError("AUTH_USERNAME must not contain ':' when AUTH_ENABLED=true.")
 
     password = os.getenv("AUTH_PASSWORD") or ""
     if len(password) < MIN_AUTH_PASSWORD_LENGTH:

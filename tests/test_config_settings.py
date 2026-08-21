@@ -253,6 +253,39 @@ def test_get_auth_config_enabled_missing_username_raises():
             assert "AUTH_USERNAME" in str(exc)
 
 
+# --- PR2B.1: AUTH_USERNAME containing ':' is ambiguous under RFC 7617's
+# own username/password delimiter and must be rejected at startup;
+# AUTH_PASSWORD may still contain ':' (auth_middleware.py only ever
+# splits the decoded credential on the FIRST colon).
+
+def test_get_auth_config_username_with_colon_raises():
+    env = {**_VALID_AUTH_ENV, "AUTH_USERNAME": "ali:ce"}
+    with patch.dict(os.environ, env, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_USERNAME" in str(exc)
+
+
+def test_get_auth_config_username_with_colon_error_never_includes_actual_username_or_password():
+    env = {"AUTH_ENABLED": "true", "AUTH_USERNAME": "ali:ce-the-secret-user", "AUTH_PASSWORD": "s3curePlatformSecret!"}
+    with patch.dict(os.environ, env, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            message = str(exc)
+            assert "ali:ce-the-secret-user" not in message
+            assert "s3curePlatformSecret!" not in message
+
+
+def test_get_auth_config_password_with_colon_is_accepted():
+    env = {"AUTH_ENABLED": "true", "AUTH_USERNAME": "alice", "AUTH_PASSWORD": "s3cure:Platform:Secret!"}
+    with patch.dict(os.environ, env, clear=True):
+        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3cure:Platform:Secret!")
+
+
 def test_get_auth_config_enabled_missing_password_raises():
     env = dict(_VALID_AUTH_ENV)
     del env["AUTH_PASSWORD"]
@@ -300,6 +333,7 @@ def test_get_auth_config_error_messages_never_include_the_actual_secret_values()
     cases = [
         {"APP_ENV": "production"},
         {**_VALID_AUTH_ENV, "AUTH_USERNAME": ""},
+        {**_VALID_AUTH_ENV, "AUTH_USERNAME": "ali:ce"},
         {**_VALID_AUTH_ENV, "AUTH_PASSWORD": "weak"},
     ]
     for env in cases:

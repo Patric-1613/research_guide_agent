@@ -40,6 +40,15 @@ previous known-good image/commit is).
 configured username/password in a response body, an exception, or any
 telemetry -- the 401 body below is a fixed, generic constant, never
 built from the request.
+
+**PR2B.1 correction: the OPTIONS exemption is narrow, not blanket.** A
+bare `OPTIONS` request -- one missing `Origin` or `Access-Control-
+Request-Method` -- is NOT a real CORS preflight (a browser never sends
+either without both) and must still require credentials like any other
+request; only a request carrying BOTH headers is exempted. The original
+PR2B version exempted every `OPTIONS` request outright, which meant an
+`OPTIONS` request to any route -- not just a genuine preflight -- bypassed
+the gate entirely.
 """
 
 from __future__ import annotations
@@ -83,6 +92,18 @@ async def _send_401(send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
         ],
     })
     await send({"type": "http.response.body", "body": _UNAUTHORIZED_BODY})
+
+
+def _is_cors_preflight(headers: list[tuple[bytes, bytes]]) -> bool:
+    """True only for a genuine CORS preflight: a browser sends `Origin`
+    on every cross-origin request, and adds `Access-Control-Request-
+    Method` ONLY on the uncredentialed OPTIONS preflight that precedes a
+    non-simple cross-origin request -- neither header is ever present on
+    an OPTIONS request a browser sends for any other reason, and a bare/
+    forged OPTIONS missing either one is not a preflight this app needs
+    to let through."""
+    names = {name.lower() for name, _ in headers}
+    return b"origin" in names and b"access-control-request-method" in names
 
 
 def _get_single_authorization_header(headers: list[tuple[bytes, bytes]]) -> bytes | None:
@@ -150,13 +171,15 @@ class BasicAuthMiddleware:
         # CORS preflight never carries credentials by spec: Authorization
         # is a non-simple header, so a cross-origin browser asks
         # permission via an uncredentialed OPTIONS request first, before
-        # ever sending the real, credentialed request. Challenging OPTIONS
-        # here would break CORS entirely, not just leave it unauthenticated
-        # -- and nothing user-facing is reachable via a bare OPTIONS: no
-        # route in this app defines its own OPTIONS handler, so this can
-        # only ever reach CORSMiddleware's own preflight response or a
-        # routing 405.
-        if method == "OPTIONS":
+        # ever sending the real, credentialed request. Challenging a
+        # GENUINE preflight here would break CORS entirely, not just
+        # leave it unauthenticated -- but the exemption must be narrow:
+        # only a request carrying BOTH `Origin` and `Access-Control-
+        # Request-Method` is a real preflight (see _is_cors_preflight's
+        # own docstring). A bare OPTIONS -- neither header present -- is
+        # not a preflight and still requires credentials, same as any
+        # other method/path.
+        if method == "OPTIONS" and _is_cors_preflight(scope.get("headers") or []):
             await self.app(scope, receive, send)
             return
 

@@ -222,6 +222,21 @@ def test_correct_credentials_pass_through():
     assert _status_of(sent) == 200
 
 
+def test_password_containing_colon_authenticates_successfully():
+    """PR2B.1: AUTH_USERNAME may never contain ':' (rejected at
+    get_auth_config()), but AUTH_PASSWORD still may -- _parse_basic_
+    credentials only ever splits the decoded header on the FIRST colon,
+    so a colon anywhere in the password is unambiguous end-to-end."""
+    app = _RecordingApp()
+    config_with_colon_password = AuthConfig(enabled=True, username="alice", password="s3cure:Platform:Secret!")
+    mw = BasicAuthMiddleware(app, auth_config=config_with_colon_password)
+
+    sent = _run(mw, _http_scope(headers=[(b"authorization", _basic_header("alice", "s3cure:Platform:Secret!"))]))
+
+    assert app.called is True
+    assert _status_of(sent) == 200
+
+
 def test_health_get_is_public_even_with_gate_enabled():
     app = _RecordingApp()
     mw = BasicAuthMiddleware(app, auth_config=ENABLED)
@@ -244,11 +259,64 @@ def test_health_post_is_not_exempted():
     assert _status_of(sent) == 401
 
 
-def test_options_is_never_challenged():
+# --- PR2B.1: the OPTIONS exemption is narrow, not blanket -- only a
+# genuine CORS preflight (BOTH Origin AND Access-Control-Request-Method
+# present) bypasses the gate. A bare OPTIONS, or one missing either
+# header, is not a preflight and must be challenged like any other
+# request.
+
+def test_genuine_cors_preflight_is_not_challenged():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED)
+    headers = [
+        (b"origin", b"http://localhost:5173"),
+        (b"access-control-request-method", b"POST"),
+    ]
+
+    sent = _run(mw, _http_scope(method="OPTIONS", path="/curation/reviews", headers=headers))
+
+    assert app.called is True
+    assert _status_of(sent) == 200
+
+
+def test_bare_options_is_challenged():
     app = _RecordingApp()
     mw = BasicAuthMiddleware(app, auth_config=ENABLED)
 
     sent = _run(mw, _http_scope(method="OPTIONS", path="/curation/reviews"))
+
+    assert app.called is False
+    assert _status_of(sent) == 401
+
+
+def test_options_with_only_origin_is_challenged():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED)
+    headers = [(b"origin", b"http://localhost:5173")]
+
+    sent = _run(mw, _http_scope(method="OPTIONS", path="/curation/reviews", headers=headers))
+
+    assert app.called is False
+    assert _status_of(sent) == 401
+
+
+def test_options_with_only_access_control_request_method_is_challenged():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED)
+    headers = [(b"access-control-request-method", b"POST")]
+
+    sent = _run(mw, _http_scope(method="OPTIONS", path="/curation/reviews", headers=headers))
+
+    assert app.called is False
+    assert _status_of(sent) == 401
+
+
+def test_authenticated_bare_options_reaches_normal_routing():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED)
+    headers = [(b"authorization", _basic_header("alice", "s3curePlatformSecret!"))]
+
+    sent = _run(mw, _http_scope(method="OPTIONS", path="/curation/reviews", headers=headers))
 
     assert app.called is True
     assert _status_of(sent) == 200
@@ -505,14 +573,25 @@ def test_integration_no_paid_action_or_http_request_telemetry_for_unauthorized_r
     assert paid_action_count == 0
 
 
-def test_integration_existing_cors_preflight_still_works_when_gate_enabled():
+def test_integration_genuine_cors_preflight_not_challenged_and_still_gets_cors_headers():
+    """PR2B.1: a genuine preflight (both Origin and Access-Control-
+    Request-Method present) must clear the auth gate AND still get
+    CORSMiddleware's own response/headers -- proves the narrowed OPTIONS
+    exemption didn't just avoid a 401, but left CORSMiddleware's real
+    preflight-handling behavior completely intact."""
     with _client_with_env(_protected_env()) as client:
         response = client.options(
             "/search",
             headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST"},
         )
-    assert response.status_code != 401
+    assert response.status_code == 200
     assert "access-control-allow-origin" in {k.lower() for k in response.headers.keys()}
+
+
+def test_integration_bare_options_is_challenged_even_against_a_real_route():
+    with _client_with_env(_protected_env()) as client:
+        response = client.options("/search")
+    assert response.status_code == 401
 
 
 def test_integration_existing_body_limit_middleware_still_enforced_when_gate_enabled():
