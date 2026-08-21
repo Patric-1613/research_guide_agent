@@ -22,7 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import research_agent.api as api
-from research_agent.config import get_settings, get_usage_policy
+from research_agent.auth_middleware import BasicAuthMiddleware
+from research_agent.config import get_auth_config, get_settings, get_usage_policy
 from research_agent.provider_clients import default_async_openai_client
 from research_agent.request_limits import RequestBodyLimitMiddleware
 from research_agent.session_limits import SessionCapacityError
@@ -98,6 +99,17 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # PR2B: read and validate the access-gate configuration FIRST, before
+    # anything else in this function runs -- get_auth_config() raises on
+    # any invalid production configuration (see its own docstring), and
+    # that must abort application construction outright, not just fail to
+    # register a middleware. research_agent.api's module-level
+    # `app = create_app()` means this raise aborts import of that module
+    # entirely, which is exactly what should happen if `uvicorn
+    # research_agent.api:app` is ever launched with a broken production
+    # auth configuration.
+    auth_config = get_auth_config()
+
     app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
 
     # curation-api-and-ui Phase 6c: the React frontend runs as its own Vite
@@ -130,6 +142,15 @@ def create_app() -> FastAPI:
     # api_app/schemas.py) via the same centralized, provisional
     # UsagePolicy every other M2 limit reads.
     app.add_middleware(RequestBodyLimitMiddleware, max_bytes=get_usage_policy().max_request_body_bytes)
+
+    # PR2B: added LAST, so it is the OUTERMOST layer of all four
+    # (add_middleware's most-recently-added-runs-first convention, same
+    # as the RequestBodyLimitMiddleware comment above) -- ahead of CORS,
+    # request telemetry, and the body-size limit. An unauthorized request
+    # is rejected here, before any of those ever see it: no telemetry
+    # row, no body read, no route/service code reached. See
+    # auth_middleware.py's own docstring for the full design.
+    app.add_middleware(BasicAuthMiddleware, auth_config=auth_config)
 
     # Usage Protection M2.2A: one centralized handler for every guarded
     # route's rejection, instead of a try/except in each router.

@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.config import get_keyword_filter_max_concurrent_calls, get_settings
-from research_agent.config.settings import Settings
+from research_agent.config import get_auth_config, get_keyword_filter_max_concurrent_calls, get_settings
+from research_agent.config.settings import AuthConfig, Settings
 
 
 def test_defaults_with_no_env_vars_set():
@@ -182,6 +182,134 @@ def test_concurrency_at_or_below_fan_out_limit_is_unchanged():
 def test_effective_concurrency_is_always_at_least_one():
     with patch.dict(os.environ, {}, clear=True):
         assert get_keyword_filter_max_concurrent_calls(fan_out_limit=1) == 1
+
+
+# --- PR2B: get_auth_config() -- the fail-closed access-gate config ---
+
+_VALID_AUTH_ENV = {
+    "AUTH_ENABLED": "true", "AUTH_USERNAME": "alice", "AUTH_PASSWORD": "s3curePlatformSecret!",
+}
+
+
+def test_get_auth_config_disabled_by_default_in_local_mode():
+    """No env vars set at all -- the exact current, unauthenticated
+    local-dev/test state -- must return a disabled config, never raise."""
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_auth_config() == AuthConfig(enabled=False, username=None, password=None)
+
+
+def test_get_auth_config_app_env_defaults_to_local():
+    with patch.dict(os.environ, {}, clear=True):
+        # Disabled + no raise is only possible if APP_ENV defaulted to
+        # "local" -- "production" would have raised (see next test).
+        get_auth_config()
+
+
+def test_get_auth_config_invalid_app_env_raises():
+    with patch.dict(os.environ, {"APP_ENV": "prod"}, clear=True):  # "production" misspelled
+        try:
+            get_auth_config()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "APP_ENV" in str(exc)
+
+
+def test_get_auth_config_production_without_auth_enabled_raises():
+    """The core PR2A correction: disabling auth is never an acceptable
+    production configuration, and there is no override for it."""
+    with patch.dict(os.environ, {"APP_ENV": "production"}, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_ENABLED" in str(exc)
+
+
+def test_get_auth_config_production_with_auth_enabled_explicitly_false_still_raises():
+    """Same as above, but with AUTH_ENABLED explicitly set to false --
+    proves there is no env-var-shaped emergency production auth-disable
+    switch, not just that the unset default is rejected."""
+    with patch.dict(os.environ, {"APP_ENV": "production", "AUTH_ENABLED": "false"}, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_ENABLED" in str(exc)
+
+
+def test_get_auth_config_production_with_valid_credentials_succeeds():
+    with patch.dict(os.environ, {"APP_ENV": "production", **_VALID_AUTH_ENV}, clear=True):
+        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3curePlatformSecret!")
+
+
+def test_get_auth_config_enabled_missing_username_raises():
+    env = dict(_VALID_AUTH_ENV)
+    del env["AUTH_USERNAME"]
+    with patch.dict(os.environ, env, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_USERNAME" in str(exc)
+
+
+def test_get_auth_config_enabled_missing_password_raises():
+    env = dict(_VALID_AUTH_ENV)
+    del env["AUTH_PASSWORD"]
+    with patch.dict(os.environ, env, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_PASSWORD" in str(exc)
+
+
+def test_get_auth_config_enabled_short_password_raises():
+    env = {**_VALID_AUTH_ENV, "AUTH_PASSWORD": "too-short-1"}
+    assert len(env["AUTH_PASSWORD"]) < 16
+    with patch.dict(os.environ, env, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "AUTH_PASSWORD" in str(exc)
+            assert "too-short-1" not in str(exc)  # never echoes the actual (weak) value
+
+
+def test_get_auth_config_local_mode_may_stay_disabled():
+    with patch.dict(os.environ, {"APP_ENV": "local"}, clear=True):
+        assert get_auth_config().enabled is False
+
+
+def test_get_auth_config_local_mode_enabled_still_validates_credentials():
+    """Local mode may enable the gate too (for manually testing it before
+    a real deployment) -- and when it does, the same credential
+    requirements apply; there is no separate, weaker local validation
+    path."""
+    with patch.dict(os.environ, {"APP_ENV": "local", "AUTH_ENABLED": "true"}, clear=True):
+        try:
+            get_auth_config()
+            assert False, "expected RuntimeError for missing credentials"
+        except RuntimeError:
+            pass
+    with patch.dict(os.environ, {"APP_ENV": "local", **_VALID_AUTH_ENV}, clear=True):
+        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3curePlatformSecret!")
+
+
+def test_get_auth_config_error_messages_never_include_the_actual_secret_values():
+    cases = [
+        {"APP_ENV": "production"},
+        {**_VALID_AUTH_ENV, "AUTH_USERNAME": ""},
+        {**_VALID_AUTH_ENV, "AUTH_PASSWORD": "weak"},
+    ]
+    for env in cases:
+        with patch.dict(os.environ, env, clear=True):
+            try:
+                get_auth_config()
+            except (RuntimeError, ValueError) as exc:
+                message = str(exc)
+                assert "s3curePlatformSecret!" not in message
+                assert "alice" not in message
 
 
 if __name__ == "__main__":
