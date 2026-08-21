@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { curationApi } from './client'
+import { baseUrl, curationApi, resolveBaseUrl } from './client'
 import { ApiError } from '../../types'
 
 // Usage Protection M2.3: headers defaults to an empty Headers so every
@@ -24,6 +24,52 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+})
+
+// PR3: resolveBaseUrl() is the pure function baseUrl() delegates to --
+// tested directly with plain booleans rather than stubbing Vite's own
+// import.meta.env.PROD flag (vi.stubEnv only reliably stubs string-typed
+// env vars, not PROD/DEV's boolean flags).
+describe('resolveBaseUrl', () => {
+  it('an explicit configured URL wins over both defaults', () => {
+    expect(resolveBaseUrl('https://deployed.example.org', false)).toBe('https://deployed.example.org')
+    expect(resolveBaseUrl('https://deployed.example.org', true)).toBe('https://deployed.example.org')
+  })
+
+  it('strips a trailing slash from an explicitly configured URL', () => {
+    expect(resolveBaseUrl('https://deployed.example.org/', false)).toBe('https://deployed.example.org')
+  })
+
+  it('strips multiple trailing slashes from an explicitly configured URL', () => {
+    expect(resolveBaseUrl('https://deployed.example.org///', false)).toBe('https://deployed.example.org')
+  })
+
+  it('a configured URL with no trailing slash is left unchanged', () => {
+    expect(resolveBaseUrl('https://deployed.example.org', false)).toBe('https://deployed.example.org')
+  })
+
+  it('production build with no override defaults to same-origin (empty base)', () => {
+    expect(resolveBaseUrl(undefined, true)).toBe('')
+  })
+
+  it('an explicitly empty configured URL is treated as unset, not as same-origin', () => {
+    expect(resolveBaseUrl('', true)).toBe('')
+    expect(resolveBaseUrl('', false)).toBe('http://localhost:8000')
+  })
+
+  it('local development build with no override defaults to http://localhost:8000', () => {
+    expect(resolveBaseUrl(undefined, false)).toBe('http://localhost:8000')
+  })
+})
+
+describe('baseUrl', () => {
+  it('reads the explicit VITE_API_BASE_URL override at call time', () => {
+    // beforeEach below already stubs VITE_API_BASE_URL to
+    // 'http://test-api.local' for the whole file (shared with every
+    // curationApi test) -- this proves baseUrl() itself, not just
+    // resolveBaseUrl(), wires that value through.
+    expect(baseUrl()).toBe('http://test-api.local')
+  })
 })
 
 describe('curationApi', () => {

@@ -1,0 +1,47 @@
+# PR3: keeps the build context small and guarantees none of these ever
+# reach an image layer -- local data, secrets, caches, and dev-only
+# artifacts have no place in a production image.
+
+.git
+.gitignore
+
+# Secrets / local env -- never baked into an image; runtime-injected only.
+.env
+.env.*
+!.env.example
+
+# Local application data -- SQLite DBs, Chroma vector store, caches.
+# Production gets a fresh, empty /app/data (PR4 wires a real volume onto
+# it); it must never start from whatever happens to be on a dev machine.
+data/
+
+# Python virtualenv / caches -- rebuilt fresh via uv sync in the image.
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Frontend -- rebuilt fresh via npm ci && npm run build in the image;
+# node_modules/dist from the host must never be copied in directly.
+frontend/node_modules/
+frontend/dist/
+frontend/e2e/test-results/
+frontend/e2e/playwright-report/
+
+# Eval / research artifacts -- developer-facing, not runtime inputs.
+eval_data/
+eval_results/
+eval_working/
+
+# Docs, specs, tests -- not needed to build or run the production image.
+docs/
+specs/
+tests/
+
+# Editor / OS cruft.
+.DS_Store
+.claude/
+.vscode/
+.idea/

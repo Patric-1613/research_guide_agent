@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import research_agent.api as api
+from research_agent.api_app.static_frontend import mount_frontend
 from research_agent.auth_middleware import BasicAuthMiddleware
 from research_agent.config import get_auth_config, get_settings, get_usage_policy
 from research_agent.provider_clients import default_async_openai_client
@@ -225,5 +226,21 @@ def create_app() -> FastAPI:
     from research_agent.api_app.routers.curation_chat import router as curation_chat_router
 
     app.include_router(curation_chat_router)
+
+    # PR3: must be LAST -- after every app.include_router(...) call above
+    # (and FastAPI's own /docs, /openapi.json, already registered by
+    # FastAPI(...)'s own __init__) -- see static_frontend.py's own
+    # docstring for why registration order here is load-bearing. A no-op
+    # when frontend/dist doesn't exist (local backend dev/tests never
+    # need `npm run build` to have run first). The explicit router list
+    # (rather than introspecting app.routes) is what lets
+    # static_frontend.py stay independent of this FastAPI version's own
+    # internal post-include_router() route representation -- see that
+    # module's own docstring.
+    mount_frontend(app, [
+        health_router, search_router, summarize_router, chat_router, export_router, library_router,
+        curation_core_router, curation_sessions_router, curation_history_router, curation_reports_router,
+        curation_chat_router,
+    ])
 
     return app

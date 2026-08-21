@@ -22,12 +22,47 @@ import type {
 } from '../../types'
 import { ApiError } from '../../types'
 
+// PR3: strips any trailing slash(es) from an explicitly configured
+// VITE_API_BASE_URL so `${baseUrl()}${path}` (every call site below,
+// chatStream.ts, and reportStream.ts all build URLs this way, and every
+// `path` they pass already starts with '/') never produces an
+// accidental '//'. A same-origin '' base has nothing to strip.
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '')
+}
+
+// PR3: the three inputs that decide the effective base URL, factored out
+// of baseUrl() as a pure function so tests can exercise every branch
+// (explicit override / production same-origin / local-dev default)
+// directly with plain booleans, instead of needing to stub Vite's own
+// import.meta.env.PROD flag. `configured` empty/undefined means "no
+// explicit override" -- an explicitly EMPTY VITE_API_BASE_URL is treated
+// the same as unset, not as "explicitly same-origin", so a blank env var
+// can never silently break local dev's cross-origin fetch to :8000.
+export function resolveBaseUrl(configured: string | undefined, isProductionBuild: boolean): string {
+  if (configured) {
+    return normalizeBaseUrl(configured)
+  }
+  // Production builds default to same-origin (the app is served by the
+  // same FastAPI process it calls, api_app/app.py's new static-frontend
+  // mount) -- an empty base means every `${baseUrl()}${path}` call
+  // becomes a plain relative path, resolved by the browser against the
+  // page's own origin.
+  if (isProductionBuild) {
+    return ''
+  }
+  // Local Vite dev server: the backend is a separate process on its
+  // default port, unchanged from before this function existed.
+  return 'http://localhost:8000'
+}
+
 // Reads at call time via Vite's import.meta.env, not module load time --
 // makes it possible to swap in tests without needing to reload the module.
-// Exported (Usage Protection M4.2B) so lib/api/chatStream.ts builds the
-// same base URL for its own fetch() call, rather than re-deriving it.
+// Exported (Usage Protection M4.2B) so lib/api/chatStream.ts and lib/
+// api/reportStream.ts build the same base URL for their own fetch()
+// calls, rather than re-deriving it.
 export function baseUrl(): string {
-  return import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+  return resolveBaseUrl(import.meta.env.VITE_API_BASE_URL, import.meta.env.PROD)
 }
 
 // Usage Protection M4.2B: pulled out of request() below, unchanged
