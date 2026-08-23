@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from research_agent.agent import ResearchSession, build_tools
 from research_agent.schema import Paper, WebArticle
@@ -146,18 +146,26 @@ def test_rerank_tool_survives_underlying_exception_and_keeps_collected_papers():
     _arxiv_tool, _s2_tool, rerank_tool, _web_tool = build_tools(session)
     session.papers = [_paper("Some Paper", "arxiv", "1111.1111")]
 
-    # Mock the client construction itself too — otherwise this test's
-    # outcome would depend on whether a real API key happens to be present
-    # in the environment (it constructs a real client before the patched
-    # embed_and_index_papers call ever runs), which isn't the failure this
-    # test is about. Usage Protection M2.2C: agent.py now calls the shared
-    # research_agent.provider_clients.default_openai_client() factory
-    # (adds the centralized provider timeout) rather than OpenAI()
-    # directly, so that's the name to patch here.
-    with patch("research_agent.agent.default_openai_client"), \
+    # PR2.6B.1: BOTH provider-boundary constructors must be mocked, not
+    # just the OpenAI client. rerank_by_relevance_tool calls
+    # get_chroma_collection() BEFORE default_openai_client() and the
+    # patched, failing embed_and_index_papers() ever run (see agent.py's
+    # own call order) — leaving it unpatched meant this test opened a
+    # REAL chromadb.PersistentClient against the real, gitignored
+    # data/chroma_db/ on every run, exactly the same class of gap K5D.2c/
+    # K5D.2d already found and fixed for tests/test_curation_api.py and
+    # tests/test_api.py's own fixtures. Mocking it here means this test's
+    # outcome never depends on, or touches, real Chroma state — only the
+    # failure path itself (embed_and_index_papers raising) is exercised.
+    with patch("research_agent.agent.get_chroma_collection") as mock_get_collection, \
+         patch("research_agent.agent.default_openai_client"), \
          patch("research_agent.agent.embed_and_index_papers", side_effect=RuntimeError("OpenAI is down")):
+        mock_get_collection.return_value = MagicMock(name="fake_chroma_collection")
         result = rerank_tool.invoke({"query": "test", "top_k": 5})
 
+    # Proves this test actually exercised (and isolated) the real boundary
+    # — not just that no exception happened to propagate from skipping it.
+    mock_get_collection.assert_called_once_with()
     assert "OpenAI is down" in result
     assert "failed" in result.lower()
     # The already-collected papers are not lost just because reranking failed.
