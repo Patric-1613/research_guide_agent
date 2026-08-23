@@ -28,8 +28,16 @@ RUN npm run build
 FROM python:3.12-slim AS python-deps
 # The official, minimal way to get the `uv` binary into a plain Python
 # base image without adding it as a project dependency -- Astral's own
-# documented pattern, no curl/pip install needed.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# documented pattern, no curl/pip install needed. PR3.1: pinned to
+# 0.11.28 (not `latest`) -- the exact version this repo's local `uv
+# --version` reports and uv.lock was generated/is maintained against;
+# confirmed published for both linux/amd64 and linux/arm64 via `docker
+# manifest inspect ghcr.io/astral-sh/uv:0.11.28`. `latest` is a floating
+# tag: two builds on different days (or a compromised push to that tag)
+# could silently install a different uv binary with no diff in this file
+# to show it -- `--frozen` below only protects lockfile RESOLUTION from
+# drifting, not which uv binary performs the sync.
+COPY --from=ghcr.io/astral-sh/uv:0.11.28 /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 # --frozen: fail rather than silently re-resolve if uv.lock is stale.

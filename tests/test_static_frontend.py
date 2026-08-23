@@ -194,6 +194,43 @@ def test_path_traversal_cannot_escape_dist_dir(tmp_path):
     assert response.text == "<html><body>SPA SHELL</body></html>"
 
 
+def test_symlink_inside_dist_cannot_escape_to_an_outside_file(tmp_path):
+    """PR3.1: the same containment check that defeats '..'-based
+    traversal above (Path.resolve() followed by is_relative_to(
+    resolved_dist_dir)) must also defeat a symlink PLANTED INSIDE
+    dist_dir that points OUTSIDE it -- resolve() follows a symlink to
+    its real target before the containment check ever runs, so a
+    request for the symlink's own path resolves to the outside file,
+    fails containment, and falls through to the ordinary safe SPA
+    shell -- never the linked file's contents."""
+    _write_frontend(tmp_path)
+    outside_secret = tmp_path.parent / "outside-symlink-secret.txt"
+    outside_secret.write_text("SECRET-BEHIND-SYMLINK")
+    symlink_path = tmp_path / "escape-link"
+    symlink_path.symlink_to(outside_secret)
+    app, _ = _bare_app_with_frontend(tmp_path)
+    client = TestClient(app)
+
+    response = client.get("/escape-link")
+
+    # The outside file's contents are never returned, and the symlink's
+    # own target is never served -- the response is byte-for-byte the
+    # ordinary SPA shell, the same safe fallback the '..' case above
+    # produces, not a 500/crash from an unhandled symlink.
+    assert "SECRET-BEHIND-SYMLINK" not in response.text
+    assert response.status_code == 200
+    assert response.text == "<html><body>SPA SHELL</body></html>"
+
+    # The symlink's mere presence elsewhere in the tree doesn't disturb
+    # normal asset serving or real-API-route precedence.
+    favicon = client.get("/favicon.svg")
+    assert favicon.status_code == 200
+    assert favicon.text == "<svg>fav</svg>"
+    widgets = client.get("/widgets")
+    assert widgets.status_code == 200
+    assert widgets.json() == []
+
+
 # --- Integration tests: the real create_app(), a temp frontend, and
 # BasicAuthMiddleware wired in exactly as production would build it. ---
 
