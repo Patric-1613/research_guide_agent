@@ -670,6 +670,36 @@ after-fix traces — `search_arxiv_tool` + `search_semantic_scholar_tool`
 together, then `rerank_by_relevance_tool`, same as before both fixes —
 only correctness and speed changed, not reasoning behavior.
 
+### A third concurrency bug: a lost-update race on the paper/web-article pools
+
+A later, independent review (PR2.6A) found a third bug in the same file,
+of a different kind than the two above — not a duplicated LLM call or an
+unparallelized loop, but silent **data loss**. `search_arxiv_tool` and
+`search_semantic_scholar_tool` both did an unprotected
+`session.papers = deduplicate(session.papers + papers)` — a plain read/
+merge/write with no lock. Since LangGraph's `ToolNode` runs same-turn
+tool calls on a real thread pool (the same confirmed fact behind the
+race above), two of these could interleave: both threads read the same
+stale `session.papers` snapshot, each merged against it independently,
+and whichever wrote last silently discarded the other's papers. A
+barrier-controlled probe reproduced this in **20 of 20** parallel runs.
+
+Fixed with two dedicated `threading.Lock`s on `ResearchSession`
+(`_papers_lock`, `_web_articles_lock` — *not* the existing
+`_suggested_titles_lock` above, which protects a different invariant),
+each held only across the small, pure, in-memory read/deduplicate/write
+step — never across the network call that produces the new results, so
+arXiv and Semantic Scholar searches still run fully concurrently. The
+same class of bug was independently audited and fixed in the separate
+`web_articles` pool, which had the identical unprotected pattern.
+**This fix makes no latency claim** — unlike the two fixes above, it's a
+correctness fix for silent data loss, not a speed optimization; existing
+concurrency is preserved, not increased.
+`tests/test_agent_concurrency.py` uses real `threading.Thread` +
+`threading.Barrier`/lock-instrumented counters to force deterministic
+interleavings, never a `sleep`-only timing-dependent assertion. See
+`docs/deployment.md` for the full write-up.
+
 ## RAGAS quality evaluation
 
 A curated, hand-verified test set (`eval_data/stage1_ragas_questions.json`,
@@ -810,11 +840,26 @@ waits for that work to genuinely settle rather than claiming to be
 instantaneous. See `docs/architecture.md`'s "Usage Protection M4" section
 for the full design, including live browser validation.
 
+## Deployment
+
+A protected, same-origin, single-process production package exists —
+fail-closed HTTP Basic Auth (only `GET /health` is public), FastAPI
+serving the built React frontend from the same origin as the API, and a
+non-root, one-uvicorn-worker Docker image with a pinned build-tool
+version. **No cloud deployment has occurred yet** — hosting-platform
+selection, HTTPS termination, real secret injection, persistent-volume
+provisioning, a backup/restore drill, a staging deployment with one
+bounded live journey, and monitoring/alerting are all still open. See
+`docs/deployment.md` for the full record, including exactly what was
+validated (a local Docker build + smoke test, zero paid calls) and what
+remains.
+
 ## Known limitations
 
 - Abstracts only — no PDF full-text ingestion (out of scope for v1).
-- No auth/multi-user support; chat history lives in the browser session,
-  not the database.
+- Single-user only: a protected deployment is possible (see
+  "Deployment" above), but there is still no multi-user/OAuth support —
+  chat history lives in the browser session, not the database.
 - Semantic Scholar's unauthenticated tier rate-limits under repeated use;
   get a free key if you hit this often.
 - Author-name parsing for APA/BibTeX (`"First Last"` → `"Last, F."`) is a

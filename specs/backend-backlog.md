@@ -3562,7 +3562,11 @@ today, cross-referenced to where each item is already tracked in detail:
 its own dedicated design document — this backlog does not duplicate or
 re-scope them, only points at them:
 
-- **OAuth/auth** — `specs/production-readiness-roadmap.md` §4.
+- **OAuth/multi-user auth** — `specs/production-readiness-roadmap.md` §4.
+  Still fully deferred. Separately, a smaller, already-completed
+  single-user HTTP Basic Auth gate exists (`docs/deployment.md`) — this
+  is NOT that roadmap item and does not substitute for it; multi-user
+  support still does not exist.
 - **PostgreSQL migration** — `specs/production-readiness-roadmap.md` §5.
 - **Multi-user support** — `specs/production-readiness-roadmap.md` §6.
 - **Tenant/workspace isolation** — `specs/production-readiness-roadmap.md`

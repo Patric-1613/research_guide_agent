@@ -3793,6 +3793,60 @@ deciding the next node. `agent.py` is the one place in this codebase where
 the model itself picks the next action (which tool to call, with what
 arguments) — that's the actual agentic component.
 
+## Single-user deployment foundation (PR2A–PR3.2)
+
+**Status: local package built and smoke-tested; no cloud deployment has
+occurred.** Full record in `docs/deployment.md` — summarized here since
+it's now a real, current part of the architecture, not aspirational.
+
+Two new layers sit around the architecture described above, both
+additive — nothing above this section changed behavior for it:
+
+- **`research_agent/auth_middleware.py`'s `BasicAuthMiddleware`** —
+  registered as the OUTERMOST ASGI middleware in `api_app/app.py`'s
+  `create_app()` (added last, so it wraps CORS, request telemetry, and
+  the body-size limit). Fail-closed: `APP_ENV=production` requires
+  `AUTH_ENABLED=true` plus a validated username/password, checked once at
+  application construction, with no production disable override. Only
+  `GET /health` is public.
+- **`research_agent/api_app/static_frontend.py`'s `mount_frontend()`** —
+  registered LAST in `create_app()`, after every `include_router(...)`
+  call. Serves `frontend/dist` from the same FastAPI process/origin:
+  `/assets` via Starlette's `StaticFiles`, a catch-all `GET` route for
+  `/`, real SPA deep links, and dist-root static files, with path-
+  traversal/symlink-escape prevention (`Path.resolve()` +
+  `is_relative_to()` containment check) and a genuine 404 (never
+  `index.html`) for an unmatched path under a reserved API-prefix
+  segment. A no-op when `frontend/dist` doesn't exist.
+
+Both inherit correctly into the existing request path with zero changes
+to any router, service, or domain module: `BasicAuthMiddleware` protects
+the new frontend routes automatically (middleware wraps the whole app
+regardless of route registration order), and `mount_frontend()`'s
+reserved-prefix derivation reads each router's own `.routes` rather than
+hand-maintaining a list, so it stays correct as routers are added.
+
+A multi-stage `Dockerfile` packages this as one non-root, one-worker
+container (`node:20-slim` frontend build → `python:3.12-slim` + `uv sync
+--frozen --no-dev` → minimal `python:3.12-slim` runtime), with the `uv`
+build tool pinned to `ghcr.io/astral-sh/uv:0.11.28` (not `latest`).
+`/app/data` is writable but not yet backed by a real persistent volume —
+that, along with hosting-platform selection, HTTPS, secret injection,
+backups, and a staging deployment, remains open (`docs/deployment.md`'s
+own "Open deployment work" list).
+
+Separately, PR2.6B fixed a real concurrency defect discovered by an
+independent review: `agent.py`'s `session.papers`/`session.web_articles`
+accumulation had an unprotected read/merge/write, reproducibly losing one
+source's papers under LangGraph `ToolNode`'s real thread-pool execution
+(20/20 in a barrier-controlled probe). Fixed with two dedicated
+`threading.Lock`s (`_papers_lock`, `_web_articles_lock`), each held only
+across the small in-memory merge step, never across the network search
+call — provider searches still run fully concurrently. See this
+document's own "Agent-path concurrency fixes" history (via the README) and
+`docs/deployment.md` for the complete write-up; no latency claim is made
+for this fix.
+
 ## Target architecture
 
 The direction (see `specs/migration-plan.md` for the phased path there,

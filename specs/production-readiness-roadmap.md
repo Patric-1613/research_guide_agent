@@ -1,12 +1,22 @@
 # Production readiness roadmap
 
-**Status: design/audit document only. Nothing in this document is implemented.**
-No auth, no OAuth, no PostgreSQL, no multi-user behavior, and no deployment
-tooling exist in this codebase as of this writing. This document is Phase 18
-of the project's standardization effort — a read-only audit of the current
-single-user codebase plus a concrete design roadmap for what production
-readiness would require, so that if/when that work starts, it starts from an
-informed plan instead of an ad hoc one.
+**Status: design/audit document only. Nothing in THIS document's own
+plan (§4's OAuth, §5's PostgreSQL, §6's multi-user model, Phases 19–27)
+is implemented.** This document is Phase 18 of the project's
+standardization effort — a read-only audit of the current single-user
+codebase plus a concrete design roadmap for what MULTI-USER production
+readiness would require, so that if/when that work starts, it starts
+from an informed plan instead of an ad hoc one.
+
+**Update, PR2A–PR3.2 (see `docs/deployment.md`):** a separate, smaller,
+already-completed track built a single-user deployment foundation
+instead — fail-closed HTTP Basic Auth (not OAuth) and a same-origin,
+non-root, one-worker Docker package (still SQLite, still no PostgreSQL).
+This is NOT the multi-user path below and does not decide any of §2's
+open product questions — OAuth, PostgreSQL, and multi-user data
+isolation all remain exactly as undecided and unimplemented as this
+document originally described. No cloud deployment has occurred under
+either track.
 
 ## 1. Current baseline
 
