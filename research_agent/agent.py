@@ -120,6 +120,24 @@ class ResearchSession:
     # arXiv and Semantic Scholar DIFFERENT suggested titles, which breaks
     # the cross-source pairing guarantee the direct-call path already has.
     _suggested_titles_lock: threading.Lock = field(default_factory=threading.Lock)
+    # PR2.6B: guards session.papers's own read/merge/write, separately from
+    # _suggested_titles_lock above — a different lock for a different
+    # invariant, not reused for convenience. search_arxiv_tool and
+    # search_semantic_scholar_tool both do `session.papers = deduplicate(
+    # session.papers + papers)`; LangGraph's ToolNode runs same-turn tool
+    # calls on a real thread pool (same confirmed fact _suggested_titles_lock's
+    # own comment cites), so two of these can interleave: both threads read
+    # the same session.papers snapshot, each computes its own merge against
+    # that stale snapshot, and whichever writes last silently discards the
+    # other's papers — a real, reproduced lost update (PR2.6A's
+    # barrier-controlled probe: 20/20 parallel runs). Only the read/merge/
+    # write itself needs to be atomic; the network call that produces new
+    # papers must happen BEFORE acquiring this (see _merge_papers_into_session
+    # below and its call sites in build_tools) so two searches still run
+    # fully concurrently — this lock only ever protects the same brief,
+    # pure, in-memory dedup step _suggested_titles_lock's own docstring
+    # warns against conflating with a different invariant.
+    _papers_lock: threading.Lock = field(default_factory=threading.Lock)
     # Round-2 enhancement 2: DOI/citation-count filters. These are set once
     # from the user's request (see run_research_agent) and read directly by
     # rerank_by_relevance_tool below — deliberately NOT exposed as tool-call
@@ -134,6 +152,16 @@ class ResearchSession:
     # section stay independently sized and independently displayed all the
     # way through to the UI.
     web_articles: list[WebArticle] = field(default_factory=list)
+    # PR2.6B: web_articles gets its OWN lock, not _papers_lock -- same
+    # "separate accumulated pool" reasoning as the field comment right
+    # above, carried through to the concurrency-control layer: the papers
+    # pool and the web-articles pool are independent invariants, so
+    # serializing one must never block the other. search_web_tool is the
+    # only tool that touches this pool, but nothing prevents a future
+    # second web-search tool from racing it the same way arXiv/Semantic
+    # Scholar race today, so it's protected on the same footing now rather
+    # than left as a latent, undiscovered version of the same bug.
+    _web_articles_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 # Same cap and same reasoning as query_expansion.py's
@@ -201,6 +229,35 @@ def _merge_web_articles(existing: list[WebArticle], new: list[WebArticle]) -> li
     return merged
 
 
+def _merge_papers_into_session(session: ResearchSession, new_papers: list[Paper]) -> list[Paper]:
+    """PR2.6B: the ONLY place session.papers is ever read, merged, or
+    written — atomically, under session._papers_lock. Callers (search_
+    arxiv_tool/search_semantic_scholar_tool below) must have already
+    finished every network call that produced `new_papers` BEFORE calling
+    this; nothing here ever blocks on I/O, so the lock is held only for a
+    read + deduplicate() (pure, in-memory) + write, never for a search.
+    Returns the new merged pool so a caller can report an exact, race-free
+    count in its own tool message instead of re-reading session.papers a
+    second time afterward (which could observe a DIFFERENT thread's
+    subsequent merge instead of this call's own result)."""
+    with session._papers_lock:
+        merged = deduplicate(session.papers + new_papers)
+        session.papers = merged
+        return merged
+
+
+def _merge_web_articles_into_session(session: ResearchSession, new_articles: list[WebArticle]) -> list[WebArticle]:
+    """PR2.6B: the web-articles counterpart of _merge_papers_into_session
+    above, under the separate session._web_articles_lock (see that field's
+    own comment on why it's not shared with _papers_lock). Reuses
+    _merge_web_articles's existing pure merge logic unchanged — only the
+    read/write around it is now atomic."""
+    with session._web_articles_lock:
+        merged = _merge_web_articles(session.web_articles, new_articles)
+        session.web_articles = merged
+        return merged
+
+
 def build_tools(session: ResearchSession) -> list:
     @tool
     def search_arxiv_tool(query: str) -> str:
@@ -239,12 +296,12 @@ def build_tools(session: ResearchSession) -> list:
                     _search_titles_bounded(search_arxiv, titles, _TITLE_SEARCH_MAX_RESULTS, _MAX_CONCURRENT_TITLE_SEARCHES)
                 ):
                     papers += title_papers
-            session.papers = deduplicate(session.papers + papers)
+            merged = _merge_papers_into_session(session, papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
                 f"arXiv returned {len(papers)} paper(s) for query {query!r} "
                 f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
-                f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
+                f"Working pool now has {len(merged)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
             # A tool failure (e.g. an unexpected network/API error that
@@ -286,12 +343,12 @@ def build_tools(session: ResearchSession) -> list:
                     )
                 ):
                     papers += title_papers
-            session.papers = deduplicate(session.papers + papers)
+            merged = _merge_papers_into_session(session, papers)
             sample = "; ".join(p.title for p in papers[:5])
             return (
                 f"Semantic Scholar returned {len(papers)} paper(s) for query {query!r} "
                 f"(including any from {len(session.suggested_titles or [])} suggested landmark title(s)). "
-                f"Working pool now has {len(session.papers)} paper(s) total. Sample: {sample or '(none)'}"
+                f"Working pool now has {len(merged)} paper(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
             logger.warning("search_semantic_scholar_tool failed for query %r: %s", query, exc)
@@ -397,11 +454,11 @@ def build_tools(session: ResearchSession) -> list:
         never blocks or changes the paper search."""
         try:
             articles = search_web(query, max_results=max_results)
-            session.web_articles = _merge_web_articles(session.web_articles, articles)
+            merged = _merge_web_articles_into_session(session, articles)
             sample = "; ".join(a.title for a in articles[:5])
             return (
                 f"Web search returned {len(articles)} article(s) for query {query!r}. "
-                f"Web context pool now has {len(session.web_articles)} article(s) total. Sample: {sample or '(none)'}"
+                f"Web context pool now has {len(merged)} article(s) total. Sample: {sample or '(none)'}"
             )
         except Exception as exc:
             logger.warning("search_web_tool failed for query %r: %s", query, exc)
