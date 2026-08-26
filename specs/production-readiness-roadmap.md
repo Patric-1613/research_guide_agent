@@ -8,14 +8,17 @@ codebase plus a concrete design roadmap for what MULTI-USER production
 readiness would require, so that if/when that work starts, it starts
 from an informed plan instead of an ad hoc one.
 
-**Update, PR2A–PR3.2 (see `docs/deployment.md`):** a separate, smaller,
+**Update, PR2A–PR3.3 (see `docs/deployment.md`):** a separate, smaller,
 already-completed track built a single-user deployment foundation
-instead — fail-closed HTTP Basic Auth (not OAuth) and a same-origin,
-non-root, one-worker Docker package (still SQLite, still no PostgreSQL).
-This is NOT the multi-user path below and does not decide any of §2's
-open product questions — OAuth, PostgreSQL, and multi-user data
-isolation all remain exactly as undecided and unimplemented as this
-document originally described. No cloud deployment has occurred under
+instead — fail-closed HTTP Basic Auth (not OAuth), a same-origin,
+non-root, one-worker Docker package (still SQLite, still no PostgreSQL),
+and a local, standard-library-only backup/verify/restore tool
+(`scripts/data_backup.py`) validated in one real drill against the
+actual application data. This is NOT the multi-user path below and does
+not decide any of §2's open product questions — OAuth, PostgreSQL, and
+multi-user data isolation all remain exactly as undecided and
+unimplemented as this document originally described. No cloud deployment
+has occurred under
 either track.
 
 ## 1. Current baseline

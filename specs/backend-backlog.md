@@ -3567,6 +3567,12 @@ re-scope them, only points at them:
   single-user HTTP Basic Auth gate exists (`docs/deployment.md`) — this
   is NOT that roadmap item and does not substitute for it; multi-user
   support still does not exist.
+- **Automated/off-site backups, retention policy, encryption at rest** —
+  `docs/deployment.md` §5. A local, manually-invoked create/verify/
+  restore tool (`scripts/data_backup.py`) exists and was validated
+  against real data — scheduling, remote/cloud storage, pruning, and
+  encryption are still all open, tied to whichever hosting platform is
+  eventually chosen.
 - **PostgreSQL migration** — `specs/production-readiness-roadmap.md` §5.
 - **Multi-user support** — `specs/production-readiness-roadmap.md` §6.
 - **Tenant/workspace isolation** — `specs/production-readiness-roadmap.md`

@@ -1,14 +1,18 @@
 # Deployment
 
-**Status: single-user deployment foundation complete. No cloud deployment
-has occurred yet.** This document records what PR2A through PR3.2 actually
-built — a protected, same-origin, single-process production package this
-app can be deployed as, once a hosting platform is chosen — and lists
-exactly what real deployment still requires. It is a separate, smaller,
-already-completed track from `specs/production-readiness-roadmap.md`'s own
-Phase 19–27 plan (OAuth, PostgreSQL, multi-user, tenant isolation) — that
-roadmap remains fully deferred and undecided; nothing below substitutes
-for it. See that document for the multi-user path, if/when it's needed.
+**Status: single-user deployment foundation complete, including a verified
+local backup/restore procedure. No cloud deployment has occurred yet.**
+This document records what PR2A through PR3.3 actually built — a
+protected, same-origin, single-process production package this app can
+be deployed as, once a hosting platform is chosen, plus a local
+create/verify/restore workflow for its data directory, validated
+against the real application data in one bounded drill (PR3.3d) — and
+lists exactly what real deployment still requires. It is a separate,
+smaller, already-completed track from
+`specs/production-readiness-roadmap.md`'s own Phase 19–27 plan (OAuth,
+PostgreSQL, multi-user, tenant isolation) — that roadmap remains fully
+deferred and undecided; nothing below substitutes for it. See that
+document for the multi-user path, if/when it's needed.
 
 ## What exists today
 
@@ -156,6 +160,90 @@ flaky by construction. The rest of this project's test suite (including
 every other test file) runs normally sequentially; only this file's
 tests deliberately exercise real multi-threaded execution.
 
+### 5. Backup and restore (PR3.3, complete — local foundation only)
+
+`scripts/data_backup.py` — a single-file, platform-neutral `create`/
+`verify`/`restore` CLI, standard library only (`hashlib`/`json`/`os`/
+`shutil`/`tempfile`; no cloud storage client, no new dependency):
+
+```bash
+# Create a snapshot -- the application MUST be stopped (or otherwise
+# proven quiescent) first; --confirm-quiescent is required and is an
+# operator assertion, not something this tool verifies for you.
+uv run python scripts/data_backup.py create \
+  --data-dir data --snapshots-dir <snapshots-dir> \
+  --name <snapshot-name> --confirm-quiescent
+
+# Verify a published snapshot against its own manifest.
+uv run python scripts/data_backup.py verify <snapshots-dir>/<snapshot-name>
+
+# Restore into a brand-new destination -- the destination must NOT
+# already exist, and must not be data/, a data/ descendant, the
+# repository root, the snapshot itself, or a path inside it.
+uv run python scripts/data_backup.py restore <snapshots-dir>/<snapshot-name> <new-destination>
+```
+
+**Manifest/hash/symlink protections**: every regular file under
+`--data-dir` is recorded in a `manifest.json` (relative POSIX path,
+exact byte size, SHA-256) written by `create`; `manifest.json` and every
+payload file are refused outright if they are a symlink, both at
+directory-walk time and again immediately before each copy; the
+manifest schema is strictly validated (exact field sets/types, path
+normalization, no `.`/`..`/absolute/duplicate paths, non-negative sizes,
+a strict `re.fullmatch()`-checked 64-character lowercase hex SHA-256 —
+not a `$`-anchored `re.match()`, which would wrongly accept a trailing
+newline) before anything is trusted; every malformed case converts to
+one clean error, never a raw exception.
+
+**Transactional staging**: `create` builds the whole snapshot inside a
+temp directory created *inside* `--snapshots-dir`, fully self-verifies
+it, re-checks immediately before publish that nothing else has since
+created the final path, and only then publishes with one same-
+filesystem `os.rename`. `restore` does the same under the destination's
+own resolved parent. A handled failure at any point removes only that
+operation's own staging directory and leaves the requested destination
+untouched/absent.
+
+**Trust model (documented, not a security boundary)**: this tool assumes
+a single trusted operator and no concurrent/hostile mutation of
+`--data-dir` or a restore destination's parent during one invocation.
+`os.O_NOFOLLOW` (used for every content read this tool performs) narrows
+only the final-path-component symlink race; it is not a portable
+guarantee, and no locking, `ctypes`, `renameat2`, elevated privileges, or
+coordination process was added to close it further. The immediately-
+before-publish existence re-check narrows, but does not eliminate, the
+final publish race — POSIX `rename()` can succeed and replace an *empty*
+directory target, so a same-instant external creation is not always an
+outright failure. This is **not** protection against a hostile or
+actively-racing filesystem, and it does not make copying several live
+SQLite/Chroma stores cross-consistent — that is exactly what
+`--confirm-quiescent` exists to require instead.
+
+**Real drill (PR3.3d)**: with the real dev server gracefully stopped
+(confirmed: every tracked PID exited, port 8000 free, no process held a
+file under `data/`), ran `create` against the real `data/` (**17 files,
+1,179,934,532 bytes**), `verify` (passed), `restore` into a new sibling
+destination, and an independent, freshly-written comparison (not reusing
+`scripts/data_backup.py`'s own code) confirming the restored tree's
+relative-path set, sizes, and SHA-256 hashes were identical to a
+preflight fingerprint of the original — 17/17 files, byte-for-byte. A
+second independent re-fingerprint of the real `data/` directory after
+the full drill confirmed it remained byte-identical throughout. The
+backend was then restarted with the exact original command/cwd and
+`GET /health` returned 200. Zero paid/provider calls; the drill
+snapshot and restored copy were built entirely under
+`/private/tmp/first-agent-pr3.3-drill/`, never inside the repository or
+`data/`, and were deleted afterward.
+
+**This is a local backup/restore foundation only.** Explicitly not
+built or claimed: automated/scheduled backups, remote or off-site
+storage, a retention policy, encryption at rest or in transit, or any
+cloud-volume/managed-backup integration — all remain deployment-time
+follow-ups, tied to whichever hosting platform is eventually chosen (see
+"Open deployment work" below). This is not a disaster-recovery
+capability and does not by itself make the current single-instance
+deployment production-complete.
+
 ## Validation evidence (this checkpoint, PR3.2)
 
 - Docker image built from the current `Dockerfile` (public base images
@@ -198,8 +286,17 @@ tests deliberately exercise real multi-threaded execution.
 - **Persistent-volume provisioning** — `/app/data` is writable but not
   yet backed by a real platform volume; every restart today (without an
   explicit bind mount) loses all SQLite/Chroma/checkpoint state.
-- **Backup/restore drill** — no backup mechanism or restore rehearsal
-  exists yet.
+- **Backup/restore automation and remote storage** (the local
+  create/verify/restore foundation itself is DONE — see §5 above and
+  PR3.3d's real drill evidence): automated/scheduled backups, remote or
+  off-site (cloud storage) copies of a snapshot, a retention/pruning
+  policy, and encryption at rest or in transit are all still open —
+  today's snapshots are local-filesystem-only and taken by hand.
+- **Cloud-volume/managed-backup integration** — tied to whichever
+  hosting platform is eventually chosen; `scripts/data_backup.py` is
+  platform-neutral by design specifically so it isn't blocked on this
+  decision, but no platform-specific volume-snapshot feature has been
+  wired up.
 - **Staging deployment and one bounded live journey** — no real
   deployment has occurred; the one paid, real end-to-end journey this
   project's own PR-phase plan calls for is still pending and requires

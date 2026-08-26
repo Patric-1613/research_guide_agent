@@ -3793,11 +3793,12 @@ deciding the next node. `agent.py` is the one place in this codebase where
 the model itself picks the next action (which tool to call, with what
 arguments) — that's the actual agentic component.
 
-## Single-user deployment foundation (PR2A–PR3.2)
+## Single-user deployment foundation (PR2A–PR3.3)
 
-**Status: local package built and smoke-tested; no cloud deployment has
-occurred.** Full record in `docs/deployment.md` — summarized here since
-it's now a real, current part of the architecture, not aspirational.
+**Status: local package built and smoke-tested, local backup/restore
+verified against real data; no cloud deployment has occurred.** Full
+record in `docs/deployment.md` — summarized here since it's now a real,
+current part of the architecture, not aspirational.
 
 Two new layers sit around the architecture described above, both
 additive — nothing above this section changed behavior for it:
@@ -3834,6 +3835,34 @@ build tool pinned to `ghcr.io/astral-sh/uv:0.11.28` (not `latest`).
 that, along with hosting-platform selection, HTTPS, secret injection,
 backups, and a staging deployment, remains open (`docs/deployment.md`'s
 own "Open deployment work" list).
+
+**`scripts/data_backup.py` (PR3.3, complete — local foundation only)** —
+a single-file, standard-library-only `create`/`verify`/`restore` CLI for
+`data/`. `create` requires `--confirm-quiescent` (the app must be
+stopped first — this tool never claims copying several live SQLite/
+Chroma stores is atomic); every regular file is recorded in a strictly-
+validated `manifest.json` (relative path, size, a `re.fullmatch()`-
+checked SHA-256); every symlink, in the manifest or the payload, is
+refused; `restore` only ever targets a brand-new destination (never
+`data/`, a `data/` descendant, the repository root, or a path in/
+containing the snapshot); both `create` and `restore` stage their full
+output in a same-filesystem temp directory, fully re-verify it, and
+publish via one `os.rename` — a handled failure cleans up only that
+operation's own staging directory. The documented trust model is
+explicit: a single trusted operator, no concurrent/hostile filesystem
+mutation, `O_NOFOLLOW` narrowing (not eliminating) the final-component
+symlink race — not adversarial-filesystem protection. **PR3.3d** ran one
+real, quiescent drill against the actual application data (dev server
+gracefully stopped, port 8000 confirmed free, no process holding a file
+under `data/`): 17 files / 1,179,934,532 bytes backed up, verified,
+restored into a new sibling directory, and independently confirmed
+byte-identical (path set, sizes, SHA-256) to a preflight fingerprint of
+the original; a second independent re-fingerprint of the real `data/`
+directory confirmed it was untouched throughout. Automated scheduling,
+remote/off-site storage, a retention policy, encryption, and cloud-
+volume integration all remain open (`docs/deployment.md`'s own "Open
+deployment work" list) — this is a local foundation, not a disaster-
+recovery capability.
 
 Separately, PR2.6B fixed a real concurrency defect discovered by an
 independent review: `agent.py`'s `session.papers`/`session.web_articles`

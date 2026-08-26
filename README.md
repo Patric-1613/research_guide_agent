@@ -846,13 +846,19 @@ A protected, same-origin, single-process production package exists —
 fail-closed HTTP Basic Auth (only `GET /health` is public), FastAPI
 serving the built React frontend from the same origin as the API, and a
 non-root, one-uvicorn-worker Docker image with a pinned build-tool
-version. **No cloud deployment has occurred yet** — hosting-platform
-selection, HTTPS termination, real secret injection, persistent-volume
-provisioning, a backup/restore drill, a staging deployment with one
-bounded live journey, and monitoring/alerting are all still open. See
-`docs/deployment.md` for the full record, including exactly what was
-validated (a local Docker build + smoke test, zero paid calls) and what
-remains.
+version. A local backup/restore procedure also exists: `scripts/
+data_backup.py` `create`/`verify`/`restore`, requiring the app stopped
+(`--confirm-quiescent`) before snapshotting and only ever restoring into
+a brand-new destination outside `data/` — validated in one real,
+quiescent drill against the actual application data (17 files,
+1,179,934,532 bytes, restored byte-for-byte identical; original `data/`
+confirmed unchanged). **No cloud deployment has occurred yet** —
+hosting-platform selection, HTTPS termination, real secret injection,
+persistent-volume provisioning, automated/off-site backups, a staging
+deployment with one bounded live journey, and monitoring/alerting are
+all still open. See `docs/deployment.md` for the full record, including
+exactly what was validated (a local Docker build + smoke test and the
+backup/restore drill, zero paid calls in either) and what remains.
 
 ## Known limitations
 
