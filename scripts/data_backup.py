@@ -152,16 +152,21 @@ more real gaps in the PR3.3a design):
   protection. This is a real, honest narrowing of common accidental
   cases (a stray symlink already sitting in a directory), not a claim
   of adversarial-filesystem-proof behavior.
-- **The immediately-before-publish existence re-check does not
-  eliminate the final race.** `create`/`restore` both re-check that the
-  publish path is still absent right before the one `os.rename()` call
-  that publishes it -- but something else could still create that exact
-  path in the (very small) window between that check and the rename
-  itself. If `os.rename()`'s target already exists as a directory by the
-  time it actually runs, the rename fails and this tool's existing
-  cleanup path removes only its own staging directory, leaving whatever
-  was externally created untouched -- but this re-check narrows, and
-  does not eliminate, that final window.
+- **The immediately-before-publish existence re-check narrows, but does
+  not eliminate, the final race.** `create`/`restore` both re-check that
+  the publish path is still absent right before the one `os.rename()`
+  call that publishes it -- but something else could still create that
+  exact path in the (very small) remaining window between that check
+  and the rename itself. What `os.rename()` does if that happens is NOT
+  uniformly "it fails": on POSIX, `rename()` can succeed and silently
+  REPLACE a destination that is an empty directory (this is standard
+  POSIX rename semantics, not a bug in this tool) -- it only reliably
+  fails the way this tool's error handling assumes when the destination
+  is a non-empty directory or otherwise incompatible with the source.
+  Safe operation of this final step assumes a single trusted operator
+  and no concurrent mutation of the destination's parent directory
+  during the operation -- it is not a guarantee against an adversarial
+  or actively racing filesystem.
 - **It does not make copying several live SQLite/Chroma stores
   cross-consistent or atomic.** SQLite databases in this project may be
   in WAL mode with a `-wal`/`-shm` sidecar holding not-yet-checkpointed
