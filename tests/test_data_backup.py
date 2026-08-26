@@ -372,14 +372,44 @@ def test_manifest_schema_rejects_non_integer_size():
 
 def test_manifest_schema_rejects_malformed_sha256_too_short():
     m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "abc"}])
-    with pytest.raises(BackupError, match="64-character lowercase hex"):
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_sha256_too_long():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "a" * 65}])
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
         validate_manifest_schema(m)
 
 
 def test_manifest_schema_rejects_uppercase_sha256():
     m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "A" * 64}])
-    with pytest.raises(BackupError, match="64-character lowercase hex"):
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
         validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_non_hexadecimal_sha256():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "g" * 64}])
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_sha256_with_a_trailing_newline():
+    """PR3.3b: the original `^[0-9a-f]{64}$` pattern used with
+    re.match() would WRONGLY accept this -- Python's '$' matches just
+    before a single trailing newline. fullmatch() must not."""
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "a" * 64 + "\n"}])
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_sha256_with_leading_or_trailing_whitespace():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": " " + "a" * 63}])
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
+        validate_manifest_schema(m)
+    m2 = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "a" * 63 + " "}])
+    with pytest.raises(BackupError, match="64 lowercase hexadecimal"):
+        validate_manifest_schema(m2)
 
 
 def test_manifest_schema_rejects_file_count_mismatch():
@@ -475,6 +505,62 @@ def test_restore_refuses_the_real_project_data_directory(tmp_path):
         restore_snapshot(snapshot_dir, real_data_dir)
 
 
+# --- PR3.3b Finding 1: the data/ protection must cover every descendant
+# (resolved-path containment), not just an exact match -- and must NOT
+# reject a merely similarly-named sibling like data-copy. These use a
+# monkeypatched fake project root so they never touch the real repo,
+# not even a read of an existing path, per this checkpoint's own "do
+# not inspect or operate on real data/" boundary. ---
+
+def test_restore_refuses_a_shallow_descendant_of_the_real_data_directory(tmp_path, monkeypatch):
+    fake_project_root = tmp_path / "fake-project"
+    fake_project_root.mkdir()
+    monkeypatch.setattr(data_backup, "_project_root", lambda: fake_project_root)
+    data_dir = _make_realistic_data_dir(tmp_path / "source-data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    descendant = fake_project_root / "data" / "restore-drill"
+
+    with pytest.raises(BackupError, match="real project data directory"):
+        restore_snapshot(snapshot_dir, descendant)
+
+    assert not descendant.exists()
+
+
+def test_restore_refuses_a_deep_descendant_of_the_real_data_directory(tmp_path, monkeypatch):
+    fake_project_root = tmp_path / "fake-project"
+    fake_project_root.mkdir()
+    monkeypatch.setattr(data_backup, "_project_root", lambda: fake_project_root)
+    data_dir = _make_realistic_data_dir(tmp_path / "source-data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    deep_descendant = fake_project_root / "data" / "a" / "b" / "c" / "restore-drill"
+
+    with pytest.raises(BackupError, match="real project data directory"):
+        restore_snapshot(snapshot_dir, deep_descendant)
+
+    assert not deep_descendant.exists()
+
+
+def test_restore_allows_a_similarly_named_sibling_of_the_data_directory(tmp_path, monkeypatch):
+    """`data-copy` is NOT inside `data/` -- its string representation
+    happens to start with "data", so a naive string-prefix check would
+    wrongly reject it, but Path.is_relative_to() (resolved-path
+    containment) correctly allows it. This is the one test in this
+    group that actually completes a restore -- into a sibling of the
+    FAKE (monkeypatched) project root's data/ directory, never the real
+    one."""
+    fake_project_root = tmp_path / "fake-project"
+    fake_project_root.mkdir()
+    monkeypatch.setattr(data_backup, "_project_root", lambda: fake_project_root)
+    data_dir = _make_realistic_data_dir(tmp_path / "source-data")
+    before = _fingerprint(data_dir)
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    sibling_dest = fake_project_root / "data-copy"
+
+    restore_snapshot(snapshot_dir, sibling_dest)
+
+    assert _fingerprint(sibling_dest) == before
+
+
 def test_restore_refuses_the_snapshot_directory_itself(tmp_path):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
@@ -531,6 +617,48 @@ def test_restore_refuses_a_snapshot_that_fails_its_own_verification(tmp_path):
         restore_snapshot(snapshot_dir, tmp_path / "restored")
 
     assert not (tmp_path / "restored").exists()
+
+
+# --- PR3.3b Finding 3: the immediately-before-publish re-check ---
+
+def test_restore_fails_and_preserves_a_destination_created_immediately_before_publish(tmp_path):
+    """Simulates another process winning the race in the exact window
+    between this restore's own staged self-verification succeeding and
+    its immediately-before-publish re-check running -- that re-check
+    (PR3.3b) must catch the now-existing destination, refuse to
+    publish, leave the externally-created destination completely
+    untouched, and still clean up this restore's own staging
+    directory."""
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    dest = tmp_path / "restored"
+
+    real_diff = data_backup._diff_against_manifest
+
+    def racing_diff(directory, manifest):
+        result = real_diff(directory, manifest)
+        if ".restore-staging-" in directory.name:
+            # This restore's own staged copy just passed verification --
+            # simulate something else creating dest_dir right now, before
+            # the immediately-before-publish re-check gets to run.
+            dest.mkdir(parents=True)
+            (dest / "created-by-someone-else.txt").write_text("not this restore's doing")
+        return result
+
+    with patch.object(data_backup, "_diff_against_manifest", side_effect=racing_diff):
+        with pytest.raises(BackupError, match="created by something else"):
+            restore_snapshot(snapshot_dir, dest)
+
+    # The externally-created destination is left completely untouched --
+    # not replaced, not merged into.
+    contents = {p.name for p in dest.iterdir()}
+    assert contents == {"created-by-someone-else.txt"}
+    assert (dest / "created-by-someone-else.txt").read_text() == "not this restore's doing"
+    assert not (dest / "history.sqlite").exists()
+
+    # This restore's own staging directory was still cleaned up.
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".restore-staging-")]
+    assert leftovers == []
 
 
 def test_interrupted_restore_leaves_destination_absent(tmp_path):

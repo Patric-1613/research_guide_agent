@@ -62,11 +62,37 @@ item below reflects the corrected design, not the original):
   filesystem `os.rename`. A caught failure removes the staging directory
   and leaves the requested destination absent.
 
-**What this tool guarantees:**
+**PR3.3b correction pass** (a further independent review found three
+more real gaps in the PR3.3a design):
 
-- Every REGULAR file beneath `--data-dir` is included, addressed by its
-  path relative to `--data-dir` (POSIX-style, forward slashes, so a
-  manifest is portable across OSes).
+- `restore`'s "protect the real project `data/` directory" check
+  compared `dest_dir` to `data/` with `==` only, so a DESCENDANT of
+  `data/` (e.g. `data/restore-drill`, or any path nested arbitrarily
+  deep beneath it) was not caught. Fixed with `Path.is_relative_to()` --
+  resolved-path CONTAINMENT, not a string-prefix comparison (a naive
+  `str.startswith()` check would also incorrectly reject an unrelated,
+  merely similarly-named sibling like `data-copy`; `is_relative_to`
+  compares path components, so it does not).
+- The SHA-256 schema check used `_SHA256_RE.match()` against a
+  `^[0-9a-f]{64}$`-anchored pattern -- but Python's `$` (without
+  `re.MULTILINE`) matches either the true end of the string OR
+  immediately before a single trailing `\n`, so a hash value with a
+  trailing newline would have WRONGLY passed. Fixed with
+  `re.fullmatch()` against an unanchored `[0-9a-f]{64}` pattern --
+  `fullmatch()` has no such carve-out; the entire string, trailing
+  newline included, must be consumed.
+- Several claims below and in the CLI's own text overstated what a
+  plain local filesystem, with no locking, can actually promise under
+  CONCURRENT external mutation. See the honest trust model in "What
+  this tool explicitly does NOT guarantee" below -- every "guarantee"
+  above and below it should be read subject to that model, not as an
+  unconditional promise.
+
+**What this tool guarantees (subject to the trust model below):**
+
+- Every REGULAR file beneath `--data-dir` at the time it is walked is
+  included, addressed by its path relative to `--data-dir` (POSIX-style,
+  forward slashes, so a manifest is portable across OSes).
 - A snapshot's `manifest.json` records, for every file, its relative
   path, exact byte size, and SHA-256 — the one source of truth `verify`/
   `restore` both check everything else against.
@@ -74,23 +100,68 @@ item below reflects the corrected design, not the original):
   `tempfile.mkdtemp` INSIDE `--snapshots-dir` (so the final publish step
   is a same-filesystem, single `os.rename`) and is only renamed into its
   final, published name after a full self-verification pass of the
-  staged copy succeeds. Likewise, `restore` stages under the
-  destination's own resolved parent and only renames into the real
-  destination path after its own full self-verification pass succeeds.
+  staged copy succeeds, AND an immediately-before-publish re-check that
+  nothing else has since created that final path. Likewise, `restore`
+  stages under the destination's own resolved parent, re-verifies fully,
+  and re-checks the destination is still absent immediately before its
+  own publish.
 - `restore` re-verifies the SOURCE snapshot against its own manifest
   BEFORE copying anything, and re-verifies the STAGED restore before
   publishing it.
-- `restore` never overwrites, merges into, or deletes anything at an
+- `restore` does not merge into, or delete anything already at, an
   existing destination — it requires a destination that does not exist
-  and creates it atomically or not at all.
-- No symlink anywhere beneath `--data-dir`, beneath a snapshot being
-  read, or at/above a restore destination is ever followed, backed up,
-  or restored into.
+  when checked, and either creates it via one atomic rename or creates
+  nothing at all.
+- Every static symlink already in place beneath `--data-dir`, beneath a
+  snapshot being read, or at/above a restore destination at the moment
+  this tool inspects that location is detected and refused -- ordinary,
+  non-adversarial mistakes (an accidental symlink, an accidental
+  existing file at a destination) are reliably caught.
 - `--snapshots-dir` is checked against `--data-dir` at the start of
   `create` — one can never be nested inside the other.
 
-**What this tool explicitly does NOT guarantee:**
+**What this tool explicitly does NOT guarantee (the trust model):**
 
+- **Safety here assumes no HOSTILE or CONCURRENT filesystem mutation
+  during a single `create`/`verify`/`restore` invocation.** Every check
+  in this module (`is_symlink()`, a directory walk, an existence check)
+  is a snapshot of the filesystem's state at the instant it runs, not a
+  lock held for the operation's duration. Between any such check and the
+  operation that follows it (a copy, a rename), something else with
+  write access to the same filesystem COULD replace a file with a
+  symlink, create a path this tool had just confirmed was absent, or
+  otherwise change what a later step actually observes. This tool
+  narrows those windows where it reasonably can (see below) but cannot
+  close them on a plain local filesystem with no locking primitive --
+  and deliberately adds none (no `ctypes`, no `renameat2`/other
+  platform-specific syscalls, no file locking, no elevated privileges,
+  no daemon/coordination process, no new dependency). It is designed for
+  a single trusted operator running one of these commands at a time
+  against a filesystem nothing else is actively attacking or racing --
+  not for an adversarial or highly concurrent environment.
+- **`os.O_NOFOLLOW` (used for every payload copy, payload hash, and
+  manifest read this module performs, wherever the platform provides
+  it) narrows only the FINAL-path-component race** — the gap between an
+  earlier check (a directory walk, an `is_symlink()` call) and the
+  actual open of that exact path. It says nothing about, and cannot
+  prevent, a component EARLIER in the path being replaced with a
+  symlink after that component was already traversed, nor is it a
+  portable guarantee: platforms without `O_NOFOLLOW` fall back to a
+  plain open, still preceded by this module's own explicit
+  `is_symlink()` check but without the kernel-enforced final-component
+  protection. This is a real, honest narrowing of common accidental
+  cases (a stray symlink already sitting in a directory), not a claim
+  of adversarial-filesystem-proof behavior.
+- **The immediately-before-publish existence re-check does not
+  eliminate the final race.** `create`/`restore` both re-check that the
+  publish path is still absent right before the one `os.rename()` call
+  that publishes it -- but something else could still create that exact
+  path in the (very small) window between that check and the rename
+  itself. If `os.rename()`'s target already exists as a directory by the
+  time it actually runs, the rename fails and this tool's existing
+  cleanup path removes only its own staging directory, leaving whatever
+  was externally created untouched -- but this re-check narrows, and
+  does not eliminate, that final window.
 - **It does not make copying several live SQLite/Chroma stores
   cross-consistent or atomic.** SQLite databases in this project may be
   in WAL mode with a `-wal`/`-shm` sidecar holding not-yet-checkpointed
@@ -139,7 +210,14 @@ MANIFEST_FILENAME = "manifest.json"
 MANIFEST_FORMAT_VERSION = 1
 _HASH_CHUNK_BYTES = 1024 * 1024  # 1 MiB streamed reads -- correct regardless of file size.
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# PR3.3b: no '^'/'$' anchors -- paired with re.fullmatch() below, not
+# re.match(). '$' (without re.MULTILINE) matches either at the true end
+# of the string OR immediately before a single trailing '\n' -- so
+# `_SHA256_RE.match(64_hex_chars + "\n")` would WRONGLY pass under the
+# original `^...$` + .match() combination. fullmatch() has no such
+# carve-out: it requires the ENTIRE string, including any trailing
+# newline, to be consumed by the pattern.
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ALLOWED_TOP_LEVEL_KEYS = frozenset({
     "manifest_format_version", "created_at_utc", "source_data_dir", "file_count", "total_bytes", "files",
 })
@@ -159,15 +237,48 @@ def _schema_error(message: str) -> BackupError:
 
 # --- hashing / filesystem walk ---------------------------------------
 
+def _open_no_follow(path: Path) -> int:
+    """Opens `path` read-only, refusing to follow a symlink at the FINAL
+    path component wherever the platform provides `os.O_NOFOLLOW`
+    (POSIX). This is the one place every no-follow read in this module
+    (payload copy, payload hashing, manifest reading) goes through, so
+    they all get the same narrowing -- see this module's own top-level
+    docstring for the honest trust model this operates under: it
+    narrows, it does not close, the gap between an earlier check (a
+    directory walk, an `is_symlink()` call) and this actual open."""
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is not None:
+        flags |= nofollow
+    return os.open(path, flags)
+
+
 def _sha256_of_file(path: Path) -> str:
+    try:
+        fd = _open_no_follow(path)
+    except OSError as exc:
+        raise BackupError(f"refusing to read {path} (symlink or unreadable): {exc}") from exc
     digest = hashlib.sha256()
-    with path.open("rb") as f:
+    with os.fdopen(fd, "rb") as f:
         while True:
             chunk = f.read(_HASH_CHUNK_BYTES)
             if not chunk:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_text_no_follow(path: Path) -> str:
+    try:
+        fd = _open_no_follow(path)
+    except OSError as exc:
+        raise BackupError(f"refusing to read {path} (symlink or unreadable): {exc}") from exc
+    with os.fdopen(fd, "rb") as f:
+        raw = f.read()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BackupError(f"{path} is not valid UTF-8 text: {exc}") from exc
 
 
 def _relative_posix(path: Path, root: Path) -> str:
@@ -218,19 +329,13 @@ def _iter_regular_files(root: Path, ignore_top_level_names: frozenset[str] = fro
 
 
 def _copy_regular_file_no_follow(src: Path, dst: Path) -> None:
-    """Copies src -> dst, refusing to follow a symlink at the final path
-    component. Uses `os.O_NOFOLLOW` (POSIX) to narrow -- not fully close
-    -- the TOCTOU window between an earlier `is_symlink()` check at the
-    call site and this actual read; there is no bundled equivalent for
-    every platform Python runs on, so this degrades to a plain open
-    (still preceded by the caller's explicit `is_symlink()` check) where
-    `O_NOFOLLOW` isn't available."""
-    flags = os.O_RDONLY
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is not None:
-        flags |= nofollow
+    """Copies src -> dst via `_open_no_follow` -- refuses to follow a
+    symlink at src's final path component wherever the platform
+    provides `os.O_NOFOLLOW`, narrowing (see `_open_no_follow`'s own
+    docstring) the TOCTOU window between an earlier `is_symlink()` check
+    at the call site and this actual read."""
     try:
-        fd = os.open(src, flags)
+        fd = _open_no_follow(src)
     except OSError as exc:
         raise BackupError(f"refusing to read {src} (symlink or unreadable): {exc}") from exc
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -394,8 +499,8 @@ def validate_manifest_schema(raw: Any) -> dict[str, Any]:
             raise _schema_error(f"files[{i}].size must be a non-negative integer")
 
         sha256 = entry["sha256"]
-        if not isinstance(sha256, str) or not _SHA256_RE.match(sha256):
-            raise _schema_error(f"files[{i}].sha256 must be a 64-character lowercase hex string")
+        if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+            raise _schema_error(f"files[{i}].sha256 must be exactly 64 lowercase hexadecimal characters")
 
         validated_files.append({"path": path, "size": size, "sha256": sha256})
         total_bytes += size
@@ -432,14 +537,17 @@ def _load_manifest_dict(snapshot_dir: Path) -> dict[str, Any]:
     validates its schema before ever returning it. Every caller in this
     module that needs the manifest's content goes through this function
     (or a value it already produced) -- never a second, independent read
-    of the file."""
+    of the file. Reads via `_read_text_no_follow` (the same O_NOFOLLOW
+    helper payload copying/hashing use) to narrow -- not eliminate -- the
+    gap between the `is_symlink()` check just below and the actual read."""
     manifest_path = snapshot_dir / MANIFEST_FILENAME
     if manifest_path.is_symlink():
         raise BackupError(f"{manifest_path} is a symlink -- {MANIFEST_FILENAME} must be a regular file")
     if not manifest_path.is_file():
         raise BackupError(f"no {MANIFEST_FILENAME} found in {snapshot_dir} -- not a valid snapshot")
+    raw_text = _read_text_no_follow(manifest_path)
     try:
-        raw = json.loads(manifest_path.read_text())
+        raw = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise BackupError(f"manifest at {manifest_path} is not valid JSON: {exc}") from exc
     return validate_manifest_schema(raw)
@@ -551,9 +659,26 @@ def create_snapshot(data_dir: Path, snapshots_dir: Path, name: str | None = None
                 f"corrupted={result['corrupted']}"
             )
 
+        # PR3.3b: re-check immediately before publish that nothing else
+        # created final_dir while this snapshot was being built and
+        # verified. This narrows, but -- see this module's own top-level
+        # trust-model note -- can never fully close the gap between this
+        # check and the os.rename() call two lines below: another
+        # process could still win a race in that exact window on a plain
+        # local filesystem with no locking. If final_dir already exists
+        # here, it was NOT created by this call -- it is left completely
+        # untouched, and only this call's own staging directory is
+        # discarded.
+        if final_dir.exists():
+            raise BackupError(
+                f"refusing to publish: {final_dir} was created by something else while this "
+                "snapshot was being built -- that externally-created path is left untouched; "
+                "this operation's own staging directory is discarded."
+            )
+
         # Same-filesystem rename (staging_dir was created INSIDE
-        # snapshots_dir specifically for this) -- as close to a single
-        # atomic publish step as a plain local filesystem provides.
+        # snapshots_dir specifically for this) -- the closest thing to a
+        # single atomic publish step a plain local filesystem provides.
         os.rename(staging_dir, final_dir)
     except BaseException:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -603,11 +728,23 @@ def _validate_restore_destination(snapshot_dir: Path, dest_dir_raw: Path) -> Pat
     dest_dir = dest_dir_raw.resolve()
 
     project_root = _project_root()
-    real_data_dir = project_root / "data"
+    real_data_dir = (project_root / "data").resolve()
     if dest_dir == project_root:
         raise BackupError(f"refusing to restore into the repository root ({dest_dir})")
-    if dest_dir == real_data_dir:
-        raise BackupError(f"refusing to restore into the real project data directory ({dest_dir})")
+    # PR3.3b: resolved-path CONTAINMENT (Path.is_relative_to on two
+    # already-resolved paths), not a string-prefix check -- a naive
+    # `str(dest_dir).startswith(str(real_data_dir))` would wrongly also
+    # reject a merely similarly-NAMED sibling like `data-copy` (its
+    # string does start with "data", but it is not inside the data
+    # directory at all). is_relative_to compares path COMPONENTS, so
+    # `data-copy` is correctly NOT relative to `data`, while `data`
+    # itself and every real descendant of it (`data/restore-drill`,
+    # `data/a/b/c`, ...) all correctly are.
+    if dest_dir.is_relative_to(real_data_dir):
+        raise BackupError(
+            f"refusing to restore: destination {dest_dir} is the real project data "
+            f"directory ({real_data_dir}) or a location beneath it"
+        )
     if dest_dir == snapshot_dir:
         raise BackupError(f"refusing to restore into the snapshot directory itself ({dest_dir})")
     if dest_dir.is_relative_to(snapshot_dir):
@@ -663,6 +800,21 @@ def restore_snapshot(snapshot_dir: Path, dest_dir: Path) -> None:
             raise BackupError(
                 "staged restore failed verification before publish -- destination left "
                 f"absent: missing={result['missing']} extra={result['extra']} corrupted={result['corrupted']}"
+            )
+
+        # PR3.3b: re-check immediately before publish that nothing else
+        # created dest_dir while this restore was staging/verifying --
+        # narrows, but (see this module's own top-level trust-model
+        # note) can never fully close the gap before the os.rename()
+        # call two lines below. If dest_dir already exists here, it was
+        # NOT created by this restore -- it is left completely
+        # untouched, and only this restore's own staging directory is
+        # discarded.
+        if dest_dir.exists():
+            raise BackupError(
+                f"refusing to publish: {dest_dir} was created by something else while this "
+                "restore was staging -- that externally-created destination is left "
+                "untouched; this restore's own staging directory is discarded."
             )
 
         os.rename(staging_dir, dest_dir)
