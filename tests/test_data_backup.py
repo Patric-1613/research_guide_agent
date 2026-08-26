@@ -1,7 +1,12 @@
-"""PR3.3: tests for scripts/data_backup.py -- the platform-neutral
+"""PR3.3/PR3.3a: tests for scripts/data_backup.py -- the platform-neutral
 create/verify/restore backup workflow. Every fixture here builds a small,
-synthetic temp data directory; nothing in this file ever touches the
-real, gitignored data/ directory or makes a network/provider call.
+synthetic temp data directory; nothing in this file ever mutates the
+real, gitignored data/ directory. A few destination-safety tests below
+DO pass the real repository root / real data/ path as a `dest_dir`
+argument -- this is safe because `_validate_restore_destination` raises
+BEFORE any filesystem mutation, and the only filesystem operations
+involved (`.exists()`/`.is_symlink()`/`==` on already-resolved paths) are
+plain path-metadata checks, never a read of any file's content.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from scripts.data_backup import (
     build_manifest,
     create_snapshot,
     restore_snapshot,
+    validate_manifest_schema,
     verify_snapshot,
 )
 
@@ -34,9 +40,7 @@ def _write(path: Path, content: bytes) -> None:
 def _fingerprint(directory: Path) -> dict[str, bytes]:
     """A simple {relative_path: content} map -- used to prove a
     directory's content is byte-identical before/after an operation,
-    independent of this module's own hashing code (so a bug in
-    data_backup.py's own SHA-256 use couldn't mask a real content
-    change)."""
+    independent of this module's own hashing code."""
     result = {}
     for dirpath, _dirnames, filenames in os.walk(directory):
         for name in filenames:
@@ -49,8 +53,7 @@ def _make_realistic_data_dir(root: Path) -> Path:
     """A synthetic data/ look-alike: a SQLite-shaped file with WAL/SHM
     sidecars, a nested Chroma-collection-shaped directory tree, a cache
     file, and a genuinely empty file -- covering every file SHAPE the
-    real data/ directory has, with fake bytes (never touching real
-    SQLite/Chroma content)."""
+    real data/ directory has, with fake bytes."""
     data_dir = root / "data"
     _write(data_dir / "history.sqlite", b"fake-sqlite-history-bytes")
     _write(data_dir / "usage_telemetry.sqlite", b"fake-sqlite-telemetry-bytes")
@@ -63,6 +66,19 @@ def _make_realistic_data_dir(root: Path) -> Path:
     _write(data_dir / "chroma_db" / "abcd-uuid-collection" / "empty.bin", b"")  # genuinely empty file
     _write(data_dir / "cache" / "embeddings.sqlite", b"fake-embedding-cache-bytes")
     return data_dir
+
+
+def _minimal_valid_manifest(files: list[dict] | None = None) -> dict:
+    if files is None:
+        files = [{"path": "a.txt", "size": 1, "sha256": "a" * 64}]
+    return {
+        "manifest_format_version": data_backup.MANIFEST_FORMAT_VERSION,
+        "created_at_utc": "2026-01-01T00:00:00Z",
+        "source_data_dir": "/tmp/whatever",
+        "file_count": len(files),
+        "total_bytes": sum(f["size"] for f in files if isinstance(f, dict) and isinstance(f.get("size"), int)),
+        "files": files,
+    }
 
 
 # --- build_manifest / create_snapshot: coverage of every file shape ---
@@ -87,7 +103,6 @@ def test_manifest_covers_sqlite_wal_shm_nested_chroma_and_empty_files(tmp_path):
     }
     empty_entry = next(e for e in manifest["files"] if e["path"] == "chroma_db/abcd-uuid-collection/empty.bin")
     assert empty_entry["size"] == 0
-    # SHA-256 of zero bytes -- a well-known constant, confirms empty files aren't skipped or mishandled.
     assert empty_entry["sha256"] == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
@@ -104,12 +119,7 @@ def test_create_snapshot_round_trips_every_byte_exactly(tmp_path):
     assert result["extra"] == []
     assert result["corrupted"] == []
     assert result["file_count"] == len(before)
-
-    # The manifest itself lives alongside the data files but is never
-    # counted as one of them.
     assert (snapshot_dir / data_backup.MANIFEST_FILENAME).is_file()
-
-    # Source data is completely untouched by taking a backup of it.
     assert _fingerprint(data_dir) == before
 
 
@@ -174,7 +184,7 @@ def test_verify_raises_for_a_directory_with_no_manifest(tmp_path):
         verify_snapshot(not_a_snapshot)
 
 
-# --- symlink escape ---
+# --- symlink escape in the DATA directory (create) ---
 
 def test_create_refuses_a_symlink_that_escapes_the_data_dir(tmp_path):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
@@ -185,7 +195,6 @@ def test_create_refuses_a_symlink_that_escapes_the_data_dir(tmp_path):
     with pytest.raises(BackupError, match="symlink"):
         create_snapshot(data_dir, tmp_path / "snapshots")
 
-    # No snapshot was ever published from a refused attempt.
     assert not (tmp_path / "snapshots").exists() or list((tmp_path / "snapshots").iterdir()) == []
 
 
@@ -201,9 +210,6 @@ def test_create_refuses_a_symlinked_directory_too(tmp_path):
 
 
 def test_create_refuses_a_symlink_that_resolves_inside_the_data_dir_too(tmp_path):
-    """Symlinks are refused unconditionally -- even a same-tree symlink
-    that would resolve back inside data_dir -- see the module's own
-    docstring for why this is deliberately blunt rather than case-by-case."""
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     (data_dir / "alias.sqlite").symlink_to(data_dir / "history.sqlite")
 
@@ -211,58 +217,309 @@ def test_create_refuses_a_symlink_that_resolves_inside_the_data_dir_too(tmp_path
         create_snapshot(data_dir, tmp_path / "snapshots")
 
 
-# --- restore: non-empty destination, force, full content round-trip ---
+# --- manifest.json itself must never be a symlink ---
 
-def test_restore_refuses_a_non_empty_destination_without_force(tmp_path):
+def _replace_manifest_with_symlink(snapshot_dir: Path, tmp_path: Path) -> None:
+    real_manifest = snapshot_dir / data_backup.MANIFEST_FILENAME
+    decoy = tmp_path / "decoy-manifest.json"
+    decoy.write_bytes(real_manifest.read_bytes())
+    real_manifest.unlink()
+    real_manifest.symlink_to(decoy)
+
+
+def test_verify_refuses_a_symlinked_manifest(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    _replace_manifest_with_symlink(snapshot_dir, tmp_path)
+
+    with pytest.raises(BackupError, match="symlink"):
+        verify_snapshot(snapshot_dir)
+
+
+def test_restore_refuses_a_symlinked_manifest(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    _replace_manifest_with_symlink(snapshot_dir, tmp_path)
+    dest = tmp_path / "restored"
+
+    with pytest.raises(BackupError, match="symlink"):
+        restore_snapshot(snapshot_dir, dest)
+
+    assert not dest.exists()
+
+
+# --- manifest is read exactly once for restore (no swap possible) ---
+
+def test_restore_reads_manifest_exactly_once(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    dest = tmp_path / "restored"
+
+    real_load = data_backup._load_manifest_dict
+    with patch.object(data_backup, "_load_manifest_dict", side_effect=real_load) as spy:
+        restore_snapshot(snapshot_dir, dest)
+
+    assert spy.call_count == 1
+
+
+# --- manifest schema: strict validation, unit-level ---
+
+def test_manifest_schema_accepts_a_well_formed_manifest():
+    validated = validate_manifest_schema(_minimal_valid_manifest())
+    assert validated["files"][0]["path"] == "a.txt"
+
+
+def test_manifest_schema_rejects_non_dict_top_level():
+    with pytest.raises(BackupError, match="JSON object"):
+        validate_manifest_schema(["not", "a", "dict"])
+
+
+def test_manifest_schema_rejects_missing_top_level_field():
+    m = _minimal_valid_manifest()
+    del m["created_at_utc"]
+    with pytest.raises(BackupError, match="missing top-level field"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_unexpected_top_level_field():
+    m = _minimal_valid_manifest()
+    m["surprise"] = 1
+    with pytest.raises(BackupError, match="unexpected top-level field"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_wrong_type_for_version():
+    m = _minimal_valid_manifest()
+    m["manifest_format_version"] = "1"
+    with pytest.raises(BackupError, match="must be an integer"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_unsupported_format_version():
+    m = _minimal_valid_manifest()
+    m["manifest_format_version"] = 999
+    with pytest.raises(BackupError, match="unsupported manifest_format_version"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_files_not_a_list():
+    m = _minimal_valid_manifest()
+    m["files"] = "not-a-list"
+    with pytest.raises(BackupError, match="files must be a list"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_entry_missing_field():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1}])
+    with pytest.raises(BackupError, match="missing field"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_entry_extra_field():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "a" * 64, "extra": 1}])
+    with pytest.raises(BackupError, match="unexpected field"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_absolute_path():
+    m = _minimal_valid_manifest(files=[{"path": "/etc/passwd", "size": 1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="absolute"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_traversal_path():
+    m = _minimal_valid_manifest(files=[{"path": "../outside.txt", "size": 1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match=r"'\.' or '\.\.'"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_empty_path_component():
+    m = _minimal_valid_manifest(files=[{"path": "a//b", "size": 1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="empty component"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_backslash_path():
+    m = _minimal_valid_manifest(files=[{"path": "chroma_db\\evil.bin", "size": 1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="backslash"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_manifest_json_as_payload_entry():
+    m = _minimal_valid_manifest(files=[{"path": "manifest.json", "size": 1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="reserved"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_duplicate_paths():
+    entry = {"path": "a.txt", "size": 1, "sha256": "a" * 64}
+    m = _minimal_valid_manifest(files=[entry, dict(entry)])
+    with pytest.raises(BackupError, match="duplicate path"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_negative_size():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": -1, "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="non-negative integer"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_non_integer_size():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": "1", "sha256": "a" * 64}])
+    with pytest.raises(BackupError, match="non-negative integer"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_malformed_sha256_too_short():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "abc"}])
+    with pytest.raises(BackupError, match="64-character lowercase hex"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_uppercase_sha256():
+    m = _minimal_valid_manifest(files=[{"path": "a.txt", "size": 1, "sha256": "A" * 64}])
+    with pytest.raises(BackupError, match="64-character lowercase hex"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_file_count_mismatch():
+    m = _minimal_valid_manifest()
+    m["file_count"] = 99
+    with pytest.raises(BackupError, match="file_count"):
+        validate_manifest_schema(m)
+
+
+def test_manifest_schema_rejects_total_bytes_mismatch():
+    m = _minimal_valid_manifest()
+    m["total_bytes"] = 99999
+    with pytest.raises(BackupError, match="total_bytes"):
+        validate_manifest_schema(m)
+
+
+def test_verify_converts_malformed_on_disk_manifest_into_backup_error_not_a_raw_exception(tmp_path):
+    snapshot_dir = tmp_path / "bad-snapshot"
+    snapshot_dir.mkdir()
+    (snapshot_dir / data_backup.MANIFEST_FILENAME).write_text(json.dumps({"files": "not-a-list"}))
+
+    with pytest.raises(BackupError):
+        verify_snapshot(snapshot_dir)
+
+
+# --- restore: conservative destination contract ---
+
+def test_restore_refuses_an_existing_empty_destination(tmp_path):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
     dest = tmp_path / "restored"
     dest.mkdir()
-    (dest / "pre-existing.txt").write_text("do not clobber me")
 
-    with pytest.raises(BackupError, match="not empty"):
-        restore_snapshot(snapshot_dir, dest, force=False)
+    with pytest.raises(BackupError, match="already exists"):
+        restore_snapshot(snapshot_dir, dest)
 
-    # Refused restore must not have written anything into dest.
-    assert [p.name for p in dest.iterdir()] == ["pre-existing.txt"]
+    assert list(dest.iterdir()) == []
 
+
+def test_restore_refuses_an_existing_non_empty_destination(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    dest = tmp_path / "restored"
+    dest.mkdir()
+    (dest / "pre-existing.txt").write_text("do not touch")
+
+    with pytest.raises(BackupError, match="already exists"):
+        restore_snapshot(snapshot_dir, dest)
+
+    assert (dest / "pre-existing.txt").read_text() == "do not touch"
+
+
+def test_restore_refuses_a_symlinked_destination_root(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    real_target = tmp_path / "real-target-dir"
+    real_target.mkdir()
+    dest = tmp_path / "restored-symlink"
+    dest.symlink_to(real_target, target_is_directory=True)
+
+    with pytest.raises(BackupError, match="symlink"):
+        restore_snapshot(snapshot_dir, dest)
+
+
+def test_restore_refuses_a_destination_with_a_symlinked_ancestor(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    dest = linked_parent / "nested" / "restored"
+
+    with pytest.raises(BackupError, match="symlink"):
+        restore_snapshot(snapshot_dir, dest)
+
+
+def test_restore_refuses_the_real_repository_root(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    repo_root = data_backup._project_root()
+
+    with pytest.raises(BackupError, match="repository root"):
+        restore_snapshot(snapshot_dir, repo_root)
+
+
+def test_restore_refuses_the_real_project_data_directory(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    real_data_dir = data_backup._project_root() / "data"
+
+    with pytest.raises(BackupError, match="real project data directory"):
+        restore_snapshot(snapshot_dir, real_data_dir)
+
+
+def test_restore_refuses_the_snapshot_directory_itself(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+
+    with pytest.raises(BackupError, match="snapshot directory itself"):
+        restore_snapshot(snapshot_dir, snapshot_dir)
+
+
+def test_restore_refuses_a_destination_inside_the_snapshot(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    nested_dest = snapshot_dir / "nested" / "new-path"
+
+    with pytest.raises(BackupError, match="inside the snapshot directory"):
+        restore_snapshot(snapshot_dir, nested_dest)
+
+
+def test_restore_refuses_a_destination_that_already_contains_the_snapshot(tmp_path):
+    """dest_dir here (tmp_path) already contains snapshot_dir, and --
+    necessarily, since snapshot_dir is a real directory on disk --
+    dest_dir must itself already exist too, so this is caught by the
+    general "destination must not exist" rule. Confirms the overall
+    safety property holds regardless of which specific check fires
+    first."""
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+
+    with pytest.raises(BackupError):
+        restore_snapshot(snapshot_dir, tmp_path)
+
+
+# --- restore: happy path, interrupted copy, failed post-copy verification ---
 
 def test_restore_into_a_new_destination_reproduces_every_file_exactly(tmp_path):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     before = _fingerprint(data_dir)
     snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    before_snapshot_fp = _fingerprint(snapshot_dir)
     dest = tmp_path / "restored"
 
-    restore_snapshot(snapshot_dir, dest, force=False)
+    restore_snapshot(snapshot_dir, dest)
 
     assert _fingerprint(dest) == before
-
-
-def test_restore_into_an_empty_existing_destination_succeeds_without_force(tmp_path):
-    data_dir = _make_realistic_data_dir(tmp_path / "data")
-    before = _fingerprint(data_dir)
-    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
-    dest = tmp_path / "restored"
-    dest.mkdir()  # exists, but empty
-
-    restore_snapshot(snapshot_dir, dest, force=False)
-
-    assert _fingerprint(dest) == before
-
-
-def test_restore_with_force_into_non_empty_destination_does_not_delete_unrelated_files(tmp_path):
-    data_dir = _make_realistic_data_dir(tmp_path / "data")
-    before = _fingerprint(data_dir)
-    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
-    dest = tmp_path / "restored"
-    dest.mkdir()
-    (dest / "unrelated.txt").write_text("kept")
-
-    restore_snapshot(snapshot_dir, dest, force=True)
-
-    assert (dest / "unrelated.txt").read_text() == "kept"
-    for rel, content in before.items():
-        assert (dest / rel).read_bytes() == content
+    # The restore never mutates its own source snapshot.
+    assert _fingerprint(snapshot_dir) == before_snapshot_fp
 
 
 def test_restore_refuses_a_snapshot_that_fails_its_own_verification(tmp_path):
@@ -271,53 +528,95 @@ def test_restore_refuses_a_snapshot_that_fails_its_own_verification(tmp_path):
     (snapshot_dir / "history.sqlite").write_bytes(b"corrupted-after-publish")
 
     with pytest.raises(BackupError, match="fails its own verification"):
-        restore_snapshot(snapshot_dir, tmp_path / "restored", force=False)
+        restore_snapshot(snapshot_dir, tmp_path / "restored")
 
     assert not (tmp_path / "restored").exists()
 
 
-# --- interrupted snapshot cleanup ---
+def test_interrupted_restore_leaves_destination_absent(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    dest = tmp_path / "restored"
+
+    call_count = {"n": 0}
+    real_copy = data_backup._copy_regular_file_no_follow
+
+    def flaky_copy(src, dst):
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise OSError("simulated disk failure mid-restore-copy")
+        return real_copy(src, dst)
+
+    with patch.object(data_backup, "_copy_regular_file_no_follow", side_effect=flaky_copy):
+        with pytest.raises(OSError, match="simulated disk failure"):
+            restore_snapshot(snapshot_dir, dest)
+
+    assert not dest.exists()
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".restore-staging-")]
+    assert leftovers == []
+
+
+def test_restore_with_silently_corrupted_copy_leaves_destination_absent(tmp_path):
+    """The copy loop itself reports success (no exception), but the
+    bytes on disk are wrong -- restore's own post-copy self-verification
+    against the validated in-memory manifest must still catch this."""
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshot_dir = create_snapshot(data_dir, tmp_path / "snapshots")
+    before_snapshot_fp = _fingerprint(snapshot_dir)
+    dest = tmp_path / "restored"
+
+    real_copy = data_backup._copy_regular_file_no_follow
+
+    def corrupting_copy(src, dst):
+        result = real_copy(src, dst)
+        if Path(src).name == "history.sqlite":
+            Path(dst).write_bytes(b"silently-wrong-bytes")
+        return result
+
+    with patch.object(data_backup, "_copy_regular_file_no_follow", side_effect=corrupting_copy):
+        with pytest.raises(BackupError, match="failed verification"):
+            restore_snapshot(snapshot_dir, dest)
+
+    assert not dest.exists()
+    assert _fingerprint(snapshot_dir) == before_snapshot_fp
+
+
+# --- interrupted / failed-self-verification snapshot CREATE (staging cleanup) ---
 
 def test_interrupted_create_leaves_no_staging_or_published_directory(tmp_path):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     snapshots_dir = tmp_path / "snapshots"
 
     call_count = {"n": 0}
-    real_copy2 = data_backup.shutil.copy2
+    real_copy = data_backup._copy_regular_file_no_follow
 
-    def flaky_copy2(src, dst, *a, **kw):
+    def flaky_copy(src, dst):
         call_count["n"] += 1
         if call_count["n"] == 3:
             raise OSError("simulated disk failure mid-copy")
-        return real_copy2(src, dst, *a, **kw)
+        return real_copy(src, dst)
 
-    with patch.object(data_backup.shutil, "copy2", side_effect=flaky_copy2):
+    with patch.object(data_backup, "_copy_regular_file_no_follow", side_effect=flaky_copy):
         with pytest.raises(OSError, match="simulated disk failure"):
             create_snapshot(data_dir, snapshots_dir, name="interrupted")
 
-    # snapshots_dir may exist (created before staging began) but must
-    # contain no staging leftovers and no published "interrupted" snapshot.
     if snapshots_dir.exists():
         assert list(snapshots_dir.iterdir()) == []
     assert not (snapshots_dir / "interrupted").exists()
 
 
 def test_failed_self_verification_before_publish_leaves_no_published_snapshot(tmp_path):
-    """Simulates a copy that silently produces wrong bytes (not an
-    exception) -- create_snapshot's own self-verification pass must
-    catch it and refuse to publish, distinct from the interruption case
-    above."""
     data_dir = _make_realistic_data_dir(tmp_path / "data")
     snapshots_dir = tmp_path / "snapshots"
-    real_copy2 = data_backup.shutil.copy2
+    real_copy = data_backup._copy_regular_file_no_follow
 
-    def corrupting_copy2(src, dst, *a, **kw):
-        result = real_copy2(src, dst, *a, **kw)
+    def corrupting_copy(src, dst):
+        result = real_copy(src, dst)
         if Path(src).name == "history.sqlite":
             Path(dst).write_bytes(b"silently-wrong-bytes")
         return result
 
-    with patch.object(data_backup.shutil, "copy2", side_effect=corrupting_copy2):
+    with patch.object(data_backup, "_copy_regular_file_no_follow", side_effect=corrupting_copy):
         with pytest.raises(BackupError, match="failed self-verification"):
             create_snapshot(data_dir, snapshots_dir, name="bad")
 
@@ -343,7 +642,37 @@ def test_create_refuses_when_data_dir_is_inside_snapshots_dir(tmp_path):
         create_snapshot(data_dir, snapshots_dir)
 
 
-# --- CLI: --confirm-quiescent is required ---
+# --- snapshot name validation ---
+
+def test_create_rejects_an_absolute_snapshot_name(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+
+    with pytest.raises(BackupError, match="absolute"):
+        create_snapshot(data_dir, tmp_path / "snapshots", name="/etc/passwd")
+
+
+def test_create_rejects_a_snapshot_name_with_a_separator(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+
+    with pytest.raises(BackupError, match="single path component"):
+        create_snapshot(data_dir, tmp_path / "snapshots", name="nested/escape")
+
+
+def test_create_rejects_a_traversal_snapshot_name(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+
+    with pytest.raises(BackupError, match="must not be"):
+        create_snapshot(data_dir, tmp_path / "snapshots", name="..")
+
+
+def test_create_rejects_an_empty_snapshot_name(tmp_path):
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+
+    with pytest.raises(BackupError, match="must not be empty"):
+        create_snapshot(data_dir, tmp_path / "snapshots", name="")
+
+
+# --- CLI: --confirm-quiescent is required; end-to-end round trip ---
 
 def test_cli_create_requires_confirm_quiescent_flag(tmp_path, capsys):
     data_dir = _make_realistic_data_dir(tmp_path / "data")
@@ -369,7 +698,7 @@ def test_cli_create_with_confirm_quiescent_publishes_a_verifiable_snapshot(tmp_p
     assert exit_code == 0
     assert "cli-snap" in capsys.readouterr().out
 
-    capsys.readouterr()  # drain before the verify call's own output
+    capsys.readouterr()
     verify_exit = data_backup.main(["verify", str(snapshots_dir / "cli-snap")])
     report = json.loads(capsys.readouterr().out)
 
@@ -408,3 +737,17 @@ def test_cli_restore_end_to_end(tmp_path):
 
     assert exit_code == 0
     assert _fingerprint(dest) == before
+
+
+def test_cli_restore_has_no_force_flag(tmp_path, capsys):
+    """--force was removed entirely (PR3.3a) -- confirms the CLI parser
+    rejects it rather than silently accepting a no-op flag."""
+    data_dir = _make_realistic_data_dir(tmp_path / "data")
+    snapshots_dir = tmp_path / "snapshots"
+    data_backup.main([
+        "create", "--data-dir", str(data_dir), "--snapshots-dir", str(snapshots_dir),
+        "--name", "s1", "--confirm-quiescent",
+    ])
+
+    with pytest.raises(SystemExit):
+        data_backup.main(["restore", str(snapshots_dir / "s1"), str(tmp_path / "restored"), "--force"])
