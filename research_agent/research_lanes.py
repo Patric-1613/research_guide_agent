@@ -23,18 +23,31 @@ Two validation tiers, deliberately different -- the same split as
 ``curation_session._dict_to_session``'s lenient ``.get()`` loads:
 
   1. CONSTRUCTION (RL2 lane generation, RL4 user edits) -- STRICT.
-     ``ResearchLane.__post_init__`` enforces the structural invariants
-     every real lane always satisfies; ``validate_lane_for_construction`` /
-     ``validate_lane_list_for_construction`` add the input-shaped limits
-     (bounded lengths, opaque non-label lane_id, hard lane count). All
-     raise ``ValueError`` on violation.
+     ``ResearchLane.__post_init__`` enforces the invariants every real lane
+     always satisfies, including EXACT FIELD TYPES: it never applies
+     ``str()`` / ``bool()`` coercion, so a malformed value (``None``, a
+     number, a list, the string ``"false"``) raises ``TypeError`` rather
+     than being silently reinterpreted as valid lane data. Whitespace is
+     stripped only AFTER a text field is confirmed to be a real ``str``.
+     ``validate_lane_for_construction`` / ``validate_lane_list_for_
+     construction`` add the input-shaped limits (bounded lengths, opaque
+     non-label lane_id, hard lane count) and raise ``ValueError``.
 
   2. DESERIALIZATION (``curation_session._dict_to_session``) -- LENIENT,
-     never raises. ``research_lanes_from_persisted`` /
-     ``normalize_paper_lane_ids`` / ``normalize_lane_result_counts`` coerce,
-     drop dangling/duplicate references deterministically, preserve order,
-     and log -- so a malformed or stale persisted lane blob can never make
-     an already-persisted session unloadable (frozen v1 requirement).
+     never raises. ``research_lanes_from_persisted`` catches the strict
+     construction errors above, DROPS the offending entry and logs it, and
+     keeps every valid entry in order; ``normalize_paper_lane_ids`` /
+     ``normalize_lane_result_counts`` drop dangling/duplicate references
+     deterministically. A malformed or stale persisted lane blob can never
+     make an already-persisted session unloadable (frozen v1 requirement),
+     and a valid persisted ``enabled=False`` always stays ``False``.
+
+Forward constraints -- RECORDED HERE, NOT IMPLEMENTED IN RL1/RL1a:
+  - RL3/RL4 must enforce the maximum ENABLED-lane count (see
+    ``MAX_LANES_PER_REVIEW``) BEFORE any provider work begins, not after.
+  - RL2/RL4 must mint opaque lane IDs SERVER-SIDE (``new_lane_id()``),
+    never trust a user-provided label (or any user-controlled string) as
+    a lane identity.
 """
 
 from __future__ import annotations
@@ -78,7 +91,12 @@ def new_lane_id() -> str:
     """A stable, opaque lane identifier -- uuid4 hex, the same scheme
     report.py already uses for report version_ids. Deliberately NOT derived
     from the label (a user-controlled string): a label can be renamed, is
-    not unique, and must never be an identity key."""
+    not unique, and must never be an identity key.
+
+    FORWARD CONSTRAINT (RL2/RL4, not implemented here): every lane created
+    from LLM output or a user edit must get its ``lane_id`` from THIS
+    function, server-side -- a client-supplied lane_id / label must never
+    be trusted as a lane identity."""
     return uuid.uuid4().hex
 
 
@@ -88,14 +106,20 @@ class ResearchLane:
     question, exactly one search query. See the module docstring for the
     frozen v1 shape.
 
-    ``__post_init__`` normalizes (strips surrounding whitespace, coerces
-    ``enabled`` to bool) and enforces the invariants EVERY real lane
-    satisfies regardless of origin: non-empty ``lane_id``/``label``/
-    ``query``, a known ``origin``, ``generation_version >= 1``. It does
-    NOT check bounded lengths or lane count -- those are construction-input
-    concerns (``validate_lane_for_construction``), not model invariants,
-    so the lenient load path can rebuild any historical lane without a
-    length policy in scope.
+    ``__post_init__`` enforces the invariants EVERY real lane satisfies
+    regardless of origin, and does so STRICTLY -- exact field types first
+    (no ``str()`` / ``bool()`` coercion: a malformed value raises, it is
+    never reinterpreted), then whitespace-strip on the confirmed strings,
+    then: non-empty ``lane_id`` / ``label`` / ``query`` (``question`` may
+    be empty), a known ``origin``, ``generation_version`` a real ``int``
+    (``bool`` rejected) ``>= 1``. It does NOT check bounded lengths or lane
+    count -- those are construction-input concerns
+    (``validate_lane_for_construction``), not model invariants, so the
+    lenient load path can rebuild any historical lane without a length
+    policy in scope.
+
+    Error messages never echo field contents -- only the field name and
+    the rule it broke.
     """
 
     lane_id: str
@@ -107,23 +131,36 @@ class ResearchLane:
     generation_version: int = 1
 
     def __post_init__(self) -> None:
-        self.lane_id = str(self.lane_id).strip()
-        self.label = str(self.label).strip()
-        self.question = str(self.question).strip()
-        self.query = str(self.query).strip()
-        self.enabled = bool(self.enabled)
-        if not self.lane_id:
-            raise ValueError("ResearchLane.lane_id must be a non-empty string")
-        if not self.label:
-            raise ValueError("ResearchLane.label must be a non-empty string")
-        if not self.query:
-            raise ValueError("ResearchLane.query must be a non-empty string")
-        if self.origin not in LANE_ORIGINS:
-            raise ValueError(f"ResearchLane.origin must be one of {LANE_ORIGINS}, got {self.origin!r}")
-        # isinstance(True, int) is True in Python -- guard bool explicitly so
-        # generation_version=True never silently reads as 1.
+        # STRICT type checks -- no str()/bool() coercion. A malformed
+        # persisted value (None, a number, a list/dict, the string
+        # "false") must raise here so research_lanes_from_persisted drops
+        # the entry rather than silently accepting it as valid lane data.
+        for _name in ("lane_id", "label", "question", "query"):
+            if not isinstance(getattr(self, _name), str):
+                raise TypeError(f"ResearchLane.{_name} must be a str")
+        if not isinstance(self.enabled, bool):
+            raise TypeError("ResearchLane.enabled must be a bool")
+        if not isinstance(self.origin, str):
+            raise TypeError("ResearchLane.origin must be a str")
+        # isinstance(True, int) is True in Python -- reject bool explicitly
+        # so generation_version=True never slips through as 1.
         if isinstance(self.generation_version, bool) or not isinstance(self.generation_version, int):
-            raise ValueError("ResearchLane.generation_version must be an int")
+            raise TypeError("ResearchLane.generation_version must be an int")
+
+        # Only now that each text field is a confirmed real str: strip
+        # surrounding whitespace, then enforce the value rules.
+        self.lane_id = self.lane_id.strip()
+        self.label = self.label.strip()
+        self.question = self.question.strip()
+        self.query = self.query.strip()
+        if not self.lane_id:
+            raise ValueError("ResearchLane.lane_id must be non-empty")
+        if not self.label:
+            raise ValueError("ResearchLane.label must be non-empty")
+        if not self.query:
+            raise ValueError("ResearchLane.query must be non-empty")
+        if self.origin not in LANE_ORIGINS:
+            raise ValueError(f"ResearchLane.origin must be one of {LANE_ORIGINS}")
         if self.generation_version < 1:
             raise ValueError("ResearchLane.generation_version must be a positive integer (>= 1)")
 
@@ -174,7 +211,12 @@ def validate_lane_for_construction(lane: ResearchLane) -> None:
 def validate_lane_list_for_construction(lanes: list[ResearchLane]) -> None:
     """Strict validation for a full lane set at curation Start (RL4 will
     call this). Enforces the hard maximum, at least one ENABLED lane,
-    unique ``lane_id``s, and each lane individually. Raises ``ValueError``."""
+    unique ``lane_id``s, and each lane individually. Raises ``ValueError``.
+
+    FORWARD CONSTRAINT (RL3/RL4, not implemented here): the maximum
+    ENABLED-lane count (``MAX_LANES_PER_REVIEW``) must be checked BEFORE
+    any provider work (search / ranking fan-out) begins for a turn, never
+    after -- this function is the intended gate."""
     if len(lanes) > MAX_LANES_PER_REVIEW:
         raise ValueError(f"a review may have at most {MAX_LANES_PER_REVIEW} research lanes, got {len(lanes)}")
     if not any(lane.enabled for lane in lanes):
@@ -193,10 +235,13 @@ def research_lanes_from_persisted(raw: object) -> list[ResearchLane]:
     """Lenient deserialization for ``session.lanes``. NEVER raises.
 
     - a non-list (the caller passes ``[]`` for a missing key) -> ``[]``;
-    - each entry that can't be structurally rebuilt into a ``ResearchLane``
-      (not a dict, empty lane_id/label/query, unknown origin, bad
-      generation_version) is DROPPED and logged -- a stale/corrupt lane
-      entry must never make the whole session unloadable;
+    - each entry ``ResearchLane.from_dict`` rejects -- not a dict; a
+      wrong-typed field (e.g. ``enabled`` not a real bool, ``lane_id``
+      not a real str); empty ``lane_id`` / ``label`` / ``query``; unknown
+      ``origin``; bad ``generation_version`` -- is DROPPED and logged, so
+      a stale/corrupt lane entry never makes the whole session
+      unloadable, and a bad value is never coerced into a plausible one;
+    - a valid persisted ``enabled=False`` entry is kept, still ``False``;
     - duplicate ``lane_id``s: FIRST occurrence wins, later ones dropped
       (deterministic);
     - input order is preserved;

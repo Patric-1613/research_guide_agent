@@ -63,8 +63,8 @@ def test_research_lane_happy_path_and_to_from_dict_round_trip():
     assert ResearchLane.from_dict(d) == lane
 
 
-def test_research_lane_strips_whitespace_and_coerces_enabled():
-    lane = ResearchLane(lane_id="  l1  ", label="  Datasets  ", question="  q  ", query="  ds  ", enabled=1)
+def test_research_lane_strips_whitespace_on_confirmed_strings():
+    lane = ResearchLane(lane_id="  l1  ", label="  Datasets  ", question="  q  ", query="  ds  ", enabled=True)
     assert lane.lane_id == "l1"
     assert lane.label == "Datasets"
     assert lane.question == "q"
@@ -82,24 +82,83 @@ def test_research_lane_from_dict_fills_optional_defaults_and_ignores_unknown_key
     assert lane.generation_version == 1
 
 
+# --- RL1a: strict field TYPES -- no str()/bool() coercion --------------
+
+@pytest.mark.parametrize("field", ["lane_id", "label", "question", "query"])
+@pytest.mark.parametrize("bad_value", [None, 5, 5.0, ["x"], {"x": 1}, True])
+def test_research_lane_text_fields_must_be_real_strings(field, bad_value):
+    base = {"lane_id": "l1", "label": "L", "question": "q", "query": "qq"}
+    base[field] = bad_value
+    with pytest.raises(TypeError):
+        ResearchLane(**base)
+
+
+@pytest.mark.parametrize("bad_value", ["false", "true", "False", 0, 1, None, [], {}, "1", "0"])
+def test_research_lane_enabled_must_be_a_real_bool_never_coerced(bad_value):
+    with pytest.raises(TypeError):
+        ResearchLane(lane_id="l1", label="L", question="q", query="qq", enabled=bad_value)
+
+
+def test_research_lane_valid_enabled_false_stays_false():
+    lane = ResearchLane(lane_id="l1", label="L", question="q", query="qq", enabled=False)
+    assert lane.enabled is False
+    assert ResearchLane.from_dict(lane.to_dict()).enabled is False
+
+
+@pytest.mark.parametrize("bad_value", [None, 5, ["suggested"], {"origin": "user"}, True])
+def test_research_lane_origin_must_be_a_real_string(bad_value):
+    with pytest.raises(TypeError):
+        ResearchLane(lane_id="l1", label="L", question="q", query="qq", origin=bad_value)
+
+
+@pytest.mark.parametrize("bad_value", [True, False, "2", 1.0, None, [1]])
+def test_research_lane_generation_version_must_be_a_real_int_bool_rejected(bad_value):
+    with pytest.raises(TypeError):
+        ResearchLane(lane_id="l1", label="L", question="q", query="qq", generation_version=bad_value)
+
+
+# --- RL1a: invalid VALUES of correctly-typed fields -> ValueError ------
+
 @pytest.mark.parametrize("kwargs", [
     {"lane_id": ""},
     {"lane_id": "   "},
     {"label": ""},
+    {"label": "   "},
     {"query": ""},
     {"query": "   "},
     {"origin": "viewpoint"},
+    {"origin": "date_range"},
     {"generation_version": 0},
     {"generation_version": -1},
-    {"generation_version": True},
-    {"generation_version": "2"},
-    {"generation_version": 1.0},
 ])
-def test_research_lane_rejects_structural_violations(kwargs):
+def test_research_lane_rejects_invalid_values(kwargs):
     base = {"lane_id": "l1", "label": "L", "question": "q", "query": "qq"}
     base.update(kwargs)
     with pytest.raises(ValueError):
         ResearchLane(**base)
+
+
+def test_research_lane_error_messages_never_echo_field_contents():
+    secrets = {
+        "lane_id": "s3cret-id-value", "label": "s3cret-label", "question": "q", "query": "s3cret-query",
+    }
+    # wrong type on each text field
+    for field in ("lane_id", "label", "query"):
+        bad = dict(secrets)
+        bad[field] = ["s3cret-list-payload"]
+        try:
+            ResearchLane(**bad)
+            assert False, "expected TypeError"
+        except TypeError as exc:
+            assert "s3cret" not in str(exc)
+    # bad origin value (real str, not allowed)
+    try:
+        ResearchLane(lane_id="l1", label="L", question="q", query="qq", origin="s3cret-origin")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "s3cret-origin" not in str(exc)
+    # question may be empty (not a violation)
+    assert ResearchLane(lane_id="l1", label="L", question="", query="qq").question == ""
 
 
 def test_from_dict_rejects_non_dict():
@@ -201,6 +260,38 @@ def test_from_persisted_drops_malformed_entries_without_raising():
     ]
     lanes = research_lanes_from_persisted(raw)
     assert [l.lane_id for l in lanes] == ["ok"]
+
+
+def test_from_persisted_drops_wrong_typed_field_entries_and_keeps_valid_neighbors_in_order():
+    """RL1a: a persisted entry with a wrong-typed field (enabled not a
+    real bool, lane_id/query not a real str, etc.) is dropped -- never
+    coerced into a plausible lane -- and the valid entries around it
+    survive, in their original order."""
+    raw = [
+        _lane(lane_id="a", label="Alpha").to_dict(),
+        {"lane_id": "b", "label": "Beta", "question": "", "query": "q",
+         "enabled": "false", "origin": "suggested", "generation_version": 1},   # enabled is a str
+        {"lane_id": "c", "label": "Gamma", "question": "", "query": "q",
+         "enabled": True, "origin": "suggested", "generation_version": "1"},     # version is a str
+        {"lane_id": 42, "label": "Delta", "question": "", "query": "q",
+         "enabled": True, "origin": "suggested", "generation_version": 1},       # lane_id is an int
+        {"lane_id": "e", "label": "Epsilon", "question": "", "query": ["q"],
+         "enabled": True, "origin": "suggested", "generation_version": 1},       # query is a list
+        _lane(lane_id="f", label="Zeta", enabled=False).to_dict(),
+    ]
+    lanes = research_lanes_from_persisted(raw)
+    assert [l.lane_id for l in lanes] == ["a", "f"]
+    assert lanes[1].enabled is False  # the valid enabled=False neighbor kept, still False
+
+
+def test_from_persisted_keeps_valid_enabled_false_entry():
+    raw = [{
+        "lane_id": "x", "label": "X", "question": "", "query": "q",
+        "enabled": False, "origin": "user", "generation_version": 2,
+    }]
+    lanes = research_lanes_from_persisted(raw)
+    assert len(lanes) == 1
+    assert lanes[0].enabled is False and lanes[0].origin == "user" and lanes[0].generation_version == 2
 
 
 def test_from_persisted_collapses_duplicate_lane_ids_first_wins_deterministically():
