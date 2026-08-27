@@ -229,6 +229,38 @@ class CurationStartRequest(BaseModel):
     use_openalex_fallback: bool = False
 
 
+class LaneSuggestRequest(BaseModel):
+    """Research Lanes (RL2): the ONLY input is the review topic (the same
+    constrained UserText every other topic/question field uses). There is
+    deliberately NO client-controlled suggestion count -- RL v1 always
+    asks for exactly research_lanes.DEFAULT_SUGGESTED_LANE_COUNT (3)."""
+
+    topic: UserText
+
+
+class ResearchLaneOut(BaseModel):
+    """Research Lanes (RL2): one editable lane suggestion. Mirrors
+    research_agent.research_lanes.ResearchLane field-for-field. lane_id is
+    always a server-minted opaque token (new_lane_id()), never derived
+    from the label and never taken from the model/client."""
+
+    lane_id: str
+    label: str
+    question: str
+    query: str
+    enabled: bool
+    origin: str
+    generation_version: int
+
+
+class LaneSuggestResponse(BaseModel):
+    """Exactly three ResearchLaneOut entries. The client edits these and
+    (RL4, not RL2) submits the chosen set to /curation/start -- RL2 never
+    persists them."""
+
+    lanes: list[ResearchLaneOut]
+
+
 class CurationPicksRequest(BaseModel):
     picked_paper_ids: IdList = Field(default_factory=list)
     stop: bool = False

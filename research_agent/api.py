@@ -48,6 +48,7 @@ from research_agent.curation_session import (
     select_paper_from_history,
 )
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
+from research_agent.lane_suggestion import suggest_lanes
 from research_agent.qa import ChatSession, ask
 from research_agent.query_expansion import (
     PaperPoolSession,
@@ -97,11 +98,14 @@ from research_agent.api_app.schemas import (
     CurationStartRequest,
     CurationStateResponse,
     CurationTurnResponse,
+    LaneSuggestRequest,
+    LaneSuggestResponse,
     LibraryItem,
     PaperOut,
     PaperSummaryOut,
     ReportOut,
     ReportSectionOut,
+    ResearchLaneOut,
     SearchRequest,
     SearchResponse,
     SummarizeRequest,
@@ -116,6 +120,7 @@ from research_agent.api_app.serializers import (
     _paper_to_out,
     _render_markdown,
     _report_to_out,
+    _research_lane_to_out,
     _summary_to_json,
     _turn_history_out,
     _turn_result_to_response,

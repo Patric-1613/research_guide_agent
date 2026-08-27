@@ -207,6 +207,16 @@ def create_app() -> FastAPI:
 
     app.include_router(curation_core_router)
 
+    # Research Lanes (RL2): POST /curation/lanes/suggest. Registered here,
+    # before curation_sessions_router (which owns GET /curation/{session_id})
+    # -- there is no method/path clash (POST /curation/lanes/suggest vs GET
+    # /curation/{session_id}), but registering the more specific literal
+    # path first matches the same defensive ordering used for
+    # /curation/reviews.
+    from research_agent.api_app.routers.curation_lanes import router as curation_lanes_router
+
+    app.include_router(curation_lanes_router)
+
     # Registered BEFORE curation_history/curation_reports/curation_chat below
     # — not load-bearing for those, but this router (curation_sessions.py)
     # itself registers GET /curation/reviews BEFORE GET /curation/{session_id}
@@ -239,8 +249,8 @@ def create_app() -> FastAPI:
     # module's own docstring.
     mount_frontend(app, [
         health_router, search_router, summarize_router, chat_router, export_router, library_router,
-        curation_core_router, curation_sessions_router, curation_history_router, curation_reports_router,
-        curation_chat_router,
+        curation_core_router, curation_lanes_router, curation_sessions_router, curation_history_router,
+        curation_reports_router, curation_chat_router,
     ])
 
     return app

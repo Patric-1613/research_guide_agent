@@ -22,12 +22,24 @@ from research_agent.api_app.schemas import (
     ReportSection,
     ReportSectionOut,
     ReportVersionSummary,
+    ResearchLaneOut,
     TurnHistoryEntryOut,
     WebArticleOut,
 )
 from research_agent.citations import CitationStyle, select_citation
 from research_agent.report import derive_legacy_references, derive_sections_from_legacy_report
+from research_agent.research_lanes import ResearchLane
 from research_agent.schema import Paper, WebArticle
+
+
+def _research_lane_to_out(lane: ResearchLane) -> ResearchLaneOut:
+    """Research Lanes (RL2): ResearchLane -> ResearchLaneOut, field-for-
+    field. Pure copy -- no computation, no ID minting (the lane_id is
+    already a server-minted opaque token by the time it reaches here)."""
+    return ResearchLaneOut(
+        lane_id=lane.lane_id, label=lane.label, question=lane.question, query=lane.query,
+        enabled=lane.enabled, origin=lane.origin, generation_version=lane.generation_version,
+    )
 
 
 def _paper_to_out(paper: Paper, score: float | None = None) -> PaperOut:
