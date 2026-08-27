@@ -81,6 +81,16 @@ class Settings:
     # is loaded lazily, only by a caller that already confirmed this
     # field is True.
     keyword_filter_policy_c_enabled: bool
+    # Research Lanes (RL1): off-by-default product feature switch, same
+    # placement rationale as keyword_filter_policy_c_enabled above --
+    # UsagePolicy is exclusively safety/threshold config, never a feature
+    # on/off switch. RL1 adds ONLY the flag: it is parsed here (strict
+    # bool, default False) and read NOWHERE yet. RL2+ will gate lane
+    # suggestion/creation on it. Flipping it never affects the
+    # loadability of a session that already has lanes -- deserialization
+    # of persisted lane data is unconditional (see
+    # research_agent/curation_session.py's _dict_to_session).
+    research_lanes_enabled: bool
 
 
 def _strict_bool(name: str, default: bool) -> bool:
@@ -161,6 +171,7 @@ def get_settings() -> Settings:
         frontend_origin=os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
         openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
         keyword_filter_policy_c_enabled=_strict_bool("KEYWORD_FILTER_POLICY_C_ENABLED", False),
+        research_lanes_enabled=_strict_bool("RESEARCH_LANES_ENABLED", False),
     )
 
 

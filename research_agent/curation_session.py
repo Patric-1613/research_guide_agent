@@ -43,6 +43,11 @@ from langgraph.graph import END, START, StateGraph
 from research_agent.config import get_usage_policy
 from research_agent.query_expansion import PaperPoolSession
 from research_agent.report import ANALYTICAL_SECTION_NAMES, GENERATION_REASON_INITIAL
+from research_agent.research_lanes import (
+    normalize_lane_result_counts,
+    normalize_paper_lane_ids,
+    research_lanes_from_persisted,
+)
 from research_agent.schema import Paper, WebArticle
 from research_agent.session_limits import check_selected_paper_capacity
 
@@ -285,6 +290,15 @@ def _session_to_dict(session: PaperPoolSession) -> dict:
         "chat_summary": dict(session.chat_summary) if session.chat_summary is not None else None,
         "chat_summary_covers_history_count": session.chat_summary_covers_history_count,
         "chat_summary_updated_at": session.chat_summary_updated_at,
+        # Research Lanes (RL1): lanes -> plain list[dict] of str/bool/int
+        # (ResearchLane.to_dict), paper_lane_ids/lane_result_counts already
+        # JSON-native -- same opaque pass-through convention as
+        # web_article_provenance_by_url/turn_history above, no object to
+        # convert. Empty for every non-lane session, so this adds `[]`/
+        # `{}`/`{}` to those checkpoints and nothing else.
+        "lanes": [lane.to_dict() for lane in session.lanes],
+        "paper_lane_ids": {pid: list(lane_ids) for pid, lane_ids in session.paper_lane_ids.items()},
+        "lane_result_counts": dict(session.lane_result_counts),
     }
 
 
@@ -301,6 +315,19 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         active_report_version_id = d.get("active_report_version_id")
     else:
         report_versions, active_report_version_id = _derive_implicit_report_versions(report)
+    # Research Lanes (RL1): a session saved before RL1 has none of these
+    # keys -- .get() with []/{} defaults, same absence-is-fine convention
+    # as every backward-compat field above. research_lanes_from_persisted
+    # is LENIENT (never raises): a malformed/stale lane blob is normalized
+    # (bad entries dropped, duplicate lane_ids collapsed first-wins, order
+    # preserved), so it can never make an already-persisted session
+    # unloadable. paper_lane_ids/lane_result_counts are then scoped to the
+    # lanes that actually survived -- any DANGLING lane_id reference is
+    # dropped deterministically. This runs regardless of
+    # RESEARCH_LANES_ENABLED: the flag gates lane CREATION (RL2+), never
+    # the loadability of a session that already has lanes.
+    lanes = research_lanes_from_persisted(d.get("lanes", []))
+    surviving_lane_ids = {lane.lane_id for lane in lanes}
     return PaperPoolSession(
         topic=d["topic"],
         # Older sessions saved before Phase 8's display_title field existed
@@ -363,6 +390,13 @@ def _dict_to_session(d: dict) -> PaperPoolSession:
         chat_summary=d.get("chat_summary"),
         chat_summary_covers_history_count=d.get("chat_summary_covers_history_count", 0),
         chat_summary_updated_at=d.get("chat_summary_updated_at"),
+        lanes=lanes,
+        paper_lane_ids=normalize_paper_lane_ids(
+            d.get("paper_lane_ids", {}), allowed_lane_ids=surviving_lane_ids,
+        ),
+        lane_result_counts=normalize_lane_result_counts(
+            d.get("lane_result_counts", {}), allowed_lane_ids=surviving_lane_ids,
+        ),
     )
 
 

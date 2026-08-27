@@ -28,6 +28,7 @@ def test_defaults_with_no_env_vars_set():
         frontend_origin="http://localhost:5173",
         openalex_mailto=None,
         keyword_filter_policy_c_enabled=False,
+        research_lanes_enabled=False,
     )
 
 
@@ -99,6 +100,37 @@ def test_keyword_filter_enabled_invalid_value_fails_clearly():
         except ValueError as exc:
             assert "KEYWORD_FILTER_POLICY_C_ENABLED" in str(exc)
             assert "enabled-ish" in str(exc)
+
+
+# --- Research Lanes (RL1): research_lanes_enabled feature flag ---
+
+def test_research_lanes_disabled_by_default():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_settings().research_lanes_enabled is False
+
+
+def test_research_lanes_enabled_true_false_parsing():
+    for truthy in ("true", "True", "TRUE", "1"):
+        with patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": truthy}, clear=True):
+            assert get_settings().research_lanes_enabled is True
+    for falsy in ("false", "False", "FALSE", "0"):
+        with patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": falsy}, clear=True):
+            assert get_settings().research_lanes_enabled is False
+
+
+def test_research_lanes_enabled_empty_string_is_treated_as_unset():
+    with patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": ""}, clear=True):
+        assert get_settings().research_lanes_enabled is False
+
+
+def test_research_lanes_enabled_invalid_value_fails_clearly():
+    with patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": "yes-please"}, clear=True):
+        try:
+            get_settings()
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "RESEARCH_LANES_ENABLED" in str(exc)
+            assert "yes-please" in str(exc)
 
 
 # --- K5D.2a: get_keyword_filter_max_concurrent_calls is a SEPARATE,

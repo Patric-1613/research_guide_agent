@@ -25,9 +25,11 @@ from research_agent.curation_session import (
     save_curation_session,
     select_paper_from_history,
 )
-from research_agent.qa import sqlite_checkpointer
+from research_agent.qa import QA_CHECKPOINT_DB_PATH, sqlite_checkpointer
 from research_agent.query_expansion import PaperPoolSession
+from research_agent.research_lanes import ResearchLane, new_lane_id
 from research_agent.schema import Paper, WebArticle
+from tests._usage_db_fingerprint import fingerprint_usage_db
 
 
 def _paper(pid: str) -> Paper:
@@ -1473,6 +1475,285 @@ def test_reopen_curation_session_persists_through_real_sqlite():
 
         assert final.stage == "curate"
         assert final.stop_reason is None
+
+
+# --- Research Lanes (RL1): session-level lane contracts + persistence ---
+#
+# Captured at IMPORT time, before any test in this file runs, exactly like
+# tests/test_admission.py's own real-DB fingerprint capture. Every test in
+# this file already runs against a tmp_path checkpoint DB, so nothing here
+# should ever touch the real data/qa_checkpoints.sqlite or
+# data/usage_telemetry.sqlite -- test_rl1_real_databases_are_byte_identical
+# at the bottom proves it (covers the .sqlite file AND its -wal/-shm
+# sidecars).
+import research_agent.telemetry as _rl1_telemetry  # noqa: E402
+
+_RL1_REAL_CHECKPOINT_DB = QA_CHECKPOINT_DB_PATH
+_RL1_REAL_USAGE_DB = _rl1_telemetry.USAGE_DB_PATH
+_RL1_CHECKPOINT_FINGERPRINT_BEFORE = fingerprint_usage_db(_RL1_REAL_CHECKPOINT_DB)
+_RL1_USAGE_FINGERPRINT_BEFORE = fingerprint_usage_db(_RL1_REAL_USAGE_DB)
+
+
+def _lane(lane_id: str, label: str, query: str = "a query", **kw) -> ResearchLane:
+    return ResearchLane(
+        lane_id=lane_id, label=label, question=kw.pop("question", "why?"), query=query, **kw,
+    )
+
+
+def _base_old_format_dict(**overrides) -> dict:
+    """The field set a checkpoint saved before RL1 has -- no lanes/
+    paper_lane_ids/lane_result_counts keys at all. Mirrors the hand-built
+    dicts the pre-existing backward-compat tests in this file already use."""
+    d = {
+        "topic": "old style session", "reserve": [], "cursor": 0,
+        "seen_paper_ids": [], "seen_titles": [], "stage": "curate", "target_count": 10,
+        "selected_paper_ids": [], "selected_papers": [], "report": None, "chat_history": [],
+        "web_articles_added": [], "pending_web_offer": None, "pending_report_update": None,
+        "refinement_notes": [], "report_covered_web_article_count": 0,
+    }
+    d.update(overrides)
+    return d
+
+
+def test_rl1_lane_fields_round_trip_through_real_sqlite():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        lane_a = _lane("lane-a", "Evaluation methods", "rag evaluation", origin="suggested", generation_version=1)
+        lane_b = _lane("lane-b", "Datasets", "rag datasets", enabled=False, origin="user", generation_version=2)
+        session = PaperPoolSession(
+            topic="retrieval-augmented generation",
+            reserve=[(_paper("p0"), 0.9)],
+            lanes=[lane_a, lane_b],
+            paper_lane_ids={"p0": ["lane-a", "lane-b"], "p1": ["lane-b"]},
+            lane_result_counts={"lane-a": 3, "lane-b": 1},
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "session-lanes", cp)
+
+        # Real SQLite read of the file itself, not just the checkpointer API.
+        conn = sqlite3.connect(db_path)
+        thread_ids = {row[0] for row in conn.execute("SELECT thread_id FROM checkpoints")}
+        conn.close()
+        assert thread_ids == {curation_thread_id("session-lanes")}
+
+        with sqlite_checkpointer(db_path) as cp2:
+            loaded = load_curation_session("session-lanes", cp2)
+
+        assert loaded is not None
+        assert [l.to_dict() for l in loaded.lanes] == [lane_a.to_dict(), lane_b.to_dict()]
+        assert loaded.lanes[1].enabled is False and loaded.lanes[1].origin == "user"
+        assert loaded.paper_lane_ids == {"p0": ["lane-a", "lane-b"], "p1": ["lane-b"]}
+        assert loaded.lane_result_counts == {"lane-a": 3, "lane-b": 1}
+
+
+def test_rl1_deterministic_double_round_trip_is_stable():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q",
+            lanes=[_lane("l1", "A"), _lane("l2", "B")],
+            paper_lane_ids={"p0": ["l2", "l1"]},
+            lane_result_counts={"l1": 0, "l2": 5},
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s", cp)
+            first = load_curation_session("s", cp)
+            save_curation_session(first, "s", cp)
+            second = load_curation_session("s", cp)
+
+        assert [l.to_dict() for l in first.lanes] == [l.to_dict() for l in second.lanes]
+        assert first.paper_lane_ids == second.paper_lane_ids == {"p0": ["l2", "l1"]}
+        assert first.lane_result_counts == second.lane_result_counts == {"l1": 0, "l2": 5}
+
+
+def test_rl1_old_session_without_lane_fields_loads_with_empty_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("old-no-lanes")}}
+            graph.invoke({"session": _base_old_format_dict()}, config=config)
+            loaded = load_curation_session("old-no-lanes", cp)
+
+        assert loaded is not None
+        assert loaded.lanes == []
+        assert loaded.paper_lane_ids == {}
+        assert loaded.lane_result_counts == {}
+
+
+def test_rl1_lane_session_loads_while_feature_flag_is_false():
+    """RESEARCH_LANES_ENABLED gates lane CREATION (RL2+), never the
+    loadability of a session that already has lanes -- deserialization is
+    unconditional. Proven by loading a lane session with the flag
+    explicitly off."""
+    import os
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(topic="q", lanes=[_lane("l1", "A")], paper_lane_ids={"p0": ["l1"]})
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s", cp)
+
+        with patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": "false"}, clear=False):
+            from research_agent.config import get_settings
+
+            assert get_settings().research_lanes_enabled is False
+            with sqlite_checkpointer(db_path) as cp2:
+                loaded = load_curation_session("s", cp2)
+
+        assert loaded is not None
+        assert [l.lane_id for l in loaded.lanes] == ["l1"]
+        assert loaded.paper_lane_ids == {"p0": ["l1"]}
+
+
+def test_rl1_persisted_duplicate_lane_ids_are_collapsed_deterministically_on_load():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        dup_dict = _base_old_format_dict(
+            stage="curate",
+            lanes=[
+                {"lane_id": "dup", "label": "First", "question": "", "query": "q1",
+                 "enabled": True, "origin": "suggested", "generation_version": 1},
+                {"lane_id": "dup", "label": "Second", "question": "", "query": "q2",
+                 "enabled": True, "origin": "suggested", "generation_version": 1},
+                {"lane_id": "other", "label": "Other", "question": "", "query": "q3",
+                 "enabled": True, "origin": "suggested", "generation_version": 1},
+            ],
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("dup-lanes")}}
+            graph.invoke({"session": dup_dict}, config=config)
+            loaded = load_curation_session("dup-lanes", cp)
+
+        assert [l.lane_id for l in loaded.lanes] == ["dup", "other"]
+        assert loaded.lanes[0].label == "First"  # first occurrence wins
+
+
+def test_rl1_dangling_lane_ids_in_provenance_are_dropped_safely_on_load():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        dangling_dict = _base_old_format_dict(
+            lanes=[{"lane_id": "real", "label": "Real", "question": "", "query": "q",
+                    "enabled": True, "origin": "suggested", "generation_version": 1}],
+            paper_lane_ids={"p0": ["real", "ghost"], "p1": ["ghost"]},
+            lane_result_counts={"real": 4, "ghost": 9},
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("dangling")}}
+            graph.invoke({"session": dangling_dict}, config=config)
+            loaded = load_curation_session("dangling", cp)
+
+        assert [l.lane_id for l in loaded.lanes] == ["real"]
+        assert loaded.paper_lane_ids == {"p0": ["real"]}  # p1 became empty -> dropped
+        assert loaded.lane_result_counts == {"real": 4}   # ghost dropped
+
+
+def test_rl1_malformed_persisted_lane_entry_does_not_make_the_session_unloadable():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        bad_dict = _base_old_format_dict(
+            lanes=[
+                {"lane_id": "ok", "label": "Fine", "question": "", "query": "q",
+                 "enabled": True, "origin": "suggested", "generation_version": 1},
+                {"lane_id": "", "label": "no id", "query": "q"},
+                {"label": "missing everything"},
+                "not-a-dict",
+            ],
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            graph = build_curation_graph(cp)
+            config = {"configurable": {"thread_id": curation_thread_id("bad-lanes")}}
+            graph.invoke({"session": bad_dict}, config=config)
+            loaded = load_curation_session("bad-lanes", cp)
+
+        assert loaded is not None
+        assert [l.lane_id for l in loaded.lanes] == ["ok"]
+
+
+def test_rl1_historical_turn_paper_lane_ids_snapshot_round_trips():
+    """RL3/RL4 will attach an OPTIONAL "paper_lane_ids" key to each new
+    turn_history entry of a lane-enabled session. RL1 freezes the shape:
+    turn_history is already opaquely round-tripped and dict[str, list[str]]
+    is JSON-native, so a turn entry WITH the key survives real SQLite and
+    an old entry WITHOUT it stays valid -- no serialization code change."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        turn_with_snapshot = {
+            "turn_number": 1,
+            "batch": [[_paper("p0").to_dict(), 0.9], [_paper("p1").to_dict(), 0.8]],
+            "refilled": False,
+            "paper_lane_ids": {"p0": ["lane-a"], "p1": ["lane-a", "lane-b"]},
+        }
+        turn_without_snapshot = {
+            "turn_number": 2,
+            "batch": [[_paper("p2").to_dict(), 0.7]],
+            "refilled": True,
+        }
+        session = PaperPoolSession(
+            topic="q",
+            lanes=[_lane("lane-a", "A"), _lane("lane-b", "B")],
+            turn_history=[turn_with_snapshot, turn_without_snapshot],
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s-turns", cp)
+            loaded = load_curation_session("s-turns", cp)
+
+        assert loaded is not None
+        assert loaded.turn_history[0]["paper_lane_ids"] == {"p0": ["lane-a"], "p1": ["lane-a", "lane-b"]}
+        assert "paper_lane_ids" not in loaded.turn_history[1]  # old-shape entry untouched
+
+
+def test_rl1_paper_reconstruction_is_unchanged_by_lane_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        p0 = Paper(
+            title="Paper p0", authors=["A. Uthor"], year=2024, venue="V", abstract="abs",
+            url="http://x", doi="10.1/x", citation_count=5, source="arxiv", paper_id="p0",
+            keywords=["retrieval", "evaluation"],
+        )
+        session = PaperPoolSession(
+            topic="q", stage="synthesize", reserve=[(p0, 0.9)],
+            selected_paper_ids=["p0"], selected_papers=[p0],
+            lanes=[_lane("l1", "A")], paper_lane_ids={"p0": ["l1"]},
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s-paper", cp)
+            loaded = load_curation_session("s-paper", cp)
+
+        assert loaded.selected_papers[0].to_dict() == p0.to_dict()
+        assert loaded.reserve[0][0].to_dict() == p0.to_dict()
+        assert loaded.reserve[0][1] == 0.9
+
+
+def test_rl1_list_curation_sessions_unaffected_by_lane_fields():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        session = PaperPoolSession(
+            topic="q", display_title="Q", reserve=[(_paper("p0"), 0.9)], target_count=7,
+            lanes=[_lane("l1", "A")],
+        )
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s", cp)
+            summaries = list_curation_sessions(cp)
+
+        assert len(summaries) == 1
+        assert set(summaries[0].keys()) == {
+            "session_id", "topic", "display_title", "stage",
+            "selected_count", "target_count", "has_report", "has_chat",
+        }
+
+
+def test_rl1_real_databases_are_byte_identical():
+    """Nothing in this file's run created, deleted, or modified the real
+    data/qa_checkpoints.sqlite or data/usage_telemetry.sqlite (or their
+    -wal/-shm sidecars) -- every test uses a tmp_path DB."""
+    assert fingerprint_usage_db(_RL1_REAL_CHECKPOINT_DB) == _RL1_CHECKPOINT_FINGERPRINT_BEFORE
+    assert fingerprint_usage_db(_RL1_REAL_USAGE_DB) == _RL1_USAGE_FINGERPRINT_BEFORE
 
 
 if __name__ == "__main__":

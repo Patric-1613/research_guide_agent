@@ -44,6 +44,7 @@ from research_agent.ingestion import (
     search_semantic_scholar,
 )
 from research_agent.provider_clients import default_openai_client
+from research_agent.research_lanes import ResearchLane
 from research_agent.schema import Paper, WebArticle
 from research_agent.tracing import ranked_paper_metadata, tag_current_trace
 
@@ -897,6 +898,29 @@ class PaperPoolSession:
     chat_summary: dict | None = None
     chat_summary_covers_history_count: int = 0
     chat_summary_updated_at: str | None = None
+    # Research Lanes (RL1): STRUCTURE ONLY -- nothing in RL1 reads these
+    # (lane generation/search/ranking/interleave/API/UI are RL2-RL5). All
+    # three are empty for the default single-search review AND for every
+    # session created before RL1; a session with no lane keys deserializes
+    # to exactly these defaults via _dict_to_session's .get() convention.
+    # See research_agent/research_lanes.py's module docstring for the
+    # frozen v1 shape and the strict-vs-lenient validation split.
+    #
+    # lanes: ordered ResearchLane list, FROZEN at curation Start (no
+    #   mid-curation editing -- frozen v1 decision). Hard max 4
+    #   (research_lanes.MAX_LANES_PER_REVIEW), enforced at construction, not
+    #   here.
+    # paper_lane_ids: CUMULATIVE discovery provenance -- paper_id ->
+    #   [lane_id, ...], a session-level SIDE-MAP, deliberately never a field
+    #   on Paper (that would duplicate it across reserve/turn_history/
+    #   selected_papers/Chroma). Same "missing key == no provenance
+    #   recorded" soft-link posture as web_article_provenance_by_url above --
+    #   always read via .get(paper_id), never assumed 1:1 with reserve.
+    # lane_result_counts: lane_id -> cumulative count of distinct papers a
+    #   lane has surfaced into the pool. Diagnostic / future-UI only.
+    lanes: list[ResearchLane] = field(default_factory=list)
+    paper_lane_ids: dict[str, list[str]] = field(default_factory=dict)
+    lane_result_counts: dict[str, int] = field(default_factory=dict)
 
     def remaining(self) -> int:
         """How many un-served candidates are left in the current reserve."""
