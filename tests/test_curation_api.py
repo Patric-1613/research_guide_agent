@@ -3387,6 +3387,334 @@ def test_different_sessions_remain_independent_with_summarization_involved():
     assert resp_b.status_code == 200
 
 
+# ======================================================================
+# Research Lanes (RL4): lane-mode /curation/start, refill dispatch, and
+# typed lane state on start/state responses. Every DB assertion is INSIDE
+# the client `with` block (the temp usage/checkpoint SQLite dies with it).
+# ======================================================================
+
+import research_agent.curation_loop as _curation_loop_mod  # noqa: E402
+import research_agent.research_lane_retrieval as _rlr  # noqa: E402
+from research_agent.research_lane_retrieval import MultiLaneRetrievalResult  # noqa: E402
+
+_LANES_ON = {"RESEARCH_LANES_ENABLED": "true"}
+_LANES_OFF = {"RESEARCH_LANES_ENABLED": "false"}
+
+
+def _submitted(*specs):
+    return [{"label": lbl, "question": f"why {lbl}?", "query": q, "enabled": en} for lbl, q, en in specs]
+
+
+def _fake_multilane_result(frozen_lanes, n_papers=12):
+    enabled_ids = [ln.lane_id for ln in frozen_lanes if ln.enabled]
+    papers = [_paper(f"lp{i}", f"Lane Paper {i}") for i in range(n_papers)]
+    prov = {p.paper_id: [enabled_ids[i % len(enabled_ids)]] for i, p in enumerate(papers)}
+    if len(enabled_ids) >= 2:
+        prov[papers[0].paper_id] = enabled_ids[:2]  # one shared paper
+    counts = {ln.lane_id: sum(1 for v in prov.values() if ln.lane_id in v) for ln in frozen_lanes}
+    return MultiLaneRetrievalResult(
+        ranked=[(p, 1.0 - i * 0.001) for i, p in enumerate(papers)],
+        paper_lane_ids=prov, lane_result_counts=counts,
+        embed_stats={"cache_hits": n_papers, "cache_misses": 0, "tokens_billed": 0,
+                     "estimated_cost_usd": 0.0, "papers_skipped": 0},
+    )
+
+
+def _paid_action_count(usage_db_path):
+    conn = sqlite3.connect(usage_db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM paid_actions").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# --- feature flag gates ONLY creation of a new lane session ------------
+
+def test_lane_start_with_flag_off_returns_403_before_any_provider_or_paid_work():
+    spy = MagicMock(side_effect=AssertionError("retrieve_across_lanes must not run when the flag is off"))
+    with _client_with_usage_db() as (client, usage_db_path), \
+         patch.dict(os.environ, _LANES_OFF), \
+         patch.object(api, "retrieve_across_lanes", spy):
+        resp = client.post("/curation/start", json={
+            "topic": "reducing hallucination in RAG",
+            "lanes": _submitted(("Methods", "rag methods", True), ("Evaluation", "rag evaluation", True)),
+        })
+        assert resp.status_code == 403
+        spy.assert_not_called()
+        assert _paid_action_count(usage_db_path) == 0
+
+
+def test_lane_start_with_flag_unset_also_returns_403():
+    with _client() as client, patch.dict(os.environ, {"RESEARCH_LANES_ENABLED": ""}, clear=False), \
+         patch.object(api, "retrieve_across_lanes", MagicMock(side_effect=AssertionError("no"))):
+        resp = client.post("/curation/start", json={"topic": "t", "lanes": _submitted(("A", "qa", True))})
+    assert resp.status_code == 403
+
+
+# --- valid lane start: server-minted IDs + full persistence -----------
+
+def test_lane_start_mints_server_ids_and_persists_all_lane_state():
+    captured = {}
+
+    def _fake_retrieve(topic, lanes, **kw):
+        captured["lanes"] = lanes
+        captured["topic"] = topic
+        return _fake_multilane_result(lanes)
+
+    with _client() as client, patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", side_effect=_fake_retrieve):
+        start = client.post("/curation/start", json={
+            "topic": "reducing hallucination in RAG",
+            "target_count": 8,
+            "lanes": _submitted(
+                ("Methods & architectures", "rag retrieval architectures", True),
+                ("Evaluation of factuality", "measuring rag factuality", True),
+                ("Deployment context", "rag production deployment", False),
+            ) + [{"label": "sneaky", "question": "q", "query": "qq", "enabled": True,
+                  "lane_id": "client-supplied-id", "origin": "admin", "generation_version": 99}],
+        }).json()
+        session_id = start["session_id"]
+
+        frozen = captured["lanes"]
+        assert captured["topic"] == "reducing hallucination in RAG"
+        assert [ln.origin for ln in frozen] == ["user"] * 4          # most-truthful origin, never client's
+        assert [ln.generation_version for ln in frozen] == [1] * 4
+        assert "client-supplied-id" not in [ln.lane_id for ln in frozen]
+        for ln in frozen:
+            assert ln.lane_id and len(ln.lane_id) >= 16 and not any(c.isspace() for c in ln.lane_id)
+            assert ln.lane_id.lower() != ln.label.lower()
+        assert [ln.enabled for ln in frozen] == [True, True, False, True]
+
+        body_lanes = start["lanes"]
+        assert [ln["lane_id"] for ln in body_lanes] == [ln.lane_id for ln in frozen]
+        assert all(ln["origin"] == "user" and ln["generation_version"] == 1 for ln in body_lanes)
+        assert start["paper_lane_ids"]
+        assert start["lane_result_counts"][frozen[2].lane_id] == 0   # disabled lane -> 0
+
+        # loads + exposes typed lane state via a separate GET, WITH THE FLAG OFF
+        with patch.dict(os.environ, _LANES_OFF):
+            state = client.get(f"/curation/{session_id}").json()
+
+        assert [ln["lane_id"] for ln in state["lanes"]] == [ln.lane_id for ln in frozen]
+        assert state["paper_lane_ids"] == start["paper_lane_ids"]
+        assert state["lane_result_counts"] == start["lane_result_counts"]
+        assert state["turn_history"], "turn 1 recorded"
+        t1_snapshot = state["turn_history"][0]["paper_lane_ids"]
+        assert t1_snapshot
+        assert set(t1_snapshot).issubset(set(state["paper_lane_ids"]))
+        assert set(t1_snapshot).issubset({p["paper_id"] for p in state["turn_history"][0]["batch"]})
+
+
+# --- malformed / >4 / all-disabled: 4xx before any work ---------------
+
+def test_lane_start_rejects_more_than_four_lanes_before_any_work():
+    spy = MagicMock(side_effect=AssertionError("no retrieve"))
+    with _client_with_usage_db() as (client, usage_db_path), patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", spy):
+        resp = client.post("/curation/start", json={
+            "topic": "t", "lanes": _submitted(*[(f"L{i}", f"q{i}", True) for i in range(5)])})
+        assert resp.status_code == 400
+        spy.assert_not_called()
+        assert _paid_action_count(usage_db_path) == 0
+
+
+def test_lane_start_rejects_all_disabled_lanes():
+    spy = MagicMock(side_effect=AssertionError("no retrieve"))
+    with _client() as client, patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", spy):
+        resp = client.post("/curation/start", json={
+            "topic": "t", "lanes": _submitted(("A", "qa", False), ("B", "qb", False))})
+    assert resp.status_code == 400
+    spy.assert_not_called()
+
+
+def test_lane_start_rejects_empty_label_before_work():
+    spy = MagicMock(side_effect=AssertionError("no retrieve"))
+    with _client() as client, patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", spy):
+        resp = client.post("/curation/start", json={
+            "topic": "t", "lanes": [{"label": "  ", "question": "q", "query": "qq", "enabled": True}]})
+    assert resp.status_code == 400
+    spy.assert_not_called()
+
+
+def test_lane_start_rejects_empty_lane_list():
+    with _client() as client, patch.dict(os.environ, _LANES_ON):
+        resp = client.post("/curation/start", json={"topic": "t", "lanes": []})
+    assert resp.status_code == 400
+
+
+def test_lane_start_oversized_label_is_a_422_before_the_service():
+    with _client() as client, patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", MagicMock(side_effect=AssertionError("no"))):
+        resp = client.post("/curation/start", json={
+            "topic": "t", "lanes": [{"label": "x" * 5000, "question": "q", "query": "qq", "enabled": True}]})
+    assert resp.status_code == 422
+
+
+# --- single-query path unchanged -------------------------------------
+
+def test_single_query_start_is_untouched_when_no_lanes_supplied():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    retrieve_spy = MagicMock(side_effect=AssertionError("retrieve_across_lanes must not run for single-query start"))
+    with _client() as client, \
+         patch.object(api, "retrieve_across_lanes", retrieve_spy), \
+         patch.object(api, "build_candidate_pool", return_value=papers) as bcp, \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})) as rfp:
+        resp = client.post("/curation/start", json={"topic": "t", "target_count": 5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lanes"] == [] and body["paper_lane_ids"] == {} and body["lane_result_counts"] == {}
+    retrieve_spy.assert_not_called()
+    assert bcp.call_count == 1 and rfp.call_count == 1  # single-query call counts unchanged
+
+
+# --- refill dispatch -------------------------------------------------
+
+def _start_lane_session(client, *, n_papers=10):
+    with patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes",
+                      side_effect=lambda topic, lanes, **kw: _fake_multilane_result(lanes, n_papers)):
+        return client.post("/curation/start", json={
+            "topic": "the topic", "target_count": 30,
+            "lanes": _submitted(("Methods", "rag methods", True), ("Evaluation", "rag eval", True)),
+        }).json()
+
+
+def test_lane_session_refill_dispatches_to_refill_lane_session_even_with_flag_off():
+    refill_pool_spy = MagicMock(side_effect=AssertionError("single-query refill_pool must NOT run for a lane session"))
+
+    def _fake_refill(session, **kw):
+        lid = session.lanes[0].lane_id
+        fresh = _paper("fresh1", "Fresh Lane Paper")
+        session.paper_lane_ids[fresh.paper_id] = [lid]
+        session.reserve = [(fresh, 0.5)]
+        session.cursor = 0
+        session.lane_result_counts = {
+            ln.lane_id: sum(1 for v in session.paper_lane_ids.values() if ln.lane_id in v) for ln in session.lanes
+        }
+        return 1
+
+    with _client() as client:
+        start = _start_lane_session(client, n_papers=10)
+        session_id = start["session_id"]
+        picks = [p["paper_id"] for p in start["batch"][:3]]  # 10 served -> 0 remain -> refill next turn
+        with patch.dict(os.environ, _LANES_OFF), \
+             patch.object(_curation_loop_mod, "refill_lane_session", side_effect=_fake_refill) as refill_spy, \
+             patch.object(_curation_loop_mod, "refill_pool", refill_pool_spy):
+            resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+        assert resp.status_code == 200
+        assert resp.json()["refilled"] is True
+        refill_spy.assert_called_once()
+        refill_pool_spy.assert_not_called()
+
+
+def test_single_query_session_refill_still_uses_refill_pool_not_the_lane_path():
+    from research_agent import query_expansion as qe_module
+
+    initial = [_paper(f"p{i}", f"Paper {i}") for i in range(10)]
+    fresh = [_paper(f"n{i}", f"New {i}") for i in range(6)]
+    lane_refill_spy = MagicMock(side_effect=AssertionError("refill_lane_session must NOT run for a single-query session"))
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=initial), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(initial), {})):
+        start = client.post("/curation/start", json={"topic": "t", "target_count": 30}).json()
+        session_id = start["session_id"]
+        picks = [p["paper_id"] for p in start["batch"][:3]]
+        with patch.object(qe_module, "build_candidate_pool", return_value=fresh), \
+             patch.object(qe_module, "rank_full_pool",
+                          side_effect=lambda topic, papers, client=None, **kw: (
+                              [(p, 1.0 - i * 0.01) for i, p in enumerate(papers)], {})), \
+             patch.object(_curation_loop_mod, "refill_lane_session", lane_refill_spy):
+            resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+        assert resp.status_code == 200
+        assert resp.json()["refilled"] is True
+        lane_refill_spy.assert_not_called()
+
+
+def test_lane_refill_end_to_end_preserves_tail_provenance_and_freezes_turn_history():
+    with _client() as client:
+        start = _start_lane_session(client, n_papers=10)
+        session_id = start["session_id"]
+        frozen_ids = [ln["lane_id"] for ln in start["lanes"]]
+        picks = [p["paper_id"] for p in start["batch"][:3]]
+
+        A_fresh = [_paper("shared-x", "Shared Fresh"), _paper("f1", "Fresh One Title"), _paper("f2", "Fresh Two Title")]
+        B_fresh = [_paper("f3", "Fresh Three Title")]
+        indexed = {}
+
+        def _fake_bcp(query, k, **kw):
+            return list(A_fresh) if "methods" in query else list(B_fresh)
+
+        def _fake_embed(papers, **kw):
+            for p in papers:
+                indexed[p.paper_id] = p
+            return {"cache_hits": len(papers), "cache_misses": 0, "tokens_billed": 0,
+                    "estimated_cost_usd": 0.0, "papers_skipped": 0}
+
+        def _fake_search(q, *, collection=None, client=None, top_k=10, where=None):
+            ids = where["paper_id"]["$in"]
+            return [(indexed[i], 1.0 - 0.01 * n) for n, i in enumerate(ids) if i in indexed]
+
+        with patch.dict(os.environ, _LANES_OFF), \
+             patch.object(_rlr, "build_candidate_pool", side_effect=_fake_bcp), \
+             patch.object(_rlr, "embed_and_index_papers", side_effect=_fake_embed) as embed_spy, \
+             patch.object(_rlr, "semantic_search", side_effect=_fake_search) as search_spy, \
+             patch.object(_rlr, "get_chroma_collection", return_value=MagicMock()):
+            picks_resp = client.post(f"/curation/{session_id}/picks", json={"picked_paper_ids": picks})
+            assert picks_resp.status_code == 200
+            assert picks_resp.json()["refilled"] is True
+            assert embed_spy.call_count == 1          # embed once per refill
+            assert search_spy.call_count == 2          # one semantic pass per enabled lane
+
+        state = client.get(f"/curation/{session_id}").json()
+
+    assert [ln["lane_id"] for ln in state["lanes"]] == frozen_ids
+    assert set(start["paper_lane_ids"]).issubset(set(state["paper_lane_ids"]))   # never lost start provenance
+    assert any(pid.startswith("f") for pid in state["paper_lane_ids"])           # fresh papers added
+    assert set(state["lane_result_counts"]) == set(frozen_ids)
+    t1 = state["turn_history"][0]
+    assert t1["turn_number"] == 1
+    assert set(t1["paper_lane_ids"]).issubset({p["paper_id"] for p in t1["batch"]})   # frozen to turn-1 batch
+
+
+# --- admission still propagates for a lane start ---------------------
+
+def test_lane_start_admission_rejection_propagates_before_provider_work():
+    from research_agent.config import get_usage_policy
+
+    limit = get_usage_policy().global_paid_action_limit
+    now = datetime.now(timezone.utc).isoformat()
+    retrieve_spy = MagicMock(side_effect=AssertionError("retrieve must not run once admission rejects"))
+    with _client_with_usage_db() as (client, usage_db_path), patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", retrieve_spy):
+        for i in range(limit):
+            telemetry._write_paid_action(
+                action_id=f"seed{i}-{uuid.uuid4().hex}", action_type="search", request_id=None,
+                subject_type=None, subject_id=None, outcome="success", started_at=now, ended_at=now,
+                latency_ms=1.0, input_tokens=None, output_tokens=None, total_tokens=None,
+                total_call_count=1, child_calls_json="[]", path=usage_db_path,
+            )
+        resp = client.post("/curation/start", json={"topic": "t", "lanes": _submitted(("A", "qa", True))})
+        assert resp.status_code == 429
+        retrieve_spy.assert_not_called()
+
+
+# --- old / pre-RL4 session still deserializes ------------------------
+
+def test_pre_rl4_single_query_session_still_loads_with_empty_lane_fields():
+    papers = [_paper(f"p{i}", f"Paper {i}") for i in range(12)]
+    with _client() as client, \
+         patch.object(api, "build_candidate_pool", return_value=papers), \
+         patch.object(api, "rank_full_pool", return_value=(_ranked(papers), {})):
+        sid = client.post("/curation/start", json={"topic": "t"}).json()["session_id"]
+        state = client.get(f"/curation/{sid}").json()
+    assert state["lanes"] == []
+    assert state["paper_lane_ids"] == {}
+    assert state["lane_result_counts"] == {}
+    assert all(t.get("paper_lane_ids", {}) == {} for t in state["turn_history"])
+
+
 if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()

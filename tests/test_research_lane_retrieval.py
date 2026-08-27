@@ -1,12 +1,14 @@
-"""Research Lanes (RL3): tests for research_agent.research_lane_retrieval.
+"""Research Lanes (RL3/RL3a/RL4): tests for
+research_agent.research_lane_retrieval -- retrieve_across_lanes (first
+search) and refill_lane_session (multi-lane refill).
 
-Pure domain function -- every network/embedding/Chroma boundary is
-mocked at the module seam (build_candidate_pool / embed_and_index_papers
-/ semantic_search / get_chroma_collection). deduplicate_with_clusters and
+Pure domain layer -- every network/embedding/Chroma boundary is mocked at
+the module seam (build_candidate_pool / embed_and_index_papers /
+semantic_search / get_chroma_collection). deduplicate_with_clusters and
 extract_keywords run FOR REAL (the cross-lane dedup + provenance +
-keyword-repair logic is exactly what RL3 owns). No network / provider
-calls. The real checkpoint / usage / Chroma DBs are fingerprinted
-(module level) and re-checked at the end.
+keyword-repair logic is exactly what this module owns). No network /
+provider calls. The real checkpoint / usage / Chroma DBs are
+fingerprinted (module level) and re-checked at the end.
 """
 
 from __future__ import annotations
@@ -716,3 +718,182 @@ def test_two_merged_clusters_and_a_singleton_recompute_once_each_and_never_for_t
     assert by_id["a:solo"].keywords == ["untouched kw"]
     for merged_id in ("a:1+b:1", "a:2+b:2"):
         assert by_id[merged_id].keywords  # merged output retains valid keywords
+
+
+# ======================================================================
+# RL4: refill_lane_session -- the multi-lane counterpart of refill_pool.
+# ======================================================================
+
+from research_agent.research_lane_retrieval import refill_lane_session  # noqa: E402
+
+
+def _lane_session(lanes, *, reserve, cursor, paper_lane_ids, seen_paper_ids, seen_titles=(), refinement_notes=()):
+    s = PaperPoolSession(
+        topic="the review topic",
+        lanes=list(lanes),
+        reserve=list(reserve),
+        cursor=cursor,
+        paper_lane_ids={k: list(v) for k, v in paper_lane_ids.items()},
+        seen_paper_ids=set(seen_paper_ids),
+        seen_titles=set(seen_titles),
+        refinement_notes=list(refinement_notes),
+    )
+    return s
+
+
+def _run_refill(session, fakes, **kwargs):
+    with patch.object(rlr, "build_candidate_pool", side_effect=fakes.build), \
+         patch.object(rlr, "embed_and_index_papers", side_effect=fakes.embed), \
+         patch.object(rlr, "semantic_search", side_effect=fakes.search), \
+         patch.object(rlr, "get_chroma_collection", side_effect=AssertionError("collection must be injected in tests")):
+        return refill_lane_session(session, collection=object(), **kwargs)
+
+
+def _refill_scenario():
+    A, B, C = _lane("qa", lane_id="A"), _lane("qb", lane_id="B"), _lane("qc", lane_id="C", enabled=False)
+    p0 = _paper("p0", "Served Paper Zero")
+    t1 = _paper("t1", "Unserved Tail One")
+    t2 = _paper("t2", "Unserved Tail Two")
+    t3 = _paper("t3", "Unserved Tail Three")
+    session = _lane_session(
+        [A, B, C],
+        reserve=[(p0, 0.99), (t1, 0.9), (t2, 0.8), (t3, 0.7)],
+        cursor=1,  # p0 already served; tail = t1, t2, t3
+        paper_lane_ids={"p0": ["A"], "t1": ["A"], "t2": ["B"], "t3": ["A", "B"]},
+        seen_paper_ids={"p0"},
+        seen_titles={"Served Paper Zero"},
+    )
+    # fresh search: lane A re-finds t1 + brings n1,n2 ; lane B re-finds t3 + brings n3
+    fakes = _Fakes({
+        "qa": [_paper("t1", "Unserved Tail One"), _paper("n1", "New One"), _paper("n2", "New Two")],
+        "qb": [_paper("t3", "Unserved Tail Three"), _paper("n3", "New Three")],
+    })
+    return session, fakes
+
+
+def test_refill_searches_every_enabled_lane_only_and_forwards_exclusions():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    assert [c["query"] for c in fakes.build_calls] == ["qa", "qb"]  # C is disabled -> never searched
+    for c in fakes.build_calls:
+        assert c["kwargs"]["exclude_titles"] == ["Served Paper Zero"]
+        assert c["kwargs"]["refinement_notes"] is None
+
+
+def test_refill_embeds_once_and_runs_one_semantic_pass_per_enabled_lane():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    assert len(fakes.embed_calls) == 1
+    assert len(fakes.search_calls) == 2  # one per enabled lane, over the COMBINED pool
+    embedded_ids = sorted(p.paper_id for p in fakes.embed_calls[0])
+    assert embedded_ids == ["n1", "n2", "n3", "t1", "t2", "t3"]  # tail + genuinely-new, deduped, once
+
+
+def test_refill_each_lane_pass_is_restricted_to_that_lanes_cumulative_subset():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    by_lane = {}
+    for c in fakes.search_calls:
+        facet = c["query"].splitlines()[-1]
+        by_lane[facet] = set(c["ids"])
+    assert by_lane["Research facet: qa"] == {"t1", "t3", "n1", "n2"}
+    assert by_lane["Research facet: qb"] == {"t2", "t3", "n3"}
+
+
+def test_refill_preserves_the_unserved_reserve_tail_and_merges_new_results():
+    session, fakes = _refill_scenario()
+    count = _run_refill(session, fakes)
+    assert count == 3  # n1, n2, n3
+    ids = [p.paper_id for p, _ in session.reserve]
+    assert set(ids) == {"t1", "t2", "t3", "n1", "n2", "n3"}
+    assert len(ids) == len(set(ids))  # each once
+    assert session.cursor == 0
+
+
+def test_refill_unions_cumulative_provenance_and_never_removes_old():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    assert session.paper_lane_ids["t3"] == ["A", "B"]        # was ["A","B"], B re-found -> unchanged, ordered
+    assert session.paper_lane_ids["t1"] == ["A"]             # A re-found -> still ["A"]
+    assert session.paper_lane_ids["t2"] == ["B"]             # NOT re-found -> old provenance kept
+    assert session.paper_lane_ids["p0"] == ["A"]             # served paper's provenance kept
+    assert session.paper_lane_ids["n1"] == ["A"]
+    assert session.paper_lane_ids["n3"] == ["B"]
+
+
+def test_refill_recomputes_lane_result_counts_from_cumulative_provenance():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    # A: p0,t1,t3,n1,n2 = 5 ; B: t2,t3,n3 = 3 ; C (disabled) = 0
+    assert session.lane_result_counts == {"A": 5, "B": 3, "C": 0}
+
+
+def test_refill_duplicate_discovery_does_not_inflate_provenance_or_counts():
+    session, fakes = _refill_scenario()
+    _run_refill(session, fakes)
+    prov_after_1 = {k: list(v) for k, v in session.paper_lane_ids.items()}
+    counts_after_1 = dict(session.lane_result_counts)
+
+    # run the SAME fresh search again -- every result is now already seen /
+    # in the tail, so nothing is genuinely new and nothing inflates.
+    session.seen_paper_ids |= {p.paper_id for p, _ in session.reserve[: 0]}  # no-op, keep seen as-is
+    fakes2 = _Fakes({
+        "qa": [_paper("t1", "Unserved Tail One"), _paper("n1", "New One"), _paper("n2", "New Two")],
+        "qb": [_paper("t3", "Unserved Tail Three"), _paper("n3", "New Three")],
+    })
+    # mark the new papers as seen so the 2nd refill treats them as duplicates
+    session.seen_paper_ids |= {"n1", "n2", "n3"}
+    count2 = _run_refill(session, fakes2)
+    assert count2 == 0
+    for k, v in prov_after_1.items():
+        assert session.paper_lane_ids[k] == v  # unchanged
+    assert session.lane_result_counts == counts_after_1
+
+
+def test_refill_with_empty_fresh_results_still_re_ranks_the_tail():
+    A, B = _lane("qa", lane_id="A"), _lane("qb", lane_id="B")
+    t1, t2 = _paper("t1", "Tail One Title"), _paper("t2", "Tail Two Title")
+    session = _lane_session(
+        [A, B], reserve=[(t1, 0.9), (t2, 0.8)], cursor=0,
+        paper_lane_ids={"t1": ["A"], "t2": ["B"]}, seen_paper_ids=set(),
+    )
+    fakes = _Fakes({"qa": [], "qb": []})
+    count = _run_refill(session, fakes)
+    assert count == 0
+    assert len(fakes.embed_calls) == 1  # tail still embedded/ranked
+    assert {p.paper_id for p, _ in session.reserve} == {"t1", "t2"}
+    assert session.lane_result_counts == {"A": 1, "B": 1}
+
+
+def test_refill_with_no_tail_and_no_fresh_results_empties_the_reserve():
+    A = _lane("qa", lane_id="A")
+    session = _lane_session([A], reserve=[], cursor=0, paper_lane_ids={}, seen_paper_ids=set())
+    fakes = _Fakes({"qa": []})
+    with patch.object(rlr, "build_candidate_pool", side_effect=fakes.build), \
+         patch.object(rlr, "embed_and_index_papers", side_effect=AssertionError("no embed on empty")), \
+         patch.object(rlr, "semantic_search", side_effect=AssertionError("no rank on empty")), \
+         patch.object(rlr, "get_chroma_collection", side_effect=AssertionError("no chroma on empty")):
+        count = refill_lane_session(session, collection=object())
+    assert count == 0
+    assert session.reserve == []
+    assert session.lane_result_counts == {"A": 0}
+
+
+def test_refill_does_not_mutate_the_frozen_lane_objects():
+    session, fakes = _refill_scenario()
+    lanes_before = [l.to_dict() for l in session.lanes]
+    _run_refill(session, fakes)
+    assert [l.to_dict() for l in session.lanes] == lanes_before
+
+
+def test_refill_folds_refinement_notes_into_search_and_ranking():
+    A = _lane("qa", lane_id="A")
+    t1 = _paper("t1", "Tail One")
+    session = _lane_session(
+        [A], reserve=[(t1, 0.9)], cursor=0, paper_lane_ids={"t1": ["A"]},
+        seen_paper_ids=set(), refinement_notes=["focus on recent work"],
+    )
+    fakes = _Fakes({"qa": [_paper("t1", "Tail One"), _paper("n1", "New One Title")]})
+    _run_refill(session, fakes)
+    assert fakes.build_calls[0]["kwargs"]["refinement_notes"] == ["focus on recent work"]
+    assert fakes.search_calls[0]["query"] == "the review topic\nResearch facet: qa. focus on recent work"

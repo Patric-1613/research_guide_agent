@@ -81,6 +81,8 @@ from research_agent.curation_session import (
 )
 from research_agent.config import get_keyword_filter_max_concurrent_calls, get_settings, get_usage_policy
 from research_agent.query_expansion import BATCH_SIZE, refill_pool, serve_next_batch
+from research_agent.research_lane_retrieval import refill_lane_session
+from research_agent.research_lanes import TURN_PAPER_LANE_IDS_KEY, build_turn_paper_lane_ids
 from research_agent.schema import Paper
 from research_agent.session_limits import check_finish_requires_selection, check_selected_paper_capacity
 from research_agent.usage_guard import guard_paid_action
@@ -158,13 +160,27 @@ def _refill_node(state: CurationLoopState, config) -> dict:
     configurable = config["configurable"]
     session_id = configurable["thread_id"][len(THREAD_ID_PREFIX):]
     with guard_paid_action("curation_refill", subject=("session", session_id), use_lease=True):
-        refill_pool(
-            session,
-            s2_api_key=configurable.get("s2_api_key"),
-            client=configurable["client"],
-            use_openalex_fallback=configurable.get("use_openalex_fallback", False),
-            openalex_mailto=configurable.get("openalex_mailto"),
-        )
+        # Research Lanes (RL4): dispatch purely on the persisted lane set,
+        # NOT the feature flag -- an existing lane session keeps refilling
+        # across all its enabled lanes even after RESEARCH_LANES_ENABLED is
+        # turned off. Both paths run inside this ONE curation_refill guard:
+        # no new action type, no nested paid action.
+        if session.lanes:
+            refill_lane_session(
+                session,
+                s2_api_key=configurable.get("s2_api_key"),
+                client=configurable["client"],
+                use_openalex_fallback=configurable.get("use_openalex_fallback", False),
+                openalex_mailto=configurable.get("openalex_mailto"),
+            )
+        else:
+            refill_pool(
+                session,
+                s2_api_key=configurable.get("s2_api_key"),
+                client=configurable["client"],
+                use_openalex_fallback=configurable.get("use_openalex_fallback", False),
+                openalex_mailto=configurable.get("openalex_mailto"),
+            )
     return {"session": _session_to_dict(session), "refilled": True}
 
 
@@ -229,11 +245,24 @@ def _serve_batch_node(state: CurationLoopState, config) -> dict:
     # could browse back to (no papers were shown), so it's not logged --
     # still true under Phase 10b's "present even if empty" routing.
     if serialized_batch:
-        session.turn_history.append({
+        entry = {
             "turn_number": len(session.turn_history) + 1,
             "batch": serialized_batch,
             "refilled": state.get("refilled", False),
-        })
+        }
+        # Research Lanes (RL4): a FROZEN per-turn discovery-provenance
+        # snapshot -- a projection of the CURRENT cumulative
+        # session.paper_lane_ids restricted to exactly this turn's batch,
+        # written once here and never rewritten, so a later refill (which
+        # extends the cumulative map) never changes a historical turn. The
+        # key is added ONLY when the snapshot is non-empty, so a
+        # single-query turn's entry stays byte-identical to before RL4.
+        turn_snapshot = build_turn_paper_lane_ids(
+            [paper_dict["paper_id"] for paper_dict, _ in serialized_batch], session.paper_lane_ids,
+        )
+        if turn_snapshot:
+            entry[TURN_PAPER_LANE_IDS_KEY] = turn_snapshot
+        session.turn_history.append(entry)
     return {"session": _session_to_dict(session), "current_batch": serialized_batch}
 
 

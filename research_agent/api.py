@@ -50,6 +50,7 @@ from research_agent.curation_session import (
 from research_agent.embeddings import embed_and_index_papers, get_chroma_collection, get_papers_by_ids, semantic_search
 from research_agent.lane_suggestion import suggest_lanes
 from research_agent.qa import ChatSession, ask
+from research_agent.research_lane_retrieval import retrieve_across_lanes
 from research_agent.query_expansion import (
     PaperPoolSession,
     build_candidate_pool,
@@ -108,6 +109,7 @@ from research_agent.api_app.schemas import (
     ResearchLaneOut,
     SearchRequest,
     SearchResponse,
+    SubmittedLane,
     SummarizeRequest,
     SummarizeResponse,
     ThemeOut,
@@ -116,6 +118,7 @@ from research_agent.api_app.schemas import (
     WebSummaryOut,
 )
 from research_agent.api_app.serializers import (
+    _lanes_out,
     _paper_out_from_batch_entry,
     _paper_to_out,
     _render_markdown,

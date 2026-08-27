@@ -28,7 +28,7 @@ from research_agent.api_app.schemas import (
 )
 from research_agent.citations import CitationStyle, select_citation
 from research_agent.report import derive_legacy_references, derive_sections_from_legacy_report
-from research_agent.research_lanes import ResearchLane
+from research_agent.research_lanes import ResearchLane, read_turn_paper_lane_ids
 from research_agent.schema import Paper, WebArticle
 
 
@@ -40,6 +40,23 @@ def _research_lane_to_out(lane: ResearchLane) -> ResearchLaneOut:
         lane_id=lane.lane_id, label=lane.label, question=lane.question, query=lane.query,
         enabled=lane.enabled, origin=lane.origin, generation_version=lane.generation_version,
     )
+
+
+def _lanes_out(lanes_raw) -> list[ResearchLaneOut]:
+    """Research Lanes (RL4): serialize the frozen lane list for an API
+    response. Accepts either a list of ResearchLane objects (from a
+    reconstructed PaperPoolSession) or a list of plain serialized dicts
+    (straight off the raw session dict a turn-result carries) -- both
+    have the same 7 fields. Empty in, empty out (single-query / pre-RL4
+    session)."""
+    out: list[ResearchLaneOut] = []
+    for lane in lanes_raw or []:
+        d = lane.to_dict() if isinstance(lane, ResearchLane) else lane
+        out.append(ResearchLaneOut(
+            lane_id=d["lane_id"], label=d["label"], question=d["question"], query=d["query"],
+            enabled=d["enabled"], origin=d["origin"], generation_version=d["generation_version"],
+        ))
+    return out
 
 
 def _paper_to_out(paper: Paper, score: float | None = None) -> PaperOut:
@@ -125,6 +142,10 @@ def _turn_history_out(turn_history: list[dict]) -> list[TurnHistoryEntryOut]:
             turn_number=entry["turn_number"],
             batch=[_paper_out_from_batch_entry(e) for e in entry["batch"]],
             refilled=entry["refilled"],
+            # RL4: the frozen per-turn snapshot -- {} for a turn served
+            # before RL4 or by a single-query session (read_turn_paper_
+            # lane_ids returns {} when the key is absent).
+            paper_lane_ids=read_turn_paper_lane_ids(entry),
         )
         for entry in turn_history
     ]
@@ -223,6 +244,14 @@ def _turn_result_to_response(session_id: str, target_count: int, result: dict) -
         # reserve Paper's full data just to subtract two lengths.
         reserve_remaining=max(0, len(session_dict["reserve"]) - session_dict["cursor"]),
         refinement_notes=list(session_dict.get("refinement_notes", [])),
+        # RL4: straight off the raw session dict -- `lanes` there is a list
+        # of plain serialized-ResearchLane dicts, the two maps are already
+        # JSON-native. All absent/empty for a single-query or pre-RL4
+        # session, so an existing client sees the same response shape with
+        # empty additions.
+        lanes=_lanes_out(session_dict.get("lanes", [])),
+        paper_lane_ids={pid: list(lids) for pid, lids in session_dict.get("paper_lane_ids", {}).items()},
+        lane_result_counts=dict(session_dict.get("lane_result_counts", {})),
     )
 
 

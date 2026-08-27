@@ -8,6 +8,7 @@ from research_agent.api_app.schemas import (
     ReferenceEntry,
 )
 from research_agent.api_app.serializers import (
+    _lanes_out,
     _paper_out_from_batch_entry,
     _paper_to_out,
     _report_to_out,
@@ -67,6 +68,14 @@ def get_state(session_id: str, cp) -> CurationStateResponse | None:
         active_report_version_id=session.active_report_version_id,
         # report-quality Phase R3.2 Chunk 2
         chat_references=[ReferenceEntry(**r) for r in chat["references"]],
+        # Research Lanes (RL4): frozen lane set + cumulative provenance +
+        # recomputed counts. All empty for a single-query / pre-RL4
+        # session (session.lanes deserializes to [] via RL1's .get()
+        # default). turn_history entries already carry their own frozen
+        # per-turn snapshot via _turn_history_out above.
+        lanes=_lanes_out(session.lanes),
+        paper_lane_ids={pid: list(lids) for pid, lids in session.paper_lane_ids.items()},
+        lane_result_counts=dict(session.lane_result_counts),
     )
 
 

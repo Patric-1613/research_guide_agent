@@ -221,12 +221,35 @@ class LibraryItem(BaseModel):
     web_article_count: int
 
 
+class SubmittedLane(BaseModel):
+    """Research Lanes (RL4): one lane submitted to /curation/start. ONLY
+    editable content -- no lane_id / origin / generation_version. The
+    server mints a fresh opaque lane_id, stamps origin="user" and
+    generation_version=1, and validates every value (RL1 construction
+    contract: label <= 80 chars, question <= 300, query <= max_text_length,
+    non-empty label/query) before any admission / telemetry / provider /
+    embedding / persistence work. A client-supplied lane_id/origin is
+    ignored, not trusted, even if present."""
+
+    label: UserText
+    question: UserText
+    query: UserText
+    enabled: bool = True
+
+
 class CurationStartRequest(BaseModel):
     topic: UserText
     # 1-30: matches report.py's own documented 30-paper cap; target_count
     # is "how many picks the user wants total," not a per-batch size.
     target_count: int = Field(default=10, ge=1, le=30)
     use_openalex_fallback: bool = False
+    # Research Lanes (RL4): optional. None/omitted -> the exact existing
+    # single-query path, unchanged. A list -> lane mode, which requires
+    # RESEARCH_LANES_ENABLED=true and a valid set (1..4 lanes, >=1
+    # enabled); an invalid set or a disabled feature returns a 4xx before
+    # any paid/provider work. Disabled lanes are persisted but never
+    # searched. Lane definitions freeze once the session starts.
+    lanes: list[SubmittedLane] | None = None
 
 
 class LaneSuggestRequest(BaseModel):
@@ -299,6 +322,14 @@ class CurationTurnResponse(BaseModel):
     # Phase 6f: every refinement note applied so far this session, so the
     # UI can show what's currently steering the search.
     refinement_notes: list[str] = []
+    # Research Lanes (RL4): empty for a single-query session (default) and
+    # for any session created before RL4. `lanes` is the frozen lane set;
+    # `paper_lane_ids` is cumulative discovery provenance keyed by the
+    # merged paper_id; `lane_result_counts` is recomputed from that
+    # cumulative provenance (a re-discovery cannot inflate it).
+    lanes: list[ResearchLaneOut] = []
+    paper_lane_ids: dict[str, list[str]] = Field(default_factory=dict)
+    lane_result_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ReferenceEntry(BaseModel):
@@ -484,6 +515,13 @@ class TurnHistoryEntryOut(BaseModel):
     turn_number: int
     batch: list[PaperOut]
     refilled: bool
+    # Research Lanes (RL4): the FROZEN per-turn discovery-provenance
+    # snapshot -- only the papers in THIS turn's batch, mapped to their
+    # discovering lane_ids as of when the turn was served. Written once at
+    # serve time and never rewritten, so a later refill never changes a
+    # historical turn. Empty for a single-query turn and for any turn
+    # served before RL4.
+    paper_lane_ids: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class CurationStateResponse(BaseModel):
@@ -540,6 +578,14 @@ class CurationStateResponse(BaseModel):
     # references), never persisted -- empty for a session with no
     # qualifying assistant turns yet.
     chat_references: list[ReferenceEntry] = []
+    # Research Lanes (RL4): the frozen lane set, cumulative discovery
+    # provenance (keyed by merged paper_id), and per-lane counts recomputed
+    # from that cumulative provenance. All empty for a single-query session
+    # and for any session created before RL4 (backward-compatible defaults
+    # -- old checkpoints and single-query clients still deserialize).
+    lanes: list[ResearchLaneOut] = []
+    paper_lane_ids: dict[str, list[str]] = Field(default_factory=dict)
+    lane_result_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class CurationChatRequest(BaseModel):
