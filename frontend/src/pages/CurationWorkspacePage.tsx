@@ -186,11 +186,18 @@ export default function CurationWorkspacePage() {
     openReview(id)
   }
 
-  async function handleStartReview(topic: string, targetCount: number, lanes?: SubmittedLane[]) {
+  async function handleStartReview(
+    topic: string,
+    targetCount: number,
+    lanes?: SubmittedLane[],
+  ): Promise<string | undefined> {
     setWorkspaceMode('review')
     setShowHistory(false)
-    await startReview(topic, targetCount, lanes)
+    // RL5b: forward the hook's explicit success signal so ReviewsList
+    // closes the New Review form only after a canonical session opened.
+    const startedSessionId = await startReview(topic, targetCount, lanes)
     setReviewsRefreshToken((t) => t + 1)
+    return startedSessionId
   }
 
   async function handleDeleteReview(id: string) {

@@ -250,3 +250,103 @@ describe('ReviewsList', () => {
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 })
+
+describe('ReviewsList -- Research Lanes (RL5b): drafts survive a failed start', () => {
+  const THREE = [
+    { lane_id: 'a', label: 'Retrieval', question: 'q1', query: 'retrieval augmented', enabled: true, origin: 'suggested', generation_version: 1 },
+    { lane_id: 'b', label: 'Evaluation', question: 'q2', query: 'evaluating grounding', enabled: true, origin: 'suggested', generation_version: 1 },
+    { lane_id: 'c', label: 'Failure modes', question: 'q3', query: 'faithfulness failures', enabled: true, origin: 'suggested', generation_version: 1 },
+  ]
+
+  function baseProps(overrides: Partial<React.ComponentProps<typeof ReviewsList>> = {}) {
+    return {
+      activeSessionId: null, onSelectReview: vi.fn(), onStartReview: vi.fn(), onDeleteReview: vi.fn(),
+      refreshToken: 0, workspaceMode: 'review' as const, workspaceUnlocked: false, onWorkspaceModeChange: vi.fn(),
+      ...overrides,
+    }
+  }
+
+  it('a failed single-search start keeps the form open with topic and target intact', async () => {
+    const user = userEvent.setup()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+    const onStartReview = vi.fn().mockResolvedValue(undefined) // failure -> no session id
+
+    render(<ReviewsList {...baseProps({ onStartReview })} />)
+    await user.click(screen.getByTestId('new-review-trigger'))
+    await user.clear(screen.getByTestId('new-review-target-count'))
+    await user.type(screen.getByTestId('new-review-target-count'), '15')
+    await user.type(screen.getByTestId('new-review-topic'), 'my topic')
+    await user.click(screen.getByTestId('new-review-start'))
+
+    expect(onStartReview).toHaveBeenCalledWith('my topic', 15)
+    // Form still mounted, values untouched.
+    expect((screen.getByTestId('new-review-topic') as HTMLInputElement).value).toBe('my topic')
+    expect((screen.getByTestId('new-review-target-count') as HTMLInputElement).value).toBe('15')
+    expect(screen.queryByTestId('new-review-trigger')).not.toBeInTheDocument()
+  })
+
+  it('a failed lane-mode start restores every edited lane value and does not re-request suggestions', async () => {
+    const user = userEvent.setup()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+    const onStartReview = vi.fn().mockResolvedValue(undefined)
+    const onSuggestLanes = vi.fn()
+
+    render(<ReviewsList {...baseProps({ onStartReview, researchLanesAvailable: true, laneSuggestions: THREE, onSuggestLanes })} />)
+    await user.click(screen.getByTestId('new-review-trigger'))
+    await user.click(screen.getByTestId('new-review-mode-lanes'))
+    await user.type(screen.getByTestId('new-review-topic'), 'quantum error correction') // clears seeded rows
+    await user.click(screen.getByTestId('lane-add'))
+    await user.type(screen.getByTestId('lane-label-0'), 'My edited lane')
+    await user.type(screen.getByTestId('lane-question-0'), 'does it converge?')
+    await user.type(screen.getByTestId('lane-query-0'), 'surface code threshold')
+    await user.click(screen.getByTestId('new-review-start'))
+
+    expect(onStartReview).toHaveBeenCalledTimes(1)
+    // Form still shows the lane editor with the exact edited values.
+    expect((screen.getByTestId('lane-label-0') as HTMLInputElement).value).toBe('My edited lane')
+    expect((screen.getByTestId('lane-question-0') as HTMLInputElement).value).toBe('does it converge?')
+    expect((screen.getByTestId('lane-query-0') as HTMLInputElement).value).toBe('surface code threshold')
+    expect(screen.getByTestId('lane-enabled-0')).toBeChecked()
+    expect((screen.getByTestId('new-review-topic') as HTMLInputElement).value).toBe('quantum error correction')
+    // No second suggestion request from the failed start.
+    expect(onSuggestLanes).not.toHaveBeenCalled()
+  })
+
+  it('while a start is in flight the form is replaced by the status but its draft state survives', async () => {
+    const user = userEvent.setup()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+
+    const { rerender } = render(<ReviewsList {...baseProps({ startingReview: false })} />)
+    await user.click(screen.getByTestId('new-review-trigger'))
+    await user.type(screen.getByTestId('new-review-topic'), 'a durable topic')
+
+    rerender(<ReviewsList {...baseProps({ startingReview: true })} />)
+    // Fields replaced by the one status; no second Start action.
+    expect(screen.getByTestId('starting-review-status')).toHaveTextContent('Starting new review…')
+    expect(screen.queryByTestId('new-review-topic')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('new-review-start')).not.toBeInTheDocument()
+
+    // Start failed -> back to the form with the draft intact.
+    rerender(<ReviewsList {...baseProps({ startingReview: false })} />)
+    expect((screen.getByTestId('new-review-topic') as HTMLInputElement).value).toBe('a durable topic')
+  })
+
+  it('the form closes and resets only after a genuinely successful start (a truthy session id)', async () => {
+    const user = userEvent.setup()
+    vi.mocked(curationApi.listReviews).mockResolvedValue([])
+    const onStartReview = vi.fn().mockResolvedValue('sess-42')
+    const onResetLaneSuggestions = vi.fn()
+
+    render(<ReviewsList {...baseProps({ onStartReview, onResetLaneSuggestions })} />)
+    await user.click(screen.getByTestId('new-review-trigger'))
+    await user.type(screen.getByTestId('new-review-topic'), 'topic')
+    await user.click(screen.getByTestId('new-review-start'))
+
+    await waitFor(() => expect(screen.getByTestId('new-review-trigger')).toBeInTheDocument())
+    expect(onResetLaneSuggestions).toHaveBeenCalled()
+
+    // Re-opening the form starts from an empty draft.
+    await user.click(screen.getByTestId('new-review-trigger'))
+    expect((screen.getByTestId('new-review-topic') as HTMLInputElement).value).toBe('')
+  })
+})

@@ -182,7 +182,11 @@ interface UseCurationSessionResult {
   suggestResearchLanes: (topic: string) => Promise<void>
   resetLaneSuggestions: () => void
   openReview: (sessionId: string) => void
-  startReview: (topic: string, targetCount: number, lanes?: SubmittedLane[]) => Promise<void>
+  // RL5b: resolves with the new session id ONLY after the start POST and
+  // the canonical state reload both succeed; resolves undefined on any
+  // failure (runAction swallows the error into `error`). Callers use this
+  // as the single explicit success signal -- never "the promise settled".
+  startReview: (topic: string, targetCount: number, lanes?: SubmittedLane[]) => Promise<string | undefined>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
   // Return the freshly-loaded state (not void) so a caller can react to
   // exactly what changed as a RESULT of this action -- e.g. App.tsx uses
@@ -724,8 +728,13 @@ export function useCurationSession(): UseCurationSessionResult {
         setSessionId(response.session_id)
         // Canonical server state (including the frozen, server-minted lane
         // set) replaces any client draft -- loadState is the single
-        // source of truth after start.
+        // source of truth after start. If it throws, runAction's catch
+        // returns undefined and the new-review form stays open with its
+        // draft intact.
         await loadState(response.session_id)
+        // RL5b: the explicit success signal -- returned only once the
+        // canonical session genuinely opened.
+        return response.session_id
       }, 'starting_review')
     },
     [runAction, loadState, setSessionId],

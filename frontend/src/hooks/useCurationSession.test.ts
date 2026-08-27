@@ -2338,3 +2338,96 @@ describe('useCurationSession -- Research Lanes (RL5)', () => {
     resolveFn({ lanes: [] })
   })
 })
+
+describe('useCurationSession -- Research Lanes (RL5b)', () => {
+  async function mountAtRoot() {
+    window.history.pushState({}, '', '/')
+    return renderHook(() => useCurationSession())
+  }
+
+  const turnResponse = (sessionId: string): CurationTurnResponse => ({
+    session_id: sessionId, stage: 'curate', target_count: 10, selected_paper_ids: [],
+    batch: [], stop_reason: null, refilled: false, reserve_remaining: 0, refinement_notes: [],
+  })
+
+  it('Fix 1: resetLaneSuggestions aborts the in-flight suggestion signal and a late success cannot repopulate lanes', async () => {
+    let capturedSignal: AbortSignal | undefined
+    let resolveFn!: (v: { lanes: unknown[] }) => void
+    const gate = new Promise<{ lanes: unknown[] }>((res) => { resolveFn = res })
+    vi.mocked(curationApi.suggestResearchLanes).mockImplementation((_topic, signal) => {
+      capturedSignal = signal
+      return gate as never
+    })
+    const { result } = await mountAtRoot()
+
+    act(() => { void result.current.suggestResearchLanes('topic A') })
+    await waitFor(() => expect(result.current.laneSuggestionLoading).toBe(true))
+    expect(capturedSignal?.aborted).toBe(false)
+
+    act(() => { result.current.resetLaneSuggestions() })
+    expect(capturedSignal?.aborted).toBe(true)
+
+    await act(async () => {
+      resolveFn({ lanes: [{ lane_id: 'x', label: 'L', question: 'q', query: 'qq', enabled: true, origin: 'suggested', generation_version: 1 }] })
+      await gate
+    })
+
+    expect(result.current.laneSuggestions).toBeNull()
+    expect(result.current.laneSuggestionLoading).toBe(false)
+    expect(result.current.laneSuggestionError).toBeNull()
+  })
+
+  it('Fix 2: startReview resolves undefined when the start POST fails (form stays open), and sets the shared error', async () => {
+    vi.mocked(curationApi.start).mockRejectedValueOnce(new ApiError(503, { detail: 'service unavailable' }))
+    const { result } = await mountAtRoot()
+
+    let resolved: string | undefined = 'sentinel'
+    await act(async () => { resolved = await result.current.startReview('t', 10) })
+
+    expect(resolved).toBeUndefined()
+    expect(result.current.error).not.toBeNull()
+    expect(result.current.sessionId).toBeNull()
+  })
+
+  it('Fix 2: startReview resolves undefined when the canonical reload fails', async () => {
+    vi.mocked(curationApi.start).mockResolvedValue(turnResponse('sess-x'))
+    vi.mocked(curationApi.getState).mockRejectedValue(new Error('reload failed'))
+    const { result } = await mountAtRoot()
+
+    let resolved: string | undefined = 'sentinel'
+    await act(async () => { resolved = await result.current.startReview('t', 10) })
+
+    expect(resolved).toBeUndefined()
+  })
+
+  it('Fix 2: startReview resolves the new session id only after canonical state loads', async () => {
+    vi.mocked(curationApi.start).mockResolvedValue(turnResponse('sess-9'))
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'sess-9' }))
+    const { result } = await mountAtRoot()
+
+    let resolved: string | undefined
+    await act(async () => { resolved = await result.current.startReview('t', 10) })
+
+    expect(resolved).toBe('sess-9')
+    expect(result.current.state?.session_id).toBe('sess-9')
+  })
+
+  it('Fix 2: a repeated startReview while one is in flight does not issue a second POST', async () => {
+    let resolveStart!: (v: CurationTurnResponse) => void
+    const gate = new Promise<CurationTurnResponse>((res) => { resolveStart = res })
+    vi.mocked(curationApi.start).mockReturnValue(gate)
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'new' }))
+    const { result } = await mountAtRoot()
+
+    act(() => { void result.current.startReview('t', 10) })
+    await waitFor(() => expect(result.current.curationAction).toBe('starting_review'))
+
+    await act(async () => { await result.current.startReview('t', 10) })
+    expect(curationApi.start).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveStart(turnResponse('new'))
+      await gate
+    })
+  })
+})

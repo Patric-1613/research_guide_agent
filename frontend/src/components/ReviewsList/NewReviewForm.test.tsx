@@ -190,3 +190,44 @@ describe('NewReviewForm -- research lanes', () => {
     expect(JSON.stringify(onSubmit.mock.calls[0][2])).not.toMatch(/lane_id|origin|generation_version/)
   })
 })
+
+describe('NewReviewForm -- RL5b', () => {
+  it('Fix 1: switching to Single search resets the lane draft + suggestions, and the single start carries no lanes', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    const onResetLaneSuggestions = vi.fn()
+    render(
+      <NewReviewForm
+        onSubmit={onSubmit} onCancel={vi.fn()} researchLanesAvailable
+        onSuggestLanes={vi.fn()} onResetLaneSuggestions={onResetLaneSuggestions} laneSuggestions={THREE}
+      />,
+    )
+    await user.click(screen.getByTestId('new-review-mode-lanes'))
+    expect(screen.getByTestId('lane-row-0')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('new-review-mode-single'))
+    expect(onResetLaneSuggestions).toHaveBeenCalled()
+
+    // The hidden draft was cleared -- returning to lane mode shows no rows.
+    await user.click(screen.getByTestId('new-review-mode-lanes'))
+    expect(screen.queryByTestId('lane-row-0')).not.toBeInTheDocument()
+
+    // A single-search submission never includes lanes.
+    await user.click(screen.getByTestId('new-review-mode-single'))
+    await user.type(screen.getByTestId('new-review-topic'), 'my topic')
+    await user.click(screen.getByTestId('new-review-start'))
+    expect(onSubmit).toHaveBeenCalledWith('my topic', 10)
+    expect(onSubmit.mock.calls[0]).toHaveLength(2)
+  })
+
+  it('Fix 2: while submitting, the form shows only the status -- no editable fields, no second Start', () => {
+    render(
+      <NewReviewForm onSubmit={vi.fn()} onCancel={vi.fn()} researchLanesAvailable submitting />,
+    )
+    expect(screen.getByTestId('starting-review-status')).toHaveTextContent('Starting new review…')
+    expect(screen.getByTestId('starting-review-status')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.queryByTestId('new-review-start')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('new-review-topic')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('new-review-mode-lanes')).not.toBeInTheDocument()
+  })
+})

@@ -10,7 +10,14 @@ import type { ResearchLaneOut, SubmittedLane } from '../../types'
 interface ReviewsListProps {
   activeSessionId: string | null
   onSelectReview: (sessionId: string) => void
-  onStartReview: (topic: string, targetCount: number, lanes?: SubmittedLane[]) => void
+  // RL5b: resolves with the new session id on a genuinely successful start
+  // (canonical server state loaded), or undefined on failure -- the form
+  // is closed/reset here only on the former.
+  onStartReview: (
+    topic: string,
+    targetCount: number,
+    lanes?: SubmittedLane[],
+  ) => void | Promise<string | undefined>
   onDeleteReview: (sessionId: string) => void
   // Bumping this triggers a refetch -- the caller increments it after any
   // action that could change a review's summary (a pick, a report, a chat
@@ -93,31 +100,24 @@ export function ReviewsList({
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col gap-3 border-r border-border bg-panel p-3">
-      {/* UXH.2: the one status location for "starting a new review" --
-          replaces the trigger/form entirely (not just disabling it) while
-          the request is in flight, so there's no interactive affordance
-          left that could submit a second start. The previously open
-          review's own content (rendered by the parent page, untouched
-          here) stays visible underneath but non-interactive via the
-          existing `loading`-driven disabled props already threaded
-          through Review/Chat/Report -- see useCurationSession's own
-          curationAction docstring for why nothing new was needed there. */}
-      {startingReview ? (
-        <p
-          role="status"
-          aria-live="polite"
-          data-testid="starting-review-status"
-          className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-2 text-sm font-medium text-text-secondary"
-        >
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Starting new review…
-        </p>
-      ) : showForm ? (
+      {/* UXH.2 / RL5b: the one status location for "starting a new review".
+          While a start is in flight the form STAYS MOUNTED (so a failed
+          start can restore every field) but renders only the status via
+          its own `submitting` prop -- there is no editable field and no
+          second Start action to click. It is closed/reset here ONLY after
+          a genuinely successful start (onStartReview resolves with the new
+          session id), never merely because the async handler settled. The
+          bare `startingReview` status below covers the edge case where a
+          start is somehow in flight with the form already closed. */}
+      {showForm ? (
         <NewReviewForm
-          onSubmit={(...args) => {
-            setShowForm(false)
-            onResetLaneSuggestions?.()
-            onStartReview(...args)
+          submitting={startingReview}
+          onSubmit={async (...args) => {
+            const startedSessionId = await onStartReview(...args)
+            if (startedSessionId) {
+              setShowForm(false)
+              onResetLaneSuggestions?.()
+            }
           }}
           onCancel={() => {
             setShowForm(false)
@@ -130,6 +130,16 @@ export function ReviewsList({
           onSuggestLanes={onSuggestLanes}
           onResetLaneSuggestions={onResetLaneSuggestions}
         />
+      ) : startingReview ? (
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="starting-review-status"
+          className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-2 text-sm font-medium text-text-secondary"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Starting new review…
+        </p>
       ) : (
         <button
           type="button"

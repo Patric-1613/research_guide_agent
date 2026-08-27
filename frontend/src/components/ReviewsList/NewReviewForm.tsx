@@ -41,6 +41,12 @@ interface NewReviewFormProps {
   laneSuggestionError?: string | null
   onSuggestLanes?: (topic: string) => void
   onResetLaneSuggestions?: () => void
+  // Research Lanes (RL5b): true while a start this form submitted is in
+  // flight. The form STAYS MOUNTED (its draft state is preserved) but
+  // temporarily renders the "Starting new review…" status instead of the
+  // editable fields -- so a failed start can restore every field exactly,
+  // and there is no second Start action to click.
+  submitting?: boolean
 }
 
 let draftLaneKeySeq = 0
@@ -72,6 +78,7 @@ export function NewReviewForm({
   laneSuggestionError = null,
   onSuggestLanes,
   onResetLaneSuggestions,
+  submitting = false,
 }: NewReviewFormProps) {
   const [topic, setTopic] = useState('')
   const [targetCount, setTargetCount] = useState(10)
@@ -90,13 +97,30 @@ export function NewReviewForm({
     }
   }, [laneSuggestions])
 
+  function clearLaneDraft() {
+    setDraftLanes([])
+    lastAppliedSuggestionsRef.current = null
+    onResetLaneSuggestions?.()
+  }
+
   function handleTopicChange(value: string) {
     if (value === topic) return
     setTopic(value)
-    // Changing the topic invalidates any lanes designed for the old one.
-    if (draftLanes.length > 0) setDraftLanes([])
-    lastAppliedSuggestionsRef.current = null
-    onResetLaneSuggestions?.()
+    // A topic change invalidates any lanes designed for the previous
+    // topic -- and cancels any in-flight suggestion request for it.
+    clearLaneDraft()
+  }
+
+  // Research Lanes (RL5b) Fix 1: leaving lane mode invalidates the hidden
+  // draft AND cancels any in-flight suggestion request (resetLaneSuggestions
+  // aborts its AbortController, so a late response / its finally block can
+  // no longer touch state). The already-sent provider request is NOT
+  // retried or replaced -- only its client-side result is discarded. Topic
+  // and target count are untouched.
+  function selectMode(next: ReviewMode) {
+    if (next === mode) return
+    setMode(next)
+    if (next === 'single') clearLaneDraft()
   }
 
   function updateLane(key: string, patch: Partial<DraftLane>) {
@@ -125,6 +149,7 @@ export function NewReviewForm({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (submitting) return
     if (mode === 'lanes') {
       if (!canStartLanes) return
       onSubmit(
@@ -148,6 +173,28 @@ export function NewReviewForm({
     onSuggestLanes?.(trimmedTopic)
   }
 
+  // Research Lanes (RL5b) Fix 2: while a start is in flight the form stays
+  // MOUNTED (every useState above is preserved) but shows only the status
+  // -- no editable fields, no Start button. A failed start flips submitting
+  // back to false and the fields render again from the untouched state;
+  // the form is closed/reset only by the parent, and only after a
+  // canonical server session genuinely opened.
+  if (submitting) {
+    return (
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="starting-review-status"
+          className="flex items-center justify-center gap-2 py-2 text-sm font-medium text-text-secondary"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Starting new review…
+        </p>
+      </div>
+    )
+  }
+
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
       {researchLanesAvailable && (
@@ -156,7 +203,7 @@ export function NewReviewForm({
             type="button"
             data-testid="new-review-mode-single"
             aria-pressed={mode === 'single'}
-            onClick={() => setMode('single')}
+            onClick={() => selectMode('single')}
             className={`flex-1 rounded px-2 py-1 font-medium ${
               mode === 'single' ? 'bg-accent text-accent-fg' : 'text-text-secondary hover:text-text'
             }`}
@@ -167,7 +214,7 @@ export function NewReviewForm({
             type="button"
             data-testid="new-review-mode-lanes"
             aria-pressed={mode === 'lanes'}
-            onClick={() => setMode('lanes')}
+            onClick={() => selectMode('lanes')}
             className={`flex-1 rounded px-2 py-1 font-medium ${
               mode === 'lanes' ? 'bg-accent text-accent-fg' : 'text-text-secondary hover:text-text'
             }`}
