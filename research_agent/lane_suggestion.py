@@ -19,15 +19,27 @@ Provider contract (frozen):
     an LLM- or client-provided identity is never accepted.
 
 Failure posture -- STRICT, never repaired:
-  - a malformed structured result (unparseable, not exactly three
-    suggestions, a lane that fails the RL1 construction contract, or a
-    duplicate label/query under casefolded + whitespace-normalized
-    comparison) raises ``LaneSuggestionError``. The service maps that to
-    the repository's existing safe 503 "service unavailable" response --
-    no raw provider text is ever exposed. This module never invents a
-    missing lane, splits one, or edits model output to make it pass.
+  - a malformed structured result raises ``LaneSuggestionError``:
+      * parser-side ``pydantic.ValidationError`` from
+        ``chat.completions.parse`` (the model's JSON did not fit
+        ``_SuggestedLanes``);
+      * a response object missing ``choices`` / ``message`` / ``parsed``,
+        or with an empty ``choices`` list (``IndexError`` /
+        ``AttributeError`` / ``TypeError`` on the access expressions),
+        or ``parsed is None``;
+      * not exactly three suggestions; a lane that fails the RL1
+        construction contract; a duplicate label/query under casefolded +
+        whitespace-normalized comparison.
+    The service maps ``LaneSuggestionError`` to the repository's existing
+    safe 503 "service unavailable" response -- no raw provider text or
+    exception message is ever exposed. This module never invents a
+    missing lane, splits one, or edits model output to make it pass, and
+    never makes a second provider call.
   - a genuine provider exception (``OpenAIError``) propagates unchanged so
     the router's ``_upstream_error_guard`` produces the same safe 503.
+  - the two narrow ``except`` clauses at the provider-response boundary
+    catch ONLY those specific expected shapes (never broad ``Exception``),
+    so an unrelated programming defect still surfaces normally.
 """
 
 from __future__ import annotations
@@ -36,7 +48,7 @@ import logging
 
 from langfuse import get_client, observe
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 import research_agent.telemetry as telemetry
 from research_agent.provider_clients import default_openai_client
@@ -101,12 +113,16 @@ class _SuggestedLanes(BaseModel):
 
 
 class LaneSuggestionError(Exception):
-    """The provider call SUCCEEDED but its structured output cannot be
-    turned into exactly ``DEFAULT_SUGGESTED_LANE_COUNT`` valid, distinct
-    ``ResearchLane`` suggestions. Carries only a short, safe reason --
-    never raw provider text. ``services/lane_suggestion_service.py`` maps
-    it to the same safe 503 "service unavailable" response the router's
-    ``_upstream_error_guard`` produces for a genuine provider exception."""
+    """The provider call was made but its response cannot be turned into
+    exactly ``DEFAULT_SUGGESTED_LANE_COUNT`` valid, distinct
+    ``ResearchLane`` suggestions -- whether because the SDK's own parse
+    step raised ``pydantic.ValidationError``, the response object was
+    structurally missing ``choices`` / ``message`` / ``parsed``, or the
+    parsed content failed a lane rule. Carries only a short, safe reason
+    -- never raw provider text or a wrapped exception message.
+    ``services/lane_suggestion_service.py`` maps it to the same safe 503
+    "service unavailable" response the router's ``_upstream_error_guard``
+    produces for a genuine ``OpenAIError``."""
 
 
 def _normalized(text: str) -> str:
@@ -149,16 +165,38 @@ def suggest_lanes(topic: str, client: OpenAI | None = None) -> list[ResearchLane
         metadata={"prompt_version": LANE_SUGGESTION_PROMPT_VERSION},
     )
 
-    with telemetry.timed_child_call("suggest_lanes", "openai", model=LANE_SUGGESTION_MODEL) as call:
-        response = client.chat.completions.parse(
-            model=LANE_SUGGESTION_MODEL,
-            temperature=LANE_SUGGESTION_TEMPERATURE,
-            messages=messages,
-            response_format=_SuggestedLanes,
-        )
-        call.set_usage(getattr(response, "usage", None))
+    # RL2a: the provider-response boundary, hardened. Exactly two failure
+    # shapes are expected here and each is converted to LaneSuggestionError
+    # (-> safe 503, no raw text):
+    #   1. parser-side: chat.completions.parse validates the model's JSON
+    #      against _SuggestedLanes and raises pydantic.ValidationError when
+    #      it doesn't fit. (An OpenAIError is a DIFFERENT type -- it is not
+    #      caught here and propagates unchanged to _upstream_error_guard.)
+    #   2. structural: the response object is missing choices / message /
+    #      parsed, or choices is empty -- surfacing as IndexError,
+    #      AttributeError, or TypeError on the exact access expressions
+    #      below. These catches are scoped tightly to those two statements
+    #      so an unrelated bug elsewhere is never swallowed; broad
+    #      `except Exception` is deliberately avoided.
+    try:
+        with telemetry.timed_child_call("suggest_lanes", "openai", model=LANE_SUGGESTION_MODEL) as call:
+            response = client.chat.completions.parse(
+                model=LANE_SUGGESTION_MODEL,
+                temperature=LANE_SUGGESTION_TEMPERATURE,
+                messages=messages,
+                response_format=_SuggestedLanes,
+            )
+            call.set_usage(getattr(response, "usage", None))
+    except ValidationError as exc:
+        langfuse.update_current_generation(level="WARNING", status_message="provider response failed schema validation")
+        raise LaneSuggestionError("provider response failed schema validation") from exc
 
-    parsed = response.choices[0].message.parsed
+    try:
+        parsed = response.choices[0].message.parsed
+    except (IndexError, AttributeError, TypeError) as exc:
+        langfuse.update_current_generation(level="WARNING", status_message="provider response missing expected fields")
+        raise LaneSuggestionError("provider response missing expected fields") from exc
+
     if parsed is None:
         langfuse.update_current_generation(level="WARNING", status_message="model returned no parsed content")
         raise LaneSuggestionError("model returned no parsed content")

@@ -79,6 +79,12 @@ ACTION_TYPES = (
     # AND at least one displayed paper misses the keyword_filter.py cache
     # -- see that node for the admission/lease wrapping.
     "curation_keyword_filter",
+    # RL2: opened once by research_agent.services.lane_suggestion_service
+    # around the single gpt-4.1-mini structured lane-suggestion call
+    # (no subject -> global admission only, no lease). One user-visible
+    # operation -- POST /curation/lanes/suggest -- not one type per
+    # internal step.
+    "curation_lane_suggest",
 )
 
 HttpOutcome = Literal["success", "error", "cancelled"]

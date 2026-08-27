@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,6 +52,25 @@ def _client(lane_dicts, *, parsed_none: bool = False, usage=(9, 4, 13)):
     fake = MagicMock()
     fake.chat.completions.parse.return_value = resp
     return fake
+
+
+def _client_returning(resp):
+    fake = MagicMock()
+    fake.chat.completions.parse.return_value = resp
+    return fake
+
+
+def _validation_error():
+    """A real pydantic.ValidationError, the exact type
+    chat.completions.parse raises when the model's JSON doesn't fit the
+    response_format model."""
+    from pydantic import ValidationError
+
+    try:
+        _SuggestedLanes(lanes="not a list of lanes")
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected a ValidationError")
 
 
 def test_returns_three_validated_lanes_with_server_minted_ids():
@@ -108,6 +128,42 @@ def test_wrong_count_raises_lane_suggestion_error_no_repair(n):
 def test_parsed_none_raises_lane_suggestion_error():
     fake = _client(None, parsed_none=True)
     with pytest.raises(LaneSuggestionError):
+        suggest_lanes("t", client=fake)
+
+
+# --- RL2a: provider-response boundary is fully hardened ---------------
+
+def test_parse_raising_pydantic_validation_error_becomes_lane_suggestion_error():
+    fake = MagicMock()
+    fake.chat.completions.parse.side_effect = _validation_error()
+    with pytest.raises(LaneSuggestionError) as exc_info:
+        suggest_lanes("t", client=fake)
+    assert fake.chat.completions.parse.call_count == 1          # no retry
+    assert "not a list of lanes" not in str(exc_info.value)     # no wrapped content
+
+
+@pytest.mark.parametrize("resp", [
+    SimpleNamespace(choices=[], usage=None),                                          # empty choices -> IndexError
+    SimpleNamespace(choices=None, usage=None),                                         # None choices -> TypeError
+    SimpleNamespace(choices=[SimpleNamespace(message=None)], usage=None),              # None.parsed -> AttributeError
+    SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())], usage=None), # message has no .parsed -> AttributeError
+    SimpleNamespace(choices=[SimpleNamespace()], usage=None),                          # choice has no .message -> AttributeError
+], ids=["empty-choices", "none-choices", "none-message", "message-no-parsed", "choice-no-message"])
+def test_structurally_malformed_response_becomes_lane_suggestion_error(resp):
+    fake = _client_returning(resp)
+    with pytest.raises(LaneSuggestionError):
+        suggest_lanes("t", client=fake)
+    assert fake.chat.completions.parse.call_count == 1          # no retry
+
+
+def test_boundary_catches_do_not_swallow_unrelated_bugs():
+    """The narrow except clauses must not hide a genuine defect. A
+    KeyError raised from inside the parse call is neither ValidationError
+    nor an IndexError/AttributeError/TypeError on the response-access
+    expressions, so it propagates unchanged."""
+    fake = MagicMock()
+    fake.chat.completions.parse.side_effect = KeyError("some unrelated internal bug")
+    with pytest.raises(KeyError):
         suggest_lanes("t", client=fake)
 
 

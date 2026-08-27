@@ -25,6 +25,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -132,6 +133,18 @@ def _fake_parse_response(lane_dicts, *, parsed_none: bool = False, usage=(11, 7,
         u.prompt_tokens, u.completion_tokens, u.total_tokens = usage
         resp.usage = u
     return resp
+
+
+def _validation_error():
+    """A real pydantic.ValidationError -- the type chat.completions.parse
+    raises when the model's JSON doesn't fit response_format."""
+    from pydantic import ValidationError
+
+    try:
+        _SuggestedLanes(lanes="not a list of lanes")
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected a ValidationError")
 
 
 def _paid_rows(usage_db_path: Path) -> list[sqlite3.Row]:
@@ -283,6 +296,124 @@ def test_provider_exception_fails_safely_and_records_error_outcome():
         child_calls = json.loads(rows[0]["child_calls_json"])
         assert len(child_calls) == 1 and child_calls[0]["outcome"] == "error"
         assert child_calls[0]["error_type"] == "APIConnectionError"
+
+
+# --- RL2a: full provider-response boundary -> safe 503 + one error row ---
+
+_MALFORMED_RESPONSE_CASES = {
+    "parse-raises-validation-error": ("side_effect", None),  # special-cased below
+    "empty-choices": ("return_value", SimpleNamespace(choices=[], usage=None)),
+    "none-choices": ("return_value", SimpleNamespace(choices=None, usage=None)),
+    "choice-has-no-message": ("return_value", SimpleNamespace(choices=[SimpleNamespace()], usage=None)),
+    "message-is-none": ("return_value", SimpleNamespace(choices=[SimpleNamespace(message=None)], usage=None)),
+    "message-has-no-parsed": (
+        "return_value", SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())], usage=None),
+    ),
+    "parsed-is-none": (
+        "return_value", SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=None))], usage=None),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_MALFORMED_RESPONSE_CASES))
+def test_every_malformed_response_shape_yields_safe_503_and_one_error_paid_action_row(case):
+    kind, value = _MALFORMED_RESPONSE_CASES[case]
+    with _lanes_client() as (client, usage_db_path, _cp, client_mock):
+        if case == "parse-raises-validation-error":
+            client_mock.chat.completions.parse.side_effect = _validation_error()
+        elif kind == "return_value":
+            client_mock.chat.completions.parse.return_value = value
+        else:
+            client_mock.chat.completions.parse.side_effect = value
+
+        resp = client.post("/curation/lanes/suggest", json={"topic": "t"})
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == _SAFE_503
+        assert client_mock.chat.completions.parse.call_count == 1  # exactly one call, no retry
+
+        # no raw provider content / exception text in the response
+        body_text = resp.text.lower()
+        for leak in ("traceback", "validationerror", "not a list of lanes", "attributeerror",
+                     "indexerror", "typeerror", "simplenamespace", "pydantic"):
+            assert leak not in body_text
+
+        rows = _paid_rows(usage_db_path)
+        assert len(rows) == 1
+        assert rows[0]["action_type"] == "curation_lane_suggest"
+        assert rows[0]["outcome"] == "error"
+
+
+def test_genuine_openai_error_still_follows_the_upstream_error_path_unchanged():
+    """RL2a must not change OpenAIError handling -- an OpenAIError is
+    neither ValidationError nor an IndexError/AttributeError/TypeError on
+    the response-access expressions, so it propagates past the two narrow
+    boundary catches to the router's _upstream_error_guard: one call, no
+    retry, one error row, safe 503."""
+    import httpx
+    from openai import APIConnectionError
+
+    with _lanes_client() as (client, usage_db_path, _cp, client_mock):
+        client_mock.chat.completions.parse.side_effect = APIConnectionError(
+            request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        )
+        resp = client.post("/curation/lanes/suggest", json={"topic": "t"})
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == _SAFE_503
+        assert client_mock.chat.completions.parse.call_count == 1
+        rows = _paid_rows(usage_db_path)
+        assert len(rows) == 1 and rows[0]["outcome"] == "error"
+        assert json.loads(rows[0]["child_calls_json"])[0]["error_type"] == "APIConnectionError"
+
+
+def test_feature_disabled_unauth_and_admission_paths_still_do_zero_provider_work():
+    """Re-assert RL2's zero-work guarantees are untouched by RL2a."""
+    from research_agent.config import get_usage_policy
+
+    # feature off
+    with _lanes_client(flag="false") as (client, usage_db_path, _cp, client_mock):
+        client_mock.chat.completions.parse.side_effect = AssertionError("no provider call when disabled")
+        assert client.post("/curation/lanes/suggest", json={"topic": "t"}).status_code == 403
+        assert client_mock.chat.completions.parse.call_count == 0
+        assert _paid_rows(usage_db_path) == []
+
+    # admission rejected
+    limit = get_usage_policy().global_paid_action_limit
+    with _lanes_client() as (client, usage_db_path, _cp, client_mock):
+        client_mock.chat.completions.parse.side_effect = AssertionError("no provider call after admission reject")
+        _seed_global_window(usage_db_path, limit)
+        assert client.post("/curation/lanes/suggest", json={"topic": "t"}).status_code == 429
+        assert client_mock.chat.completions.parse.call_count == 0
+        assert len(_paid_rows(usage_db_path)) == limit
+
+
+# --- RL2a: telemetry action registry -------------------------------
+
+def test_curation_lane_suggest_is_registered_exactly_once_in_action_types():
+    assert telemetry.ACTION_TYPES.count("curation_lane_suggest") == 1
+
+
+def test_no_existing_action_type_was_removed_or_renamed():
+    # Frozen pre-RL2 set (the M1 architecture-audit enum) -- RL2 only
+    # APPENDS. If this list needs editing, a registered action type is
+    # being removed/renamed and that is a breaking telemetry change.
+    frozen_pre_rl2 = {
+        "search", "summarize", "search_chat", "curation_start", "curation_refill",
+        "curation_chat", "report_generate", "report_regenerate", "curation_keyword_filter",
+    }
+    assert frozen_pre_rl2 <= set(telemetry.ACTION_TYPES)
+    assert set(telemetry.ACTION_TYPES) == frozen_pre_rl2 | {"curation_lane_suggest"}
+    assert len(telemetry.ACTION_TYPES) == len(set(telemetry.ACTION_TYPES))  # no dupes
+
+
+def test_successful_suggest_row_uses_a_registered_action_type():
+    with _lanes_client() as (client, usage_db_path, _cp, client_mock):
+        client_mock.chat.completions.parse.return_value = _fake_parse_response(_THREE_VALID)
+        assert client.post("/curation/lanes/suggest", json={"topic": "t"}).status_code == 200
+        rows = _paid_rows(usage_db_path)
+        assert len(rows) == 1
+        assert rows[0]["action_type"] in telemetry.ACTION_TYPES
+        assert rows[0]["action_type"] == "curation_lane_suggest"
 
 
 # --- 10-11: exactly one provider call, correct contract -------------
