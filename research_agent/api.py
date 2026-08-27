@@ -118,7 +118,6 @@ from research_agent.api_app.schemas import (
     WebSummaryOut,
 )
 from research_agent.api_app.serializers import (
-    _lanes_out,
     _paper_out_from_batch_entry,
     _paper_to_out,
     _render_markdown,

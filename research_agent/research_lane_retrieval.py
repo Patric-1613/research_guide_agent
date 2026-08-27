@@ -344,9 +344,17 @@ def refill_lane_session(
       searched), excluding already-seen titles and folding in refinement
       notes -- exactly as ``refill_pool`` does for the single query;
     - preserves the unserved reserve tail (never re-searched, carried
-      forward);
-    - merges genuinely-new results with that tail into ONE combined pool,
-      embeds it once, runs ONE semantic pass per enabled lane, and
+      forward) -- and guarantees it is carried forward even if a tail
+      paper has no surviving lane provenance to be ranked under;
+    - deduplicates the fresh results AGAINST the carry-forward tail in ONE
+      pass (``deduplicate_with_clusters`` is the sole identity authority):
+      a fresh record that is the SAME real paper as a tail paper -- matched
+      by DOI or fuzzy title even when its paper_id differs -- lands in that
+      tail paper's cluster, so the tail paper survives unchanged and the
+      fresh lane_ids flow into ITS cumulative provenance; it never becomes
+      a second reserve entry;
+    - merges the genuinely-new results with the tail into ONE combined
+      pool, embeds it once, runs ONE semantic pass per enabled lane, and
       round-robin interleaves -- it does NOT fully rank fresh results and
       then rank a second time;
     - UNIONs this refill's fresh discovery provenance into
@@ -360,7 +368,7 @@ def refill_lane_session(
 
     unserved_tail = session.reserve[session.cursor:]
     tail_papers = [p for p, _ in unserved_tail]
-    tail_ids = {p.paper_id for p in tail_papers}
+    tail_id_set = {p.paper_id for p in tail_papers}
 
     fresh_tagged = _retrieve_and_tag(
         enabled, k_for_widening=k_for_widening, s2_api_key=s2_api_key, client=client,
@@ -368,19 +376,45 @@ def refill_lane_session(
         exclude_titles=list(session.seen_titles) or None,
         refinement_notes=list(session.refinement_notes) or None,
     )
-    fresh_pool, fresh_provenance = _cross_lane_dedup(fresh_tagged, enabled_lane_ids)
+    # object identity -> the enabled lane_ids that returned THIS fresh
+    # instance (accumulated + de-duped) -- the same discovery signal
+    # _cross_lane_dedup uses; tail papers carry no fresh tag.
+    fresh_lane_by_obj: dict[int, list[str]] = {}
+    for paper, lane_id in fresh_tagged:
+        lst = fresh_lane_by_obj.setdefault(id(paper), [])
+        if lane_id not in lst:
+            lst.append(lane_id)
+    fresh_papers = [p for p, _ in fresh_tagged]
 
-    # Cumulative provenance union FIRST -- so a tail/seen paper a fresh
-    # lane re-discovered this refill is eligible in that lane's ranking
-    # pass below too. Old provenance is never removed.
-    for merged in fresh_pool:
-        merged_set = set(session.paper_lane_ids.get(merged.paper_id, [])) | set(fresh_provenance[merged.paper_id])
-        session.paper_lane_ids[merged.paper_id] = [lid for lid in enabled_lane_ids if lid in merged_set]
+    # ONE dedup pass over the carry-forward tail AND every fresh result.
+    genuinely_new: list[Paper] = []
+    for merged, members in deduplicate_with_clusters(tail_papers + fresh_papers):
+        fresh_lanes: set[str] = set()
+        for m in members:
+            fresh_lanes.update(fresh_lane_by_obj.get(id(m), ()))
+        cluster_tail_ids = [m.paper_id for m in members if m.paper_id in tail_id_set]
 
-    exclude_ids = session.seen_paper_ids | tail_ids
-    genuinely_new = [p for p in fresh_pool if p.paper_id not in exclude_ids]
+        if cluster_tail_ids:
+            # a fresh record merged into a tail paper (or the tail paper
+            # alone) -> the tail paper survives; only genuinely-new fresh
+            # lane_ids are added to its provenance, in enabled-lane order.
+            if fresh_lanes:
+                for tp_id in cluster_tail_ids:
+                    combined = set(session.paper_lane_ids.get(tp_id, [])) | fresh_lanes
+                    session.paper_lane_ids[tp_id] = [lid for lid in enabled_lane_ids if lid in combined]
+            continue
+
+        # fresh-only cluster: enrich provenance either way (cumulative,
+        # never removes), then decide if it is genuinely new.
+        existing = set(session.paper_lane_ids.get(merged.paper_id, []))
+        session.paper_lane_ids[merged.paper_id] = [lid for lid in enabled_lane_ids if lid in (existing | fresh_lanes)]
+        if merged.paper_id in session.seen_paper_ids:
+            continue  # already served this session -- provenance enriched, not re-served
+        if len(members) > 1:
+            merged.keywords = extract_keywords(merged.title, merged.abstract)
+        genuinely_new.append(merged)
+
     combined_pool = tail_papers + genuinely_new
-
     if combined_pool:
         combined_provenance = {
             p.paper_id: list(session.paper_lane_ids.get(p.paper_id, [])) for p in combined_pool
@@ -390,6 +424,15 @@ def refill_lane_session(
             collection=collection, client=client,
             refinement_notes=list(session.refinement_notes) or None,
         )
+        # Defensive tail preservation: a tail paper with no (surviving)
+        # lane provenance -- or one Chroma could not return -- is appended
+        # (its prior reserve score) rather than dropped. In the normal
+        # case every reserve paper has provenance and this adds nothing.
+        ranked_ids = {p.paper_id for p, _ in ranked}
+        tail_score = {p.paper_id: s for p, s in unserved_tail}
+        ranked = ranked + [
+            (p, tail_score.get(p.paper_id, 0.0)) for p in tail_papers if p.paper_id not in ranked_ids
+        ]
         session.reserve = ranked
     else:
         session.reserve = []

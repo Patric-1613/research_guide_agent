@@ -3715,6 +3715,54 @@ def test_pre_rl4_single_query_session_still_loads_with_empty_lane_fields():
     assert all(t.get("paper_lane_ids", {}) == {} for t in state["turn_history"])
 
 
+# --- RL4a review follow-ups ------------------------------------------
+
+def test_lane_start_ignores_unknown_and_identity_request_fields():
+    captured = {}
+
+    def _fake_retrieve(topic, lanes, **kw):
+        captured["lanes"] = lanes
+        return _fake_multilane_result(lanes)
+
+    with _client() as client, patch.dict(os.environ, _LANES_ON), \
+         patch.object(api, "retrieve_across_lanes", side_effect=_fake_retrieve):
+        resp = client.post("/curation/start", json={
+            "topic": "t",
+            "lanes": [{
+                "label": "Methods", "question": "q", "query": "qq", "enabled": True,
+                # every one of these must be ignored, never persisted as identity
+                "lane_id": "client-id", "origin": "admin", "generation_version": 42,
+                "totally_unknown_field": {"nested": [1, 2, 3]},
+            }],
+        })
+    assert resp.status_code == 200
+    lane = captured["lanes"][0]
+    assert lane.lane_id != "client-id" and len(lane.lane_id) >= 16
+    assert lane.origin == "user" and lane.generation_version == 1
+    assert resp.json()["lanes"][0]["lane_id"] == lane.lane_id
+
+
+def test_lane_start_empty_list_with_flag_off_is_a_403_not_a_silent_single_query():
+    spy = MagicMock(side_effect=AssertionError("no retrieve"))
+    with _client() as client, patch.dict(os.environ, _LANES_OFF), \
+         patch.object(api, "retrieve_across_lanes", spy), \
+         patch.object(api, "build_candidate_pool", MagicMock(side_effect=AssertionError("no single-query fallback"))):
+        resp = client.post("/curation/start", json={"topic": "t", "lanes": []})
+    assert resp.status_code == 403  # sending `lanes` at all = requesting lane mode
+    spy.assert_not_called()
+
+
+def test_api_does_not_re_export_the_private_lanes_out_serializer():
+    """RL4a: `_lanes_out` is only reached by services importing it
+    directly from api_app.serializers -- nothing patches or calls
+    `api._lanes_out`, so it must not sit in api.py's compatibility
+    re-export block."""
+    assert not hasattr(api, "_lanes_out")
+    # the public/patched lane names that ARE an established boundary stay
+    assert hasattr(api, "retrieve_across_lanes")
+    assert hasattr(api, "suggest_lanes")
+
+
 if __name__ == "__main__":
     test_curation_start_returns_a_batch_and_a_fresh_session_id()
     test_curation_start_with_no_papers_returns_404()

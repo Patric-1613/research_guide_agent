@@ -897,3 +897,89 @@ def test_refill_folds_refinement_notes_into_search_and_ranking():
     _run_refill(session, fakes)
     assert fakes.build_calls[0]["kwargs"]["refinement_notes"] == ["focus on recent work"]
     assert fakes.search_calls[0]["query"] == "the review topic\nResearch facet: qa. focus on recent work"
+
+
+# --- RL4a: fresh-vs-tail content dedup, provenance union, tail safety ---
+
+def test_refill_fresh_result_that_content_duplicates_a_tail_paper_merges_not_duplicates():
+    """Regression (RL4a): a fresh lane record that is the SAME real paper
+    as an unserved-tail paper -- matched by DOI even though its paper_id
+    differs -- must NOT appear as a second reserve entry, and its lane
+    provenance must be added to the surviving tail paper."""
+    A, B = _lane("qa", lane_id="A"), _lane("qb", lane_id="B")
+    tail = _paper("arxiv-t1", "Grounded Retrieval For Factual QA", doi="10.1/shared")
+    t2 = _paper("t2", "An Unrelated Tail Paper")
+    session = _lane_session(
+        [A, B], reserve=[(tail, 0.9), (t2, 0.8)], cursor=0,
+        paper_lane_ids={"arxiv-t1": ["A"], "t2": ["B"]}, seen_paper_ids=set(),
+    )
+    # lane B re-discovers the same real paper, DIFFERENT paper_id, same DOI
+    fakes = _Fakes({
+        "qa": [_paper("n1", "Dense Passage Retrieval for Open Domain QA")],
+        "qb": [_paper("s2-t1", "Grounded Retrieval For Factual QA", doi="10.1/shared"),
+               _paper("n2", "Sparse Mixture of Experts for Efficient Inference")],
+    })
+    count = _run_refill(session, fakes)
+
+    reserve_ids = [p.paper_id for p, _ in session.reserve]
+    assert reserve_ids.count("arxiv-t1") == 1        # the tail paper, once
+    assert "s2-t1" not in reserve_ids               # the fresh duplicate never enters
+    assert set(reserve_ids) == {"arxiv-t1", "t2", "n1", "n2"}
+    assert session.paper_lane_ids["arxiv-t1"] == ["A", "B"]   # fresh lane B provenance unioned in
+    assert "s2-t1" not in session.paper_lane_ids
+    assert count == 2                               # n1, n2 only
+    # counts recomputed from cumulative provenance -- the shared paper
+    # counts for both lanes, but is not double-counted.
+    assert session.lane_result_counts == {"A": 2, "B": 3}  # A: arxiv-t1,n1 ; B: arxiv-t1,t2,n2
+
+
+def test_refill_tail_paper_with_no_surviving_provenance_is_still_carried_forward():
+    """A tail paper whose lane provenance is (somehow) empty must not be
+    silently dropped by the per-lane ranking -- it is appended with its
+    prior score."""
+    A = _lane("qa", lane_id="A")
+    orphan = _paper("orphan", "Orphaned Tail Paper")
+    kept = _paper("kept", "Well Provenanced Tail Paper")
+    session = _lane_session(
+        [A], reserve=[(kept, 0.9), (orphan, 0.4)], cursor=0,
+        paper_lane_ids={"kept": ["A"]},  # 'orphan' deliberately absent
+        seen_paper_ids=set(),
+    )
+    fakes = _Fakes({"qa": []})
+    _run_refill(session, fakes)
+    reserve_ids = {p.paper_id for p, _ in session.reserve}
+    assert reserve_ids == {"kept", "orphan"}       # tail fully preserved
+    orphan_score = next(s for p, s in session.reserve if p.paper_id == "orphan")
+    assert orphan_score == 0.4                     # prior reserve score kept
+
+
+def test_refill_multi_lane_paper_is_included_in_every_applicable_lane_ranking_pass():
+    A, B, C = _lane("qa", lane_id="A"), _lane("qb", lane_id="B"), _lane("qc", lane_id="C")
+    shared = _paper("shared", "A Paper Two Lanes Both Want", doi="10.2/s")
+    session = _lane_session(
+        [A, B, C], reserve=[(shared, 0.9)], cursor=0,
+        paper_lane_ids={"shared": ["A", "B"]}, seen_paper_ids=set(),
+    )
+    fakes = _Fakes({"qa": [], "qb": [], "qc": [_paper("c1", "Lane C Only Paper")]})
+    _run_refill(session, fakes)
+    subsets = {c["query"].splitlines()[-1]: set(c["ids"]) for c in fakes.search_calls}
+    assert "shared" in subsets["Research facet: qa"]
+    assert "shared" in subsets["Research facet: qb"]
+    assert "shared" not in subsets.get("Research facet: qc", set())
+    ids = [p.paper_id for p, _ in session.reserve]
+    assert ids.count("shared") == 1               # emitted once despite two lanes
+
+
+def test_refill_zero_new_results_keeps_the_full_unserved_tail():
+    A, B = _lane("qa", lane_id="A"), _lane("qb", lane_id="B")
+    t1, t2, t3 = _paper("t1", "Tail A"), _paper("t2", "Tail B"), _paper("t3", "Tail AB", doi="10.3/x")
+    session = _lane_session(
+        [A, B], reserve=[(t1, 0.9), (t2, 0.8), (t3, 0.7)], cursor=0,
+        paper_lane_ids={"t1": ["A"], "t2": ["B"], "t3": ["A", "B"]}, seen_paper_ids=set(),
+    )
+    fakes = _Fakes({"qa": [], "qb": []})
+    count = _run_refill(session, fakes)
+    assert count == 0
+    assert {p.paper_id for p, _ in session.reserve} == {"t1", "t2", "t3"}
+    assert session.paper_lane_ids == {"t1": ["A"], "t2": ["B"], "t3": ["A", "B"]}  # untouched
+    assert session.lane_result_counts == {"A": 2, "B": 2}

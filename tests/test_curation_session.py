@@ -1748,6 +1748,58 @@ def test_rl1_list_curation_sessions_unaffected_by_lane_fields():
         }
 
 
+def test_rl4_full_lane_session_survives_a_real_checkpoint_round_trip_exactly():
+    """RL4a: one save/load of a FULLY-populated lane session -- frozen
+    lanes (incl. a disabled one), cumulative paper_lane_ids,
+    lane_result_counts, and turn_history entries carrying their own
+    FROZEN per-turn paper_lane_ids snapshot -- all survive reload byte-
+    exact through real SQLite."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "checkpoints.sqlite"
+        lane_a = _lane("lane-a", "Methods", "rag methods", origin="user", generation_version=1)
+        lane_b = _lane("lane-b", "Evaluation", "rag evaluation", origin="user", generation_version=1)
+        lane_c = _lane("lane-c", "Deployment", "rag deployment", enabled=False, origin="user", generation_version=1)
+        turn_history = [
+            {"turn_number": 1,
+             "batch": [[_paper("p0").to_dict(), 0.9], [_paper("p1").to_dict(), 0.8]],
+             "refilled": False,
+             "paper_lane_ids": {"p0": ["lane-a"], "p1": ["lane-a", "lane-b"]}},
+            {"turn_number": 2,
+             "batch": [[_paper("p2").to_dict(), 0.7]],
+             "refilled": True,
+             "paper_lane_ids": {"p2": ["lane-b"]}},
+        ]
+        session = PaperPoolSession(
+            topic="reducing hallucination in RAG",
+            display_title="Reducing hallucination in RAG",
+            lanes=[lane_a, lane_b, lane_c],
+            reserve=[(_paper("r0"), 0.6), (_paper("r1"), 0.5)],
+            cursor=1,
+            selected_paper_ids=["p0"], selected_papers=[_paper("p0")],
+            seen_paper_ids={"p0", "p1", "p2"}, seen_titles={"Paper p0", "Paper p1", "Paper p2"},
+            paper_lane_ids={"p0": ["lane-a"], "p1": ["lane-a", "lane-b"], "p2": ["lane-b"], "r0": ["lane-a"], "r1": ["lane-b"]},
+            lane_result_counts={"lane-a": 3, "lane-b": 3, "lane-c": 0},
+            turn_history=turn_history,
+        )
+
+        with sqlite_checkpointer(db_path) as cp:
+            save_curation_session(session, "s-rl4", cp)
+
+        with sqlite_checkpointer(db_path) as cp2:
+            loaded = load_curation_session("s-rl4", cp2)
+
+        assert loaded is not None
+        assert [l.to_dict() for l in loaded.lanes] == [lane_a.to_dict(), lane_b.to_dict(), lane_c.to_dict()]
+        assert loaded.lanes[2].enabled is False
+        assert loaded.paper_lane_ids == {
+            "p0": ["lane-a"], "p1": ["lane-a", "lane-b"], "p2": ["lane-b"], "r0": ["lane-a"], "r1": ["lane-b"]}
+        assert loaded.lane_result_counts == {"lane-a": 3, "lane-b": 3, "lane-c": 0}
+        assert loaded.turn_history[0]["paper_lane_ids"] == {"p0": ["lane-a"], "p1": ["lane-a", "lane-b"]}
+        assert loaded.turn_history[1]["paper_lane_ids"] == {"p2": ["lane-b"]}
+        assert [p.paper_id for p, _ in loaded.reserve] == ["r0", "r1"]
+        assert loaded.cursor == 1
+
+
 def test_rl1_real_databases_are_byte_identical():
     """Nothing in this file's run created, deleted, or modified the real
     data/qa_checkpoints.sqlite or data/usage_telemetry.sqlite (or their
