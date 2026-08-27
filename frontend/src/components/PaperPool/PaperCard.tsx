@@ -8,13 +8,18 @@ interface PaperCardProps {
   // judge them), omitted in compact contexts like the pool summary's
   // Selected list, where just the title is enough.
   showAbstract?: boolean
+  // Research Lanes (RL5): resolved lane labels this paper was discovered
+  // through (already mapped from paper_lane_ids by the parent -- see
+  // lib/lanes.ts). Undefined/empty for a single-query session or a paper
+  // with no provenance: nothing is rendered, no placeholder.
+  foundViaLabels?: string[]
   action:
     | { kind: 'add'; onAdd: () => void }
     | { kind: 'remove'; onRemove: () => void }
     | { kind: 'none' }
 }
 
-export function PaperCard({ paper, isNew, showAbstract, action }: PaperCardProps) {
+export function PaperCard({ paper, isNew, showAbstract, foundViaLabels, action }: PaperCardProps) {
   const metaParts = [paper.venue, paper.year != null ? String(paper.year) : null].filter(Boolean)
   return (
     <div data-testid={`paper-card-${paper.paper_id}`} className="relative flex flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5">
@@ -64,6 +69,19 @@ export function PaperCard({ paper, isNew, showAbstract, action }: PaperCardProps
               className="max-w-full whitespace-normal break-words rounded-md border border-accent/30 bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent"
             >
               {keyword}
+            </span>
+          ))}
+        </div>
+      )}
+      {showAbstract && foundViaLabels && foundViaLabels.length > 0 && (
+        <div data-testid={`paper-lanes-${paper.paper_id}`} className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] uppercase tracking-wide text-text-muted">Found via</span>
+          {foundViaLabels.map((label, i) => (
+            <span
+              key={`${label}-${i}`}
+              className="max-w-full whitespace-normal break-words rounded-md border border-border bg-panel-alt px-1.5 py-0.5 text-[11px] font-medium text-text-secondary"
+            >
+              {label}
             </span>
           ))}
         </div>

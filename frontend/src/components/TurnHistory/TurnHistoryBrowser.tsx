@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { CurationStateResponse } from '../../types'
 import { PaperCard } from '../PaperPool/PaperCard'
+import { buildLaneLabelMap, laneLabelsForPaper } from '../../lib/lanes'
 
 interface TurnHistoryBrowserProps {
   state: CurationStateResponse
@@ -63,6 +64,14 @@ export function TurnHistoryBrowser({
   const clampedIndex = Math.min(Math.max(selectedIndex, 0), turns.length - 1)
   const entry = turns.length > 0 ? turns[clampedIndex] : null
 
+  // Research Lanes (RL5): lane definitions are session-level and frozen;
+  // the provenance shown for a past turn is that turn's OWN frozen
+  // snapshot (entry.paper_lane_ids), never the session's cumulative map --
+  // so Browse Past Turns shows what each turn discovered at the time.
+  const laneLabels = buildLaneLabelMap(state.lanes)
+  const foundVia = (paperId: string) =>
+    laneLabelsForPaper(paperId, entry?.paper_lane_ids, laneLabels)
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-3">
@@ -112,8 +121,17 @@ export function TurnHistoryBrowser({
             </h3>
             <div className="flex flex-col gap-2">
               {entry.batch.map((paper) => {
+                const foundViaLabels = foundVia(paper.paper_id)
                 if (selectedSet.has(paper.paper_id) || isLocked) {
-                  return <PaperCard key={paper.paper_id} paper={paper} showAbstract action={{ kind: 'none' }} />
+                  return (
+                    <PaperCard
+                      key={paper.paper_id}
+                      paper={paper}
+                      showAbstract
+                      foundViaLabels={foundViaLabels}
+                      action={{ kind: 'none' }}
+                    />
+                  )
                 }
                 if (canPickImmediately) {
                   return (
@@ -121,6 +139,7 @@ export function TurnHistoryBrowser({
                       key={paper.paper_id}
                       paper={paper}
                       showAbstract
+                      foundViaLabels={foundViaLabels}
                       action={{
                         kind: 'add',
                         onAdd: () => {
@@ -135,6 +154,7 @@ export function TurnHistoryBrowser({
                     key={paper.paper_id}
                     paper={paper}
                     showAbstract
+                    foundViaLabels={foundViaLabels}
                     action={{ kind: 'remove', onRemove: () => onRemoveStaged(paper.paper_id) }}
                   />
                 ) : (
@@ -142,6 +162,7 @@ export function TurnHistoryBrowser({
                     key={paper.paper_id}
                     paper={paper}
                     showAbstract
+                    foundViaLabels={foundViaLabels}
                     action={{ kind: 'add', onAdd: () => onAdd(paper.paper_id) }}
                   />
                 )

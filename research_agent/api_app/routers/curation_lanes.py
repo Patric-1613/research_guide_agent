@@ -15,11 +15,27 @@ all; there is no route-specific auth here.
 from fastapi import APIRouter, HTTPException
 
 from research_agent.api_app.errors import _upstream_error_guard
-from research_agent.api_app.schemas import LaneSuggestRequest, LaneSuggestResponse
+from research_agent.api_app.schemas import (
+    CurationCapabilitiesResponse,
+    LaneSuggestRequest,
+    LaneSuggestResponse,
+)
+from research_agent.config import get_settings
 from research_agent.services.errors import ServiceError
 from research_agent.services.lane_suggestion_service import suggest_lanes_for_topic
 
 router = APIRouter()
+
+
+@router.get("/curation/capabilities", response_model=CurationCapabilitiesResponse)
+def curation_capabilities() -> CurationCapabilitiesResponse:
+    """Research Lanes (RL5): the smallest protected, zero-provider capability
+    probe. No admission, telemetry, DB, or provider work -- just a strict
+    read of the RESEARCH_LANES_ENABLED flag (uncached get_settings(), same
+    per-request read the suggestion service uses). Protected automatically
+    by the outermost Basic Auth middleware, like every route except
+    GET /health. Returns ONLY {research_lanes_enabled: bool}."""
+    return CurationCapabilitiesResponse(research_lanes_enabled=get_settings().research_lanes_enabled)
 
 
 @router.post("/curation/lanes/suggest", response_model=LaneSuggestResponse)

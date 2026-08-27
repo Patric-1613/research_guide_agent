@@ -1017,3 +1017,60 @@ describe('ReviewModePanel -- Paper Keywords and Filtering, K4.2: Popular/Browse-
     expect(search.className).toContain('max-w-full')
   })
 })
+
+describe('ReviewModePanel -- Research Lanes (RL5)', () => {
+  const laneState = (overrides: Partial<CurationStateResponse> = {}) =>
+    baseState({
+      lanes: [
+        { lane_id: 'la', label: 'Retrieval', question: 'q', query: 'qq', enabled: true, origin: 'user', generation_version: 1 },
+        { lane_id: 'lb', label: 'Evaluation', question: 'q', query: 'qq', enabled: true, origin: 'user', generation_version: 1 },
+      ],
+      paper_lane_ids: { p1: ['la', 'lb'], p2: ['lb'] },
+      pending_batch: [paper('p1', 'Paper One', 'abs'), paper('p2', 'Paper Two', 'abs')],
+      ...overrides,
+    })
+
+  it('shows "Found via" chips mapping each paper to its discovering lane labels', () => {
+    render(
+      <ReviewModePanel
+        state={laneState()} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+    expect(within(screen.getByTestId('paper-lanes-p1')).getByText('Retrieval')).toBeInTheDocument()
+    expect(within(screen.getByTestId('paper-lanes-p1')).getByText('Evaluation')).toBeInTheDocument()
+    expect(screen.getByTestId('paper-lanes-p2')).toHaveTextContent('Evaluation')
+    expect(screen.getByTestId('paper-lanes-p2')).not.toHaveTextContent('Retrieval')
+  })
+
+  it('renders no lane DOM for a single-query session', () => {
+    const state = baseState({ pending_batch: [paper('p1', 'Paper One', 'abs')] })
+    render(
+      <ReviewModePanel
+        state={state} turnEvents={[]} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('paper-lanes-p1')).not.toBeInTheDocument()
+  })
+
+  it('the "search for more" busy label says "Searching across research lanes…" for a lane session', () => {
+    render(
+      <ReviewModePanel
+        state={laneState()} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()} searchingMore
+      />,
+    )
+    expect(screen.getByTestId('review-request-refill')).toHaveTextContent('Searching across research lanes…')
+  })
+
+  it('the Continue busy label keeps non-search wording when the reserve is not yet exhausted', () => {
+    render(
+      <ReviewModePanel
+        state={laneState({ reserve_remaining: 5 })} turnEvents={[]} stagedPickIds={[]} disabled
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSubmitPicks={vi.fn()} continuingReview
+      />,
+    )
+    expect(screen.getByTestId('review-continue')).toHaveTextContent('Finding next papers…')
+  })
+})

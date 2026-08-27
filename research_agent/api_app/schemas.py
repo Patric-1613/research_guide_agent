@@ -284,6 +284,16 @@ class LaneSuggestResponse(BaseModel):
     lanes: list[ResearchLaneOut]
 
 
+class CurationCapabilitiesResponse(BaseModel):
+    """Research Lanes (RL5): the single capability flag the frontend reads
+    to decide whether to offer lane mode at all. Deliberately carries ONLY
+    this one boolean -- never policy values, limits, credentials, model
+    names, or any other deployment configuration. A read failure lets the
+    frontend safely hide lane mode without breaking single search."""
+
+    research_lanes_enabled: bool
+
+
 class CurationPicksRequest(BaseModel):
     picked_paper_ids: IdList = Field(default_factory=list)
     stop: bool = False

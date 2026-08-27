@@ -6,6 +6,7 @@ import { TurnDivider } from '../TurnFeed/TurnBlock'
 import { PaperCard } from '../PaperPool/PaperCard'
 import { mergeSelectedPaperIds } from '../../lib/selection'
 import { aggregateKeywords, canonicalKeywordKey, type KeywordOption } from '../../lib/keywords'
+import { buildLaneLabelMap, laneLabelsForPaper } from '../../lib/lanes'
 
 // Paper Keywords and Filtering, K4.2: "Popular" is capped and gated so the
 // filter UI never becomes the flat wall-of-checkboxes it replaced --
@@ -81,6 +82,14 @@ export function ReviewModePanel({
   // UXH.1 (UX-01): deduplicated union -- see mergeSelectedPaperIds' own
   // docstring for why this replaced plain `a.length + b.length`.
   const totalSelected = mergeSelectedPaperIds(state.selected_paper_ids, stagedPickIds).length
+
+  // Research Lanes (RL5): lane-aware display only. A single-query session
+  // has no lanes -> foundVia() is always [] -> PaperCard renders no
+  // "Found via" row, and the refill wording below stays unchanged.
+  const isLaneSession = (state.lanes?.length ?? 0) > 0
+  const laneLabels = buildLaneLabelMap(state.lanes)
+  const foundVia = (paperId: string) => laneLabelsForPaper(paperId, state.paper_lane_ids, laneLabels)
+  const LANE_SEARCH_LABEL = 'Searching across research lanes…'
 
   // Scroll the batch back to the top whenever the SET OF PAPER IDS in
   // pending_batch actually changes (a new batch was served, whether via
@@ -165,7 +174,13 @@ export function ReviewModePanel({
           <p className="mb-3 text-center text-sm text-text-secondary">{stopReasonMessage(state)}</p>
           <div className="flex flex-col gap-2">
             {state.selected_papers.map((paper) => (
-              <PaperCard key={paper.paper_id} paper={paper} showAbstract action={{ kind: 'none' }} />
+              <PaperCard
+                key={paper.paper_id}
+                paper={paper}
+                showAbstract
+                foundViaLabels={foundVia(paper.paper_id)}
+                action={{ kind: 'none' }}
+              />
             ))}
           </div>
         </div>
@@ -233,7 +248,9 @@ export function ReviewModePanel({
   const turnMessage = isEmptyBatch
     ? "No new candidates found for this search. Try refining below, or click \"I'm done\" if you're satisfied with what you have."
     : state.refilled
-      ? `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
+      ? isLaneSession
+        ? `Searched across your research lanes and found ${pendingBatch.length} to show you this turn.`
+        : `Searched for more candidates and found ${pendingBatch.length} to show you this turn.`
       : isPartialBatch
         ? `Only ${pendingBatch.length} candidate${pendingBatch.length === 1 ? '' : 's'} left in the already-fetched pool.`
         : `Showing ${pendingBatch.length} candidates from the pool already fetched — no new search needed.`
@@ -450,6 +467,7 @@ export function ReviewModePanel({
                   key={paper.paper_id}
                   paper={paper}
                   showAbstract
+                  foundViaLabels={foundVia(paper.paper_id)}
                   action={{ kind: 'remove', onRemove: () => onRemoveStaged(paper.paper_id) }}
                 />
               ) : (
@@ -458,6 +476,7 @@ export function ReviewModePanel({
                   paper={paper}
                   isNew
                   showAbstract
+                  foundViaLabels={foundVia(paper.paper_id)}
                   action={{ kind: 'add', onAdd: () => onAdd(paper.paper_id) }}
                 />
               ),
@@ -514,7 +533,7 @@ export function ReviewModePanel({
               {searchingMore ? (
                 <span role="status" aria-live="polite" className="flex items-center gap-1.5">
                   <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-                  Searching for more papers…
+                  {isLaneSession ? LANE_SEARCH_LABEL : 'Searching for more papers…'}
                 </span>
               ) : (
                 'Search for more candidates'
@@ -530,7 +549,7 @@ export function ReviewModePanel({
               {continuingReview ? (
                 <span role="status" aria-live="polite" className="flex items-center gap-1.5">
                   <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-                  Finding next papers…
+                  {isLaneSession && state.reserve_remaining === 0 ? LANE_SEARCH_LABEL : 'Finding next papers…'}
                 </span>
               ) : stagedPickIds.length > 0 ? (
                 `Continue with ${stagedPickIds.length} added`

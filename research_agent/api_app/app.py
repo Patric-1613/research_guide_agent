@@ -207,12 +207,12 @@ def create_app() -> FastAPI:
 
     app.include_router(curation_core_router)
 
-    # Research Lanes (RL2): POST /curation/lanes/suggest. Registered here,
-    # before curation_sessions_router (which owns GET /curation/{session_id})
-    # -- there is no method/path clash (POST /curation/lanes/suggest vs GET
-    # /curation/{session_id}), but registering the more specific literal
-    # path first matches the same defensive ordering used for
-    # /curation/reviews.
+    # Research Lanes (RL2/RL5): POST /curation/lanes/suggest and
+    # GET /curation/capabilities. Registered here, before
+    # curation_sessions_router (which owns GET /curation/{session_id}) --
+    # this ordering IS load-bearing for GET /curation/capabilities, which
+    # would otherwise match {session_id}="capabilities"; same defensive
+    # ordering used for /curation/reviews.
     from research_agent.api_app.routers.curation_lanes import router as curation_lanes_router
 
     app.include_router(curation_lanes_router)

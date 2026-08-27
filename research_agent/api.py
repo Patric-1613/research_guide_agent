@@ -89,6 +89,7 @@ from research_agent.api_app.schemas import (
     ChatTurn,
     CitedPaperOut,
     CitedWebArticleOut,
+    CurationCapabilitiesResponse,
     CurationChatRequest,
     CurationChatResponse,
     CurationDeleteResponse,

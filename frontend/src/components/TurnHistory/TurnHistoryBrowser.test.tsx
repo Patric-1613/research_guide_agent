@@ -261,3 +261,51 @@ describe('TurnHistoryBrowser', () => {
     expect(screen.getByText('No turns yet.')).toBeInTheDocument()
   })
 })
+
+describe('TurnHistoryBrowser -- Research Lanes (RL5) frozen provenance', () => {
+  it('shows each past turn\'s OWN frozen paper_lane_ids, not the session cumulative map', async () => {
+    const user = userEvent.setup()
+    const state = baseState({
+      stage: 'synthesize',
+      lanes: [
+        { lane_id: 'la', label: 'Retrieval', question: 'q', query: 'qq', enabled: true, origin: 'user', generation_version: 1 },
+        { lane_id: 'lb', label: 'Evaluation', question: 'q', query: 'qq', enabled: true, origin: 'user', generation_version: 1 },
+      ],
+      // Session cumulative provenance -- deliberately BROADER than turn 1's frozen snapshot.
+      paper_lane_ids: { p0: ['la', 'lb'] },
+      turn_history: [
+        { turn_number: 1, refilled: false, batch: [paper('p0', 'Turn One Paper', 'Abstract one.')], paper_lane_ids: { p0: ['la'] } },
+        { turn_number: 2, refilled: true, batch: [paper('p1', 'Turn Two Paper', 'Abstract two.')], paper_lane_ids: { p1: ['lb'] } },
+      ],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+
+    // Latest turn (2): frozen snapshot is lane lb only.
+    expect(screen.getByTestId('paper-lanes-p1')).toHaveTextContent('Evaluation')
+    expect(screen.getByTestId('paper-lanes-p1')).not.toHaveTextContent('Retrieval')
+
+    // Navigate to turn 1: frozen snapshot is lane la only -- NOT the
+    // broader session cumulative ['la','lb'].
+    await user.click(screen.getByTestId('turn-history-prev'))
+    expect(screen.getByTestId('paper-lanes-p0')).toHaveTextContent('Retrieval')
+    expect(screen.getByTestId('paper-lanes-p0')).not.toHaveTextContent('Evaluation')
+  })
+
+  it('renders no lane chips in history for a single-query session', () => {
+    const state = baseState({
+      turn_history: [{ turn_number: 1, refilled: false, batch: [paper('p0', 'Turn One Paper', 'Abstract one.')] }],
+    })
+    render(
+      <TurnHistoryBrowser
+        state={state} stagedPickIds={[]} disabled={false}
+        onAdd={vi.fn()} onRemoveStaged={vi.fn()} onSelectFromHistory={vi.fn()} onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('paper-lanes-p0')).not.toBeInTheDocument()
+  })
+})

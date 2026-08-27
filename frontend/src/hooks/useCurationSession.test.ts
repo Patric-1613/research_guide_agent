@@ -23,6 +23,8 @@ vi.mock('../lib/api/client', () => ({
     deleteChatExchanges: vi.fn(),
     addChatExchangesToReport: vi.fn(),
     editChatExchange: vi.fn(),
+    getCurationCapabilities: vi.fn(),
+    suggestResearchLanes: vi.fn(),
   },
 }))
 
@@ -171,6 +173,10 @@ function chatResponse(overrides: Partial<CurationChatResponse> = {}): CurationCh
 beforeEach(() => {
   window.history.pushState({}, '', '/')
   vi.clearAllMocks()
+  // Research Lanes (RL5): the hook loads capabilities once on mount --
+  // default it to a clean "feature off" resolve so tests that don't care
+  // about lanes see no unhandled rejection and no lane mode.
+  vi.mocked(curationApi.getCurationCapabilities).mockResolvedValue({ research_lanes_enabled: false })
 })
 
 afterEach(() => {
@@ -2166,5 +2172,169 @@ describe('useCurationSession -- UXH.2: curationAction', () => {
 
     expect(result.current.curationAction).toBe('continuing_review')
     expect(curationApi.picks).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useCurationSession -- Research Lanes (RL5)', () => {
+  async function mountAtRoot() {
+    window.history.pushState({}, '', '/')
+    const rendered = renderHook(() => useCurationSession())
+    return rendered
+  }
+
+  it('researchLanesAvailable is true only after a successful capability read that returns enabled', async () => {
+    vi.mocked(curationApi.getCurationCapabilities).mockResolvedValue({ research_lanes_enabled: true })
+    const { result } = await mountAtRoot()
+    await waitFor(() => expect(result.current.researchLanesAvailable).toBe(true))
+  })
+
+  it('researchLanesAvailable stays false when the capability read says disabled', async () => {
+    vi.mocked(curationApi.getCurationCapabilities).mockResolvedValue({ research_lanes_enabled: false })
+    const { result } = await mountAtRoot()
+    await waitFor(() => expect(curationApi.getCurationCapabilities).toHaveBeenCalled())
+    expect(result.current.researchLanesAvailable).toBe(false)
+  })
+
+  it('a failed capability read safely leaves lane mode hidden and never surfaces an error', async () => {
+    vi.mocked(curationApi.getCurationCapabilities).mockRejectedValue(new Error('network down'))
+    const { result } = await mountAtRoot()
+    await waitFor(() => expect(curationApi.getCurationCapabilities).toHaveBeenCalled())
+    expect(result.current.researchLanesAvailable).toBe(false)
+    expect(result.current.error).toBeNull()
+  })
+
+  it('suggestResearchLanes stores the returned lanes and toggles loading', async () => {
+    const lanes = [
+      { lane_id: 'srv-1', label: 'A', question: 'qa', query: 'qqa', enabled: true, origin: 'suggested', generation_version: 1 },
+      { lane_id: 'srv-2', label: 'B', question: 'qb', query: 'qqb', enabled: true, origin: 'suggested', generation_version: 1 },
+      { lane_id: 'srv-3', label: 'C', question: 'qc', query: 'qqc', enabled: true, origin: 'suggested', generation_version: 1 },
+    ]
+    vi.mocked(curationApi.suggestResearchLanes).mockResolvedValue({ lanes })
+    const { result } = await mountAtRoot()
+
+    await act(async () => {
+      await result.current.suggestResearchLanes('a topic')
+    })
+
+    expect(curationApi.suggestResearchLanes).toHaveBeenCalledWith('a topic', expect.any(AbortSignal))
+    expect(result.current.laneSuggestions).toEqual(lanes)
+    expect(result.current.laneSuggestionLoading).toBe(false)
+    expect(result.current.laneSuggestionError).toBeNull()
+  })
+
+  it('a suggestion failure sets laneSuggestionError, not the shared curation error, and keeps prior suggestions untouched', async () => {
+    vi.mocked(curationApi.suggestResearchLanes).mockRejectedValue(new ApiError(503, { detail: { error: 'x' } }))
+    const { result } = await mountAtRoot()
+
+    await act(async () => {
+      await result.current.suggestResearchLanes('a topic')
+    })
+
+    expect(result.current.laneSuggestionError).not.toBeNull()
+    expect(result.current.error).toBeNull()
+    expect(result.current.laneSuggestions).toBeNull()
+    expect(result.current.laneSuggestionLoading).toBe(false)
+  })
+
+  it('rejects a second concurrent suggestion request while one is in flight', async () => {
+    let resolveFn!: (v: { lanes: [] }) => void
+    const gate = new Promise<{ lanes: [] }>((res) => { resolveFn = res })
+    vi.mocked(curationApi.suggestResearchLanes).mockReturnValue(gate as never)
+    const { result } = await mountAtRoot()
+
+    act(() => { void result.current.suggestResearchLanes('first') })
+    await waitFor(() => expect(result.current.laneSuggestionLoading).toBe(true))
+    await act(async () => { await result.current.suggestResearchLanes('second') })
+
+    expect(curationApi.suggestResearchLanes).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveFn({ lanes: [] }); await gate })
+  })
+
+  it('resetLaneSuggestions clears suggestions and error', async () => {
+    vi.mocked(curationApi.suggestResearchLanes).mockResolvedValue({
+      lanes: [{ lane_id: 's1', label: 'A', question: 'q', query: 'qq', enabled: true, origin: 'suggested', generation_version: 1 }],
+    })
+    const { result } = await mountAtRoot()
+    await act(async () => { await result.current.suggestResearchLanes('t') })
+    expect(result.current.laneSuggestions).not.toBeNull()
+
+    act(() => { result.current.resetLaneSuggestions() })
+    expect(result.current.laneSuggestions).toBeNull()
+    expect(result.current.laneSuggestionError).toBeNull()
+  })
+
+  it('startReview sends only editable lane content -- never lane_id / origin / generation_version', async () => {
+    vi.mocked(curationApi.start).mockResolvedValue({
+      session_id: 'new', stage: 'curate', target_count: 10, selected_paper_ids: [],
+      batch: [], stop_reason: null, refilled: false, reserve_remaining: 0, refinement_notes: [],
+    })
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'new' }))
+    const { result } = await mountAtRoot()
+
+    await act(async () => {
+      await result.current.startReview('t', 5, [
+        { label: 'L1', question: 'q1', query: 'qq1', enabled: true },
+        { label: 'L2', question: 'q2', query: 'qq2', enabled: false },
+      ] as never)
+    })
+
+    expect(curationApi.start).toHaveBeenCalledWith({
+      topic: 't', target_count: 5,
+      lanes: [
+        { label: 'L1', question: 'q1', query: 'qq1', enabled: true },
+        { label: 'L2', question: 'q2', query: 'qq2', enabled: false },
+      ],
+    })
+    const payload = vi.mocked(curationApi.start).mock.calls[0][0]
+    expect(JSON.stringify(payload)).not.toMatch(/lane_id|origin|generation_version/)
+  })
+
+  it('startReview without lanes still posts the exact single-query payload', async () => {
+    vi.mocked(curationApi.start).mockResolvedValue({
+      session_id: 'new', stage: 'curate', target_count: 10, selected_paper_ids: [],
+      batch: [], stop_reason: null, refilled: false, reserve_remaining: 0, refinement_notes: [],
+    })
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({ session_id: 'new' }))
+    const { result } = await mountAtRoot()
+
+    await act(async () => { await result.current.startReview('t', 10) })
+
+    expect(curationApi.start).toHaveBeenCalledWith({ topic: 't', target_count: 10 })
+  })
+
+  it('canonical server state after start replaces any client draft (loadState is the source of truth)', async () => {
+    vi.mocked(curationApi.start).mockResolvedValue({
+      session_id: 'new', stage: 'curate', target_count: 10, selected_paper_ids: [],
+      batch: [], stop_reason: null, refilled: false, reserve_remaining: 0, refinement_notes: [],
+    })
+    vi.mocked(curationApi.getState).mockResolvedValue(fullState({
+      session_id: 'new',
+      lanes: [{ lane_id: 'server-minted', label: 'L1', question: 'q1', query: 'qq1', enabled: true, origin: 'user', generation_version: 1 }],
+      lane_result_counts: { 'server-minted': 4 },
+    }))
+    const { result } = await mountAtRoot()
+
+    await act(async () => {
+      await result.current.startReview('t', 10, [{ label: 'L1', question: 'q1', query: 'qq1', enabled: true }] as never)
+    })
+
+    expect(result.current.state?.lanes?.[0].lane_id).toBe('server-minted')
+    expect(result.current.state?.lane_result_counts?.['server-minted']).toBe(4)
+  })
+
+  it('unmounting aborts an in-flight suggestion request', async () => {
+    let resolveFn!: (v: { lanes: [] }) => void
+    const gate = new Promise<{ lanes: [] }>((res) => { resolveFn = res })
+    vi.mocked(curationApi.suggestResearchLanes).mockReturnValue(gate as never)
+    const { result, unmount } = await mountAtRoot()
+
+    act(() => { void result.current.suggestResearchLanes('t') })
+    await waitFor(() => expect(result.current.laneSuggestionLoading).toBe(true))
+
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort')
+    unmount()
+    expect(abortSpy).toHaveBeenCalled()
+    abortSpy.mockRestore()
+    resolveFn({ lanes: [] })
   })
 })

@@ -111,3 +111,37 @@ describe('PaperCard -- Paper Keywords and Filtering, K4.2', () => {
     expect(screen.getByRole('button', { name: '+ Add to review' })).toBeInTheDocument()
   })
 })
+
+describe('PaperCard -- Research Lanes (RL5) "Found via" chips', () => {
+  it('renders a "Found via" row with one chip per resolved lane label', () => {
+    render(
+      <PaperCard
+        paper={paper()}
+        showAbstract
+        foundViaLabels={['Retrieval architectures', 'Evaluation of factuality']}
+        action={{ kind: 'none' }}
+      />,
+    )
+    const row = screen.getByTestId('paper-lanes-p1')
+    expect(row).toHaveTextContent('Found via')
+    expect(row).toHaveTextContent('Retrieval architectures')
+    expect(row).toHaveTextContent('Evaluation of factuality')
+  })
+
+  it('renders nothing (no row, no placeholder) when foundViaLabels is empty or absent', () => {
+    const { rerender } = render(
+      <PaperCard paper={paper()} showAbstract foundViaLabels={[]} action={{ kind: 'none' }} />,
+    )
+    expect(screen.queryByTestId('paper-lanes-p1')).not.toBeInTheDocument()
+
+    rerender(<PaperCard paper={paper()} showAbstract action={{ kind: 'none' }} />)
+    expect(screen.queryByTestId('paper-lanes-p1')).not.toBeInTheDocument()
+  })
+
+  it('hides the "Found via" row when showAbstract is false (compact contexts)', () => {
+    render(
+      <PaperCard paper={paper()} foundViaLabels={['Retrieval architectures']} action={{ kind: 'none' }} />,
+    )
+    expect(screen.queryByTestId('paper-lanes-p1')).not.toBeInTheDocument()
+  })
+})

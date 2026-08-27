@@ -6,6 +6,7 @@ import type {
   CurationChatDeleteResponse,
   CurationChatEditRequest,
   CurationChatEditResponse,
+  CurationCapabilitiesResponse,
   CurationChatRequest,
   CurationChatResponse,
   CurationDeleteResponse,
@@ -15,6 +16,7 @@ import type {
   CurationStartRequest,
   CurationStateResponse,
   CurationTurnResponse,
+  LaneSuggestResponse,
   RefinementMode,
   ReportExportFormat,
   ReportOut,
@@ -94,8 +96,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-function postJson<T>(path: string, body: unknown): Promise<T> {
-  return request<T>(path, { method: 'POST', body: JSON.stringify(body) })
+function postJson<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
+  return request<T>(path, { ...init, method: 'POST', body: JSON.stringify(body) })
 }
 
 function deleteRequest<T>(path: string): Promise<T> {
@@ -104,6 +106,18 @@ function deleteRequest<T>(path: string): Promise<T> {
 
 export const curationApi = {
   listReviews: (): Promise<CurationReviewSummary[]> => request('/curation/reviews'),
+
+  // Research Lanes (RL5): the zero-provider capability probe. A rejection
+  // here is handled by the caller as "lane mode unavailable", never as a
+  // user-facing error -- single search must keep working regardless.
+  getCurationCapabilities: (signal?: AbortSignal): Promise<CurationCapabilitiesResponse> =>
+    request('/curation/capabilities', { signal }),
+
+  // Research Lanes (RL5): one inexpensive structured LLM call server-side;
+  // returns exactly three editable suggestions. The client sends only the
+  // topic -- there is no client-controlled suggestion count.
+  suggestResearchLanes: (topic: string, signal?: AbortSignal): Promise<LaneSuggestResponse> =>
+    postJson('/curation/lanes/suggest', { topic }, { signal }),
 
   start: (req: CurationStartRequest): Promise<CurationTurnResponse> => postJson('/curation/start', req),
 

@@ -9,8 +9,9 @@ import { PoolSummaryPanel } from '../components/ReviewMode/PoolSummaryPanel'
 import { ChatModePanel } from '../components/ChatMode/ChatModePanel'
 import { ReportModePanel } from '../components/ReportMode/ReportModePanel'
 import { TurnHistoryBrowser } from '../components/TurnHistory/TurnHistoryBrowser'
+import { LaneSummary } from '../components/Lanes/LaneSummary'
 import type { WorkspaceMode } from '../components/WorkspaceMode/WorkspaceModeSwitcher'
-import type { RefinementMode, ReportTemplate } from '../types'
+import type { RefinementMode, ReportTemplate, SubmittedLane } from '../types'
 import { mergeSelectedPaperIds } from '../lib/selection'
 
 const MODE_PARAM = 'mode'
@@ -46,6 +47,8 @@ export default function CurationWorkspacePage() {
   const {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning, curationAction, startingReviewVisible,
+    researchLanesAvailable, laneSuggestions, laneSuggestionLoading, laneSuggestionError,
+    suggestResearchLanes, resetLaneSuggestions,
     openReview, startReview, submitPicks, activateReportVersion,
     chatStreamActive, chatStreamPhase, chatStreamText, chatStreamSyncFailed, sendChatMessageStreaming, cancelChatStream,
     reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
@@ -183,10 +186,10 @@ export default function CurationWorkspacePage() {
     openReview(id)
   }
 
-  async function handleStartReview(topic: string, targetCount: number) {
+  async function handleStartReview(topic: string, targetCount: number, lanes?: SubmittedLane[]) {
     setWorkspaceMode('review')
     setShowHistory(false)
-    await startReview(topic, targetCount)
+    await startReview(topic, targetCount, lanes)
     setReviewsRefreshToken((t) => t + 1)
   }
 
@@ -320,6 +323,12 @@ export default function CurationWorkspacePage() {
           workspaceUnlocked={unlocked}
           onWorkspaceModeChange={setWorkspaceMode}
           startingReview={startingReviewVisible}
+          researchLanesAvailable={researchLanesAvailable}
+          laneSuggestions={laneSuggestions}
+          laneSuggestionLoading={laneSuggestionLoading}
+          laneSuggestionError={laneSuggestionError}
+          onSuggestLanes={suggestResearchLanes}
+          onResetLaneSuggestions={resetLaneSuggestions}
         />
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -348,6 +357,9 @@ export default function CurationWorkspacePage() {
           {state && (
             <>
               <TopicHeader topic={state.display_title} selectedCount={effectiveSelectedCount} targetCount={state.target_count} />
+              {state.lanes && state.lanes.length > 0 && (
+                <LaneSummary lanes={state.lanes} laneResultCounts={state.lane_result_counts ?? {}} />
+              )}
               {!showHistory && (reopenEligible || (state.turn_history.length > 0 && workspaceMode !== 'report')) && (
                 <div className="flex items-center justify-between border-b border-border bg-panel px-4 py-1.5">
                   <div>

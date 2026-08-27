@@ -7,6 +7,7 @@ import { ApiError } from '../types'
 import type {
   ChatStreamPhase, CurationGenerateReportRequest, CurationRegenerateReportRequest, CurationStateResponse,
   RefinementMode, ReportStreamCompletionNotice, ReportStreamPhase, ReportStreamServerEvent, ReportTemplate,
+  ResearchLaneOut, SubmittedLane,
 } from '../types'
 
 // One completed curation turn, for the center panel's scrollback. This is
@@ -165,8 +166,23 @@ interface UseCurationSessionResult {
   // the indicator is rendered outside the specific session it started
   // for (see this field's own assignment site for the full reasoning).
   startingReviewVisible: boolean
+  // Research Lanes (RL5): capability + lane-suggestion lifecycle, owned
+  // here so ReviewsList/NewReviewForm stay presentational. researchLanes
+  // Available is true ONLY after a successful GET /curation/capabilities
+  // that returned research_lanes_enabled === true -- a failed/pending
+  // read leaves it false, which safely hides lane mode without touching
+  // single search. laneSuggestions holds the server's canonical suggested
+  // lanes (the plan only -- no papers searched yet); the editable draft
+  // rows live in NewReviewForm. resetLaneSuggestions clears the server
+  // suggestions + any error (called when the topic changes).
+  researchLanesAvailable: boolean
+  laneSuggestions: ResearchLaneOut[] | null
+  laneSuggestionLoading: boolean
+  laneSuggestionError: string | null
+  suggestResearchLanes: (topic: string) => Promise<void>
+  resetLaneSuggestions: () => void
   openReview: (sessionId: string) => void
-  startReview: (topic: string, targetCount: number) => Promise<void>
+  startReview: (topic: string, targetCount: number, lanes?: SubmittedLane[]) => Promise<void>
   submitPicks: (pickedIds: string[], stop?: boolean, refinement?: string, requestRefill?: boolean) => Promise<void>
   // Return the freshly-loaded state (not void) so a caller can react to
   // exactly what changed as a RESULT of this action -- e.g. App.tsx uses
@@ -262,6 +278,20 @@ export function useCurationSession(): UseCurationSessionResult {
   const [lastAddToReportResult, setLastAddToReportResult] = useAutoClearingState<AddToReportResult>()
   const turnEventsSessionRef = useRef<string | null>(null)
 
+  // Research Lanes (RL5): see UseCurationSessionResult's own docstring.
+  const [researchLanesAvailable, setResearchLanesAvailable] = useState(false)
+  const [laneSuggestions, setLaneSuggestions] = useState<ResearchLaneOut[] | null>(null)
+  const [laneSuggestionLoading, setLaneSuggestionLoading] = useState(false)
+  const [laneSuggestionError, setLaneSuggestionError] = useState<string | null>(null)
+  // A ref alongside the loading state -- suggestResearchLanes' own
+  // "reject a second concurrent request" guard reads THIS synchronously,
+  // so a fast double-click can't slip a second request past a state
+  // update that hasn't re-rendered yet (same rationale as
+  // chatStreamActiveRef).
+  const laneSuggestionActiveRef = useRef(false)
+  const laneSuggestionAbortRef = useRef<AbortController | null>(null)
+  const capabilityAbortRef = useRef<AbortController | null>(null)
+
   // UXH.2: see CurationActionKind's own docstring. The ref alongside the
   // state mirrors chatStreamActiveRef/reportStreamActiveRef's own
   // rationale below -- runAction's own reentrancy guard (see below) reads
@@ -300,6 +330,29 @@ export function useCurationSession(): UseCurationSessionResult {
     return () => {
       isMountedRef.current = false
     }
+  }, [])
+
+  // Research Lanes (RL5): load the capability flag once on mount. A
+  // rejection (endpoint missing, network failure, feature genuinely off)
+  // leaves researchLanesAvailable at its default false -- lane mode is
+  // simply not offered, and single search is completely unaffected. The
+  // AbortController is aborted on unmount so a late response can't publish
+  // to a torn-down hook.
+  useEffect(() => {
+    const controller = new AbortController()
+    capabilityAbortRef.current = controller
+    curationApi
+      .getCurationCapabilities(controller.signal)
+      .then((caps) => {
+        if (!controller.signal.aborted && isMountedRef.current) {
+          setResearchLanesAvailable(caps.research_lanes_enabled === true)
+        }
+      })
+      .catch(() => {
+        // Deliberately swallowed -- a failed capability read is "lane mode
+        // unavailable", never a user-facing error.
+      })
+    return () => controller.abort()
   }, [])
 
   // The one place sessionId is ever assigned -- keeps currentSessionIdRef
@@ -607,13 +660,71 @@ export function useCurationSession(): UseCurationSessionResult {
   // request still runs to completion; only the display is scoped).
   const startReviewOriginSessionIdRef = useRef<string | null>(null)
 
+  // Research Lanes (RL5): request the three server-suggested lanes for a
+  // topic. Deliberately NOT routed through runAction -- it has its own
+  // loading/error fields (a suggestion failure must not populate the
+  // shared curation `error` banner) and its own concurrency guard. A
+  // failure preserves the topic and everything else; only laneSuggestion
+  // Error is set. The suggestions define a search plan only -- no papers
+  // have been searched.
+  const suggestResearchLanes = useCallback(async (topic: string): Promise<void> => {
+    if (laneSuggestionActiveRef.current) return
+    laneSuggestionAbortRef.current?.abort()
+    const controller = new AbortController()
+    laneSuggestionAbortRef.current = controller
+    laneSuggestionActiveRef.current = true
+    setLaneSuggestionLoading(true)
+    setLaneSuggestionError(null)
+    try {
+      const response = await curationApi.suggestResearchLanes(topic, controller.signal)
+      if (controller.signal.aborted || !isMountedRef.current) return
+      setLaneSuggestions(response.lanes)
+    } catch (err) {
+      if (controller.signal.aborted || !isMountedRef.current) return
+      setLaneSuggestionError(getUserFacingErrorMessage(err))
+    } finally {
+      if (!controller.signal.aborted) {
+        laneSuggestionActiveRef.current = false
+        setLaneSuggestionLoading(false)
+      }
+    }
+  }, [])
+
+  const resetLaneSuggestions = useCallback(() => {
+    laneSuggestionAbortRef.current?.abort()
+    laneSuggestionActiveRef.current = false
+    setLaneSuggestions(null)
+    setLaneSuggestionError(null)
+    setLaneSuggestionLoading(false)
+  }, [])
+
+  // Research Lanes (RL5): abort an in-flight suggestion request when the
+  // hook unmounts.
+  useEffect(() => () => laneSuggestionAbortRef.current?.abort(), [])
+
   const startReview = useCallback(
-    (topic: string, targetCount: number) => {
+    (topic: string, targetCount: number, lanes?: SubmittedLane[]) => {
       startReviewOriginSessionIdRef.current = currentSessionIdRef.current
       return runAction(async () => {
-        const response = await curationApi.start({ topic, target_count: targetCount })
+        // Research Lanes (RL5): send ONLY editable lane content -- never a
+        // server-minted lane_id / origin / generation_version, even if a
+        // draft row still carries one from the suggestion response.
+        const lanePayload: SubmittedLane[] | undefined = lanes?.map((lane) => ({
+          label: lane.label,
+          question: lane.question,
+          query: lane.query,
+          enabled: lane.enabled,
+        }))
+        const response = await curationApi.start({
+          topic,
+          target_count: targetCount,
+          ...(lanePayload && lanePayload.length > 0 ? { lanes: lanePayload } : {}),
+        })
         setSessionIdInUrl(response.session_id)
         setSessionId(response.session_id)
+        // Canonical server state (including the frozen, server-minted lane
+        // set) replaces any client draft -- loadState is the single
+        // source of truth after start.
         await loadState(response.session_id)
       }, 'starting_review')
     },
@@ -1222,6 +1333,8 @@ export function useCurationSession(): UseCurationSessionResult {
   return {
     sessionId, state, loading, error, turnEvents, lastChatSearchMeta, reportPossiblyStale, lastAddToReportResult,
     dismissReportStaleWarning, curationAction, startingReviewVisible,
+    researchLanesAvailable, laneSuggestions, laneSuggestionLoading, laneSuggestionError,
+    suggestResearchLanes, resetLaneSuggestions,
     openReview, startReview, submitPicks, generateReport, regenerateReport,
     reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
     reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice,

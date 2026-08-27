@@ -5,11 +5,12 @@ import type { CurationReviewSummary } from '../../types'
 import { ReviewCard, statusLabel } from './ReviewCard'
 import { NewReviewForm } from './NewReviewForm'
 import { WorkspaceModeSwitcher, type WorkspaceMode } from '../WorkspaceMode/WorkspaceModeSwitcher'
+import type { ResearchLaneOut, SubmittedLane } from '../../types'
 
 interface ReviewsListProps {
   activeSessionId: string | null
   onSelectReview: (sessionId: string) => void
-  onStartReview: (topic: string, targetCount: number) => void
+  onStartReview: (topic: string, targetCount: number, lanes?: SubmittedLane[]) => void
   onDeleteReview: (sessionId: string) => void
   // Bumping this triggers a refetch -- the caller increments it after any
   // action that could change a review's summary (a pick, a report, a chat
@@ -29,6 +30,15 @@ interface ReviewsListProps {
   // "Starting new review…" status location and disables the trigger
   // that would otherwise let a second start be submitted mid-request.
   startingReview?: boolean
+  // Research Lanes (RL5): all optional -- forwarded straight to
+  // NewReviewForm. When researchLanesAvailable is false/absent, the lane
+  // affordances never render and this list behaves exactly as before.
+  researchLanesAvailable?: boolean
+  laneSuggestions?: ResearchLaneOut[] | null
+  laneSuggestionLoading?: boolean
+  laneSuggestionError?: string | null
+  onSuggestLanes?: (topic: string) => void
+  onResetLaneSuggestions?: () => void
 }
 
 // Fixed section order, most-active-first -- matches the natural
@@ -49,6 +59,12 @@ export function ReviewsList({
   workspaceUnlocked,
   onWorkspaceModeChange,
   startingReview = false,
+  researchLanesAvailable = false,
+  laneSuggestions = null,
+  laneSuggestionLoading = false,
+  laneSuggestionError = null,
+  onSuggestLanes,
+  onResetLaneSuggestions,
 }: ReviewsListProps) {
   const [reviews, setReviews] = useState<CurationReviewSummary[]>([])
   const [showForm, setShowForm] = useState(false)
@@ -98,11 +114,21 @@ export function ReviewsList({
         </p>
       ) : showForm ? (
         <NewReviewForm
-          onSubmit={(topic, targetCount) => {
+          onSubmit={(...args) => {
             setShowForm(false)
-            onStartReview(topic, targetCount)
+            onResetLaneSuggestions?.()
+            onStartReview(...args)
           }}
-          onCancel={() => setShowForm(false)}
+          onCancel={() => {
+            setShowForm(false)
+            onResetLaneSuggestions?.()
+          }}
+          researchLanesAvailable={researchLanesAvailable}
+          laneSuggestions={laneSuggestions}
+          laneSuggestionLoading={laneSuggestionLoading}
+          laneSuggestionError={laneSuggestionError}
+          onSuggestLanes={onSuggestLanes}
+          onResetLaneSuggestions={onResetLaneSuggestions}
         />
       ) : (
         <button

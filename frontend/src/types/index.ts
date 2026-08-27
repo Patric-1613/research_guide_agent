@@ -71,6 +71,47 @@ export interface ChatTurn {
   web_relevance_verified?: boolean | null
 }
 
+// Research Lanes (RL5): mirrors research_agent.api_app.schemas
+// .ResearchLaneOut field-for-field. lane_id / origin / generation_version
+// are server-owned -- read-only here, and NEVER sent back in a start
+// payload (see SubmittedLane below).
+export interface ResearchLaneOut {
+  lane_id: string
+  label: string
+  question: string
+  query: string
+  enabled: boolean
+  origin: string
+  generation_version: number
+}
+
+// Research Lanes (RL5): the ONLY lane content the client submits to
+// /curation/start -- mirrors research_agent.api_app.schemas.SubmittedLane.
+// No lane_id / origin / generation_version: the server mints and stamps
+// those. A draft lane row the user edits maps down to exactly this shape
+// on submit.
+export interface SubmittedLane {
+  label: string
+  question: string
+  query: string
+  enabled: boolean
+}
+
+// Research Lanes (RL5): response of POST /curation/lanes/suggest -- always
+// exactly three editable suggestions (research_agent.api_app.schemas
+// .LaneSuggestResponse). The suggestions only DEFINE a search plan; they
+// have not searched for any papers.
+export interface LaneSuggestResponse {
+  lanes: ResearchLaneOut[]
+}
+
+// Research Lanes (RL5): response of GET /curation/capabilities. Carries
+// ONLY this one boolean -- no policy values or limits. A failed read is
+// treated as "unavailable" (lane mode hidden), never as an error.
+export interface CurationCapabilitiesResponse {
+  research_lanes_enabled: boolean
+}
+
 export interface CurationTurnResponse {
   session_id: string
   stage: string
@@ -81,6 +122,13 @@ export interface CurationTurnResponse {
   refilled: boolean
   reserve_remaining: number
   refinement_notes: string[]
+  // Research Lanes (RL5): empty/absent for a single-query session and any
+  // session created before RL4. `lanes` is the frozen lane set;
+  // `paper_lane_ids` is cumulative discovery provenance keyed by merged
+  // paper_id; `lane_result_counts` is recomputed from that provenance.
+  lanes?: ResearchLaneOut[]
+  paper_lane_ids?: Record<string, string[]>
+  lane_result_counts?: Record<string, number>
 }
 
 // report-quality Phase R1: one entry in a report's global, report-wide
@@ -237,6 +285,12 @@ export interface TurnHistoryEntryOut {
   turn_number: number
   batch: PaperOut[]
   refilled: boolean
+  // Research Lanes (RL5): the FROZEN per-turn discovery-provenance
+  // snapshot -- only this turn's batch papers, mapped to their
+  // discovering lane_ids as of when the turn was served. Never rewritten
+  // by a later refill. Empty/absent for a single-query turn and any turn
+  // served before RL4.
+  paper_lane_ids?: Record<string, string[]>
 }
 
 export interface CurationStateResponse {
@@ -275,6 +329,14 @@ export interface CurationStateResponse {
   // numbering from report.references entirely (see
   // research_agent/curation_chat.py's derive_chat_references).
   chat_references: ReferenceEntry[]
+  // Research Lanes (RL5): frozen lane set, cumulative discovery
+  // provenance (keyed by merged paper_id), and per-lane counts recomputed
+  // from that provenance. All empty/absent for a single-query session and
+  // any session created before RL4 -- a session with no `lanes` renders
+  // no lane disclosure, no "Found via" chips, and no placeholders.
+  lanes?: ResearchLaneOut[]
+  paper_lane_ids?: Record<string, string[]>
+  lane_result_counts?: Record<string, number>
 }
 
 export interface CurationChatResponse {
@@ -352,6 +414,11 @@ export interface CurationStartRequest {
   topic: string
   target_count?: number
   use_openalex_fallback?: boolean
+  // Research Lanes (RL5): omitted -> the existing single-query path,
+  // unchanged. A list -> lane mode (requires the capability enabled and a
+  // valid 1..4 set with >=1 enabled). Only editable content is ever sent;
+  // never a server lane_id / origin / generation_version.
+  lanes?: SubmittedLane[]
 }
 
 export interface CurationPicksRequest {

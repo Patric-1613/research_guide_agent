@@ -371,6 +371,53 @@ describe('curationApi', () => {
     expect(result.stage).toBe('curate')
   })
 
+  // Research Lanes (RL5)
+  it('getCurationCapabilities() issues a plain GET to /curation/capabilities', async () => {
+    const fetchMock = mockFetchOnce(200, { research_lanes_enabled: true })
+
+    const result = await curationApi.getCurationCapabilities()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/capabilities',
+      expect.not.objectContaining({ method: 'POST' }),
+    )
+    expect(result).toEqual({ research_lanes_enabled: true })
+  })
+
+  it('suggestResearchLanes() posts only the topic to /curation/lanes/suggest', async () => {
+    const fetchMock = mockFetchOnce(200, { lanes: [] })
+
+    await curationApi.suggestResearchLanes('reducing hallucination in RAG')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/lanes/suggest',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ topic: 'reducing hallucination in RAG' }) }),
+    )
+  })
+
+  it('start() forwards a lanes payload when one is given', async () => {
+    const fetchMock = mockFetchOnce(200, {
+      session_id: 's1', stage: 'curate', target_count: 10,
+      selected_paper_ids: [], batch: [], stop_reason: null, refilled: false,
+    })
+
+    await curationApi.start({
+      topic: 't', target_count: 5,
+      lanes: [{ label: 'L', question: 'q', query: 'qq', enabled: true }],
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test-api.local/curation/start',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          topic: 't', target_count: 5,
+          lanes: [{ label: 'L', question: 'q', query: 'qq', enabled: true }],
+        }),
+      }),
+    )
+  })
+
   it('throws an ApiError carrying the status and parsed detail on a non-2xx response', async () => {
     mockFetchOnce(404, { detail: 'session_id not found' })
 
