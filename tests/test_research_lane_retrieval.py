@@ -15,7 +15,8 @@ import copy
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import call, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -542,3 +543,176 @@ def test_interleave_emits_every_candidate_exactly_once_and_is_deterministic(lane
     ids1 = [p.paper_id for p, _ in r1.ranked]
     assert ids1 == [p.paper_id for p, _ in r2.ranked]           # deterministic
     assert len(ids1) == len(set(ids1)) == sum(lane_sizes)       # each once, all emitted
+
+
+# ======================================================================
+# RL3a: shared-object provenance, item-type validation, cluster-only
+# keyword recompute.
+# ======================================================================
+
+
+def _run_with_build(topic, lanes, build_side_effect, *, embed_side_effect=None, search_side_effect=None):
+    """Like _run() but with a fully custom build_candidate_pool side
+    effect (so a test can hand back the SAME Paper object to two lanes)."""
+    fakes = _Fakes({})
+    with patch.object(rlr, "build_candidate_pool", side_effect=build_side_effect), \
+         patch.object(rlr, "embed_and_index_papers", side_effect=embed_side_effect or fakes.embed), \
+         patch.object(rlr, "semantic_search", side_effect=search_side_effect or fakes.search), \
+         patch.object(rlr, "get_chroma_collection", side_effect=AssertionError("collection must be injected")):
+        return retrieve_across_lanes(topic, lanes, collection=object()), fakes
+
+
+# --- Fix 1: the SAME Paper instance returned by multiple lanes ---------
+
+def test_same_paper_object_returned_by_two_lanes_keeps_both_lane_ids():
+    """Regression: the old dict[int, str] kept only the LAST lane_id for a
+    shared object. build_candidate_pool here returns the IDENTICAL Paper
+    instance for lane A and lane B."""
+    shared = _paper("shared", "Dense Passage Retrieval for QA")
+
+    def _build(query, k, **kwargs):
+        assert query in ("qa", "qb")
+        return [shared]  # the exact same object both times
+
+    lanes = [_lane("qa", lane_id="A"), _lane("qb", lane_id="B")]
+    result, _ = _run_with_build("t", lanes, _build)
+
+    assert result.paper_lane_ids == {"shared": ["A", "B"]}
+    assert result.lane_result_counts == {"A": 1, "B": 1}
+    assert len(result.ranked) == 1
+
+
+def test_same_paper_object_across_three_lanes_in_enabled_order_even_when_discovered_out_of_order():
+    shared = _paper("s", "Fusion in Decoder for Knowledge Grounded Generation")
+
+    def _build(query, k, **kwargs):
+        # lane C ("qc") and lane A ("qa") return the shared object; B does not
+        return [shared] if query in ("qc", "qa") else [_paper("b1", "Reranking Candidate Passages")]
+
+    lanes = [_lane("qa", lane_id="A"), _lane("qb", lane_id="B"), _lane("qc", lane_id="C")]
+    result, _ = _run_with_build("t", lanes, _build)
+
+    assert result.paper_lane_ids["s"] == ["A", "C"]           # enabled-lane order, not discovery order
+    assert result.paper_lane_ids["b1"] == ["B"]
+
+
+def test_shared_object_provenance_has_no_duplicates_even_if_a_lane_returns_it_twice():
+    shared = _paper("s2", "Instruction Tuning for Factual Question Answering")
+
+    def _build(query, k, **kwargs):
+        return [shared, shared] if query == "qa" else [shared]  # lane A hands it back twice
+
+    lanes = [_lane("qa", lane_id="A"), _lane("qb", lane_id="B")]
+    result, _ = _run_with_build("t", lanes, _build)
+    assert result.paper_lane_ids["s2"] == ["A", "B"]          # A once, then B
+
+
+def test_distinct_duplicate_objects_merged_by_doi_still_get_every_lane():
+    # unchanged-behaviour guard: the DOI-merge path (distinct objects)
+    # must keep working alongside the shared-object fix.
+    def _build(query, k, **kwargs):
+        pid = "arxiv:x" if query == "qa" else "s2:x"
+        return [_paper(pid, f"Title {query}", doi="10.1/same")]
+
+    lanes = [_lane("qa", lane_id="A"), _lane("qb", lane_id="B")]
+    result, _ = _run_with_build("t", lanes, _build)
+    (lane_ids,) = list(result.paper_lane_ids.values())
+    assert lane_ids == ["A", "B"]
+
+
+# --- Fix 2: every item validated as ResearchLane before .enabled ------
+
+@pytest.mark.parametrize("bad", [
+    {"lane_id": "A", "enabled": True},     # dict
+    None,
+    "a lane",                             # str
+    SimpleNamespace(),                     # object without .enabled
+    SimpleNamespace(enabled=True),         # has .enabled but not a ResearchLane
+    SimpleNamespace(enabled=False),        # would-be-disabled non-ResearchLane
+    123,
+])
+def test_malformed_list_item_raises_controlled_typeerror_before_any_work(bad):
+    good = _lane("methods", lane_id="A")
+    with patch.object(rlr, "build_candidate_pool", side_effect=AssertionError("no build")), \
+         patch.object(rlr, "embed_and_index_papers", side_effect=AssertionError("no embed")), \
+         patch.object(rlr, "semantic_search", side_effect=AssertionError("no rank")), \
+         patch.object(rlr, "get_chroma_collection", side_effect=AssertionError("no chroma")):
+        with pytest.raises(TypeError, match="ResearchLane"):
+            retrieve_across_lanes("t", [good, bad], collection=object())
+
+
+def test_malformed_item_rejected_even_when_it_would_have_been_disabled():
+    good = _lane("methods", lane_id="A")
+    would_be_disabled = SimpleNamespace(enabled=False, lane_id="X", query="x")
+    with patch.object(rlr, "build_candidate_pool", side_effect=AssertionError("no build")):
+        with pytest.raises(TypeError, match="ResearchLane"):
+            retrieve_across_lanes("t", [good, would_be_disabled], collection=object())
+
+
+def test_malformed_item_as_sole_entry_raises_typeerror_not_valueerror():
+    with patch.object(rlr, "build_candidate_pool", side_effect=AssertionError("no build")):
+        with pytest.raises(TypeError, match="ResearchLane"):
+            retrieve_across_lanes("t", [None], collection=object())
+
+
+def test_type_check_precedes_the_no_enabled_lanes_valueerror():
+    # a valid disabled lane + a malformed item: TypeError (item type)
+    # wins over ValueError (no enabled lane)
+    with patch.object(rlr, "build_candidate_pool", side_effect=AssertionError("no build")):
+        with pytest.raises(TypeError):
+            retrieve_across_lanes("t", [_lane("x", enabled=False), {}], collection=object())
+
+
+# --- Fix 3: recompute keywords ONLY for >1-member clusters -----------
+
+def test_singleton_with_nonempty_keywords_never_calls_extract_keywords():
+    lanes = [_lane("methods", lane_id="A")]
+    p = _paper("solo", "A Solo Standalone Paper", keywords=["kept keyword a", "kept keyword b"])
+    fakes = _Fakes({"methods": [p]})
+    with patch.object(rlr, "extract_keywords", wraps=rlr.extract_keywords) as ek:
+        result = _run("t", lanes, fakes)
+    ek.assert_not_called()
+    (paper, _), = result.ranked
+    assert paper.keywords == ["kept keyword a", "kept keyword b"]
+
+
+def test_singleton_with_empty_keywords_is_left_empty_and_not_recomputed():
+    lanes = [_lane("methods", lane_id="A")]
+    p = _paper("solo0", "A Legitimately Keywordless Paper", keywords=[])
+    fakes = _Fakes({"methods": [p]})
+    with patch.object(rlr, "extract_keywords", wraps=rlr.extract_keywords) as ek:
+        result = _run("t", lanes, fakes)
+    ek.assert_not_called()
+    (paper, _), = result.ranked
+    assert paper.keywords == []
+
+
+def test_multi_member_merged_cluster_recomputes_yake_v2_exactly_once():
+    lanes = [_lane("methods", lane_id="A"), _lane("evaluation", lane_id="B")]
+    pa = _paper("arxiv:m", "Retrieval Augmented Generation", doi="10.2/m", abstract=_ABSTRACT)
+    pb = _paper("s2:m", "Grounding Language Models In External Documents", doi="10.2/m", abstract=_ABSTRACT)
+    fakes = _Fakes({"methods": [pa], "evaluation": [pb]})
+    with patch.object(rlr, "extract_keywords", wraps=rlr.extract_keywords) as ek:
+        result = _run("t", lanes, fakes)
+    ek.assert_called_once()
+    (merged, _), = result.ranked
+    assert ek.call_args == call(merged.title, merged.abstract)
+    assert merged.keywords and merged.keywords == rlr.extract_keywords(merged.title, merged.abstract)
+
+
+def test_two_merged_clusters_and_a_singleton_recompute_once_each_and_never_for_the_singleton():
+    lanes = [_lane("a", lane_id="A"), _lane("b", lane_id="B")]
+    # cluster 1: same DOI; cluster 2: same DOI; plus one singleton in lane A
+    a1 = _paper("a:1", "Sparse Mixture of Experts", doi="10.4/one", abstract=_ABSTRACT)
+    b1 = _paper("b:1", "Efficient Inference via Expert Routing", doi="10.4/one", abstract=_ABSTRACT)
+    a2 = _paper("a:2", "Multi Hop Reasoning over Knowledge Bases", doi="10.4/two", abstract=_ABSTRACT)
+    b2 = _paper("b:2", "Chained Retrieval for Complex Questions", doi="10.4/two", abstract=_ABSTRACT)
+    solo = _paper("a:solo", "A Distinct Unshared Contribution", keywords=["untouched kw"])
+    fakes = _Fakes({"a": [a1, a2, solo], "b": [b1, b2]})
+    with patch.object(rlr, "extract_keywords", wraps=rlr.extract_keywords) as ek:
+        result = _run("t", lanes, fakes)
+    assert ek.call_count == 2  # once per merged cluster, never for the singleton
+    by_id = {p.paper_id: p for p, _ in result.ranked}
+    assert by_id["a:solo"].keywords == ["untouched kw"]
+    for merged_id in ("a:1+b:1", "a:2+b:2"):
+        assert by_id[merged_id].keywords  # merged output retains valid keywords

@@ -12,21 +12,30 @@ Pipeline -- one pass, lanes run SEQUENTIALLY in v1 (no whole-lane
 parallelism; the existing per-query arXiv/S2 and title-search concurrency
 inside ``build_candidate_pool`` is untouched). No latency claim is made.
 
-  enabled lanes (frozen order; disabled lanes ignored entirely)
+  validate: EVERY list item must be a ResearchLane (checked before any
+  field -- including ``.enabled`` -- is read on any of them; a malformed
+  entry raises a controlled TypeError regardless of enabled/disabled),
+  then: >= 1 enabled lane, <= MAX_LANES_PER_REVIEW enabled, each enabled
+  lane through the RL1 construction contract, unique enabled lane_ids
+   -> enabled lanes (frozen order; disabled lanes ignored entirely)
    -> per lane: ONE build_candidate_pool(lane.query, k_for_widening, ...)
       call -- reuses the existing arXiv / Semantic Scholar / OpenAlex +
       LLM-title widening, per-lane dedup, and YAKE-v2 keyword computation.
       NO extra lane-generation or query-expansion call is added.
-   -> tag every returned paper with its discovering lane_id
+   -> record, per returned Paper OBJECT, the enabled lane_ids that
+      returned it -- accumulated + de-duplicated, so the SAME instance
+      handed back for two lanes keeps both
    -> ONE cross-lane dedup.deduplicate_with_clusters() over all tagged
       papers (shares production dedup's single _same_paper path -- no
-      second identity approximation)
-   -> provenance: paper_lane_ids[<final merged paper_id>] = every lane
-      represented in the dedup cluster, de-duplicated and ordered by
-      enabled-lane order
-   -> keyword repair: _merge_cluster() builds a fresh Paper (no keywords)
-      for any multi-member cluster; recompute deterministic YAKE-v2
-      keywords for exactly those (production YAKE-v2 is not changed)
+      second identity approximation; the sole paper-identity authority)
+   -> provenance: paper_lane_ids[<final merged paper_id>] = every enabled
+      lane that discovered ANY member of the dedup cluster, de-duplicated
+      and ordered by enabled-lane order
+   -> keyword repair: _merge_cluster() builds a fresh Paper (keywords=[])
+      for any >1-member cluster; recompute deterministic YAKE-v2 keywords
+      exactly ONCE for exactly those clusters (a singleton -- including a
+      legitimate keywords=[] -- is left untouched; production YAKE-v2 is
+      not changed)
    -> embed_and_index_papers(global_pool) ONCE
    -> per enabled lane: semantic_search(anchored ranking query,
       where=paper_id in that lane's own merged ids, top_k=full subset) --
@@ -146,7 +155,20 @@ def retrieve_across_lanes(
     ``client`` / ``collection`` are forwarded to the existing retrieval /
     embedding primitives unchanged; RL3 does not wire refill.
     """
-    # --- validation, BEFORE any provider / search / embedding / Chroma work ---
+    # --- validation, BEFORE any provider / default client / embedding /
+    # Chroma / ranking work ---
+    # Item TYPE is checked for EVERY entry first -- before `.enabled` (or
+    # any other field) is read on ANY of them -- so a malformed entry
+    # (dict / None / str / an object without `.enabled`) raises a
+    # controlled TypeError regardless of whether it "would have been"
+    # enabled or disabled, never an uncontrolled AttributeError and never
+    # a silent skip.
+    for lane in lanes:
+        if not isinstance(lane, ResearchLane):
+            raise TypeError(
+                f"every research lane must be a ResearchLane instance, got {type(lane).__name__}"
+            )
+
     enabled = [lane for lane in lanes if lane.enabled]
     if not enabled:
         raise ValueError("retrieve_across_lanes requires at least one enabled research lane")
@@ -155,8 +177,6 @@ def retrieve_across_lanes(
             f"retrieve_across_lanes accepts at most {MAX_LANES_PER_REVIEW} enabled research lanes, got {len(enabled)}"
         )
     for lane in enabled:
-        if not isinstance(lane, ResearchLane):
-            raise TypeError("every enabled lane must be a ResearchLane")
         validate_lane_for_construction(lane)  # RL1 construction contract
     enabled_lane_ids = [lane.lane_id for lane in enabled]
     if len(set(enabled_lane_ids)) != len(enabled_lane_ids):
@@ -179,20 +199,36 @@ def retrieve_across_lanes(
             tagged.append((paper, lane.lane_id))
 
     # --- one cross-lane dedup + provenance merge + keyword repair ---
-    lane_by_obj: dict[int, str] = {id(paper): lane_id for paper, lane_id in tagged}
+    # Object identity -> the enabled lanes whose build_candidate_pool
+    # returned THIS exact Paper object, ACCUMULATED (not overwritten) and
+    # de-duplicated. If a lane's retrieval returns the very same instance
+    # for two lanes, both lane_ids are kept -- the earlier RL3
+    # `dict[int, str]` silently dropped all but the last. Object identity
+    # stays purely the *discovery* signal; deduplicate_with_clusters
+    # remains the sole paper-identity authority (no independent matching).
+    lane_ids_by_obj: dict[int, list[str]] = {}
+    for paper, lane_id in tagged:
+        lst = lane_ids_by_obj.setdefault(id(paper), [])
+        if lane_id not in lst:
+            lst.append(lane_id)
+
     clustered = deduplicate_with_clusters([paper for paper, _ in tagged])
 
     global_pool: list[Paper] = []
     paper_lane_ids: dict[str, list[str]] = {}
     for merged, members in clustered:
-        member_lane_ids = {lane_by_obj[id(m)] for m in members if id(m) in lane_by_obj}
+        member_lane_ids: set[str] = set()
+        for m in members:
+            member_lane_ids.update(lane_ids_by_obj.get(id(m), ()))
         paper_lane_ids[merged.paper_id] = [lid for lid in enabled_lane_ids if lid in member_lane_ids]
-        if not merged.keywords:
-            # _merge_cluster() builds a fresh Paper with no keywords for a
-            # multi-member cluster -- recompute the same deterministic
-            # YAKE-v2 keywords build_candidate_pool() computes once per
-            # deduped paper. A single-member cluster's merged paper IS its
-            # sole member (keywords intact) -> already truthy -> skipped.
+        if len(members) > 1:
+            # _merge_cluster() builds a fresh Paper (keywords=[]) for a
+            # >1-member cluster -- recompute the same deterministic YAKE-v2
+            # keywords build_candidate_pool() computes once per deduped
+            # paper, exactly ONCE per merged cluster. A SINGLETON cluster's
+            # merged paper IS its sole member: its keywords are left
+            # exactly as build_candidate_pool produced them (empty or
+            # not), and extract_keywords is never re-run for it.
             merged.keywords = extract_keywords(merged.title, merged.abstract)
         global_pool.append(merged)
 
