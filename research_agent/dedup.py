@@ -100,12 +100,13 @@ def _merge_cluster(cluster: list[Paper]) -> Paper:
     return merged
 
 
-@observe(name="deduplicate", capture_input=False, capture_output=False)
-def deduplicate(papers: list[Paper]) -> list[Paper]:
-    """Cluster duplicate papers (DOI or fuzzy title match) and merge each cluster.
-
-    O(n^2) comparisons — fine at the scale this agent runs at (tens of
-    results per query), not intended for bulk corpus dedup.
+def _cluster_papers(papers: list[Paper]) -> list[list[Paper]]:
+    """The clustering half of deduplicate(), extracted verbatim so both
+    deduplicate() and deduplicate_with_clusters() share ONE `_same_paper`
+    path — there is no second, independent approximation of paper
+    identity anywhere. Greedy single pass, O(n^2), input order preserved:
+    each paper joins the first existing cluster it matches (by DOI or
+    fuzzy title), else starts its own.
     """
     clusters: list[list[Paper]] = []
     for paper in papers:
@@ -115,7 +116,17 @@ def deduplicate(papers: list[Paper]) -> list[Paper]:
                 break
         else:
             clusters.append([paper])
+    return clusters
 
+
+@observe(name="deduplicate", capture_input=False, capture_output=False)
+def deduplicate(papers: list[Paper]) -> list[Paper]:
+    """Cluster duplicate papers (DOI or fuzzy title match) and merge each cluster.
+
+    O(n^2) comparisons — fine at the scale this agent runs at (tens of
+    results per query), not intended for bulk corpus dedup.
+    """
+    clusters = _cluster_papers(papers)
     merged = [_merge_cluster(cluster) for cluster in clusters]
     n_dupes = len(papers) - len(merged)
     if n_dupes:
@@ -126,3 +137,19 @@ def deduplicate(papers: list[Paper]) -> list[Paper]:
         output={"deduped_count": len(merged), "duplicates_merged": n_dupes},
     )
     return merged
+
+
+def deduplicate_with_clusters(papers: list[Paper]) -> list[tuple[Paper, list[Paper]]]:
+    """deduplicate(), but also handing back each merged paper's original
+    cluster members -- for a caller (research_lane_retrieval.py) that
+    must know which inputs collapsed together to carry cross-lane
+    discovery provenance forward.
+
+    `[merged for merged, _ in deduplicate_with_clusters(papers)]` is
+    byte-for-byte the list `deduplicate(papers)` returns: same
+    `_cluster_papers` clustering, same `_merge_cluster`, same order.
+    Deliberately has no `@observe` span of its own -- it is an internal
+    helper for one caller, and each per-lane `build_candidate_pool`
+    already emits its own `deduplicate` span.
+    """
+    return [(_merge_cluster(cluster), list(cluster)) for cluster in _cluster_papers(papers)]

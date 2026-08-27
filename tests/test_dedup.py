@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.dedup import deduplicate
+from research_agent.dedup import deduplicate, deduplicate_with_clusters
 from research_agent.schema import Paper
 
 
@@ -87,6 +87,55 @@ def test_doi_match_overrides_dissimilar_titles():
 
 def test_empty_input_returns_empty():
     assert deduplicate([]) == []
+
+
+# --- RL3: deduplicate_with_clusters is deduplicate() + cluster membership ---
+
+def _p(pid: str, title: str, *, doi=None, abstract="an abstract here for the paper") -> Paper:
+    return Paper(
+        title=title, authors=["A"], year=2024, venue="V", abstract=abstract,
+        url=None, doi=doi, citation_count=None, source="arxiv", paper_id=pid,
+    )
+
+
+def _fixtures():
+    return [
+        [],
+        [_p("a", "Alpha")],
+        [_p("a", "Alpha"), _p("b", "Beta"), _p("c", "Gamma")],
+        [_arxiv_paper(), _s2_paper(), _p("x", "Totally Different Title")],
+        # DOI match over dissimilar titles + a fuzzy-title pair
+        [_p("d1", "Neural Scaling Laws", doi="10.1/x"), _p("d2", "A Study Of Something Else", doi="10.1/x"),
+         _p("t1", "Retrieval Augmented Generation"), _p("t2", "Retrieval-Augmented Generation")],
+    ]
+
+
+def test_deduplicate_with_clusters_merged_list_is_byte_for_byte_deduplicate():
+    for papers in _fixtures():
+        plain = deduplicate(list(papers))
+        withc = deduplicate_with_clusters(list(papers))
+        merged_only = [m for m, _ in withc]
+        assert len(merged_only) == len(plain)
+        for a, b in zip(merged_only, plain):
+            assert a.to_dict() == b.to_dict()
+
+
+def test_deduplicate_with_clusters_exposes_the_dedup_cluster_members():
+    a, x, s = _arxiv_paper(), _p("x", "Unrelated"), _s2_paper()
+    withc = deduplicate_with_clusters([a, x, s])
+    # cluster order follows first-seen input order: the RAG pair, then x
+    assert [len(members) for _, members in withc] == [2, 1]
+    rag_cluster = withc[0][1]
+    assert {m.source for m in rag_cluster} == {"arxiv", "semantic_scholar"}
+    assert rag_cluster[0] is a and rag_cluster[1] is s  # exact input objects, in order
+    assert withc[1][1] == [x]
+
+
+def test_deduplicate_with_clusters_singleton_merged_is_the_same_object():
+    p = _p("solo", "Solo Paper")
+    withc = deduplicate_with_clusters([p])
+    (merged, members), = withc
+    assert merged is p and members == [p]
 
 
 if __name__ == "__main__":
