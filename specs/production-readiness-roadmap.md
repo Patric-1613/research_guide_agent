@@ -42,6 +42,18 @@ any kind, PostgreSQL (or any database other than SQLite), multi-user data
 isolation, containerization, or CI. This document does not change that —
 everything below is a plan to read later, not code to run now.
 
+Feature work has continued on top of this baseline as separate, explicitly
+go-ahead-gated arcs (Usage Protection M1–M4, Paper Keywords K1–K5,
+Research Lanes RL1–RL6) — none of which touches auth / Postgres /
+multi-user / CI. Two **optional product feature flags** now exist, both
+**default `False`** and both plain strict-boolean fields on the
+always-computed `Settings` dataclass: `KEYWORD_FILTER_POLICY_C_ENABLED`
+(K5) and `RESEARCH_LANES_ENABLED` (Research Lanes — optional multi-query
+curation; see `docs/architecture.md`'s "Research Lanes" section). A future
+config/deployment phase (§10, Phase 22) is where their default-off posture
+and per-deployment configuration would be formally accounted for; Research
+Lanes itself is **not** a roadmap item and is not tracked further here.
+
 **This roadmap does not disturb `standardized-single-user-project`.**
 Everything from here on is scoped as a separate, later arc (Phases 19+,
 see §10), gated on explicit go-aheads the same way every phase in this

@@ -2290,6 +2290,30 @@ see `docs/architecture.md`'s "Usage Protection M1" section; a
 dashboard/reporting layer on top of it is still not built, and M1 is
 its own initiative, not part of R6.
 
+## Research Lanes — not evaluated (2026-08-28)
+
+Research Lanes (optional multi-query curation, RL1–RL6; see
+`docs/architecture.md`'s "Research Lanes" section) has **no statistical
+or quality evaluation**, by design:
+
+- RL0 was a design review only — no retrieval experiment was run.
+- There is **no benchmark comparing multi-lane retrieval against
+  single-query retrieval** on precision, recall, coverage, or diversity.
+  The 17-topic retrieval reference set and the `scripts/eval_retrieval.py`
+  harness were not extended to lane mode.
+- RL6's one approved live journey (1 Suggest + 1 Start, two enabled
+  lanes, disposable topic) is **operational-behavior evidence only** —
+  exact provider-call count, request-payload shape, provenance recording,
+  UI rendering, cleanup — on an **unlabelled** topic. It makes no claim
+  about retrieval quality.
+- No coverage guarantee: a lane can legitimately contribute zero papers
+  after cross-lane dedup and ranking.
+
+A real multi-lane-vs-single-query evaluation (labelled topic set, a
+diversity/coverage metric, a frozen gate) would be a separate future
+initiative — noted as a residual limitation in `specs/backend-backlog.md`'s
+Research Lanes entry, not scheduled and with no owner.
+
 ## Related docs
 
 - `docs/architecture.md` — backend architecture, including why

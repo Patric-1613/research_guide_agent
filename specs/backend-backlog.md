@@ -3412,6 +3412,59 @@ unscheduled work. No M5 (or any further milestone) exists anywhere in
 this project's prior roadmap docs as of this checkpoint — none is
 invented here.
 
+### Research Lanes: optional multi-query curation (RL1–RL6) — complete, off by default
+- **Goal**: let a curation review optionally start from up to four
+  complementary search "lanes" (label + research question + one query
+  each) instead of one topic string, with lane-of-origin provenance on
+  every candidate paper. Single search unchanged and still the default.
+- **Design**: RL0 was a no-code design review (Model C — hybrid
+  LLM-suggested, user-editable lanes — recommended and chosen). Full
+  architecture, API contracts, provenance/dedup model, test list, and
+  the one approved live-journey provider-call record are in
+  `docs/architecture.md`'s "Research Lanes" section; user-facing summary
+  in `README.md`.
+- **Feature flag**: `RESEARCH_LANES_ENABLED` (`config/settings.py`,
+  strict boolean, default `False`). When off: the capability endpoint
+  returns `false`, the frontend shows no lane affordance, and
+  `POST /curation/lanes/suggest` / a `lanes` field on
+  `POST /curation/start` return `403` before any admission / telemetry /
+  provider work. An existing lane session keeps refilling after the flag
+  is turned back off — `_refill_node` dispatches on `session.lanes`, not
+  the flag.
+- **New modules**: `research_lanes.py` (domain model + strict-construction
+  vs. lenient-deserialization validation), `lane_suggestion.py` (one
+  protected `gpt-4.1-mini` structured call, no retry / no fallback
+  model), `research_lane_retrieval.py` (`retrieve_across_lanes` +
+  `refill_lane_session`), `services/lane_suggestion_service.py`,
+  `api_app/routers/curation_lanes.py`. `dedup.deduplicate_with_clusters`
+  added as the sole cross-lane identity authority.
+- **API**: `GET /curation/capabilities` → `{"research_lanes_enabled":
+  bool}` (that key only); `POST /curation/lanes/suggest`; optional
+  `lanes` on `POST /curation/start`; `lanes` / `paper_lane_ids` /
+  `lane_result_counts` (all defaulted empty) added to state / turn /
+  turn-history responses — pre-RL4 checkpoints and single-query clients
+  deserialize unchanged.
+- **Tests**: 230 in the dedicated backend group + 27 lane-specific
+  across `test_curation_api`/`test_curation_session`/`test_curation_loop`;
+  614 frontend (Vitest); one fully mocked Playwright browser journey
+  (`frontend/e2e/research-lanes-mocked.spec.ts`, desktop + 375 px
+  mobile). Full backend suite at the milestone: 2618 passed, 1 failed
+  (the known pre-existing multi-file Chroma-fingerprint flake — see
+  Technical Debt below; unrelated).
+- **Live validation (RL6)**: one approved journey — 1 Suggest + 1 Start,
+  two enabled lanes, disposable topic. Approved bound ≤ 8 OpenAI calls;
+  actual 7 (4 `gpt-4.1-mini` + 3 `text-embedding-3-small`, ~4,636
+  tokens, ≈ $0.0013), no retry / no model substitution / no OpenAlex.
+  Session deleted, flag restored (nothing in `.env` changed).
+- **Residual limitations**: no mid-curation lane editing (frozen at
+  Start), no per-lane refill, no lane-aware chat/report synthesis, no
+  coverage guarantee, no statistical/quality evaluation of multi-lane
+  vs. single-query retrieval, single-user only. Duplicate lane *labels*
+  are permitted at Start (only lane IDs are enforced unique).
+- **Status**: Closed (2026-08-28). Commits: `909e300`..`29d334d`
+  (RL1–RL5b) plus this checkpoint's docs/publication commit. Annotated
+  milestone tag `research-lanes-v1` marks the documentation commit.
+
 Placeholders below, ready for real entries:
 
 ### [Placeholder — feature idea 1]
@@ -3554,7 +3607,25 @@ today, cross-referenced to where each item is already tracked in detail:
   assigned. The dedicated K5D.2 production test files themselves (`tests/
   test_keyword_filter.py`, `tests/test_config_settings.py`, `tests/
   test_curation_loop_keyword_filter.py`) are unaffected and pass cleanly
-  on their own.
+  on their own. **Confirmed still present at the Research Lanes (RL6)
+  milestone**: a full `uv run pytest -q` showed `2618 passed, 1 failed`,
+  the single failure being `test_curation_loop_keyword_filter.py::
+  test_real_chroma_db_untouched` from exactly this interaction — it fails
+  identically on the clean `4ffe63c` baseline and is unrelated to
+  Research Lanes.
+- **`ReviewCard.tsx` nests its delete `<button>` inside the card
+  `<button>` (frontend, pre-existing, not Research Lanes).** The card is
+  a `<button onClick={onSelect}>` and the delete affordance is a second
+  `<button>` inside it (wrapped in a `display: contents` div that fixes
+  layout but not the nesting). React 19 logs a DOM-nesting warning
+  whenever a review card renders. Surfaced during the RL6 live browser
+  journey (the mocked journey used an empty reviews list so it never
+  appeared). Last touched by `6b16baf` — well before the Research Lanes
+  range (`909e300`..) — so it is explicitly **not** a Research Lanes
+  defect and was left for a separate fix (the smallest correct fix is to
+  make the card a non-`<button>` clickable region, or move the delete
+  button out as a sibling). Not scheduled, no owner assigned.
+  `frontend/src/components/ReviewsList/ReviewCard.tsx`.
 
 ## 4. Explicitly deferred platform work
 

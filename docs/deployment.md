@@ -60,6 +60,33 @@ compares, which would reintroduce a timing signal). The 401 response is
 generic, carries `WWW-Authenticate` and `Cache-Control: no-store`, and
 never reveals whether the username or password was wrong.
 
+**Optional product feature flags (separate from the auth gate above).**
+Two strict-boolean env vars, both **default `False`**, both plain fields
+on the always-computed `Settings` dataclass — a malformed value raises
+loudly rather than silently defaulting, but neither is required and
+neither aborts startup when unset:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `KEYWORD_FILTER_POLICY_C_ENABLED` | opt-in LLM keyword-narrowing pass on displayed batches (K5) | `false` |
+| `RESEARCH_LANES_ENABLED` | opt-in multi-query "research lanes" curation (RL1–RL6) | `false` |
+
+When `RESEARCH_LANES_ENABLED` is off: `GET /curation/capabilities`
+returns `{"research_lanes_enabled": false}`, the frontend shows no lane
+UI, and `POST /curation/lanes/suggest` / a `lanes` field on
+`POST /curation/start` return `403` before any admission / telemetry /
+provider work. Turning it on adds provider cost only when a user
+actually uses lane mode — one `gpt-4.1-mini` call per Suggest, and per
+Start roughly (one `suggest_related_titles` `gpt-4.1-mini` call + one
+ranking pass) × number of *enabled* lanes plus one `canonicalize_topic`
+call and a few `text-embedding-3-small` calls (RL6's approved live
+journey: 7 OpenAI calls total for one Suggest + one Start with two
+enabled lanes; see `docs/architecture.md`'s "Research Lanes" section).
+An existing lane session keeps refilling across its lanes even after the
+flag is turned back off (dispatch is on the persisted lane set, not the
+flag). No lane data is ever exposed by the capabilities endpoint — only
+the one boolean.
+
 ### 2. Same-origin frontend/backend production package
 
 `research_agent/api_app/static_frontend.py`'s `mount_frontend()` serves

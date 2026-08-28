@@ -196,6 +196,14 @@ research_agent/
   curation_session.py  curation session persistence, history, reopen/delete
   curation_chat.py    chat over a curated paper set, with optional live
                      web-search escalation and report-update offers
+  research_lanes.py   optional multi-query curation: ResearchLane domain
+                     model + strict-construction / lenient-deserialization
+                     validation (off by default, RESEARCH_LANES_ENABLED)
+  lane_suggestion.py  the one protected gpt-4.1-mini call behind
+                     POST /curation/lanes/suggest
+  research_lane_retrieval.py  multi-lane retrieve / cross-lane dedup with
+                     full provenance / per-lane rank / round-robin
+                     interleave, plus refill_lane_session
   report.py           literature-review report generation/regeneration for a
                      curated session
   storage.py         SQLite persistence for saved searches (one-shot pipeline)
@@ -840,6 +848,40 @@ waits for that work to genuinely settle rather than claiming to be
 instantaneous. See `docs/architecture.md`'s "Usage Protection M4" section
 for the full design, including live browser validation.
 
+## Research Lanes (optional multi-query curation)
+
+An optional way to start a curation review from **up to four complementary
+search "lanes"** — each a label + research question + one search query —
+instead of a single topic string. **Single search is unchanged and stays
+the default.** Lane mode is gated behind `RESEARCH_LANES_ENABLED`
+(strict boolean, default `False`); when off, the frontend never shows any
+lane affordance and `POST /curation/lanes/suggest` / a `lanes` field on
+`POST /curation/start` return `403` before any provider work.
+
+Workflow: in the New Review form, pick *Research lanes*, type a topic,
+click **Suggest lanes** (one `gpt-4.1-mini` structured call → three
+editable suggestions — a *plan* only, nothing searched yet), edit /
+enable / add (max 4) / remove (min 1) rows, then **Start lane research**.
+On start, every enabled lane is searched (one candidate-pool build + one
+semantic-ranking pass per enabled lane, cross-lane deduplicated with full
+multi-lane provenance, round-robin interleaved); disabled lanes are
+persisted but never searched. After start the lane set is **frozen** and
+shown read-only as a compact "Research lanes · N active" disclosure, and
+every candidate paper carries small "Found via <lane>" chips — cumulative
+provenance for the current batch, each turn's own frozen snapshot in
+Browse Past Turns. Refill re-searches all enabled lanes and dispatches on
+the persisted lane set, not the flag, so an existing lane session keeps
+working after the flag is turned back off.
+
+`GET /curation/capabilities` → `{"research_lanes_enabled": bool}` (that
+key only) is the zero-cost probe the UI reads. New backend modules:
+`research_lanes.py` (domain model + two-tier validation),
+`lane_suggestion.py` (the one protected LLM call), `research_lane_
+retrieval.py` (multi-lane retrieve/dedup/rank/interleave + refill),
+`services/lane_suggestion_service.py`, `api_app/routers/curation_lanes.py`.
+Full design, API contracts, test list, and the one approved live-journey
+provider-call record: `docs/architecture.md`'s "Research Lanes" section.
+
 ## Deployment
 
 A protected, same-origin, single-process production package exists —
@@ -878,3 +920,9 @@ backup/restore drill, zero paid calls in either) and what remains.
   found web articles from leaking into later, unrelated answers) uses a
   starting embedding-similarity threshold that hasn't been empirically
   calibrated yet — see `docs/architecture.md`'s "Phase C" section.
+- Research Lanes (above) is off by default and has no mid-curation lane
+  editing, no per-lane refill, no lane-aware chat/report synthesis, no
+  coverage guarantee, and no statistical evaluation of multi-lane vs.
+  single-query retrieval — RL6's one live journey is operational-behavior
+  evidence only, on an unlabelled disposable topic. Duplicate lane
+  *labels* are permitted (only lane IDs are enforced unique).
