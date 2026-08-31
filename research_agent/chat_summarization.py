@@ -48,16 +48,14 @@ deliberately different and never silently converted into each other
 except via `group_into_exchanges` below, which is the one place that
 translates between them.
 
-**Coupling posture**: this module does not import anything private from
-`research_agent/qa.py` (no `_CITATION_MARKER_RE`, no `_PROMPT_INJECTION_PATTERNS`,
-no `_detect_retrieved_prompt_injection`) -- those are `qa.py`'s own
-private internals, coupling to them would tie two otherwise-independent
-modules together for a small amount of shared logic. This module
-re-implements its own small, local, high-precision bracket-marker strip
-and instruction-override redaction instead, documented and tested
-independently (see `_strip_bracket_citation_markers`/
-`_redact_injection_phrases` below) -- deliberate, bounded duplication,
-not a missed reuse opportunity.
+**Coupling posture**: prompt-injection phrase detection and redaction
+live in the shared `research_agent/prompt_injection.py` -- one canonical
+pattern registry and normalization policy for both this module's summary
+sanitizer and `qa.py`'s web-relevance guard (the two boundaries take
+different actions -- redact a span here, reject a candidate there -- but
+never disagree on what a directive phrase is). The bracket citation-
+marker strip below (`_strip_bracket_citation_markers`) is local, because
+"a summary is never a citable source" is this module's own concern.
 """
 
 from __future__ import annotations
@@ -71,6 +69,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+import research_agent.prompt_injection as prompt_injection
 import research_agent.telemetry as telemetry
 from research_agent.config import UsagePolicy
 from research_agent.schema import Paper, WebArticle
@@ -184,43 +183,12 @@ def _strip_bracket_citation_markers(text: str) -> str:
     return _BRACKET_CITATION_MARKER_RE.sub("", text)
 
 
-# High-precision, low-recall, deliberately narrow phrase patterns --
-# every pattern is a multi-word phrase describing an instruction
-# DIRECTED AT the model, never a single keyword ("system", "prompt",
-# "instructions" alone all appear routinely in genuine academic/
-# technical writing and must never trigger this on their own). This is
-# a SEPARATE, LOCAL, independent implementation from qa.py's own
-# comparable `_PROMPT_INJECTION_PATTERNS` guard -- see this module's own
-# docstring for why it is not imported/reused. Known, accepted, and
-# explicitly NOT solved here: obfuscation (leetspeak, zero-width
-# characters, other languages, encoded payloads), and a quoted academic
-# discussion OF prompt injection could still be redacted incorrectly --
-# the same limitations qa.py's own guard documents for itself.
-_INJECTION_REDACTION_PLACEHOLDER = "[redacted]"
-_INJECTION_PHRASE_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\bsystem\s+override\b", re.IGNORECASE),
-    re.compile(r"\bignore\s+(?:all\s+)?(?:the\s+)?(?:prior|previous|above)\s+instructions\b", re.IGNORECASE),
-    re.compile(r"\bdisregard\s+(?:all\s+)?(?:the\s+)?(?:prior|previous|above)\s+instructions\b", re.IGNORECASE),
-    re.compile(r"\byou\s+(?:must|should)\s+(?:mark|classify|treat|report|answer|respond|say)\b", re.IGNORECASE),
-    re.compile(r"\bnew\s+instructions?\s*:", re.IGNORECASE),
-]
-
-
-def _redact_injection_phrases(text: str) -> str:
-    """Replaces only the matched span with a neutral placeholder --
-    deliberately NOT whole-field rejection for one flagged phrase. A
-    high-precision detector's false-positive cost (losing one clause) is
-    much lower than the availability cost of discarding an entire
-    otherwise-good summary field over one matched span. See this
-    module's own docstring for the documented limitations of this
-    detector."""
-    for pattern in _INJECTION_PHRASE_PATTERNS:
-        text = pattern.sub(_INJECTION_REDACTION_PLACEHOLDER, text)
-    return text
-
-
 def _sanitize_free_text(text: str) -> str:
-    return _redact_injection_phrases(_strip_bracket_citation_markers(text))
+    """Strip bracket citation markers (this module's concern -- a summary
+    is not a citable source), then redact any prompt-injection directive
+    span via the shared registry (matched span only, never whole-field
+    deletion)."""
+    return prompt_injection.redact(_strip_bracket_citation_markers(text))
 
 
 def _dedupe_stable(items: list[str]) -> list[str]:
