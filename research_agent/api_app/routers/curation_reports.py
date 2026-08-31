@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse, Response
 
 import research_agent.api as api
@@ -12,7 +12,6 @@ from research_agent.services.curation_report_service import (
     stream_generate_report,
     stream_regenerate_report,
 )
-from research_agent.services.errors import ServiceError
 
 router = APIRouter()
 
@@ -32,12 +31,9 @@ def curation_report(
     cp=Depends(api.get_curation_checkpointer),
 ) -> ReportOut:
     with _upstream_error_guard("curation_report"):
-        try:
-            return get_or_create_report(
-                session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
-            )
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return get_or_create_report(
+            session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
+        )
 
 
 @router.post("/curation/{session_id}/report/regenerate", response_model=ReportOut)
@@ -46,12 +42,9 @@ def curation_report_regenerate(
     cp=Depends(api.get_curation_checkpointer),
 ) -> ReportOut:
     with _upstream_error_guard("curation_report_regenerate"):
-        try:
-            return regenerate_report(
-                session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
-            )
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return regenerate_report(
+            session_id, cp, report_template=req.report_template, refinement_mode=req.refinement_mode,
+        )
 
 
 # Usage Protection M4.3A: the streaming counterparts -- both existing
@@ -67,10 +60,7 @@ def curation_report_stream(
     session_id: str, req: CurationGenerateReportRequest = CurationGenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
 ):
-    try:
-        return stream_generate_report(session_id, req, cp)
-    except ServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return stream_generate_report(session_id, req, cp)
 
 
 @router.post("/curation/{session_id}/report/regenerate/stream")
@@ -78,10 +68,7 @@ def curation_report_regenerate_stream(
     session_id: str, req: CurationRegenerateReportRequest = CurationRegenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
 ):
-    try:
-        return stream_regenerate_report(session_id, req, cp)
-    except ServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return stream_regenerate_report(session_id, req, cp)
 
 
 @router.get("/curation/{session_id}/report/export")
@@ -110,10 +97,7 @@ def curation_report_export(
     class with raw bytes and no charset.
     """
     with _upstream_error_guard("curation_report_export"):
-        try:
-            content, filename = export_active_report(session_id, cp, format)
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        content, filename = export_active_report(session_id, cp, format)
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         if format == "docx":
             return Response(content=content, media_type=_DOCX_MEDIA_TYPE, headers=headers)
@@ -133,7 +117,4 @@ def curation_report_activate_version(
     an unknown session_id -- both mean "this URL doesn't point at
     anything real," not a client error worth a 400."""
     with _upstream_error_guard("curation_report_activate_version"):
-        try:
-            return activate_report_version(session_id, version_id, cp)
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return activate_report_version(session_id, version_id, cp)

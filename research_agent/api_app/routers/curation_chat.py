@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 import research_agent.api as api
 from research_agent.api_app.errors import _upstream_error_guard
@@ -19,7 +19,6 @@ from research_agent.services.curation_chat_service import (
     edit_curation_chat_exchange,
     stream_answer_curation_chat,
 )
-from research_agent.services.errors import ServiceError
 
 router = APIRouter()
 
@@ -27,10 +26,7 @@ router = APIRouter()
 @router.post("/curation/{session_id}/chat", response_model=CurationChatResponse)
 def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(api.get_curation_checkpointer)) -> CurationChatResponse:
     with _upstream_error_guard("curation_chat"):
-        try:
-            return answer_curation_chat(session_id, req, cp)
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return answer_curation_chat(session_id, req, cp)
 
 
 # Usage Protection M4.2A Part E: the streaming counterpart -- the
@@ -43,10 +39,7 @@ def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(api
 # events instead -- see curation_chat_streaming.py's own docstring).
 @router.post("/curation/{session_id}/chat/stream")
 def curation_chat_turn_stream(session_id: str, req: CurationChatRequest, cp=Depends(api.get_curation_checkpointer)):
-    try:
-        return stream_answer_curation_chat(session_id, req, cp)
-    except ServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return stream_answer_curation_chat(session_id, req, cp)
 
 
 # curation-chat-delete Phase 3: POST, not DELETE-with-body -- the one
@@ -63,10 +56,7 @@ def curation_chat_turn_stream(session_id: str, req: CurationChatRequest, cp=Depe
 def curation_chat_delete_exchanges(
     session_id: str, req: CurationChatDeleteRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatDeleteResponse:
-    try:
-        return delete_curation_chat_exchanges(session_id, req, cp)
-    except ServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return delete_curation_chat_exchanges(session_id, req, cp)
 
 
 # curation-chat-add-to-report Phase 4: same POST-not-DELETE-with-body
@@ -77,10 +67,7 @@ def curation_chat_add_to_report(
     session_id: str, req: CurationChatAddToReportRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatAddToReportResponse:
     with _upstream_error_guard("curation_chat_add_to_report"):
-        try:
-            return add_curation_chat_exchanges_to_report(session_id, req, cp)
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return add_curation_chat_exchanges_to_report(session_id, req, cp)
 
 
 # curation-chat-edit Phase 5: same POST-not-DELETE-with-body convention.
@@ -91,7 +78,4 @@ def curation_chat_edit_exchange(
     session_id: str, req: CurationChatEditRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatEditResponse:
     with _upstream_error_guard("curation_chat_edit_exchange"):
-        try:
-            return edit_curation_chat_exchange(session_id, req, cp)
-        except ServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return edit_curation_chat_exchange(session_id, req, cp)

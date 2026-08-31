@@ -789,6 +789,9 @@ def test_search_404_from_missing_papers_is_not_masked_as_a_503():
     with _client() as client, patch.object(api, "run_research_agent", return_value=fake_session):
         resp = client.post("/search", json={"topic": "t"})
     assert resp.status_code == 404
+    # ServiceError from the search service -> centralized handler, not the
+    # 503 upstream-error guard: body is exactly {"detail": <string detail>}.
+    assert resp.json() == {"detail": "No papers found for this topic."}
 
 
 def test_chat_history_rejects_unknown_role():

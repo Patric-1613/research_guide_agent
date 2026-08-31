@@ -423,6 +423,8 @@ def test_curation_picks_on_unknown_session_id_returns_404():
     with _client() as client:
         resp = client.post("/curation/does-not-exist/picks", json={"picked_paper_ids": []})
     assert resp.status_code == 404
+    # ServiceError -> centralized handler: body is exactly {"detail": <detail>}.
+    assert resp.json() == {"detail": "session_id not found"}
 
 
 def test_curation_picks_after_curation_already_finished_returns_400():

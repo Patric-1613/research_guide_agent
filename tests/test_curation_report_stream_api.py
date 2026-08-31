@@ -118,12 +118,19 @@ def test_stream_generate_unknown_session_returns_404():
     with _client() as client:
         resp = client.post("/curation/does-not-exist/report/stream", json={})
         assert resp.status_code == 404
+        # A synchronous ServiceError raised before the stream starts is
+        # mapped by the centralized handler -- a plain JSON body, not an
+        # SSE error event.
+        assert resp.json() == {"detail": "session_id not found"}
+        assert resp.headers["content-type"] == "application/json"
 
 
 def test_stream_regenerate_unknown_session_returns_404():
     with _client() as client:
         resp = client.post("/curation/does-not-exist/report/regenerate/stream", json={})
         assert resp.status_code == 404
+        assert resp.json() == {"detail": "session_id not found"}
+        assert resp.headers["content-type"] == "application/json"
 
 
 def test_stream_generate_malformed_request_returns_422():

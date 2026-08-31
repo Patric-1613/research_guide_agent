@@ -1,11 +1,10 @@
 """Small service-layer exception so services can signal an HTTP-mapped
-failure without reaching into the HTTP layer (raising FastAPI's
-HTTPException) themselves.
+failure without depending on the web framework themselves.
 
-Routers catch ServiceError and convert it to the identical
-HTTPException(status_code=..., detail=...) the service used to raise
-directly — status_code/detail are preserved exactly, only the raise site
-moves from the service to the router.
+One centralized handler (research_agent/api_app/app.py) maps every
+ServiceError to its response: status = status_code, body = {"detail":
+detail}, with detail passed through unchanged whether it is a plain
+string or a structured object. Services only ever raise it.
 """
 
 from __future__ import annotations
