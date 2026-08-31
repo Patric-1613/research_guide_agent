@@ -8,6 +8,12 @@ data/demo_chroma_db/
 data/cache/
 data/*.sqlite
 data/*.sqlite3
+# SQLite runtime sidecars (WAL/shared-memory/rollback-journal) — transient,
+# recreated on every open, never source. Recursive so a nested store
+# (e.g. data/cache/*.sqlite) is covered too.
+data/**/*.sqlite-wal
+data/**/*.sqlite-shm
+data/**/*.sqlite-journal
 .DS_Store
 # Raw human-maintained reference spreadsheet: binary, not diff-friendly.
 # eval_data/reference_topics.json (its converted, reviewable output) is
