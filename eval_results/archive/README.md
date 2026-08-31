@@ -2,8 +2,8 @@
 
 The files in this directory are **manual, historical snapshots** — not
 the canonical, currently-generated eval output. They were kept as
-before/after comparison points for specific pieces of work documented in
-the root `README.md`, not as ongoing run logs.
+before/after comparison points for specific pieces of work (now
+documented in `docs/evaluation.md`), not as ongoing run logs.
 
 The canonical, currently-generated eval outputs live one level up, in
 `eval_results/` itself:
@@ -20,7 +20,7 @@ to or reads from.
 
 | File | What it captures |
 |---|---|
-| `retrieval_history_pre_ranking_experiment.csv` | `eval_retrieval.py`'s history log as it stood before the BM25/hybrid/citation-partitioned ranking-mode experiments (see root `README.md`'s "Retrieval ranking experiments") — a before-snapshot, not a duplicate of the current log. |
+| `retrieval_history_pre_ranking_experiment.csv` | `eval_retrieval.py`'s history log as it stood before the BM25/hybrid/citation-partitioned ranking-mode experiments (see `docs/evaluation.md`'s ranking-experiment findings) — a before-snapshot, not a duplicate of the current log. |
 | `retrieval_history_pre_citation_partition.csv` | Same log, snapshotted again immediately before the citation-partitioned reranking experiment specifically — narrower before-point than the file above. |
 | `history_throwaway_smoketest.csv` | `ragas_eval.py`'s history log from an early smoke-test run, kept as a small reference example rather than a comparison point. |
 | `history_two_metric_run1.csv` | `ragas_eval.py`'s history log from a run before all four RAGAS metrics were wired in (two metrics only) — a before-snapshot of that expansion. |
@@ -28,18 +28,13 @@ to or reads from.
 ## `latency_history.csv`
 
 `eval_results/latency_history.csv` (one level up, **not** moved into this
-archive) is referenced directly by root `README.md`'s "Search-call
-parallelization" section as the full per-topic before/after data for that
-measurement. As of this writing, **no script in `scripts/` reproduces
-it** — grepping the repo for its column headers (`elapsed_s`,
-`rate_limited_calls`) or filename finds only the README reference and the
-CSV itself. It was committed alongside the commit documenting that
-latency win, but the measurement script that produced it was apparently
-never committed. It was left in place (not moved here) since README
-links to it by its current path; if it needs regenerating in the future,
-that gap should be closed first — either by committing a reproducing
-script or by explicitly relabeling it as a one-time historical
-measurement rather than a repeatable eval.
+archive) holds the per-topic before/after data for the search-call
+parallelization measurement (`docs/evaluation.md`'s "Search-call
+parallelization" note). **No script in `scripts/` reproduces it** — it
+was committed alongside the latency win, but the measurement script was
+never committed. It is a one-time historical measurement; regenerating it
+would mean committing a reproducing script first. Tracked in
+`specs/backend-backlog.md`'s Technical Debt section.
 
 ## Convention going forward
 

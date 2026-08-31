@@ -3498,10 +3498,12 @@ today, cross-referenced to where each item is already tracked in detail:
   (`DATA_DIR`, `DB_PATH`, `CHROMA_PERSIST_DIR`, `QA_CHECKPOINT_DB_PATH`),
   `DATA_DIR` independently duplicated in two files. Same status as
   above — optional, not scheduled, same source.
-- **`eval_results/latency_history.csv` has no reproducing script.**
-  Referenced directly by `README.md`'s "Search-call parallelization"
-  section; no script in `scripts/` currently produces it. See
-  `docs/evaluation.md`, `eval_results/archive/README.md`.
+- **`eval_results/latency_history.csv` has no reproducing script.** It is
+  a one-time historical measurement (search-call parallelization,
+  before/after); no script in `scripts/` produces it. Either commit a
+  small `scripts/eval_latency.py` or leave it labelled as historical. See
+  `docs/evaluation.md`'s "Search-call parallelization" note,
+  `eval_results/archive/README.md`.
 - **`api.py`'s compatibility re-exports retirement — deferred.**
   Every schema/helper/runtime object moved out of `api.py` across
   Phases 4–10 is still re-exported from it for `research_agent.api.

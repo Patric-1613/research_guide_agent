@@ -23,8 +23,8 @@ npm run lint               # oxlint
 
 ## Connecting to the backend
 
-Start the backend separately first (see the root `README.md`'s "Running
-the app" section):
+Start the backend separately first (see the root `README.md`'s "Quick
+start" section):
 
 ```bash
 uv run uvicorn research_agent.api:app --reload --reload-exclude "frontend/*"

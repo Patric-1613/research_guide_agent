@@ -1,13 +1,12 @@
 # Project history
 
-A phase-by-phase account of how this project got to its current state. This
-is a **new** document — nothing has been removed from `README.md`; the two
-are complementary. `README.md` is the authoritative deep-dive for the
-original one-shot research pipeline (search → dedup → rank → summarize/
-chat) and its own retrieval/ranking/RAGAS experiments. This document covers
-the same ground at a summary level, plus everything built afterward that
-`README.md` doesn't yet describe: the interactive curation system, the
-report/chat workflow, and the React frontend.
+A phase-by-phase account of how this project got to its current state.
+`README.md` is now a concise public entry point; the deep detail this
+document once pointed at it for has moved into the docs it references:
+`docs/architecture.md` (architecture and per-feature design),
+`docs/evaluation.md` (retrieval/ranking findings, RAGAS, report-quality,
+keyword-quality), and `docs/deployment.md`. This document covers the same
+ground at a milestone level, in commit/branch order.
 
 Branch names below are exact (`git branch -a` / `git log --merges`);
 per-item detail depth reflects how directly each phase is documented in
@@ -16,25 +15,26 @@ importance.
 
 ## Arc 1 — the original research pipeline
 
-Round-1 phases (see `README.md`'s own "Project structure" and "Try each
-phase individually" sections for the authoritative description):
-ingestion (arXiv/Semantic Scholar search) → dedup → embeddings/ranking →
-`agent.py`'s tool-calling orchestration → `summarize.py`'s themed summaries
-→ `qa.py`'s conversational Q&A → `api.py`'s FastAPI surface.
+Round-1 phases (module map in `docs/architecture.md`; per-phase live
+demos under `scripts/`): ingestion (arXiv/Semantic Scholar search) →
+dedup → embeddings/ranking → `agent.py`'s tool-calling orchestration →
+`summarize.py`'s themed summaries → `qa.py`'s conversational Q&A →
+`api.py`'s FastAPI surface.
 
 Notable branches/PRs building on that foundation:
 - `round2-enhancements`, `round3-interactive-triage` — early enhancement
-  rounds (see README "Key design decisions" for what shipped).
+  rounds.
 - `retrieval-eval`, `ranking-experiment`, `citation-partition-experiment`,
   `citation-partition-final-rule`, `citation-partition-k-generalization` —
-  the retrieval-ranking experiments README documents in detail under
-  "Retrieval ranking experiments" (BM25/RRF confirmed worse than
-  semantic-only; citation-partitioned reranking confirmed as a real win;
-  the derived proportion rule tested across k=3–30).
-- `ragas-integration`, `ragas-full-metrics` — RAGAS quality evaluation
-  harness (README: "RAGAS quality evaluation").
-- `mentor-feedback-fixes` — the robustness/reliability hardening pass
-  README documents under "Robustness & reliability pass."
+  the retrieval-ranking experiments (BM25/RRF confirmed worse than
+  semantic-only; citation-partitioned reranking confirmed as a real win
+  and promoted to the live agent path; the derived proportion rule tested
+  across k=3–30). Findings in `docs/evaluation.md`.
+- `ragas-integration`, `ragas-full-metrics` — the RAGAS quality
+  evaluation harness (`docs/evaluation.md`).
+- `mentor-feedback-fixes` — a robustness/reliability hardening pass
+  (defensive parsing, embedding-order correctness, per-request SQLite
+  connections + WAL, clean upstream-error responses, zero-API-key tests).
 - `semantic-classify-message` — replaced an exact-match non-substantive-
   message allowlist with an embedding-similarity classifier (four
   independent guards: question-mark veto, length cap, content-override
@@ -45,10 +45,11 @@ Notable branches/PRs building on that foundation:
   foundation the curation system later activated for real.
 - `parallelize-search-calls`, `add-openalex-fallback` — search-call
   parallelization and an OpenAlex fallback for Semantic Scholar rate-limit
-  flakiness (README: "Search-call parallelization," "Agent-path concurrency
-  fixes").
-- `langfuse-integration` — the Langfuse tracing layer (README:
-  "Observability").
+  flakiness. Later concurrency-correctness fixes (a title-suggestion cache
+  race, an unparallelized per-tool loop, a lost-update race on the
+  paper/web-article pools) are in `docs/architecture.md` and
+  `specs/backend-backlog.md`.
+- `langfuse-integration` — the Langfuse tracing layer (`docs/architecture.md`).
 - `streamlit-removal` — removed the original Streamlit UI in favor of the
   React/Vite frontend once it reached parity.
 
@@ -113,9 +114,9 @@ comments (`curation-*` prefixes throughout `research_agent/`).
 ## Test-count trajectory
 
 A rough proxy for how much of this arc is covered by deterministic tests
-(not a precise phase-by-phase log, but directionally accurate from this
-project's own running commentary across the curation arc): the backend
-suite grew from roughly 148 tests (the original pipeline, per `README.md`)
-through the 200s and into the 300s as the curation system was built out,
-standing at 340 as of this document (2026-07-29) — see `specs/test-plan.md`
-for the current per-file breakdown.
+(not a precise phase-by-phase log): the backend suite grew from roughly
+148 tests for the original one-shot pipeline, through the 200s and 300s as
+the curation system was built out, and past 2,000 across the later
+feature arcs (usage protection, keyword extraction/evaluation, report
+quality, Research Lanes). `specs/test-plan.md` has a per-file breakdown;
+`uv run pytest` reports the exact current count.

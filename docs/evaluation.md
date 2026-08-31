@@ -44,6 +44,31 @@ uv run python scripts/eval_retrieval.py --help
 Every run appends a row to `eval_results/retrieval_history.csv` (unless
 `--topic-ids` narrows the run — see `--help`).
 
+#### Ranking-experiment findings
+
+A separate line of work asked whether the live ranking step (cosine
+similarity over embeddings) was the best available option, and whether a
+recurring failure — foundational papers losing rerank against generic
+surveys that repeat a topic's wording densely — has a fix. All runs use
+the same 17-topic reference set; every number is logged to
+`eval_results/retrieval_history.csv` (and the named comparison snapshots
+in `eval_results/archive/`).
+
+- **BM25 and hybrid (RRF)** — both confirmed **worse** than semantic-only
+  on Precision@10 / Recall@10. `research_agent/ranking.py`'s BM25/RRF
+  functions stay **eval-only** (reachable only via
+  `--ranking-mode bm25|hybrid`); `api.py` / `app.py` / `qa.py` never
+  import them.
+- **Citation-partitioned reranking** — a real, large improvement on the
+  foundational-vs-survey failure. It was **promoted to the live agent
+  path** (`agent.py`'s rerank tool → `ranking.py`'s
+  `partition_by_citation` / `merge_with_guaranteed_slots`), and is the
+  behavior `--ranking-mode citation_partition` reproduces.
+- **k-generalization** — the winning proportion does **not** hold
+  uniformly across `k` (tested at k = 3, 5, 10, 20, 25, 30); the final
+  rule is tuned for the k range the app actually serves, not a single
+  best-at-all-k constant.
+
 ### RAGAS quality evaluation (`scripts/ragas_eval.py`)
 
 Runs the real pipeline (real search + `qa.py`'s real `ask()`) through all
@@ -101,18 +126,28 @@ approved production pilot are documented in `docs/architecture.md`, not
 here — this section only covers the offline evaluation harness that
 validated the policy before any production code existed.
 
-### Latency measurement — currently a documented gap, not a command
+### Search-call parallelization — a one-time historical measurement, no command
 
-Root `README.md`'s "Search-call parallelization" section links to
-`eval_results/latency_history.csv` as the full per-topic before/after
-data for that specific measurement. **As of this writing, no script in
-`scripts/` reproduces it** — this is stated honestly here rather than
-inventing a command that doesn't exist. If this needs re-measuring in
-the future, either commit a small `scripts/eval_latency.py` that
-reproduces the methodology described in that README section, or
-relabel the CSV as a one-time historical measurement rather than a
-repeatable eval. See `eval_results/archive/README.md` for the same note
-in the archive context.
+`query_expansion.py`'s `build_candidate_pool()` was changed to issue its
+arXiv and Semantic Scholar calls **concurrently** (`asyncio.gather` over
+`asyncio.to_thread`), with the LLM-suggested-title searches running under
+bounded cross-pair concurrency (a semaphore capped at 2). Nothing about
+*what* is searched, deduplicated, or ranked changed — only the scheduling
+of independent network calls. (`agent.py`'s tool path needed no change:
+LangGraph's `ToolNode` already runs same-turn tool calls concurrently.)
+
+Measured back-to-back on the same 20-topic set at `k=10`, sequential
+(commit `a3769e3`) vs. parallelized (both runs hit comparable Semantic
+Scholar rate-limiting): **mean latency 49.9 s → 14.0 s, median 26.5 s →
+12.0 s; every topic got faster (mean speedup 72%, median 55%)**. The gain
+holds *because* of rate-limiting, not despite it — concurrent calls
+absorb their `429` backoffs in overlapping wall-clock time.
+
+Per-topic before/after data is in `eval_results/latency_history.csv`.
+**No script reproduces it** — it is a one-time historical measurement,
+not a repeatable eval. Re-measuring would mean committing a small
+`scripts/eval_latency.py`. Also tracked in `specs/backend-backlog.md`'s
+Technical Debt section.
 
 ## Artifact policy
 

@@ -1,928 +1,237 @@
 # Research Paper Summarizer Agent
 
-An agent that takes a natural-language research topic, searches arXiv and
-Semantic Scholar, deduplicates and ranks results by semantic relevance,
-produces a structured literature summary grounded strictly in retrieved
-abstracts, generates citations, and answers conversational follow-up
-questions — with every claim traceable back to a specific paper.
+A literature-review assistant. Give it a research topic and it searches
+arXiv and Semantic Scholar, deduplicates and semantically ranks the
+results, and helps you curate a paper set, generate a grounded
+literature-review report, and chat about it — with every citation
+traceable to a specific retrieved paper (grounding is enforced by the
+schema, not just the prompt). A React frontend is the primary UI; a
+FastAPI backend does the work. Single-user, local-first, with an optional
+fail-closed auth gate for a protected deployment.
 
-No Google Scholar (no official API, scraping violates ToS) — only the
-arXiv and Semantic Scholar APIs are used.
+Only the arXiv and Semantic Scholar APIs are used for paper search — no
+Google Scholar (no official API; scraping violates its ToS).
 
-Beyond the one-shot flow above, the app also has an interactive
-**curation workflow**: review candidate papers a batch at a time and pick
-which ones matter (`curation_loop.py`), each shown with up to 6
-deterministic, offline-extracted keywords (`research_agent/keywords.py`,
-no LLM/network call by default) that the current batch can also be
-filtered by — an optional, off-by-default LLM narrowing pass
-(`research_agent/keyword_filter.py`, `KEYWORD_FILTER_POLICY_C_ENABLED`)
-exists but is not active unless explicitly opted into; see
-`docs/architecture.md`'s K5 section — get a synthesized literature-review
-report with regenerate-on-demand (`report.py`), and chat about the curated
-set with the option to pull in live web context or refresh the report
-mid-conversation (`curation_chat.py`). Chat messages support per-exchange
-actions — select, delete, edit a previous question (truncate-and-
-regenerate), and selectively approving a web-backed answer's cited
-sources for the report — see `docs/architecture.md`'s "Chat feature:
-message actions and report inclusion" section for the full design.
-A **React + Vite frontend**
-(`frontend/`, see `frontend/README.md`) is the primary UI for this
-workflow — see "Running the app" below to start it. The backend itself was
-restructured over a later, separate standardization effort (routers →
-services → schemas/serializers/errors/runtime → app factory, with zero
-endpoint-behavior change) — see `docs/architecture.md` for the current
-layered structure and `specs/migration-plan.md` for how it got there.
+## Capabilities
 
-**Status**: standardized single-user project baseline (tag
-`standardized-single-user-project`) — backend architecture, config,
-eval workflow, and frontend structure are all standardized and fully
-tested. OAuth/authentication, PostgreSQL migration, and multi-user
-support are **not started**, by design — see `specs/remaining-
-standardization-plan.md` for the full current-state record, and
-`specs/production-readiness-roadmap.md` for the design-only audit/plan
-covering what any of that would actually require.
+- **Search + candidate pool** — topic search across arXiv and Semantic
+  Scholar, cross-source dedup/merge, optional LLM-suggested-title
+  widening, and semantic (cosine) ranking over cached embeddings.
+- **Interactive curation** — review candidates a batch at a time, pick
+  what matters, refine the search mid-flow, browse past turns. Each paper
+  shows up to 6 deterministic offline keywords (YAKE-v2, no LLM or
+  network call).
+- **Research Lanes** *(optional, off by default)* — start a review from
+  up to four complementary search "lanes" instead of one topic string,
+  with lane-of-origin provenance on every paper. Gated behind
+  `RESEARCH_LANES_ENABLED`.
+- **Policy C keyword filtering** *(optional, off by default)* — an LLM
+  narrowing pass over the displayed batch's keywords, gated behind
+  `KEYWORD_FILTER_POLICY_C_ENABLED`. YAKE-v2 is the normal behavior.
+- **Grounded report** — a synthesized literature-review report with
+  inline `[n]` citations, a global references list, reader-depth
+  templates, an optional single-pass refinement loop, version history,
+  and Markdown / PDF / DOCX export.
+- **Paper-grounded chat** — ask questions about the curated set; the
+  answer can only cite papers actually in scope. Optional live web
+  context, with a relevance gate, and the option to fold an answer's
+  approved web sources into the report.
+- **Real-time progress** — curation chat and report generation stream
+  phase-level progress over Server-Sent Events (never token-by-token);
+  every synchronous endpoint remains available and unchanged.
+- **Usage protection** — configurable per-session / global paid-action
+  budgets, a one-in-flight concurrency lease, and request-size caps.
+  Rejections return a stable reason code and a safe message. A separate
+  telemetry DB records operational metadata only — never prompt, chat,
+  or report content.
+
+## How it works
+
+**Search → dedup → embed → rank.** `ingestion.py` queries arXiv and
+Semantic Scholar; `dedup.py` merges duplicates (fuzzy title + DOI);
+`embeddings.py` batch-embeds abstracts (content-hash cached) into Chroma;
+retrieval is cosine similarity over those embeddings. Optionally,
+`query_expansion.py` widens the pool with LLM-suggested related titles.
+
+**Curation loop.** `curation_loop.py` is a LangGraph `StateGraph` used
+purely for checkpointing and `interrupt()`/resume — a batch is presented,
+the HTTP request returns, and a later request resumes the graph with the
+user's picks. Curation state (`PaperPoolSession`) is persisted per turn.
+
+**Report + chat.** `report.py` generates and regenerates the report;
+`curation_chat.py` answers questions grounded in the curated papers,
+constrained so a cited `paper_id` must be one that was actually
+retrieved. Chat history is preserved in full but bounded for the model
+via a persisted summary of older turns.
+
+**Persistence.** ChromaDB (`data/chroma_db/`) is the source of truth for
+paper content and embeddings, keyed by `paper_id` and shared across every
+flow. SQLite holds only the join data — which `paper_id`s belong to which
+saved search / curation session, plus checkpoints and operational
+telemetry — never a second copy of paper content.
+
+The original one-shot pipeline (`/search` → `/summarize` → `/chat` →
+`/export`) is still available directly via the API; there is no dedicated
+frontend for it anymore.
 
 ## Architecture
 
-For the current, full-app architecture (frontend → API → services →
-domain modules → storage, including the curation/report/chat system),
-see [`docs/architecture.md`](docs/architecture.md)'s Mermaid diagram
-under "Current architecture." The original, hand-maintained
-`research_agent_architecture.svg` diagram is retained for history at
-[`docs/archive/research_agent_architecture.svg`](docs/archive/research_agent_architecture.svg)
-— it's accurate only for the original one-shot pipeline below, predates
-the curation system/React frontend/backend standardization entirely, and
-should not be read as describing the app's current architecture.
-
-The one-shot pipeline specifically, condensed:
-
-```
-Topic
-  │
-  ▼
-┌────────────────────┐   ┌──────────────────────┐
-│ ingestion.py        │   │ dedup.py              │
-│ search_arxiv()       │──▶│ fuzzy title + DOI     │
-│ search_semantic_     │   │ match, merge records  │
-│ scholar()            │   └───────────┬──────────┘
-└────────────────────┘               │
-                                       ▼
-                          ┌──────────────────────┐
-                          │ embeddings.py         │
-                          │ batch-embed abstracts │
-                          │ (cached), store in    │
-                          │ Chroma, cosine search │
-                          └───────────┬──────────┘
-                                       ▼
-                          ┌──────────────────────┐
-                          │ agent.py              │
-                          │ LangChain tool-calling │
-                          │ agent orchestrates the │
-                          │ above: which source(s),│
-                          │ query reformulation,   │
-                          │ when to rerank         │
-                          └───────────┬──────────┘
-                                       ▼
-                    ┌──────────────────┴──────────────────┐
-                    ▼                                       ▼
-        ┌──────────────────────┐                ┌──────────────────────┐
-        │ summarize.py          │                │ qa.py                 │
-        │ theme clustering +     │                │ conversational RAG:    │
-        │ grounded per-paper     │                │ condense follow-up →   │
-        │ summaries + citations  │                │ retrieve → answer with │
-        │ (citations.py: APA/    │                │ inline [n] citations   │
-        │ BibTeX, no LLM)        │                │                        │
-        └──────────────────────┘                └──────────────────────┘
-                    │                                       │
-                    └──────────────────┬───────────────────┘
-                                        ▼
-                          ┌──────────────────────┐
-                          │ storage.py (SQLite)   │
-                          │ per-request conn. via │
-                          │ FastAPI Depends + WAL │
-                          │ saved searches:       │
-                          │ topic, paper_ids,     │
-                          │ scores, summary       │
-                          └───────────┬──────────┘
-                                       ▼
-                          ┌──────────────────────┐
-                          │ api.py (FastAPI)       │
-                          │ /search /summarize     │
-                          │ /chat /export /library │
-                          │ upstream errors →      │
-                          │ clean 503, no raw 500  │
-                          └──────────────────────┘
+```mermaid
+flowchart LR
+    U["User / browser"] --> FE["React + Vite frontend<br/>(frontend/)"]
+    FE -->|"fetch() / SSE"| API["FastAPI backend<br/>(research_agent/)"]
+    API --> SVC["services/<br/>search · curation · chat · report · lanes"]
+    SVC --> DOM["domain modules<br/>ingestion · dedup · embeddings · ranking<br/>query_expansion · qa · curation_loop · report"]
+    DOM --> EXT["OpenAI<br/>arXiv · Semantic Scholar · OpenAlex · Tavily"]
+    DOM --> DB[("SQLite<br/>searches · checkpoints · telemetry")]
+    DOM --> CH[("ChromaDB<br/>paper content + embeddings")]
 ```
 
-Persistence has two layers with different jobs:
-- **ChromaDB** (`data/chroma_db/`) is the source of truth for paper content
-  (title, abstract, authors, ...) and their embeddings — it's keyed by
-  `paper_id` and shared across every phase.
-- **SQLite** (`data/history.sqlite`) only tracks *which* `paper_id`s belong
-  to which saved search (topic, timestamp, scores, generated summary). It
-  never duplicates paper content — `paper_id` is the join key back to Chroma.
+Full current architecture (layered structure, request flow, every
+module): [`docs/architecture.md`](docs/architecture.md).
 
-## Setup
+## Quick start
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/getting-started/installation/),
+plus **Node 20+** for the frontend.
 
 ```bash
-uv sync
-cp .env.example .env
+uv sync                 # creates .venv, installs pinned deps from uv.lock
+cp .env.example .env     # then set OPENAI_API_KEY (see Configuration)
 ```
 
-`uv sync` creates a `.venv` and installs the exact pinned versions from
-`uv.lock`. Run project commands with `uv run <command>`, or activate the
-environment directly with `source .venv/bin/activate`.
-
-Edit `.env` and set:
-- `OPENAI_API_KEY` — required (embeddings + summarization + chat + agent).
-- `SEMANTIC_SCHOLAR_API_KEY` — optional. Semantic Scholar works
-  unauthenticated at a low, shared rate limit; a free key
-  ([semanticscholar.org/product/api](https://www.semanticscholar.org/product/api))
-  raises it. Search functions degrade gracefully (empty result, not a crash)
-  if rate-limited.
-
-## Running the app
-
-Two processes, in separate terminals:
+Run the two processes in separate terminals:
 
 ```bash
+# backend
 uv run uvicorn research_agent.api:app --reload --reload-exclude "frontend/*"
+
+# frontend
+cd frontend && npm install && npm run dev
 ```
+
+Open `http://localhost:5173`. Interactive API docs are at
+`http://localhost:8000/docs`.
+
+`--reload-exclude "frontend/*"` matters: without it, `--reload` also
+watches the entire `frontend/` tree and restarts the backend (killing the
+in-flight request) whenever a frontend file is saved.
+
+Each pipeline phase also has a standalone live demo under `scripts/`
+(`scripts/test_ingestion.py "topic"`, `scripts/test_agent.py "topic"`,
+…) — these hit real APIs and cost real tokens.
+
+## Configuration
+
+All via `.env` (copy from [`.env.example`](.env.example), which documents
+every variable). The essentials:
+
+| Variable | Required? | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | **yes** | embeddings, summarization, chat, agent |
+| `SEMANTIC_SCHOLAR_API_KEY` | optional | raises the Semantic Scholar rate limit (search degrades gracefully without it) |
+| `TAVILY_API_KEY` | optional | enables live web context in chat |
+| `UNPAYWALL_EMAIL` / `OPENALEX_MAILTO` | optional | polite-pool contact for abstract enrichment / OpenAlex fallback |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | optional | Langfuse tracing (inert no-op when unset) |
+| `KEYWORD_FILTER_POLICY_C_ENABLED` | optional, default **false** | opt-in LLM keyword-narrowing pass |
+| `RESEARCH_LANES_ENABLED` | optional, default **false** | opt-in multi-query "research lanes" curation |
+| `APP_ENV` / `AUTH_ENABLED` / `AUTH_USERNAME` / `AUTH_PASSWORD` | optional (required for a protected deployment) | fail-closed HTTP Basic Auth — see Deployment |
+| `FRONTEND_ORIGIN` | optional | the one browser origin allowed for credentialed CORS — see Deployment |
+
+Both feature flags and the auth gate default to off; local development
+with only `OPENAI_API_KEY` set is the normal case.
+
+## Running tests
 
 ```bash
-cd frontend
-npm install   # first time only
-npm run dev
+uv run pytest                    # backend — fully deterministic
+cd frontend && npm test          # frontend — Vitest
+cd frontend && npm run build     # frontend — type-check + production build
+cd frontend && npm run lint      # frontend — oxlint
+cd frontend && npm run e2e       # frontend — Playwright (needs live servers)
 ```
 
-Open `http://localhost:5173` for the app. Interactive API docs (including
-the original one-shot `/search`/`/summarize`/`/chat`/`/export`/`/library`
-endpoints, still available directly — there's no dedicated frontend for
-them anymore) are at `http://localhost:8000/docs`.
-
-`--reload-exclude "frontend/*"` matters: by default `--reload` watches
-every file in the project, including the entire `frontend/` tree (source,
-`node_modules`, build output). Without the exclude, saving a frontend file
-mid-request restarts the backend and kills whatever request was in
-flight — easy to mistake for a hang or timeout.
-
-## Project structure
-
-```
-research_agent/
-  schema.py         Paper / WebArticle — the normalized records shared by every phase
-  ingestion.py       search_arxiv(), search_semantic_scholar()
-  dedup.py           cross-source deduplication + merge
-  embeddings.py      batched + cached embedding, Chroma storage, cosine retrieval
-  query_expansion.py LLM-suggested-title candidate-pool widening (build_candidate_pool
-                     + expanded_search) — the live app's opt-in query-expansion mode;
-                     also owns PaperPoolSession, the curation workflow's own state
-  ranking.py         BM25/RRF-hybrid ranking alternatives, evaluation-only (see
-                     "Retrieval ranking experiments" below) — never used by the live
-                     app. Also owns citation-partitioned reranking
-                     (partition_by_citation/get_partition_n/merge_with_guaranteed_
-                     slots), which IS used live, by agent.py's rerank tool
-  agent.py           LangChain tool-calling orchestration agent (one-shot pipeline)
-  summarize.py       theme clustering + grounded per-paper summaries (one-shot only)
-  citations.py       APA + BibTeX formatting (deterministic, no LLM)
-  qa.py              conversational RAG over retrieved abstracts — powers both
-                     the one-shot /chat and (via curation_chat.py) curation chat
-  curation_loop.py    interactive review workflow: present a batch of candidate
-                     papers, take picks, refine, resume — a LangGraph StateGraph
-                     used for checkpointing + interrupt/resume, not agentic
-                     decision-making (see docs/architecture.md)
-  curation_session.py  curation session persistence, history, reopen/delete
-  curation_chat.py    chat over a curated paper set, with optional live
-                     web-search escalation and report-update offers
-  research_lanes.py   optional multi-query curation: ResearchLane domain
-                     model + strict-construction / lenient-deserialization
-                     validation (off by default, RESEARCH_LANES_ENABLED)
-  lane_suggestion.py  the one protected gpt-4.1-mini call behind
-                     POST /curation/lanes/suggest
-  research_lane_retrieval.py  multi-lane retrieve / cross-lane dedup with
-                     full provenance / per-lane rank / round-robin
-                     interleave, plus refill_lane_session
-  report.py           literature-review report generation/regeneration for a
-                     curated session
-  storage.py         SQLite persistence for saved searches (one-shot pipeline)
-  tracing.py         shared Langfuse helpers (redacted paper/trace metadata
-                     views) — see "Observability" below
-  api.py             thin compatibility/composition entrypoint — routers,
-                     services, schemas, and app wiring live under api_app/
-                     and services/ (see docs/architecture.md)
-  api_app/           routers (thin HTTP adapters), schemas, serializers,
-                     error handling, runtime state, and the app factory
-  services/          per-endpoint-group orchestration
-frontend/          React + Vite UI for the curation/report/chat workflow —
-                   see frontend/README.md
-scripts/           runnable CLI demos for each phase (see below), plus two
-                   real-pipeline evaluation harnesses: eval_retrieval.py
-                   (retrieval precision/recall + ranking-mode experiments)
-                   and ragas_eval.py (RAGAS Faithfulness/Answer Relevancy/
-                   Context Precision/Context Recall over a curated question set)
-tests/             deterministic backend unit tests (342 as of the
-                   standardized-single-user-backend baseline; zero network/LLM
-                   calls required — see "Run the tests" below). frontend/ has
-                   its own 98-test vitest suite plus Playwright e2e tests.
-eval_data/         curated reference sets consumed by the eval harnesses
-                   (17-topic retrieval reference set, 24-scenario RAGAS
-                   set) — see eval_data/README.md
-eval_results/      CSV run history for both harnesses, eval_results/archive/
-                   (historical snapshots), eval_results/runs/ (gitignored
-                   per-run RAGAS artifacts) — see eval_results/README.md
-                   and docs/evaluation.md for the full artifact policy
-data/              gitignored: chroma_db/, cache/, history.sqlite
-docs/              docs/architecture.md — current + target backend
-                   architecture; docs/evaluation.md — eval workflow
-specs/             specs/migration-plan.md (Phases 0-10 backend
-                   standardization, done) and specs/remaining-
-                   standardization-plan.md (what's left: config, evals,
-                   frontend, docs — auth/Postgres/multi-user explicitly out
-                   of scope until a separate decision)
-```
-
-### Try each phase individually
-
-```bash
-uv run python scripts/test_ingestion.py "your topic"          # phase 1: raw search
-uv run python scripts/test_dedup.py "your topic"               # phase 2: dedup/merge
-uv run python scripts/test_ranking.py                          # phase 3: keyword vs. semantic ranking
-uv run python scripts/test_agent.py "your topic"                # phase 4: agent + tool-call log
-uv run python scripts/test_summarize.py "your topic"            # phase 5: themed summary + citations
-uv run python scripts/test_qa.py                                # phase 6: multi-turn grounded chat
-uv run python scripts/test_api.py                                # phase 7: full API flow, live
-```
-
-### Run the tests
-
-```bash
-uv run pytest tests/ -v          # backend — 342 tests as of the
-                                  # standardized-single-user-backend baseline
-cd frontend && npm test           # frontend — 98 vitest tests
-cd frontend && npm run build      # frontend — type-check + production build
-cd frontend && npm run e2e        # frontend — Playwright end-to-end tests
-```
-
-All backend tests in `tests/` are fully deterministic and need no network
-access and no API keys — every LLM call (OpenAI) and every external API call
-(arXiv, Semantic Scholar, Unpaywall/CrossRef, Tavily) is mocked, including
-the `OpenAI()` client construction in `api_app/app.py`'s FastAPI `lifespan()`,
-which otherwise runs unconditionally at `TestClient` startup regardless of
-which endpoint a given test hits. Verified directly: `tests/` passes with
-`.env` entirely absent — including Langfuse tracing, disabled for the whole
-suite via `tests/conftest.py` (see "Observability" below) so a normal test
-run never sends real telemetry.
-
-The live smoke tests live separately in `scripts/` (not `tests/`, and not
-run by `pytest`) — those intentionally hit real APIs and cost a small amount
-of real tokens; see "Try each phase individually" above.
-
-## Key design decisions
-
-- **Dedup cache key is a content hash, not `paper_id`.** A merged record's
-  `paper_id` changes (`arxiv_id+s2_id`) when dedup collapses a duplicate —
-  keying the embedding cache on the abstract's hash instead means a paper is
-  never re-billed just because it was later found to be a duplicate.
-- **Relevance ranking *is* retrieval** — cosine similarity over cached
-  embeddings, no separate scoring system layered on top.
-- **Agent model vs. summarization model:** `gpt-4.1-mini` for the phase-4
-  agent's tool-calling loop (many calls per session, cost compounds) vs.
-  `gpt-4.1` for summarization/Q&A (infrequent, user-facing, faithfulness
-  matters more than marginal cost).
-- **Grounding is enforced structurally, not just by prompting.** Every
-  citation (`paper_id`) the model can emit is constrained to a dynamic
-  `Literal` type built from the exact papers retrieved for that call —
-  fabricating a citation is a schema violation, not just discouraged.
-  Verified directly (a test asserts an out-of-set `paper_id` is rejected).
-- **Theme clustering is prompt-based, not embedding clustering (KMeans
-  etc.).** At this project's scale (a handful to ~20 papers per topic), an
-  embedding-clustering approach would still need an LLM call afterward just
-  to name each cluster — folding grouping into the same call that writes
-  the summaries is fewer LLM calls, not more.
-- **APA/BibTeX citations are pure deterministic string formatting — no
-  LLM.** There's nothing a model would do better here, and every LLM call
-  is a chance to hallucinate a citation detail.
-- **Follow-up questions are condensed into a standalone query before
-  retrieval** (e.g. "what about its limitations?" → "what are RoCoFT's
-  limitations?"), costing one small extra LLM call per turn — skipped
-  entirely on the first turn, where there's no history to resolve against.
-- **Chat history is not persisted server-side.** The client carries it
-  forward per-request; only *searches* are saved to SQLite, per the brief.
-- **`/summarize` and `/export` reuse a previously generated summary** for a
-  given `search_id` instead of re-billing the LLM on repeat calls.
-
-## Robustness & reliability pass
-
-A later review pass (branch `mentor-feedback-fixes`) hardened several edge
-cases and failure modes that the original phases above didn't cover. No
-behavior changed for valid/well-formed input anywhere in this list — every
-fix below only changes what happens on an already-broken or edge-case input,
-verified by keeping the full test suite green (101 → 128 tests) throughout.
-
-- **Defensive parsing fixes:** a blank/`None` author name inside an
-  otherwise normal author list no longer crashes APA/Harvard formatting
-  (falls back to `"Unknown"`); a malformed/empty Semantic Scholar response
-  body is caught and degrades to `[]` instead of raising;
-  `Retry-After` is parsed as either plain seconds or an HTTP-date (both are
-  valid per RFC 9110), falling back to the existing backoff default if
-  neither parses; a paper with both an empty title and no abstract is
-  skipped (logged) rather than failing the whole embedding batch.
-- **Embedding order correctness:** OpenAI's embeddings API doesn't guarantee
-  response order matches request order — vectors are now sorted by the
-  API's own `index` field before being assigned back to their papers,
-  instead of trusting list position.
-- **Resilient agent tool calls:** each of the four agent tools
-  (`search_arxiv_tool`, `search_semantic_scholar_tool`,
-  `rerank_by_relevance_tool`, `search_web_tool`) now wraps its body in
-  try/except, so one tool's failure (e.g. an OpenAI embedding call erroring
-  mid-rerank) returns a description instead of killing the whole agent run
-  — already-gathered papers survive, and the failed step is retryable.
-- **Per-request SQLite connections:** `storage.py` moved from one SQLite
-  connection shared across every request (`check_same_thread=False`) to a
-  FastAPI `Depends`-based connection opened and closed per request
-  (`get_db_connection`), plus WAL journal mode and a `busy_timeout` — the
-  standard pairing for safe concurrent access under FastAPI's
-  multi-threaded request handling. Verified with a 20-thread concurrent
-  write test.
-- **Clean upstream error responses:** `/search`, `/summarize`, `/chat`, and
-  `/export` now catch `OpenAIError`/`ArxivError`/`RequestException` at the
-  endpoint boundary and return a clean `503 {"error": "... unavailable"}`
-  instead of leaking a raw 500 with an internal stack trace — while
-  intentional 404s (`HTTPException`) are re-raised untouched, not swallowed
-  into a 503.
-- **Duplicate-citation guard:** the dynamic-`Literal` grounding in
-  `summarize.py` guarantees a cited `paper_id` was actually retrieved, but
-  never prevented the *same* `paper_id` from being placed in more than one
-  theme — a post-generation check now keeps only its first occurrence
-  (logged as a warning).
-- **Capped chat history:** `qa.py` now caps chat history to the last 8
-  turns (16 messages) before either LLM call it makes per turn (follow-up
-  condensing and answer generation), bounding cost/latency growth as a
-  conversation lengthens. The cap is prompt-only — `session.history` itself
-  stays fully intact for a UI transcript.
-- **Zero-API-key test suite:** the `OpenAI()` client construction in
-  `api.py`'s `lifespan()` (previously unconditional and unmocked in tests)
-  is now mocked in the shared test fixture — `pytest tests/` passes
-  128/128 with `.env` entirely absent, not just with real credentials
-  configured.
-
-## Evaluation
-
-Two real-pipeline (non-mocked, billable) evaluation harnesses live in
-`scripts/`, each with its own repeatable command. Full workflow detail,
-including the artifact-organization policy below, is in
-[`docs/evaluation.md`](docs/evaluation.md).
-
-```bash
-uv run python scripts/eval_retrieval.py --note "..."   # retrieval precision/recall
-uv run python scripts/ragas_eval.py --note "..."         # RAGAS quality metrics
-```
-
-Both accept `--help` for the full flag reference (ranking-mode
-experiments, topic subsets, judge-model override, etc.). **Every real
-run appends a row to that harness's `eval_results/*.csv` history log** —
-expect `git status` to show that file locally modified after running
-either command; that's the log working as designed, not a mistake to
-undo. See `docs/evaluation.md` for exactly which `eval_results/` files
-are tracked history logs vs. `.gitignore`d per-run detail vs. archived
-historical snapshots.
-
-## Retrieval ranking experiments
-
-A later, separate line of work asked whether the live app's ranking step
-(cosine similarity over embeddings, nothing else, at the time) was actually
-the best available option, and whether a diagnosed recurring failure —
-foundational papers (e.g. LoRA) losing rerank against generic survey papers
-that repeat a topic's wording densely — has a fix. The BM25/hybrid
-comparisons directly below are **opt-in evaluation only**, wired through
-`scripts/eval_retrieval.py`'s `--ranking-mode` flag; `research_agent/
-ranking.py` is never imported by `api.py`, `app.py`, or `qa.py`. The winning
-approach found here — citation-partitioned reranking — was later promoted
-to the live agent's default path; see "Deployment status" below.
-
-Every number below is a real run against the same 17-topic reference set
-(`eval_data/reference_topics.json`) used throughout, logged to
-`eval_results/retrieval_history.csv`.
-
-### BM25 and hybrid (RRF) — both confirmed worse than semantic-only
-
-| Mode | Precision@10 | Recall@10 |
-|---|---|---|
-| semantic (baseline) | 0.029 | 0.216 |
-| bm25 | 0.018 | 0.147 |
-| hybrid (RRF, k=60) | 0.018 | 0.137 |
-
-BM25-alone underperforming was the predicted outcome (term-frequency
-density rewards the same generic survey papers that were the original
-diagnosed problem) and was confirmed. Hybrid was expected to be genuinely
-uncertain; instead it measurably underperformed BM25 alone and cratered to
-0.0 recall on the `easy` difficulty tier — RRF's k=60 constant (the
-standard from Cormack et al. 2009, still the Elasticsearch/OpenSearch/
-Azure AI Search default) is validated at web-scale candidate-list sizes,
-and appears to dilute its own top-rank-rewarding mechanism against this
-project's much smaller ~20–40-paper per-topic pools. **Neither replaces
-semantic-only ranking.**
-
-### Citation-partitioned reranking — a real, large win
-
-A different idea: sort the candidate pool by citation count (papers with
-no citation count are never eligible, never treated as zero), reserve `n`
-guaranteed final-result slots for the highest-cited eligible papers
-(Partition A), then rank *everything* — both partitions — by semantic
-similarity against the original topic, subject to that guarantee. Final
-order is always by semantic score, never partition-then-partition
-stacking; the guarantee only changes anything when Partition A wasn't
-already going to rank well on its own merit.
-
-At `top_k=10`, `n=2` recovers **LoRA** — the paper this whole diagnostic
-arc kept circling back to — and roughly doubles recall over the semantic
-baseline:
-
-| n (top_k=10) | Precision@10 | Recall@10 |
-|---|---|---|
-| 0 (semantic baseline) | 0.029 | 0.216 |
-| 1 | 0.043 | 0.431 |
-| **2** | **0.055** | **0.549** |
-| 3 | 0.047 | 0.471 |
-| 4 | 0.047 | 0.471 |
-
-**The citation-bias tradeoff is real and was deliberately probed to its
-extreme, not just measured in aggregate**: at `top_k=3`, forcing every
-single result to be a Partition-A member (`n=3`, 100%) collapsed the
-`domain` difficulty tier from a day-long-solid 0.667 recall to 0.000 —
-even though that same setting gave the LoRA/QLoRA topic its best recall of
-the whole study (0.667). The ideal setting is genuinely topic-dependent,
-not just a k-dependent knob.
-
-### Does the winning proportion generalize across k? No — tested at k=3, 5, 10, 20, 25, 30
-
-The original "reserve 20% of k" rule was **disconfirmed** once tested
-outside k=10: the true peak proportion swings from ~67% at k=3 down to
-~7% at k=30, while the true peak *absolute* n stays in a much narrower,
-non-monotonic band:
-
-| k | True peak n | True peak recall |
-|---|---|---|
-| 3 | 2 | 0.392 |
-| 5 | 3 | 0.471 |
-| 10 | 2 | 0.549 |
-| 20 | 4 (confirmed via a complete, gap-free n=1–8 sweep) | 0.578 |
-| 25 | 3 | 0.578 |
-| 30 | 2 (a wide plateau, n=2 through n=8) | 0.549 |
-
-`research_agent/ranking.py`'s `get_partition_n(k)` implements the derived
-production rule, **`n = min(2, k)`** — a flat constant, not a scaling
-formula. It was chosen over two candidates (a hand-fit step function; a
-light `k/8`-scaled-and-clamped formula) that scored marginally better in
-raw aggregate fit but only by tuning thresholds to exactly six data
-points with no independent validation. `n=2` is exactly optimal at k=3,
-at k=10 (the documented production default in `api.py`/`app.py`), and at
-k=30 (the production maximum) — reported honestly, it is *not* optimal
-everywhere: it leaves real recall on the table at k=5 (−0.049) and k=20
-(−0.088, the largest gap found). `eval_retrieval.py`'s `citation_partition`
-mode uses this rule automatically unless `--partition-n` or
-`--partition-proportion` explicitly overrides it for further
-experimentation.
-
-**Deployment status: promoted to the live agent's default path.** This
-section's own findings — citation-partitioned reranking and the derived
-`get_partition_n(k)` rule — are no longer opt-in-only: `agent.py`'s
-`rerank_by_relevance_tool` now uses this exact mechanism (unmodified) on
-every real agent run, not just `scripts/eval_retrieval.py`'s eval-only
-`citation_partition` mode. See "LangGraph agent path" below for why, and
-the real, measured numbers from doing so.
-
-Run it yourself:
-```bash
-uv run python scripts/eval_retrieval.py --note "..." --ranking-mode citation_partition --top-k 10
-uv run python scripts/eval_retrieval.py --note "..." --ranking-mode bm25          # or hybrid, semantic
-```
-
-## LangGraph agent path — measured, fixed, and now the live default
-
-Every retrieval number above was measured by calling ingestion/dedup/
-embeddings functions directly — a deliberate, correct isolation choice at
-the time, but it meant `agent.py`'s LangGraph tool-calling agent (the
-actual default path a real user hits, since `expanded_search` is opt-in —
-see `SearchRequest.use_query_expansion` in `api.py`) had never once been
-measured against the 17-topic reference set. It was, via
-`scripts/eval_retrieval.py`'s `--ranking-mode langgraph_agent`, and it was
-substantially worse than every direct-function mode above: recall 0.078
-against citation-partitioned reranking's 0.549, with `recall_easy` at a
-flat 0.000 — every single "easy" topic missed, including foundational
-papers as well-known as *Attention Is All You Need*.
-
-Three concrete, sequential causes, each fixed directly in `agent.py`:
-
-1. **A duplicated, drifted constant.** `agent.py`'s search tools hardcoded
-   `max_results=10`; `ingestion.py`'s own `search_arxiv`/
-   `search_semantic_scholar` default to `max_results=20`. Fixed by removing
-   the parameter from the tool signatures entirely so they inherit
-   `ingestion.py`'s default — one place defines this number, not two.
-2. **No citation-partitioned reranking.** `rerank_by_relevance_tool` used
-   plain semantic reranking only. Now uses `ranking.py`'s
-   `partition_by_citation`/`get_partition_n`/`merge_with_guaranteed_slots`
-   pipeline, unmodified — the exact mechanism validated above.
-3. **No title-suggestion.** The single biggest gap: `query_expansion.py`'s
-   `suggest_related_titles()` (the mechanism that actually recovers
-   foundational papers — see above) was never wired into the agent at all.
-   It now runs automatically on every agent search — deliberately *not* an
-   optional tool call the model can skip, since the agent's own query
-   reformulation was separately found to be shallow paraphrasing, not
-   reliable judgment.
-
-| Fix stacked | Recall | recall_easy |
-|---|---|---|
-| none (original agent) | 0.078 | 0.000 |
-| + pool-size fix | 0.137 | 0.000 |
-| + citation-partitioned reranking | 0.078* | 0.000 |
-| + automatic title-suggestion | **0.578** | **0.733** |
-| *(reference: best direct-call mode, citation_partition n=2)* | 0.549 | 0.733 |
-
-*\*Measured no better than the pool-size-only run — explained by
-Semantic Scholar rate-limiting hitting more topics that specific run, not
-a regression from the fix itself; confirmed by re-checking individual
-trace data, not assumed.*
-
-**All three fixes are live in `agent.py` today** — not opt-in, not behind
-a flag. Confirmed the fixes generalize, not just fit one run: a fresh
-15-trial re-measurement after merging came back at recall 0.533
-(`recall_easy` 0.733), consistent with the number above.
-
-**What that recall parity actually costs**, measured directly via
-Langfuse trace data (`totalCost`/`latency`, real production traces, not
-estimates) — `expanded_search` (n=54) vs. the now-fixed agent (n=17):
-
-| Metric | `expanded_search` | Agent | Delta |
-|---|---|---|---|
-| Avg. cost/search | $0.000286 | $0.002187 | 7.6× more |
-| Avg. latency | 22.31s | 40.27s | 1.8× slower |
-| Semantic Scholar rate-limit incidence | 35.2% | 94.1% | 2.7× more often |
-
-The mechanism is direct, not mysterious: the agent now makes roughly the
-same ~6 Semantic Scholar calls per search that `expanded_search` always
-did (original query + up to 5 suggested titles), against the same shared
-rate limit — plus its own LLM tool-selection reasoning turns
-(`ChatOpenAI`, ~2.9s each) stacked on top. Recall parity was never free;
-it was previously just *unmeasured*.
-
-**Why keep the agent as the default anyway**, rather than switching to
-the cheaper deterministic path: it can do things `expanded_search`
-structurally cannot at any price — scope a search to one source only
-("arXiv preprints on X"), pull in live web context (`search_web_tool`,
-agent-only), and judge per-topic whether that web context is even worth
-fetching. Whether that flexibility is worth 7.6× the cost is a product
-call, not a data one — the data above is what makes that call an
-informed one instead of a guess.
-
-## Search-call parallelization
-
-`query_expansion.py`'s `build_candidate_pool()` (the function backing
-`expanded_search` and, via `scripts/eval_retrieval.py`, every retrieval
-number above) used to run its arXiv and Semantic Scholar calls
-sequentially — one call at a time, per query, for the original topic plus
-every LLM-suggested title. Each pair is now issued concurrently
-(`asyncio.gather` over `asyncio.to_thread`), and the suggested-title
-searches themselves run with bounded cross-pair concurrency (a semaphore
-capped at 2 simultaneous title-pairs) rather than one after another.
-Nothing about *what* gets searched, deduplicated, or ranked changed —
-same function signatures, same return values, same data sources — only
-the scheduling of independent network calls. (`agent.py`'s tool-calling
-path needed no such change: LangGraph's own `ToolNode` already runs
-same-turn tool calls concurrently via a thread pool executor, confirmed
-by reading its source and by real trace timestamps.)
-
-Measured directly, not assumed: the same 20-topic reference set, same
-`k=10`, run at commit `a3769e3` (sequential, pre-parallelization) and
-again immediately after at `main` (parallelized), back-to-back so both
-runs hit the same Semantic Scholar rate-limit conditions — confirmed
-comparable, since **every topic in both runs hit at least one rate-limit
-retry** (48 total rate-limited calls before vs. 52 after; not a cleaner
-network window for either side).
-
-| Metric | Before (sequential) | After (parallelized) |
-|---|---|---|
-| Mean latency | 49.90s | 13.96s |
-| Median latency | 26.48s | 12.03s |
-| Min / Max | 8.94s / 219.67s | 4.83s / 36.69s |
-| Total (20 topics) | 998.02s | 279.15s |
-
-**Every one of the 20 topics got faster** — improvements ranged from
--6% (`insect-cv-01`) to -94% (`attn-01`), with the largest wins on
-topics that hit the worst rate-limit stalls beforehand (`peft-01`:
-219.67s → 14.44s; `attn-01`: 150.31s → 9.33s; `insect-class-01`:
-100.06s → 14.84s). **Mean speedup: 72.0%. Median speedup: 54.6%.**
-
-The result holds up under heavy rate-limiting rather than depending on
-its absence: sequentially, every 429 backoff (1s/2s/4s) stacks serially
-across calls; concurrently, independent calls absorb their own backoffs
-in overlapping wall-clock time, so total elapsed time collapses even
-though the raw count of rate-limited calls barely moved. Full per-topic
-data (both runs, git commit, rate-limited-call counts) is in
-`eval_results/latency_history.csv`.
-
-## Agent-path concurrency fixes: a race condition and an unparallelized loop
-
-Reading real Langfuse traces closely (not just the summary numbers) after
-the search-call parallelization work surfaced two more bugs in
-`agent.py` — both pre-existing since the earlier `agent-title-suggestion`
-merge, neither caused by that parallelization work, which never touched
-this file.
-
-**1. A real race condition.** `_get_suggested_titles()` cached
-`suggest_related_titles()`'s result on the session with a plain
-check-then-act (`if session.suggested_titles is None: ...`). LangGraph's
-`ToolNode` runs same-turn tool calls concurrently on a real OS thread pool
-(`get_executor_for_config` → `ContextThreadPoolExecutor` — confirmed by
-reading LangGraph's own source, not assumed), so `search_arxiv_tool` and
-`search_semantic_scholar_tool` could both see `None` at the same instant
-and each fire their own real, separately-billed, non-deterministic LLM
-call — doubling title-suggestion cost and, since the two calls could
-return *different* titles, breaking the cross-source pairing guarantee
-the direct-call path already has. Fixed with a `threading.Lock`
-(double-checked locking) on `ResearchSession`. Confirmed live, not
-assumed: across 5 real "before" runs the race actually fired in **2 of
-5** (`suggest_related_titles` called twice); across 5 "after" runs, it
-was called **exactly once, every time** — and both tools' searched titles
-now provably match.
-
-**2. An unparallelized per-tool search loop.** Each tool's suggested-title
-search ran one title at a time in a plain `for` loop — real trace data
-showed 4 sequential arXiv calls (1.57s, 2.73s, 2.77s, 8.80s) summing
-directly into one tool call's ~17.5s total. This loop was never touched
-by the earlier parallelization work (that work only reasoned "LangGraph's
-`ToolNode` already parallelizes *across* tools," which is true but says
-nothing about the calls *within* one tool's own loop). Fixed by reusing
-`query_expansion.py`'s exact `asyncio.gather` + `asyncio.to_thread` +
-bounded-semaphore pattern, unchanged, at each tool's call site.
-
-Real 5-topic before/after measurement (a git worktree at the commit
-before both fixes vs. the fixed code, run back-to-back under matched —
-and heavily degraded — Semantic Scholar conditions, so this reflects the
-fix's real effect even under failure, not a clean network):
-
-| Topic | Before | After | Change |
-|---|---|---|---|
-| RAG for QA | 43.39s | 33.97s | -22% |
-| CNN image classification | 81.05s | 32.25s | -60% |
-| Few-shot intrusion detection | 64.46s | 26.22s | -59% |
-| Vector databases | 95.56s | 21.10s | -78% |
-| Multi-agent LLM systems | 52.11s | 25.12s | -52% |
-
-**Mean latency: 67.31s → 27.73s (-58.8%). Median: 64.46s → 26.22s
-(-59.3%).** Every topic improved. ReAct loop structure (3 model turns,
-same tool selection every time) confirmed unchanged across all 5
-after-fix traces — `search_arxiv_tool` + `search_semantic_scholar_tool`
-together, then `rerank_by_relevance_tool`, same as before both fixes —
-only correctness and speed changed, not reasoning behavior.
-
-### A third concurrency bug: a lost-update race on the paper/web-article pools
-
-A later, independent review (PR2.6A) found a third bug in the same file,
-of a different kind than the two above — not a duplicated LLM call or an
-unparallelized loop, but silent **data loss**. `search_arxiv_tool` and
-`search_semantic_scholar_tool` both did an unprotected
-`session.papers = deduplicate(session.papers + papers)` — a plain read/
-merge/write with no lock. Since LangGraph's `ToolNode` runs same-turn
-tool calls on a real thread pool (the same confirmed fact behind the
-race above), two of these could interleave: both threads read the same
-stale `session.papers` snapshot, each merged against it independently,
-and whichever wrote last silently discarded the other's papers. A
-barrier-controlled probe reproduced this in **20 of 20** parallel runs.
-
-Fixed with two dedicated `threading.Lock`s on `ResearchSession`
-(`_papers_lock`, `_web_articles_lock` — *not* the existing
-`_suggested_titles_lock` above, which protects a different invariant),
-each held only across the small, pure, in-memory read/deduplicate/write
-step — never across the network call that produces the new results, so
-arXiv and Semantic Scholar searches still run fully concurrently. The
-same class of bug was independently audited and fixed in the separate
-`web_articles` pool, which had the identical unprotected pattern.
-**This fix makes no latency claim** — unlike the two fixes above, it's a
-correctness fix for silent data loss, not a speed optimization; existing
-concurrency is preserved, not increased.
-`tests/test_agent_concurrency.py` uses real `threading.Thread` +
-`threading.Barrier`/lock-instrumented counters to force deterministic
-interleavings, never a `sleep`-only timing-dependent assertion. See
-`docs/deployment.md` for the full write-up.
-
-## RAGAS quality evaluation
-
-A curated, hand-verified test set (`eval_data/stage1_ragas_questions.json`,
-24 scenarios across single-paper, cross-paper-comparison, multi-turn, and
-deliberately-unanswerable categories) drives `scripts/ragas_eval.py`,
-which runs the real pipeline — real search, real `qa.py` answers — through
-all four RAGAS metrics. Every scenario's target paper was independently
-confirmed to actually survive the real two-stage retrieval (Stage 1
-candidate search at `top_k=10`, Stage 2 answer-time re-rank at `qa.py`'s
-own `TOP_K_DEFAULT=5`) before being included — 15 of an original 25
-candidate questions were dropped or rewritten after verification showed
-their target paper (e.g. LoRA, ResNet, ARES) never actually survives
-either stage under the topics as originally phrased.
-
-Real results from the latest full run:
-
-| Metric | Overall | Notes |
-|---|---|---|
-| Faithfulness | 0.945–0.949 | Uniformly high across every category |
-| Answer Relevancy | ~0.58–0.64 | Mechanically explained, not a defect: RAGAS's own noncommittal-answer penalty zeroes any refusal/hedge response, and 6 of 24 scenarios are deliberately unanswerable |
-| Context Precision | 0.778 (20/24 scenarios have a reference) | Notably lower for comparison-category questions (0.506) — their reference only concerns 2 of the 5 papers Stage 2 always retrieves, so the other 3 get penalized as irrelevant |
-| Context Recall | 1.000 | Expected/structural, not independent proof of retrieval quality — references were drafted from the same abstracts retrieval reliably surfaces |
-
-17 of 24 scenarios have a hand-drafted reference answer (grounded strictly
-in the real retrieved abstracts, never general knowledge) enabling
-Context Precision/Recall; the other 7 (6 deliberately-unanswerable
-scenarios, plus one comparison question flagged during review as too thin
-to ground a confident reference) are excluded from those two metrics
-specifically, with the reason recorded per-scenario in the data file —
-Faithfulness/Answer Relevancy are still computed for all 24.
-
-Every run also writes `eval_results/runs/run_<id>.json` (the full scored
-per-turn record: question, real retrieved paper titles, real generated
-answer, every metric) plus an incremental `raw_<timestamp>.jsonl`, written
-turn-by-turn *during* generation rather than only at the end — so
-already-paid-for generation data survives even if scoring itself later
-crashes or rate-limits. `eval_results/runs/` is gitignored (per-run
-detail, reviewed locally, not meant to accumulate in git history the way
-`eval_results/history.csv`'s one-row-per-run log does — see
-`docs/evaluation.md`).
-
-```bash
-uv run python scripts/ragas_eval.py --note "..."
-```
-
-## Observability (Langfuse tracing)
-
-Every real pipeline call — `search_arxiv`/`search_semantic_scholar`,
-`deduplicate`, `semantic_search`, `suggest_related_titles`,
-`build_candidate_pool`/`expanded_search`, `qa.py`'s `ask()` (condense +
-answer as two generations under one trace), `summarize.py`'s
-`generate_summary()`, and the full agent tool-calling loop
-(`agent.py`'s `run_research_agent()`, via LangChain's native Langfuse
-`CallbackHandler`) — is traced. Set `LANGFUSE_PUBLIC_KEY`,
-`LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` in `.env` to enable it;
-absent, the client degrades to an inert no-op (confirmed directly — no
-exception, no broken calls), so tracing is genuinely optional.
-
-**RAGAS and retrieval-eval scores are attached directly to their trace**,
-a second, complementary view alongside `eval_results/*.csv` (which stays
-the unchanged source of truth): `scripts/ragas_eval.py` captures each
-turn's own trace ID from `ask()`'s return value and reattaches
-Faithfulness/Answer Relevancy/Context Precision/Context Recall after
-RAGAS finishes scoring the whole batch; `scripts/eval_retrieval.py`
-wraps each topic's evaluation in its own span and attaches
-Precision@k/Recall@k while still in that span's own context.
-
-**Rate-limit visibility, at two levels.** `search_semantic_scholar`
-tags its own span with `rate_limited`/`retry_count` on every 429 (`
-search_arxiv` has no equivalent retry logic of its own — confirmed by
-reading it; it relies entirely on the `arxiv` package's internal
-handling). Separately, both `query_expansion.py`'s `build_candidate_pool`/
-`expanded_search` and `agent.py`'s `run_research_agent` roll this up onto
-their own root trace (`search_had_rate_limit`/`rate_limit_count`), so
-"how many of my searches hit rate-limiting" is a direct
-`Is Root Observation: True` + metadata filter, not a manual
-cross-reference of child spans. This needed a real workaround, not a
-built-in: there is no current, public Langfuse SDK method to update an
-already-started ancestor span's metadata from a descendant (verified,
-not assumed — `update_current_span`/`update_current_generation` only
-ever target whichever span is currently active, and
-`propagate_attributes` explicitly only flows attributes forward to
-future child spans, never retroactively to an already-created parent).
-Both rollups instead use a plain `contextvars.ContextVar`
-(`reset_rate_limit_tracking()`/`get_rate_limited_call_count()` in
-`ingestion.py`) that the retry logic increments and the root caller
-reads back — `agent.py`'s version additionally wraps `agent.stream()` in
-an explicit span it holds a real reference to, since unlike
-`expanded_search`, nothing wrapped the agent's own run at all when
-called directly from `api.py`.
-
-**Cost and latency are native, not hand-tracked.** Langfuse's own
-`totalCost`/`latency` trace fields already roll up every descendant
-generation's cost (confirmed directly against a trace's own
-`Σ $X` header value) — no custom aggregation needed; this is what the
-LangGraph-agent-path cost/latency numbers above are measured from.
-
-`tests/conftest.py` sets `LANGFUSE_TRACING_ENABLED=false` before any
-test module is imported, so `pytest` never sends real telemetry — this
-was overdue rather than new when added: earlier `@observe`-decorated
-modules had been silently doing so on every test run since tracing was
-first introduced.
-
-## Usage safeguards
-
-The backend enforces configurable usage protections — per-session/global
-paid-action budgets, a same-session concurrency lease, request-body/text/
-ID/session-capacity caps, and bounded standalone-agent runs — all
-provisional defaults, overridable via env vars documented in
-`research_agent/config/limits.py` and described in full in
-`docs/architecture.md`'s "Usage Protection M1/M2" sections. Rejections
-return a stable reason code and a safe, user-facing message (never a raw
-stack trace or internal detail); the frontend surfaces these as a
-dismissable alert.
-
-A related, separate `data/usage_telemetry.sqlite` database (gitignored,
-same as `data/history.sqlite`) records operational metadata only — route,
-status, latency, token/call counts — **never** prompt text, chat
-messages, report content, or any other request/response body content.
-
-Long curation-chat conversations preserve their full, visible history —
-nothing is ever deleted or truncated — while automatically bounding what
-actually reaches the model via a persisted, validated summary of older
-turns plus the most recent exchanges. No summary is ever exposed as a
-chat message or as a citable source; see `docs/architecture.md`'s
-"Usage Protection M3" section for the full design.
-
-Curation chat and report generation/regeneration both stream real-time
-progress over Server-Sent Events — phase-first (e.g. "Checking sources",
-"Generating report", "Saving"), never token-by-token, since the current
-OpenAI SDK's own structured-output streaming doesn't expose a smoothly
-growing partial string for this schema shape. Every existing synchronous
-endpoint (`/chat`, `/report`, `/report/regenerate`) is unchanged and
-remains fully available. Cancelling a stream aborts the request and
-reloads the real, persisted state — since the underlying provider/save
-call runs in a thread pool Python cannot forcibly interrupt, cancellation
-waits for that work to genuinely settle rather than claiming to be
-instantaneous. See `docs/architecture.md`'s "Usage Protection M4" section
-for the full design, including live browser validation.
-
-## Research Lanes (optional multi-query curation)
-
-An optional way to start a curation review from **up to four complementary
-search "lanes"** — each a label + research question + one search query —
-instead of a single topic string. **Single search is unchanged and stays
-the default.** Lane mode is gated behind `RESEARCH_LANES_ENABLED`
-(strict boolean, default `False`); when off, the frontend never shows any
-lane affordance and `POST /curation/lanes/suggest` / a `lanes` field on
-`POST /curation/start` return `403` before any provider work.
-
-Workflow: in the New Review form, pick *Research lanes*, type a topic,
-click **Suggest lanes** (one `gpt-4.1-mini` structured call → three
-editable suggestions — a *plan* only, nothing searched yet), edit /
-enable / add (max 4) / remove (min 1) rows, then **Start lane research**.
-On start, every enabled lane is searched (one candidate-pool build + one
-semantic-ranking pass per enabled lane, cross-lane deduplicated with full
-multi-lane provenance, round-robin interleaved); disabled lanes are
-persisted but never searched. After start the lane set is **frozen** and
-shown read-only as a compact "Research lanes · N active" disclosure, and
-every candidate paper carries small "Found via <lane>" chips — cumulative
-provenance for the current batch, each turn's own frozen snapshot in
-Browse Past Turns. Refill re-searches all enabled lanes and dispatches on
-the persisted lane set, not the flag, so an existing lane session keeps
-working after the flag is turned back off.
-
-`GET /curation/capabilities` → `{"research_lanes_enabled": bool}` (that
-key only) is the zero-cost probe the UI reads. New backend modules:
-`research_lanes.py` (domain model + two-tier validation),
-`lane_suggestion.py` (the one protected LLM call), `research_lane_
-retrieval.py` (multi-lane retrieve/dedup/rank/interleave + refill),
-`services/lane_suggestion_service.py`, `api_app/routers/curation_lanes.py`.
-Full design, API contracts, test list, and the one approved live-journey
-provider-call record: `docs/architecture.md`'s "Research Lanes" section.
-
-## Deployment
-
-A protected, same-origin, single-process production package exists —
-fail-closed HTTP Basic Auth (only `GET /health` is public), FastAPI
-serving the built React frontend from the same origin as the API, and a
-non-root, one-uvicorn-worker Docker image with a pinned build-tool
-version. A local backup/restore procedure also exists: `scripts/
-data_backup.py` `create`/`verify`/`restore`, requiring the app stopped
-(`--confirm-quiescent`) before snapshotting and only ever restoring into
-a brand-new destination outside `data/` — validated in one real,
-quiescent drill against the actual application data (17 files,
-1,179,934,532 bytes, restored byte-for-byte identical; original `data/`
-confirmed unchanged). **No cloud deployment has occurred yet** —
-hosting-platform selection, HTTPS termination, real secret injection,
-persistent-volume provisioning, automated/off-site backups, a staging
-deployment with one bounded live journey, and monitoring/alerting are
-all still open. See `docs/deployment.md` for the full record, including
-exactly what was validated (a local Docker build + smoke test and the
-backup/restore drill, zero paid calls in either) and what remains.
+Every backend test is deterministic and needs **no network access and no
+API keys** — every OpenAI call and every external API call (arXiv,
+Semantic Scholar, Unpaywall/CrossRef, Tavily) is mocked, including the
+`OpenAI()` client constructed at FastAPI startup, and Langfuse tracing is
+disabled for the whole suite. `uv run pytest` passes with `.env` entirely
+absent.
+
+The real-pipeline evaluation harnesses live in `scripts/` (not run by
+`pytest`) and cost real tokens — see [`docs/evaluation.md`](docs/evaluation.md).
+
+## Single-user deployment
+
+A **protected, same-origin, single-process** production package exists and
+has been validated with a local Docker build + smoke test and a real
+backup/restore drill (zero paid calls in either). It is **not** a cloud
+deployment.
+
+- **Fail-closed HTTP Basic Auth** (`research_agent/auth_middleware.py`),
+  the outermost middleware — only `GET /health` is public; every other
+  route requires credentials when the gate is enabled. `APP_ENV=production`
+  **requires** `AUTH_ENABLED=true` with a validated username and a
+  ≥16-character password, checked once at startup — there is no
+  production auth-disable override.
+- **Credentialed cross-origin support** — `FRONTEND_ORIGIN` defines the
+  one trusted browser origin (validated: scheme + host only, no `*`, no
+  path; a `localhost` value is refused in production). Same-origin
+  production needs nothing set. The auth 401 carries the matching
+  `Access-Control-Allow-Origin` / `Access-Control-Allow-Credentials`
+  headers so a permitted frontend gets a readable response. Full contract:
+  [`docs/deployment.md`](docs/deployment.md) §1 / §1a.
+- **Same-origin packaging** — FastAPI serves the built React frontend from
+  its own origin; a non-root, one-uvicorn-worker Docker image with pinned
+  build tooling.
+- **Backup / restore** — `scripts/data_backup.py create|verify|restore`
+  for `data/`, requiring the app stopped and only ever restoring into a
+  brand-new destination outside `data/`.
+
+**Deferred, by design:** cloud-platform selection, HTTPS termination,
+managed secrets and persistent volumes, automated/off-site backups,
+monitoring, OAuth / multi-user support, PostgreSQL (or any DB other than
+SQLite), and horizontal scaling — SQLite and embedded Chroma cap this at a
+single worker / single instance. See
+[`docs/deployment.md`](docs/deployment.md) and
+[`specs/production-readiness-roadmap.md`](specs/production-readiness-roadmap.md).
+
+## Documentation
+
+| Topic | Document |
+|---|---|
+| Full architecture, request flow, per-feature design | [`docs/architecture.md`](docs/architecture.md) |
+| Evaluation workflow, retrieval/ranking findings, RAGAS, report-quality, keyword-quality (K5) | [`docs/evaluation.md`](docs/evaluation.md) |
+| Deployment, auth, credentialed CORS, backup/restore | [`docs/deployment.md`](docs/deployment.md) |
+| Research Lanes — design, API contracts, provenance model | [`docs/architecture.md`](docs/architecture.md) ("Research Lanes" section) |
+| Milestone history | [`docs/project-history.md`](docs/project-history.md) |
+| Backend standardization plan | [`specs/migration-plan.md`](specs/migration-plan.md) |
+| Production-readiness plan (auth / Postgres / multi-user, design-only) | [`specs/production-readiness-roadmap.md`](specs/production-readiness-roadmap.md) |
+| Known bugs, feature ideas, technical debt | [`specs/backend-backlog.md`](specs/backend-backlog.md) |
+| Frontend structure and commands | [`frontend/README.md`](frontend/README.md) |
+| Evaluation datasets / result-artifact policy | [`eval_data/README.md`](eval_data/README.md) · [`eval_results/README.md`](eval_results/README.md) |
+| Original hand-drawn architecture diagram (historical) | [`docs/archive/README.md`](docs/archive/README.md) |
 
 ## Known limitations
 
-- Abstracts only — no PDF full-text ingestion (out of scope for v1).
-- Single-user only: a protected deployment is possible (see
-  "Deployment" above), but there is still no multi-user/OAuth support —
-  chat history lives in the browser session, not the database.
-- Semantic Scholar's unauthenticated tier rate-limits under repeated use;
-  get a free key if you hit this often.
-- Author-name parsing for APA/BibTeX (`"First Last"` → `"Last, F."`) is a
-  heuristic — it will mis-format multi-word surnames.
-- Structural grounding prevents citing a paper that wasn't retrieved, but
-  can't fully prevent an LLM from mis-stating a detail *within* a correctly
-  cited paper's summary — an inherent limit of free-text generation, not
-  specific to this project.
-- Curation chat's web-source relevance filter (keeps stale, previously
-  found web articles from leaking into later, unrelated answers) uses a
-  starting embedding-similarity threshold that hasn't been empirically
-  calibrated yet — see `docs/architecture.md`'s "Phase C" section.
-- Research Lanes (above) is off by default and has no mid-curation lane
-  editing, no per-lane refill, no lane-aware chat/report synthesis, no
-  coverage guarantee, and no statistical evaluation of multi-lane vs.
-  single-query retrieval — RL6's one live journey is operational-behavior
-  evidence only, on an unlabelled disposable topic. Duplicate lane
-  *labels* are permitted (only lane IDs are enforced unique).
+- **Abstracts only** — no PDF full-text ingestion.
+- **Single-user only** — a protected deployment is possible, but there is
+  no multi-user / OAuth support; chat history lives in the browser
+  session, not the database.
+- **Grounding** is structural — a model cannot cite a paper that wasn't
+  retrieved — but cannot fully prevent it from mis-stating a detail
+  *within* a correctly cited paper. Inherent to free-text generation.
+- **Author-name parsing** for APA/BibTeX is heuristic and mis-formats
+  multi-word surnames.
+- **Semantic Scholar's** unauthenticated tier rate-limits under repeated
+  use; add a free key if you hit it often.
+- **Policy C keyword filtering** was validated on small (8–10 paper)
+  product-local samples with AI-assisted human labels — no external
+  benchmark, no statistical-significance or universal-superiority claim.
+  It stays off by default; YAKE-v2 remains the default extractor.
+- **Research Lanes** has no mid-curation lane editing, no per-lane refill,
+  no lane-aware chat/report synthesis, no coverage guarantee, and no
+  statistical evaluation of multi-lane vs. single-query retrieval. Off by
+  default.
+- **Curation chat's web-relevance threshold** is a starting value, not
+  empirically calibrated.

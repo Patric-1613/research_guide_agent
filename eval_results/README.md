@@ -26,10 +26,9 @@ policy — this file is a short local index.
   correlates each row to its per-example detail file in `runs/` below
   (R7E.1). See `docs/evaluation.md`'s "R7E — chat relevance evaluation
   arc" section for the live-run evidence history.
-- `latency_history.csv` — a specific historical measurement, referenced
-  directly by root `README.md`'s "Search-call parallelization" section.
-  **Tracked.** No script currently reproduces it — see
-  `docs/evaluation.md`'s "Latency measurement" note.
+- `latency_history.csv` — a one-time historical measurement (search-call
+  parallelization, before/after). **Tracked.** No script reproduces it —
+  see `docs/evaluation.md`'s "Search-call parallelization" note.
 - `report_quality_history.csv` — current running log, appended to by
   every `uv run python -m research_agent.evals.cli run --suite
   report_quality` run. `--mode mock` (R6B, the default) runs

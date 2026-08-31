@@ -39,10 +39,10 @@ to describe:
   in time), not as a description of anything current.
 
 - **`research_agent_architecture.svg`** — the original, hand-maintained,
-  file-by-file architecture diagram, embedded in `README.md`'s
-  "Architecture" section for most of this project's history. **This
-  diagram is historical, not current** — it describes only the original
-  one-shot pipeline (search → dedup → rank → summarize/chat) and
+  file-by-file architecture diagram, shown in `README.md` for most of
+  this project's history. **This diagram is historical, not current** —
+  it describes only the original one-shot pipeline (search → dedup → rank
+  → summarize/chat) and
   predates three major additions: the interactive curation/report/chat
   system (`curation_loop.py`, `curation_chat.py`, `report.py`, and
   everything under `/curation/*`), the React + Vite frontend, and the
