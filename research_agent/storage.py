@@ -18,6 +18,19 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "history.sqlite"
 
+# The columns _row_to_saved_search() needs, named explicitly instead of
+# `SELECT *` so row reconstruction does not silently depend on the table's
+# column order or on columns added later for unrelated reasons.
+_SAVED_SEARCH_COLUMNS = (
+    "id, topic, created_at, paper_ids, scores, summary, web_articles, web_summary"
+)
+
+# Bounds for a saved-search listing. The listing is unpaginated, so an
+# unbounded query would grow without limit as history accumulates; 100 is
+# a generous default for a single-user library view and 500 a hard cap.
+DEFAULT_LIST_LIMIT = 100
+MAX_LIST_LIMIT = 500
+
 
 def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +66,14 @@ def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
     for column in ("web_articles", "web_summary"):
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE searches ADD COLUMN {column} TEXT")
+    # Backs the listing's `ORDER BY created_at DESC, id DESC LIMIT ?` so it
+    # does not fall back to a full scan and sort as history grows. IF NOT
+    # EXISTS keeps this idempotent and safe on a database created before
+    # the index existed; no data is rewritten.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_searches_created_at_id "
+        "ON searches(created_at DESC, id DESC)"
+    )
     conn.commit()
     return conn
 
@@ -131,10 +152,22 @@ def update_web_summary(conn: sqlite3.Connection, search_id: int, web_summary: di
 
 
 def get_search(conn: sqlite3.Connection, search_id: int) -> SavedSearch | None:
-    row = conn.execute("SELECT * FROM searches WHERE id = ?", (search_id,)).fetchone()
+    row = conn.execute(
+        f"SELECT {_SAVED_SEARCH_COLUMNS} FROM searches WHERE id = ?", (search_id,)
+    ).fetchone()
     return _row_to_saved_search(row) if row else None
 
 
-def list_searches(conn: sqlite3.Connection) -> list[SavedSearch]:
-    rows = conn.execute("SELECT * FROM searches ORDER BY created_at DESC").fetchall()
+def list_searches(
+    conn: sqlite3.Connection, limit: int = DEFAULT_LIST_LIMIT
+) -> list[SavedSearch]:
+    """Newest saved searches first, at most `limit` rows. `id DESC` is the
+    tie-break so rows sharing a `created_at` (same-second saves) have a
+    stable, deterministic order rather than whatever the scan yields.
+    """
+    rows = conn.execute(
+        f"SELECT {_SAVED_SEARCH_COLUMNS} FROM searches "
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
     return [_row_to_saved_search(r) for r in rows]

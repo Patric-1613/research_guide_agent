@@ -668,6 +668,78 @@ def test_library_reports_web_article_count():
         assert len(detail["web_articles"]) == 2
 
 
+@contextmanager
+def _library_client():
+    """Same TestClient(api.app) startup isolation as _client(), but also
+    yields the per-test history DB path so a test can seed the searches
+    table directly instead of driving 100+ real /search round-trips."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.sqlite"
+        usage_db_path = Path(tmp) / "usage_telemetry.sqlite"
+        with patch.object(api, "init_db", lambda: real_init_db(db_path)), \
+             patch.object(telemetry, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(admission, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(leases, "USAGE_DB_PATH", usage_db_path), \
+             patch.object(api, "search_web", return_value=[]), \
+             patch.object(api, "OpenAI", return_value=MagicMock()), \
+             patch.object(api, "get_chroma_collection", return_value=MagicMock(name="fake_chroma_collection")):
+            api.app.dependency_overrides[api.get_db_connection] = _make_test_db_override(db_path)
+            try:
+                with TestClient(api.app) as client:
+                    yield client, db_path
+            finally:
+                api.app.dependency_overrides.clear()
+
+
+def _seed_searches(db_path: Path, n: int) -> None:
+    from research_agent.storage import save_search
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        for i in range(n):
+            save_search(conn, f"topic-{i}", [f"p{i}"], [1.0])
+    finally:
+        conn.close()
+
+
+def test_library_listing_defaults_to_100_items():
+    with _library_client() as (client, db_path):
+        _seed_searches(db_path, 101)
+        assert len(client.get("/library").json()) == 100
+
+
+def test_library_limit_1_returns_only_the_newest_item():
+    with _library_client() as (client, db_path):
+        _seed_searches(db_path, 5)
+        listing = client.get("/library?limit=1").json()
+        assert len(listing) == 1
+        assert listing[0]["topic"] == "topic-4"  # last seeded == newest
+
+
+def test_library_limit_500_is_accepted():
+    with _library_client() as (client, db_path):
+        _seed_searches(db_path, 3)
+        resp = client.get("/library?limit=500")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 3
+
+
+def test_library_rejects_invalid_limit_values_with_422():
+    with _library_client() as (client, _db_path):
+        for bad in ("0", "-1", "501", "1000", "abc", "1.5", ""):
+            resp = client.get(f"/library?limit={bad}")
+            assert resp.status_code == 422, f"limit={bad!r} should be a validation error"
+
+
+def test_library_repeated_limit_param_takes_fastapi_last_value():
+    with _library_client() as (client, db_path):
+        _seed_searches(db_path, 30)
+        # Starlette resolves a repeated scalar query param to its last value;
+        # no custom parsing is added for this case.
+        assert len(client.get("/library?limit=10&limit=20").json()) == 20
+
+
 def test_search_upstream_openai_failure_returns_clean_error_not_raw_500():
     import httpx
     from openai import APIConnectionError
@@ -985,6 +1057,11 @@ if __name__ == "__main__":
     test_export_includes_separate_web_context_section()
     test_library_list_and_detail()
     test_library_reports_web_article_count()
+    test_library_listing_defaults_to_100_items()
+    test_library_limit_1_returns_only_the_newest_item()
+    test_library_limit_500_is_accepted()
+    test_library_rejects_invalid_limit_values_with_422()
+    test_library_repeated_limit_param_takes_fastapi_last_value()
     test_search_upstream_openai_failure_returns_clean_error_not_raw_500()
     test_search_upstream_arxiv_failure_returns_clean_error_not_raw_500()
     test_chat_upstream_openai_failure_returns_clean_error_not_raw_500()

@@ -14,6 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sqlite3
 
 from research_agent.storage import (
+    DEFAULT_LIST_LIMIT,
+    MAX_LIST_LIMIT,
+    _SAVED_SEARCH_COLUMNS,
     get_db_connection,
     get_search,
     init_db,
@@ -22,6 +25,10 @@ from research_agent.storage import (
     update_summary,
     update_web_summary,
 )
+
+
+def _index_names(conn: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in conn.execute("PRAGMA index_list(searches)")}
 
 
 def test_save_and_get_search_roundtrip():
@@ -121,6 +128,138 @@ def test_list_searches_orders_newest_first():
         assert [s.id for s in results] == [id2, id1]
 
 
+def test_list_searches_never_returns_more_than_limit():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        ids = [save_search(conn, f"t{i}", ["a"], [1.0])[0] for i in range(5)]
+
+        results = list_searches(conn, limit=3)
+        assert [s.id for s in results] == list(reversed(ids))[:3]  # 3 newest, newest first
+
+
+def test_list_searches_tie_breaks_equal_timestamps_by_descending_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        # Force an identical created_at across rows (same-second saves) so
+        # only the id DESC tie-break decides the order.
+        ts = "2026-01-01T00:00:00+00:00"
+        for topic in ("a", "b", "c"):
+            conn.execute(
+                "INSERT INTO searches (topic, created_at, paper_ids, scores) VALUES (?, ?, ?, ?)",
+                (topic, ts, "[]", "[]"),
+            )
+        conn.commit()
+
+        results = list_searches(conn)
+        assert [s.id for s in results] == [3, 2, 1]
+
+
+def test_list_searches_default_limit_constant_is_100():
+    assert DEFAULT_LIST_LIMIT == 100
+    assert MAX_LIST_LIMIT == 500
+
+
+def test_get_search_and_list_searches_ignore_an_unrelated_extra_column():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        search_id, _ = save_search(conn, "topic", ["p1"], [0.5])
+        # A column added later for an unrelated reason must not change row
+        # reconstruction, because the queries name their columns explicitly.
+        conn.execute("ALTER TABLE searches ADD COLUMN unrelated_extra TEXT")
+        conn.commit()
+
+        assert get_search(conn, search_id).topic == "topic"
+        assert [s.id for s in list_searches(conn)] == [search_id]
+
+
+def test_init_db_creates_the_created_at_index_on_a_new_database():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        assert "idx_searches_created_at_id" in _index_names(conn)
+
+
+def test_init_db_creates_the_created_at_index_on_a_legacy_database():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy.sqlite"
+        legacy = sqlite3.connect(path)
+        legacy.execute(
+            """
+            CREATE TABLE searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                paper_ids TEXT NOT NULL,
+                scores TEXT NOT NULL,
+                summary TEXT
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO searches (topic, created_at, paper_ids, scores) VALUES (?, ?, ?, ?)",
+            ("old", "2020-01-01T00:00:00+00:00", '["p1"]', "[0.5]"),
+        )
+        legacy.commit()
+        legacy.close()
+
+        conn = init_db(path)
+        assert "idx_searches_created_at_id" in _index_names(conn)
+
+
+def test_init_db_is_idempotent_across_repeated_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "test.sqlite"
+        init_db(path).close()
+        init_db(path).close()
+        conn = init_db(path)  # third call must not raise
+        assert list(_index_names(conn)).count("idx_searches_created_at_id") == 1
+
+
+def test_legacy_rows_deserialize_with_web_field_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy.sqlite"
+        legacy = sqlite3.connect(path)
+        legacy.execute(
+            """
+            CREATE TABLE searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                paper_ids TEXT NOT NULL,
+                scores TEXT NOT NULL,
+                summary TEXT
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO searches (topic, created_at, paper_ids, scores) VALUES (?, ?, ?, ?)",
+            ("old", "2020-01-01T00:00:00+00:00", '["p1"]', "[0.5]"),
+        )
+        legacy.commit()
+        legacy.close()
+
+        conn = init_db(path)
+        legacy_row = get_search(conn, 1)
+        assert legacy_row.web_articles == []
+        assert legacy_row.web_summary is None
+        assert [s.id for s in list_searches(conn)] == [1]
+
+
+def test_list_searches_query_plan_uses_the_created_at_index():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        for i in range(5):
+            save_search(conn, f"t{i}", ["a"], [1.0])
+        plan = "\n".join(
+            str(tuple(r))
+            for r in conn.execute(
+                f"EXPLAIN QUERY PLAN SELECT {_SAVED_SEARCH_COLUMNS} FROM searches "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (10,),
+            )
+        )
+        assert "idx_searches_created_at_id" in plan
+
+
 def test_get_db_connection_yields_working_connection_and_closes_it_after():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "test.sqlite"
@@ -191,6 +330,15 @@ if __name__ == "__main__":
     test_update_web_summary_persists()
     test_init_db_migrates_pre_existing_database_missing_web_columns()
     test_list_searches_orders_newest_first()
+    test_list_searches_never_returns_more_than_limit()
+    test_list_searches_tie_breaks_equal_timestamps_by_descending_id()
+    test_list_searches_default_limit_constant_is_100()
+    test_get_search_and_list_searches_ignore_an_unrelated_extra_column()
+    test_init_db_creates_the_created_at_index_on_a_new_database()
+    test_init_db_creates_the_created_at_index_on_a_legacy_database()
+    test_init_db_is_idempotent_across_repeated_calls()
+    test_legacy_rows_deserialize_with_web_field_defaults()
+    test_list_searches_query_plan_uses_the_created_at_index()
     test_get_db_connection_yields_working_connection_and_closes_it_after()
     test_concurrent_requests_via_per_request_connections_do_not_corrupt_storage()
     print("All storage tests passed.")

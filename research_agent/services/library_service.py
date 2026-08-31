@@ -5,11 +5,13 @@ import sqlite3
 import research_agent.api as api
 from research_agent.api_app.schemas import LibraryItem, SearchResponse
 from research_agent.api_app.serializers import _paper_to_out, _web_article_to_out, _web_articles_from_saved
-from research_agent.storage import get_search, list_searches
+from research_agent.storage import DEFAULT_LIST_LIMIT, get_search, list_searches
 
 
-def list_library_items(db: sqlite3.Connection) -> list[LibraryItem]:
-    saved_list = list_searches(db)
+def list_library_items(
+    db: sqlite3.Connection, limit: int = DEFAULT_LIST_LIMIT
+) -> list[LibraryItem]:
+    saved_list = list_searches(db, limit)
     return [
         LibraryItem(
             search_id=s.id, topic=s.topic, created_at=s.created_at,
