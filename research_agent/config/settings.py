@@ -1,11 +1,16 @@
 """Centralized, typed access to this project's environment-variable-driven
 configuration.
 
-Deliberately covers only the env vars our own code reads directly today:
+`get_settings()` deliberately covers only the always-safe, always-succeeds
+env vars our own code reads directly on every request:
 `SEMANTIC_SCHOLAR_API_KEY`, `UNPAYWALL_EMAIL`, `TAVILY_API_KEY`,
-`FRONTEND_ORIGIN`, `OPENALEX_MAILTO` — same names, same defaults, same
-falsy-value-becomes-None handling as every call site being replaced. No
-env var was renamed and no default changed.
+`OPENALEX_MAILTO` — same names, same defaults, same falsy-value-becomes-
+None handling as every call site being replaced.
+
+Two other env-var contracts live in this module but NOT on `Settings` /
+`get_settings()`, because each must be validated ONCE at app construction
+and be ALLOWED to raise: `AUTH_ENABLED`/`AUTH_USERNAME`/`AUTH_PASSWORD`/
+`APP_ENV` (`get_auth_config()`) and `FRONTEND_ORIGIN` (`get_cors_config()`).
 
 **Intentionally NOT covered here, and why:**
 
@@ -49,7 +54,6 @@ class Settings:
     semantic_scholar_api_key: str | None
     unpaywall_email: str | None
     tavily_api_key: str | None
-    frontend_origin: str
     openalex_mailto: str | None
     # K5D.2: off-by-default product behavior flags belong here, not in
     # UsagePolicy -- UsagePolicy is exclusively safety/threshold
@@ -168,7 +172,6 @@ def get_settings() -> Settings:
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
         unpaywall_email=os.getenv("UNPAYWALL_EMAIL") or None,
         tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
-        frontend_origin=os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
         openalex_mailto=os.getenv("OPENALEX_MAILTO") or None,
         keyword_filter_policy_c_enabled=_strict_bool("KEYWORD_FILTER_POLICY_C_ENABLED", False),
         research_lanes_enabled=_strict_bool("RESEARCH_LANES_ENABLED", False),
@@ -294,3 +297,110 @@ def get_auth_config() -> AuthConfig:
         )
 
     return AuthConfig(enabled=True, username=username, password=password)
+
+
+# --- H1: FRONTEND_ORIGIN / credentialed CORS contract ---
+#
+# Same discipline as get_auth_config() above: validated ONCE at app
+# construction (api_app/app.py's create_app()), ALLOWED to raise (aborting
+# startup on an invalid value), never folded into the lightweight,
+# always-succeeds get_settings(). Separate from AuthConfig because CORS is
+# not authentication -- it only decides which browser origins the backend
+# emits Access-Control-* headers for; it grants no access on its own.
+
+# The two conventional Vite-dev-server origins. Both, not just
+# `http://localhost:5173`, because a browser may resolve `localhost` to
+# the loopback IP and send `Origin: http://127.0.0.1:5173` instead. This
+# is a LOCAL-DEV-ONLY default -- production never gets it implicitly.
+_LOCAL_DEV_ORIGINS: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173")
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+@dataclass(frozen=True)
+class CorsConfig:
+    """The validated set of browser origins CORSMiddleware may emit
+    credentialed CORS headers for. Every entry is a canonical RFC 6454
+    origin (lowercased `scheme://host[:port]`, no path, no trailing
+    slash) -- never `*`, never a reflected arbitrary origin. May be empty:
+    a same-origin production deployment (the frontend served by this same
+    process) needs no cross-origin entry at all."""
+
+    allowed_origins: tuple[str, ...]
+
+
+def _validate_frontend_origin(raw: str) -> str:
+    """Normalize + strictly validate one configured FRONTEND_ORIGIN value.
+    Returns the canonical origin string. Raises RuntimeError naming the
+    unmet rule. An origin is not itself a secret, but the message stays
+    minimal, matching get_auth_config()'s no-secret-echo discipline."""
+    from urllib.parse import urlsplit
+
+    value = raw.strip()
+    if "*" in value:
+        raise RuntimeError("FRONTEND_ORIGIN must not contain '*' -- no wildcard origins.")
+    try:
+        parts = urlsplit(value)
+        _ = parts.hostname, parts.username, parts.password  # force any lazy parse error now
+    except ValueError:
+        raise RuntimeError("FRONTEND_ORIGIN is not a parseable URL origin.") from None
+    if parts.scheme.lower() not in ("http", "https"):
+        raise RuntimeError("FRONTEND_ORIGIN must use the http or https scheme, with an explicit '://'.")
+    if parts.username is not None or parts.password is not None:
+        raise RuntimeError("FRONTEND_ORIGIN must not contain embedded credentials (user:pass@host).")
+    if parts.query or parts.fragment:
+        raise RuntimeError("FRONTEND_ORIGIN must be an origin only -- no query string or fragment.")
+    if parts.path not in ("", "/"):
+        raise RuntimeError("FRONTEND_ORIGIN must be an origin only -- no path (a lone trailing '/' is normalized away).")
+    if not parts.hostname:
+        raise RuntimeError("FRONTEND_ORIGIN must include a host.")
+    # Canonical origin: lowercased scheme + netloc (host[:port], no
+    # userinfo -- already rejected above), no path/trailing slash. Lower-
+    # casing the whole netloc is safe: ports are digits, and browsers
+    # lowercase the host (and any IPv6 literal) in the Origin header too,
+    # so this matches what CORSMiddleware will exact-match against.
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    from urllib.parse import urlsplit
+
+    return (urlsplit(origin).hostname or "").lower() in _LOOPBACK_HOSTS
+
+
+def get_cors_config() -> CorsConfig:
+    """The FRONTEND_ORIGIN contract. Read once at app construction; may
+    raise (aborting startup) on an invalid value or a
+    production/dev-origin mismatch.
+
+    - unset/empty + APP_ENV=local -> the two conventional local dev
+      origins (http://localhost:5173, http://127.0.0.1:5173). Exactly the
+      current local-dev CORS default, unchanged.
+    - unset/empty + APP_ENV=production -> NO cross-origin (allowed_origins
+      == ()). A same-origin production deployment (the built frontend
+      served by this same FastAPI process) is valid with nothing set; a
+      SPLIT-origin production deployment MUST set FRONTEND_ORIGIN.
+    - set (either APP_ENV) -> exactly that one validated origin. In
+      production a loopback value (localhost / 127.0.0.1 / ::1) is
+      REFUSED -- production must never silently allow a development origin.
+
+    One origin, not a comma-separated list: a single-frontend, single-user
+    app has exactly one trusted browser origin.
+
+    Never `*`, never a reflected arbitrary origin, never wildcard
+    credentials -- the middleware and the auth gate both exact-match
+    against this list.
+    """
+    app_env = _app_env()
+    raw = os.getenv("FRONTEND_ORIGIN") or ""
+    if not raw.strip():
+        if app_env == "production":
+            return CorsConfig(allowed_origins=())
+        return CorsConfig(allowed_origins=_LOCAL_DEV_ORIGINS)
+
+    origin = _validate_frontend_origin(raw)
+    if app_env == "production" and _is_loopback_origin(origin):
+        raise RuntimeError(
+            "FRONTEND_ORIGIN must not be a local development origin "
+            "(localhost / 127.0.0.1 / ::1) when APP_ENV=production."
+        )
+    return CorsConfig(allowed_origins=(origin,))

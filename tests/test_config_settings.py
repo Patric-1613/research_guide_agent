@@ -13,8 +13,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from research_agent.config import get_auth_config, get_keyword_filter_max_concurrent_calls, get_settings
-from research_agent.config.settings import AuthConfig, Settings
+from research_agent.config import (
+    get_auth_config,
+    get_cors_config,
+    get_keyword_filter_max_concurrent_calls,
+    get_settings,
+)
+from research_agent.config.settings import AuthConfig, CorsConfig, Settings
 
 
 def test_defaults_with_no_env_vars_set():
@@ -25,7 +30,6 @@ def test_defaults_with_no_env_vars_set():
         semantic_scholar_api_key=None,
         unpaywall_email=None,
         tavily_api_key=None,
-        frontend_origin="http://localhost:5173",
         openalex_mailto=None,
         keyword_filter_policy_c_enabled=False,
         research_lanes_enabled=False,
@@ -51,7 +55,6 @@ def test_every_env_var_override_is_read():
         "SEMANTIC_SCHOLAR_API_KEY": "s2-key",
         "UNPAYWALL_EMAIL": "contact@example.org",
         "TAVILY_API_KEY": "tavily-key",
-        "FRONTEND_ORIGIN": "https://app.example.org",
         "OPENALEX_MAILTO": "openalex@example.org",
     }, clear=True):
         settings = get_settings()
@@ -59,16 +62,23 @@ def test_every_env_var_override_is_read():
     assert settings.semantic_scholar_api_key == "s2-key"
     assert settings.unpaywall_email == "contact@example.org"
     assert settings.tavily_api_key == "tavily-key"
-    assert settings.frontend_origin == "https://app.example.org"
     assert settings.openalex_mailto == "openalex@example.org"
+
+
+def test_get_settings_has_no_frontend_origin_field():
+    # H1: FRONTEND_ORIGIN moved off Settings/get_settings() onto the
+    # validated, may-raise get_cors_config() -- see below. There must be
+    # no unvalidated raw accessor left to bypass it.
+    with patch.dict(os.environ, {}, clear=True):
+        assert not hasattr(get_settings(), "frontend_origin")
 
 
 def test_get_settings_is_uncached_and_reflects_env_changes_between_calls():
     with patch.dict(os.environ, {}, clear=True):
-        assert get_settings().frontend_origin == "http://localhost:5173"
-        with patch.dict(os.environ, {"FRONTEND_ORIGIN": "https://changed.example.org"}):
-            assert get_settings().frontend_origin == "https://changed.example.org"
-        assert get_settings().frontend_origin == "http://localhost:5173"
+        assert get_settings().semantic_scholar_api_key is None
+        with patch.dict(os.environ, {"SEMANTIC_SCHOLAR_API_KEY": "s2-key"}):
+            assert get_settings().semantic_scholar_api_key == "s2-key"
+        assert get_settings().semantic_scholar_api_key is None
 
 
 # --- K5D.2: keyword_filter_policy_c_enabled / keyword_filter_max_concurrent_calls ---
@@ -376,6 +386,105 @@ def test_get_auth_config_error_messages_never_include_the_actual_secret_values()
                 message = str(exc)
                 assert "s3curePlatformSecret!" not in message
                 assert "alice" not in message
+
+
+# --- H1: get_cors_config() -- the validated FRONTEND_ORIGIN / credentialed
+# CORS contract. Same "read once, allowed to raise" discipline as
+# get_auth_config() above; never on the always-succeeds get_settings().
+
+def test_get_cors_config_local_default_is_the_two_dev_origins():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_cors_config() == CorsConfig(
+            allowed_origins=("http://localhost:5173", "http://127.0.0.1:5173")
+        )
+    with patch.dict(os.environ, {"APP_ENV": "local"}, clear=True):
+        assert get_cors_config().allowed_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
+
+
+def test_get_cors_config_local_empty_string_is_treated_as_unset():
+    with patch.dict(os.environ, {"FRONTEND_ORIGIN": "   "}, clear=True):
+        assert get_cors_config().allowed_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
+
+
+def test_get_cors_config_production_unset_allows_no_cross_origin():
+    """Same-origin production (frontend served by this same process) needs
+    no CORS entry -- and must not silently get a dev origin."""
+    with patch.dict(os.environ, {"APP_ENV": "production"}, clear=True):
+        assert get_cors_config() == CorsConfig(allowed_origins=())
+
+
+def test_get_cors_config_explicit_origin_is_the_only_allowed_one():
+    for env_extra in ({}, {"APP_ENV": "local"}):
+        with patch.dict(os.environ, {"FRONTEND_ORIGIN": "https://research.example.com", **env_extra}, clear=True):
+            assert get_cors_config().allowed_origins == ("https://research.example.com",)
+
+
+def test_get_cors_config_split_origin_production_requires_explicit_origin():
+    with patch.dict(os.environ, {
+        "APP_ENV": "production", "FRONTEND_ORIGIN": "https://research.example.com",
+    }, clear=True):
+        assert get_cors_config().allowed_origins == ("https://research.example.com",)
+
+
+def test_get_cors_config_production_refuses_a_localhost_origin():
+    for bad in (
+        "http://localhost:5173", "http://127.0.0.1:5173", "https://localhost", "http://[::1]:5173",
+    ):
+        with patch.dict(os.environ, {"APP_ENV": "production", "FRONTEND_ORIGIN": bad}, clear=True):
+            try:
+                get_cors_config()
+                assert False, f"expected RuntimeError for {bad!r}"
+            except RuntimeError as exc:
+                assert "local development origin" in str(exc)
+
+
+def test_get_cors_config_normalizes_a_lone_trailing_slash_and_case():
+    with patch.dict(os.environ, {"FRONTEND_ORIGIN": "HTTPS://App.Example.COM/"}, clear=True):
+        assert get_cors_config().allowed_origins == ("https://app.example.com",)
+    with patch.dict(os.environ, {"FRONTEND_ORIGIN": "  https://app.example.com:8443/  "}, clear=True):
+        assert get_cors_config().allowed_origins == ("https://app.example.com:8443",)
+
+
+def test_get_cors_config_rejects_invalid_origins():
+    cases = {
+        "ftp://app.example.com": "http or https",
+        "app.example.com": "http or https",           # no scheme
+        "//app.example.com": "http or https",           # scheme-relative
+        "https://app.example.com/dashboard": "no path",
+        "https://app.example.com/?next=/x": "query string or fragment",
+        "https://app.example.com/#frag": "query string or fragment",
+        "https://user:pass@app.example.com": "embedded credentials",
+        "https://*.example.com": "wildcard",
+        "*": "wildcard",
+        "https://": "must include a host",
+    }
+    for raw, needle in cases.items():
+        with patch.dict(os.environ, {"FRONTEND_ORIGIN": raw}, clear=True):
+            try:
+                get_cors_config()
+                assert False, f"expected RuntimeError for {raw!r}"
+            except RuntimeError as exc:
+                assert needle in str(exc), f"{raw!r}: {exc}"
+
+
+def test_get_cors_config_error_never_echoes_a_full_configured_value():
+    # An origin isn't a secret, but the message stays a rule statement,
+    # never a quote of the raw input (matching get_auth_config()).
+    with patch.dict(os.environ, {"FRONTEND_ORIGIN": "https://user:hunter2@evil.example.com/secret"}, clear=True):
+        try:
+            get_cors_config()
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "hunter2" not in str(exc)
+            assert "evil.example.com" not in str(exc)
+
+
+def test_get_cors_config_is_uncached_and_reflects_env_changes_between_calls():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_cors_config().allowed_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
+        with patch.dict(os.environ, {"FRONTEND_ORIGIN": "https://research.example.com"}):
+            assert get_cors_config().allowed_origins == ("https://research.example.com",)
+        assert get_cors_config().allowed_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
 
 
 if __name__ == "__main__":

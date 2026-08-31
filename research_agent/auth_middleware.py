@@ -49,6 +49,21 @@ request; only a request carrying BOTH headers is exempted. The original
 PR2B version exempted every `OPTIONS` request outright, which meant an
 `OPTIONS` request to any route -- not just a genuine preflight -- bypassed
 the gate entirely.
+
+**H1: the 401 carries credentialed-CORS headers for an allowed origin.**
+This middleware is outermost, so its `401` is emitted before
+`CORSMiddleware` (registered inner) ever runs -- meaning that response
+would otherwise carry NO `Access-Control-Allow-Origin`, and a permitted
+cross-origin browser frontend (which sends `credentials: "include"`)
+would see an opaque network failure instead of a readable `401`.
+`create_app()` hands this middleware the SAME validated origin list it
+gives `CORSMiddleware` (`get_cors_config().allowed_origins`); when the
+request's `Origin` header exactly matches one of those, the `401` gets
+`Access-Control-Allow-Origin: <that origin>` (echoed exactly -- never
+`*`, never a reflected un-allowed value), `Access-Control-Allow-
+Credentials: true`, and `Vary: Origin`. A same-origin request, a
+non-browser client, or a request from an origin NOT on the list gets a
+plain `401` with none of these -- unchanged.
 """
 
 from __future__ import annotations
@@ -57,7 +72,7 @@ import base64
 import binascii
 import hmac
 import json
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 
 from research_agent.config.settings import AuthConfig
 
@@ -78,7 +93,42 @@ _UNAUTHORIZED_BODY = json.dumps({
 _PUBLIC_GET_PATHS = frozenset({"/health"})
 
 
-async def _send_401(send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+def _get_header(headers: list[tuple[bytes, bytes]], name: bytes) -> bytes | None:
+    for key, value in headers:
+        if key.lower() == name:
+            return value
+    return None
+
+
+def _cors_headers_for_401(
+    headers: list[tuple[bytes, bytes]], allowed_origins: frozenset[str]
+) -> list[tuple[bytes, bytes]]:
+    """H1: the Access-Control-* headers CORSMiddleware WOULD have added to
+    a cross-origin response for an allowed origin -- recreated here
+    because this 401 is emitted before CORSMiddleware runs. Empty list
+    whenever there is no `Origin` header, or its value is not an EXACT
+    match for one of the configured origins (never reflect an un-allowed
+    origin, never emit `*`)."""
+    if not allowed_origins:
+        return []
+    origin = _get_header(headers, b"origin")
+    if origin is None:
+        return []
+    # An Origin header is always ASCII; latin-1 decodes any byte without
+    # raising, so a comparison against the (str) allow-list is safe.
+    if origin.decode("latin-1") not in allowed_origins:
+        return []
+    return [
+        (b"access-control-allow-origin", origin),
+        (b"access-control-allow-credentials", b"true"),
+        (b"vary", b"Origin"),
+    ]
+
+
+async def _send_401(
+    send: Callable[[dict[str, Any]], Awaitable[None]],
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
+) -> None:
     await send({
         "type": "http.response.start",
         "status": 401,
@@ -89,6 +139,7 @@ async def _send_401(send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
             # credentials must not have a stale 401 (or a stale prior
             # success) served back from a shared cache.
             (b"cache-control", b"no-store"),
+            *(extra_headers or []),
         ],
     })
     await send({"type": "http.response.body", "body": _UNAUTHORIZED_BODY})
@@ -156,11 +207,18 @@ def _credentials_match(username: str, password: str, expected_username: str, exp
 
 
 class BasicAuthMiddleware:
-    def __init__(self, app: Any, auth_config: AuthConfig) -> None:
+    def __init__(
+        self, app: Any, auth_config: AuthConfig, allowed_origins: Iterable[str] = (),
+    ) -> None:
         self.app = app
         self.enabled = auth_config.enabled
         self.username = auth_config.username
         self.password = auth_config.password
+        # H1: the exact origin set CORSMiddleware (registered INNER of this
+        # gate) is configured for -- see _cors_headers_for_401 and this
+        # module's docstring. Exact-match only: never `*`, never a
+        # reflected un-allowed value.
+        self.allowed_origins: frozenset[str] = frozenset(allowed_origins)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http" or not self.enabled:
@@ -188,7 +246,8 @@ class BasicAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        header_value = _get_single_authorization_header(scope.get("headers") or [])
+        request_headers = scope.get("headers") or []
+        header_value = _get_single_authorization_header(request_headers)
         if header_value is not None:
             parsed = _parse_basic_credentials(header_value)
             if parsed is not None:
@@ -200,4 +259,4 @@ class BasicAuthMiddleware:
                     await self.app(scope, receive, send)
                     return
 
-        await _send_401(send)
+        await _send_401(send, _cors_headers_for_401(request_headers, self.allowed_origins))

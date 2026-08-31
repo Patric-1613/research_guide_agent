@@ -90,6 +90,12 @@ export async function throwApiErrorIfNotOk(response: Response): Promise<void> {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl()}${path}`, {
     ...init,
+    // H1: send the browser's stored Basic-Auth credentials on every
+    // request, so a split-origin production deployment (frontend and API
+    // on different origins) works behind the fail-closed auth gate. Inert
+    // and harmless for the same-origin case. Paired with the backend's
+    // allow_credentials=True + explicit allow_origins (never "*").
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   })
   await throwApiErrorIfNotOk(response)

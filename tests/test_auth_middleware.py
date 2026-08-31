@@ -345,6 +345,83 @@ def test_no_credential_ever_appears_in_the_401_response():
     assert "alice" not in response_text
 
 
+# --- H1: the 401 carries credentialed-CORS headers for an allowed origin ---
+
+_ALLOWED = ("http://localhost:5173", "https://research.example.com")
+
+
+def test_401_from_an_allowed_origin_carries_credentialed_cors_headers():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED, allowed_origins=_ALLOWED)
+
+    sent = _run(mw, _http_scope(path="/search", headers=[(b"origin", b"https://research.example.com")]))
+
+    assert app.called is False
+    assert _status_of(sent) == 401
+    headers = _headers_of(sent)
+    # the CORS headers CORSMiddleware (inner) would have added
+    assert headers[b"access-control-allow-origin"] == b"https://research.example.com"
+    assert headers[b"access-control-allow-credentials"] == b"true"
+    assert headers[b"vary"] == b"Origin"
+    # the existing 401 headers/body are untouched
+    assert headers[b"www-authenticate"] == b'Basic realm="research-agent", charset="UTF-8"'
+    assert headers[b"cache-control"] == b"no-store"
+    assert json.loads(_body_of(sent))["detail"]["reason_code"] == "unauthorized"
+
+
+def test_401_echoes_the_exact_matched_origin_never_a_wildcard():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED, allowed_origins=_ALLOWED)
+
+    sent = _run(mw, _http_scope(headers=[(b"origin", b"http://localhost:5173")]))
+
+    headers = _headers_of(sent)
+    assert headers[b"access-control-allow-origin"] == b"http://localhost:5173"
+    assert headers[b"access-control-allow-origin"] != b"*"
+
+
+def test_401_from_a_disallowed_origin_carries_no_cors_headers():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED, allowed_origins=_ALLOWED)
+
+    sent = _run(mw, _http_scope(headers=[(b"origin", b"https://evil.example.com")]))
+
+    assert _status_of(sent) == 401
+    headers = _headers_of(sent)
+    assert b"access-control-allow-origin" not in headers
+    assert b"access-control-allow-credentials" not in headers
+
+
+def test_401_with_no_origin_header_carries_no_cors_headers():
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED, allowed_origins=_ALLOWED)
+
+    sent = _run(mw, _http_scope(path="/search"))
+
+    assert _status_of(sent) == 401
+    headers = _headers_of(sent)
+    assert b"access-control-allow-origin" not in headers
+
+
+def test_401_carries_no_cors_headers_when_no_origins_are_configured():
+    """Same-origin production (get_cors_config -> allowed_origins == ()):
+    even a request bearing an Origin gets a plain 401."""
+    app = _RecordingApp()
+    mw = BasicAuthMiddleware(app, auth_config=ENABLED, allowed_origins=())
+
+    sent = _run(mw, _http_scope(headers=[(b"origin", b"http://localhost:5173")]))
+
+    assert _status_of(sent) == 401
+    assert b"access-control-allow-origin" not in _headers_of(sent)
+
+
+def test_default_allowed_origins_is_empty_so_pre_h1_construction_still_works():
+    """BasicAuthMiddleware(app, auth_config=...) with no 3rd arg -- every
+    existing unit test constructs it this way -- still behaves as before."""
+    mw = BasicAuthMiddleware(_RecordingApp(), auth_config=ENABLED)
+    assert mw.allowed_origins == frozenset()
+
+
 # --- Integration tests against a real, freshly-built app ---
 
 def _make_test_db_override(db_path: Path):
@@ -599,3 +676,91 @@ def test_integration_existing_body_limit_middleware_still_enforced_when_gate_ena
         oversized_topic = "x" * (1024 * 1024)  # 1 MiB, far above the 64 KiB provisional limit
         response = client.post("/search", json={"topic": oversized_topic}, headers=_auth_header())
     assert response.status_code == 413
+
+
+def test_integration_unauthorized_request_from_allowed_origin_gets_readable_401_with_cors_headers():
+    """H1: an unauthenticated cross-origin request from a PERMITTED origin
+    must come back as a plain, readable 401 -- with the credentialed-CORS
+    headers a browser needs to actually read it -- AND still never reach
+    telemetry / body parsing / a route. Local mode's default allow-list
+    includes http://localhost:5173."""
+    with _client_with_env(_protected_env()) as client:
+        response = client.post(
+            "/search",
+            json={"topic": "quantum computing"},
+            headers={"Origin": "http://localhost:5173"},  # no Authorization
+        )
+
+        assert response.status_code == 401
+        lower = {k.lower(): v for k, v in response.headers.items()}
+        assert lower["access-control-allow-origin"] == "http://localhost:5173"
+        assert lower["access-control-allow-credentials"] == "true"
+        assert "origin" in lower["vary"].lower()
+        assert lower["www-authenticate"].startswith("Basic ")
+        assert lower["cache-control"] == "no-store"
+        assert response.json()["detail"]["reason_code"] == "unauthorized"
+
+        # requirement 2: still rejected before telemetry
+        conn = sqlite3.connect(telemetry.USAGE_DB_PATH)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM http_requests").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM paid_actions").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+
+def test_integration_unauthorized_request_from_a_disallowed_origin_gets_a_plain_401():
+    with _client_with_env(_protected_env()) as client:
+        response = client.post(
+            "/search", json={"topic": "x"}, headers={"Origin": "https://not-my-frontend.example.com"},
+        )
+    assert response.status_code == 401
+    lower = {k.lower() for k in response.headers.keys()}
+    assert "access-control-allow-origin" not in lower
+
+
+def test_integration_split_origin_production_401_carries_the_configured_origin():
+    """A configured split-origin production deployment: FRONTEND_ORIGIN is
+    the only allowed origin, and an unauthenticated request from it still
+    gets a readable 401."""
+    env = {"APP_ENV": "production", "AUTH_ENABLED": "true", "AUTH_USERNAME": "alice",
+           "AUTH_PASSWORD": "s3curePlatformSecret!", "FRONTEND_ORIGIN": "https://research.example.com"}
+    with _client_with_env(env) as client:
+        response = client.post(
+            "/search", json={"topic": "x"}, headers={"Origin": "https://research.example.com"},
+        )
+    assert response.status_code == 401
+    lower = {k.lower(): v for k, v in response.headers.items()}
+    assert lower["access-control-allow-origin"] == "https://research.example.com"
+    assert lower["access-control-allow-credentials"] == "true"
+
+
+def test_integration_authenticated_cross_origin_response_carries_allow_credentials():
+    """The success path: once credentials are correct, CORSMiddleware
+    (allow_credentials=True, explicit allow_origins) adds the credentialed
+    CORS headers to the real response -- so credentials: "include" round
+    trips."""
+    with _client_with_env(_protected_env()) as client:
+        response = client.get(
+            "/curation/reviews",
+            headers={**_auth_header(), "Origin": "http://localhost:5173"},
+        )
+    assert response.status_code == 200
+    lower = {k.lower(): v for k, v in response.headers.items()}
+    assert lower["access-control-allow-origin"] == "http://localhost:5173"
+    assert lower["access-control-allow-credentials"] == "true"
+
+
+def test_integration_production_same_origin_default_allows_no_cross_origin():
+    """FRONTEND_ORIGIN unset + APP_ENV=production: a cross-origin request
+    gets NO Access-Control-Allow-Origin from anywhere -- correct for a
+    same-origin deployment."""
+    env = {"APP_ENV": "production", "AUTH_ENABLED": "true", "AUTH_USERNAME": "alice",
+           "AUTH_PASSWORD": "s3curePlatformSecret!"}
+    with _client_with_env(env) as client:
+        r_401 = client.get("/curation/reviews", headers={"Origin": "https://research.example.com"})
+        r_ok = client.get("/curation/reviews", headers={**_auth_header(), "Origin": "https://research.example.com"})
+    assert r_401.status_code == 401
+    assert r_ok.status_code == 200
+    for r in (r_401, r_ok):
+        assert "access-control-allow-origin" not in {k.lower() for k in r.headers.keys()}

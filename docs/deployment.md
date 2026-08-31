@@ -60,6 +60,39 @@ compares, which would reintroduce a timing signal). The 401 response is
 generic, carries `WWW-Authenticate` and `Cache-Control: no-store`, and
 never reveals whether the username or password was wrong.
 
+**H1: the 401 is readable from a permitted cross-origin frontend.**
+Because the auth gate is outermost, its 401 is emitted before
+`CORSMiddleware` runs — so `create_app()` hands the gate the same
+validated origin list it gives `CORSMiddleware` (`get_cors_config()`,
+below), and when the request's `Origin` exactly matches one of them the
+401 also carries `Access-Control-Allow-Origin: <that origin>` (echoed
+exactly — never `*`, never a reflected un-allowed value),
+`Access-Control-Allow-Credentials: true`, and `Vary: Origin`. A
+same-origin request, a non-browser client, or a request from an origin
+not on the list gets a plain 401 with none of these. `CORSMiddleware` is
+configured with `allow_credentials=True`, so the frontend can send its
+stored Basic-Auth credentials (`fetch(..., { credentials: "include" })`,
+applied to every JSON API request and both SSE streams).
+
+### 1a. Cross-origin (`FRONTEND_ORIGIN`) contract
+
+`research_agent/config/settings.py`'s `get_cors_config()`, read once at
+application construction and allowed to raise (an invalid value aborts
+startup, same as `get_auth_config()`):
+
+| `FRONTEND_ORIGIN` | `APP_ENV` | Allowed browser origins |
+|---|---|---|
+| unset / empty | `local` | `http://localhost:5173` **and** `http://127.0.0.1:5173` (the Vite dev default) |
+| unset / empty | `production` | **none** — correct for a same-origin deployment (the built frontend served by this same process); a split-origin production deployment **must** set `FRONTEND_ORIGIN` |
+| set | either | exactly that one origin |
+
+A configured value must be an **origin only** — `http`/`https` scheme +
+host `[:port]`, no path (a lone trailing `/` is normalized away), no
+query or fragment, no embedded `user:pass@`, no `*`. In `production` a
+`localhost` / `127.0.0.1` / `::1` value is **refused** — production never
+silently allows a development origin. There is no comma-separated list: a
+single-frontend, single-user app has exactly one trusted browser origin.
+
 **Optional product feature flags (separate from the auth gate above).**
 Two strict-boolean env vars, both **default `False`**, both plain fields
 on the always-computed `Settings` dataclass — a malformed value raises

@@ -66,6 +66,8 @@ describe('streamGenerateReport', () => {
       'http://test-api.local/curation/s1/report/stream',
       expect.objectContaining({
         method: 'POST',
+        // H1: same credentialed-CORS contract as the JSON client.
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
         signal: controller.signal,
