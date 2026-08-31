@@ -73,11 +73,6 @@ PATTERN_IDS: tuple[str, ...] = tuple(pattern_id for pattern_id, _ in _PATTERNS)
 # For redaction only: the same phrase bodies, compiled case-insensitively
 # so a matched span can be substituted in the ORIGINAL text without first
 # lower-casing (which would rewrite every non-matched character too).
-_REDACTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern.pattern, re.IGNORECASE) for _, pattern in _PATTERNS
-)
-
-
 @dataclass(frozen=True)
 class InjectionMatch:
     detected: bool
@@ -104,19 +99,69 @@ def detect(text: str) -> InjectionMatch:
     return InjectionMatch(detected=bool(matched), pattern_ids=matched)
 
 
+def _normalized_with_origin(text: str) -> tuple[str, list[int]]:
+    """A char-by-char NFKC + lower-case view of `text`, together with a
+    parallel list mapping each normalized-string index back to the index
+    in `text` that produced it. Per-character (not whole-string)
+    normalization is what keeps the mapping exact: a full-width or
+    compatibility character folds independently, and expansions (e.g. a
+    ligature -> two letters) simply point several normalized indices at
+    the one source index. The canonical phrases are plain ASCII letter
+    runs separated by `\\s+`, so this differs from `normalize()` only by
+    not collapsing whitespace -- which never changes which phrases match,
+    since every inter-word gap in every pattern is already `\\s+`/`\\s*`.
+    """
+    pieces: list[str] = []
+    origin: list[int] = []
+    for index, char in enumerate(text):
+        folded = unicodedata.normalize("NFKC", char).lower()
+        pieces.append(folded)
+        origin.extend([index] * len(folded))
+    return "".join(pieces), origin
+
+
 def redact(text: str, placeholder: str = DEFAULT_REDACTION_PLACEHOLDER) -> str:
-    """Replace each matched phrase span with `placeholder`, leaving the
-    rest of `text` intact -- never whole-field deletion. The
+    """Replace each matched phrase span with `placeholder`, leaving every
+    other character of `text` exactly as supplied -- never whole-field
+    deletion, and never a Unicode rewrite of unmatched text.
+
+    Matches are located against a normalized view (so a full-width or
+    compatibility-character injection phrase is still caught), then mapped
+    back to spans of the ORIGINAL string; the result is rebuilt from the
+    original, substituting only those spans. Overlapping or touching
+    spans are merged so no text is duplicated or dropped. The
     false-positive cost of a high-precision detector (losing one clause)
     is far below the availability cost of discarding an entire
-    otherwise-good field over one matched span.
+    otherwise-good field over one matched span."""
+    if not text:
+        return text
 
-    `text` is NFKC-normalized first, so a phrase built from full-width or
-    compatibility character variants is caught the same way `detect()`
-    catches it. For ordinary text NFKC is a no-op, so non-matched content
-    is returned unchanged; case and whitespace outside a matched span are
-    always preserved."""
-    text = unicodedata.normalize("NFKC", text)
-    for pattern in _REDACTION_PATTERNS:
-        text = pattern.sub(placeholder, text)
-    return text
+    normalized, origin = _normalized_with_origin(text)
+
+    spans: list[tuple[int, int]] = []
+    for _pattern_id, pattern in _PATTERNS:
+        for match in pattern.finditer(normalized):
+            n_start, n_end = match.start(), match.end()
+            if n_start == n_end:
+                continue
+            spans.append((origin[n_start], origin[n_end - 1] + 1))
+    if not spans:
+        return text
+
+    spans.sort()
+    merged: list[tuple[int, int]] = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    out: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        out.append(text[cursor:start])
+        out.append(placeholder)
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
