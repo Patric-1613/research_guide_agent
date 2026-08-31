@@ -52,7 +52,7 @@ describe('streamCurationChat', () => {
       'http://test-api.local/curation/s1/chat/stream',
       expect.objectContaining({
         method: 'POST',
-        // H1: same credentialed-CORS contract as the JSON client.
+        // Same credentialed-CORS contract as the JSON client.
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'hello' }),

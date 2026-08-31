@@ -50,20 +50,19 @@ PR2B version exempted every `OPTIONS` request outright, which meant an
 `OPTIONS` request to any route -- not just a genuine preflight -- bypassed
 the gate entirely.
 
-**H1: the 401 carries credentialed-CORS headers for an allowed origin.**
-This middleware is outermost, so its `401` is emitted before
-`CORSMiddleware` (registered inner) ever runs -- meaning that response
-would otherwise carry NO `Access-Control-Allow-Origin`, and a permitted
-cross-origin browser frontend (which sends `credentials: "include"`)
-would see an opaque network failure instead of a readable `401`.
-`create_app()` hands this middleware the SAME validated origin list it
-gives `CORSMiddleware` (`get_cors_config().allowed_origins`); when the
-request's `Origin` header exactly matches one of those, the `401` gets
-`Access-Control-Allow-Origin: <that origin>` (echoed exactly -- never
-`*`, never a reflected un-allowed value), `Access-Control-Allow-
-Credentials: true`, and `Vary: Origin`. A same-origin request, a
-non-browser client, or a request from an origin NOT on the list gets a
-plain `401` with none of these -- unchanged.
+**The 401 carries credentialed-CORS headers for an allowed origin.** This
+middleware is outermost, so its `401` is emitted before `CORSMiddleware`
+(registered inner) ever runs -- that response would otherwise carry no
+`Access-Control-Allow-Origin`, and a permitted cross-origin browser
+frontend (which sends `credentials: "include"`) would see an opaque
+network failure instead of a readable `401`. `create_app()` hands this
+middleware the same validated origin list it gives `CORSMiddleware`
+(`get_cors_config().allowed_origins`); when the request's `Origin` header
+exactly matches one of those, the `401` gets `Access-Control-Allow-
+Origin: <that origin>` (echoed exactly -- never `*`, never a reflected
+un-allowed value), `Access-Control-Allow-Credentials: true`, and `Vary:
+Origin`. A same-origin request, a non-browser client, or a request from
+an origin not on the list gets a plain `401` with none of these.
 """
 
 from __future__ import annotations
@@ -103,12 +102,12 @@ def _get_header(headers: list[tuple[bytes, bytes]], name: bytes) -> bytes | None
 def _cors_headers_for_401(
     headers: list[tuple[bytes, bytes]], allowed_origins: frozenset[str]
 ) -> list[tuple[bytes, bytes]]:
-    """H1: the Access-Control-* headers CORSMiddleware WOULD have added to
-    a cross-origin response for an allowed origin -- recreated here
-    because this 401 is emitted before CORSMiddleware runs. Empty list
-    whenever there is no `Origin` header, or its value is not an EXACT
-    match for one of the configured origins (never reflect an un-allowed
-    origin, never emit `*`)."""
+    """The Access-Control-* headers CORSMiddleware would have added to a
+    cross-origin response for an allowed origin -- recreated here because
+    this 401 is emitted before CORSMiddleware runs. Empty list whenever
+    there is no `Origin` header, or its value is not an EXACT match for
+    one of the configured origins (never reflect an un-allowed origin,
+    never emit `*`)."""
     if not allowed_origins:
         return []
     origin = _get_header(headers, b"origin")
@@ -214,7 +213,7 @@ class BasicAuthMiddleware:
         self.enabled = auth_config.enabled
         self.username = auth_config.username
         self.password = auth_config.password
-        # H1: the exact origin set CORSMiddleware (registered INNER of this
+        # The exact origin set CORSMiddleware (registered INNER of this
         # gate) is configured for -- see _cors_headers_for_401 and this
         # module's docstring. Exact-match only: never `*`, never a
         # reflected un-allowed value.

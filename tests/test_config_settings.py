@@ -66,9 +66,9 @@ def test_every_env_var_override_is_read():
 
 
 def test_get_settings_has_no_frontend_origin_field():
-    # H1: FRONTEND_ORIGIN moved off Settings/get_settings() onto the
-    # validated, may-raise get_cors_config() -- see below. There must be
-    # no unvalidated raw accessor left to bypass it.
+    # FRONTEND_ORIGIN lives on the validated, may-raise get_cors_config()
+    # -- see below -- not on Settings/get_settings(). There must be no
+    # unvalidated raw accessor left to bypass it.
     with patch.dict(os.environ, {}, clear=True):
         assert not hasattr(get_settings(), "frontend_origin")
 
@@ -388,7 +388,7 @@ def test_get_auth_config_error_messages_never_include_the_actual_secret_values()
                 assert "alice" not in message
 
 
-# --- H1: get_cors_config() -- the validated FRONTEND_ORIGIN / credentialed
+# --- get_cors_config() -- the validated FRONTEND_ORIGIN / credentialed
 # CORS contract. Same "read once, allowed to raise" discipline as
 # get_auth_config() above; never on the always-succeeds get_settings().
 

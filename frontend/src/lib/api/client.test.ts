@@ -118,7 +118,7 @@ describe('curationApi', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://test-api.local/curation/s1', expect.not.objectContaining({ method: 'POST' }))
   })
 
-  // H1: every JSON API request sends the browser's stored Basic-Auth
+  // Every JSON API request sends the browser's stored Basic-Auth
   // credentials so a split-origin production deployment works behind the
   // fail-closed auth gate.
   it('requests are sent with credentials: "include" (GET and POST alike)', async () => {

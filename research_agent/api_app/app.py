@@ -110,22 +110,22 @@ def create_app() -> FastAPI:
     # research_agent.api:app` is ever launched with a broken production
     # auth configuration.
     auth_config = get_auth_config()
-    # H1: FRONTEND_ORIGIN contract, validated once here (like auth_config)
-    # and ALLOWED to raise -- see get_cors_config()'s own docstring. The
-    # same origin list is also handed to BasicAuthMiddleware below so its
-    # own 401 (emitted before CORSMiddleware runs) can carry the matching
+    # FRONTEND_ORIGIN contract, validated once here (like auth_config) and
+    # allowed to raise -- see get_cors_config()'s own docstring. The same
+    # origin list is also handed to BasicAuthMiddleware below so its own
+    # 401 (emitted before CORSMiddleware runs) can carry the matching
     # credentialed-CORS headers.
     cors_config = get_cors_config()
 
     app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
 
-    # curation-api-and-ui Phase 6c / H1: the React frontend may run as its
-    # own Vite dev-server process -- a genuinely separate origin from this
-    # API -- so CORS is required for its browser-side fetch calls, and
-    # those calls send Basic-Auth credentials (credentials: "include"), so
-    # allow_credentials must be true and allow_origins must be an EXPLICIT
-    # list (never "*", never reflected). A same-origin production
-    # deployment gets an empty list and never needs a CORS header at all.
+    # The React frontend may run as its own Vite dev-server process -- a
+    # genuinely separate origin from this API -- so CORS is required for
+    # its browser-side fetch calls, and those calls send Basic-Auth
+    # credentials (credentials: "include"), so allow_credentials must be
+    # true and allow_origins must be an explicit list (never "*", never
+    # reflected). A same-origin production deployment gets an empty list
+    # and never needs a CORS header at all.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_config.allowed_origins),
@@ -160,12 +160,12 @@ def create_app() -> FastAPI:
     # row, no body read, no route/service code reached. See
     # auth_middleware.py's own docstring for the full design.
     #
-    # H1: because this 401 is emitted before CORSMiddleware (inner) runs,
-    # it is handed the SAME validated origin list so it can add the
-    # matching Access-Control-Allow-Origin / -Allow-Credentials / Vary
-    # headers itself -- otherwise a permitted cross-origin browser
-    # frontend would see an opaque network failure instead of a readable
-    # 401. Exact-match only; never "*", never a reflected un-allowed value.
+    # Because this 401 is emitted before CORSMiddleware (inner) runs, it
+    # is handed the same validated origin list so it can add the matching
+    # Access-Control-Allow-Origin / -Allow-Credentials / Vary headers
+    # itself -- otherwise a permitted cross-origin browser frontend would
+    # see an opaque network failure instead of a readable 401. Exact-match
+    # only; never "*", never a reflected un-allowed value.
     app.add_middleware(
         BasicAuthMiddleware, auth_config=auth_config, allowed_origins=cors_config.allowed_origins,
     )

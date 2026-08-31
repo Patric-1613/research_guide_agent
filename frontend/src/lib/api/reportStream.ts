@@ -91,7 +91,7 @@ async function* streamReportOperation(
 ): AsyncGenerator<ReportStreamServerEvent> {
   const response = await fetch(`${baseUrl()}${path}`, {
     method: 'POST',
-    // H1: same credentialed-CORS contract as lib/api/client.ts's request().
+    // Same credentialed-CORS contract as lib/api/client.ts's request().
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

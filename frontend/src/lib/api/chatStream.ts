@@ -60,7 +60,7 @@ export async function* streamCurationChat(
 ): AsyncGenerator<ChatStreamServerEvent> {
   const response = await fetch(`${baseUrl()}/curation/${sessionId}/chat/stream`, {
     method: 'POST',
-    // H1: same credentialed-CORS contract as lib/api/client.ts's request().
+    // Same credentialed-CORS contract as lib/api/client.ts's request().
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

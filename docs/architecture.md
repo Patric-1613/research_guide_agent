@@ -985,24 +985,25 @@ constants and filesystem paths above is deferred to a later, explicitly
 stay untouched unless a future deployment-config need requires routing
 them through `Settings` too.
 
-**Later — H1 (credentialed CORS):** `FRONTEND_ORIGIN` was moved OFF the
-lightweight, always-succeeds `Settings`/`get_settings()` onto a dedicated
-`get_cors_config()` — same "read once at app construction, allowed to
-raise" discipline as `get_auth_config()`. It now strictly validates the
-value (origin only: `http`/`https` scheme + host `[:port]`, no path /
-query / fragment / `user:pass@` / `*`; a lone trailing `/` normalized
-away) and enforces a production/dev-origin policy: unset + `production`
-→ no cross-origin allowed (correct for a same-origin deployment); a
+**Credentialed CORS (`FRONTEND_ORIGIN`):** `FRONTEND_ORIGIN` lives on a
+dedicated `get_cors_config()`, not on the lightweight, always-succeeds
+`Settings`/`get_settings()` — same "read once at app construction,
+allowed to raise" discipline as `get_auth_config()`, because an invalid
+cross-origin setting should abort startup rather than silently produce a
+dead allow-list. It strictly validates the value (origin only:
+`http`/`https` scheme + host `[:port]`, no path / query / fragment /
+`user:pass@` / `*`; a lone trailing `/` normalized away) and enforces a
+production/dev-origin policy: unset + `production` → no cross-origin
+allowed (correct for a same-origin deployment); a
 `localhost`/`127.0.0.1`/`::1` value is refused in `production`. The
-hardcoded `"http://127.0.0.1:5173"` CORS allow-list entry in
-`api_app/app.py` is gone — it is now a `local`-only default alongside
-`http://localhost:5173`, never applied in `production`. `CORSMiddleware`
-gains `allow_credentials=True` and the auth gate's 401 carries the
-matching credentialed-CORS headers for an allowed origin (see
-`docs/deployment.md`'s "§1a" and `auth_middleware.py`'s docstring). The
-frontend sends `credentials: "include"` on every request. See
-`tests/test_config_settings.py`'s `get_cors_config` section and
-`tests/test_auth_middleware.py`'s H1 tests.
+`local`-only default is `http://localhost:5173` and
+`http://127.0.0.1:5173`, never applied in `production`. `CORSMiddleware`
+is configured with `allow_credentials=True`, and the auth gate's 401
+carries the matching credentialed-CORS headers for an allowed origin
+(see `docs/deployment.md`'s "§1a" and `auth_middleware.py`'s docstring).
+The frontend sends `credentials: "include"` on every request. See
+`tests/test_config_settings.py`'s `get_cors_config` section and the
+credentialed-CORS tests in `tests/test_auth_middleware.py`.
 
 ### Phase 17 (final checkpoint) — done
 

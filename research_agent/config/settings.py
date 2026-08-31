@@ -299,7 +299,7 @@ def get_auth_config() -> AuthConfig:
     return AuthConfig(enabled=True, username=username, password=password)
 
 
-# --- H1: FRONTEND_ORIGIN / credentialed CORS contract ---
+# --- FRONTEND_ORIGIN / credentialed CORS contract ---
 #
 # Same discipline as get_auth_config() above: validated ONCE at app
 # construction (api_app/app.py's create_app()), ALLOWED to raise (aborting

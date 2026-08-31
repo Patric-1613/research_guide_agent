@@ -60,7 +60,7 @@ compares, which would reintroduce a timing signal). The 401 response is
 generic, carries `WWW-Authenticate` and `Cache-Control: no-store`, and
 never reveals whether the username or password was wrong.
 
-**H1: the 401 is readable from a permitted cross-origin frontend.**
+**The 401 is readable from a permitted cross-origin frontend.**
 Because the auth gate is outermost, its 401 is emitted before
 `CORSMiddleware` runs — so `create_app()` hands the gate the same
 validated origin list it gives `CORSMiddleware` (`get_cors_config()`,

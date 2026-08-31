@@ -345,7 +345,7 @@ def test_no_credential_ever_appears_in_the_401_response():
     assert "alice" not in response_text
 
 
-# --- H1: the 401 carries credentialed-CORS headers for an allowed origin ---
+# --- the 401 carries credentialed-CORS headers for an allowed origin ---
 
 _ALLOWED = ("http://localhost:5173", "https://research.example.com")
 
@@ -679,7 +679,7 @@ def test_integration_existing_body_limit_middleware_still_enforced_when_gate_ena
 
 
 def test_integration_unauthorized_request_from_allowed_origin_gets_readable_401_with_cors_headers():
-    """H1: an unauthenticated cross-origin request from a PERMITTED origin
+    """An unauthenticated cross-origin request from a PERMITTED origin
     must come back as a plain, readable 401 -- with the credentialed-CORS
     headers a browser needs to actually read it -- AND still never reach
     telemetry / body parsing / a route. Local mode's default allow-list
