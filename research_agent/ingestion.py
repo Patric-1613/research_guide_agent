@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -58,6 +59,17 @@ if not _arxiv_logger.handlers:
 _S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 _S2_FIELDS = "title,authors,year,venue,abstract,externalIds,citationCount,url"
 _S2_MAX_LIMIT = 100  # hard cap enforced by the Semantic Scholar API per request
+
+# Hard ceiling on any single wait between Semantic Scholar retries, whether
+# the wait comes from a `Retry-After` header (delay-seconds or HTTP-date),
+# the exponential backoff, or a fallback. Each attempt already has a 15s
+# request timeout and there are three attempts by default, in a single-user
+# interactive workflow -- so a pause of about twice the request timeout is
+# a proportionate response to backpressure, while a longer wait (from an
+# over-large or non-finite `Retry-After`, or a far-future date) would only
+# turn one search into a multi-minute stall. The call already degrades to
+# an empty result when every attempt fails.
+_S2_MAX_RETRY_DELAY_SECONDS = 30.0
 
 # Lets a caller that makes several search_semantic_scholar calls for one
 # logical operation (query_expansion.py's build_candidate_pool(), which
@@ -133,16 +145,35 @@ def _clean_venue(journal_ref: str | None) -> str | None:
     return None
 
 
+def _bounded_delay(seconds: float) -> float:
+    """Coerce a retry wait into a value that is always safe to hand to
+    `time.sleep`: finite, non-negative, and never longer than
+    `_S2_MAX_RETRY_DELAY_SECONDS`. A non-finite wait (`+inf` -> the
+    maximum; `NaN` or `-inf` -> `0.0`) would otherwise raise inside
+    `time.sleep` or block the process indefinitely, stranding an
+    interactive search.
+    """
+    if not math.isfinite(seconds):
+        return _S2_MAX_RETRY_DELAY_SECONDS if seconds == math.inf else 0.0
+    return max(0.0, min(seconds, _S2_MAX_RETRY_DELAY_SECONDS))
+
+
 def _parse_retry_after(value: str | None, default: float) -> float:
     """Parse a `Retry-After` header value, which per RFC 9110 is either a
-    plain number of delay-seconds or an HTTP-date. Falls back to `default`
-    (the existing exponential backoff value) if it's neither, rather than
-    letting `float()` raise on a date string and crash the retry loop.
+    plain number of delay-seconds or an HTTP-date, into a wait in seconds.
+
+    The result is always finite, non-negative, and no greater than
+    `_S2_MAX_RETRY_DELAY_SECONDS` (see `_bounded_delay`): a single-user
+    interactive search must never be stranded by an over-large, negative,
+    non-finite, or far-future value. Falls back to `default` (the existing
+    exponential backoff value) if the header is absent or is neither a
+    number nor a date, rather than letting `float()` raise on a date
+    string and crash the retry loop.
     """
     if value is None:
-        return default
+        return _bounded_delay(default)
     try:
-        return float(value)
+        return _bounded_delay(float(value))
     except ValueError:
         pass
     try:
@@ -150,10 +181,10 @@ def _parse_retry_after(value: str | None, default: float) -> float:
         if target.tzinfo is None:
             target = target.replace(tzinfo=timezone.utc)
         delta = (target - datetime.now(timezone.utc)).total_seconds()
-        return max(delta, 0.0)
+        return _bounded_delay(delta)
     except (TypeError, ValueError):
         logger.warning("Unparseable Retry-After header %r, using default backoff", value)
-        return default
+        return _bounded_delay(default)
 
 
 @observe(name="search_arxiv", capture_input=False, capture_output=False)
@@ -226,7 +257,9 @@ def search_semantic_scholar(
 
     Retries on 429 with exponential backoff (honoring Retry-After if the API
     sends one). Unauthenticated calls share a low, strict rate limit, so
-    backoff matters more here than for arXiv.
+    backoff matters more here than for arXiv. Every wait between attempts is
+    bounded to `_S2_MAX_RETRY_DELAY_SECONDS` so a single search can never
+    stall on an over-large or malformed Retry-After value.
     """
     if not query.strip():
         logger.warning("search_semantic_scholar called with empty query")
@@ -270,7 +303,7 @@ def search_semantic_scholar(
             if attempt == max_retries:
                 get_client().update_current_span(output={"count": 0, "papers": []})
                 return []
-            time.sleep(backoff)
+            time.sleep(_bounded_delay(backoff))
             backoff *= 2
             continue
 

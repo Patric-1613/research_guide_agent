@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from research_agent.ingestion import (
+    _S2_MAX_RETRY_DELAY_SECONDS,
     _clean_abstract,
     _clean_venue,
     _parse_retry_after,
@@ -114,6 +116,99 @@ def test_search_semantic_scholar_retry_after_date_header_does_not_crash():
         assert search_semantic_scholar("test query", max_retries=2) == []
 
 
+# --- Retry waits are bounded so one search cannot stall on a bad value ---
+
+def test_parse_retry_after_small_numeric_delay_is_unchanged():
+    assert _parse_retry_after("5", default=1.0) == 5.0
+    assert _parse_retry_after("2.5", default=1.0) == 2.5
+    assert _parse_retry_after("0", default=1.0) == 0.0
+
+
+def test_parse_retry_after_caps_a_huge_numeric_delay():
+    assert _parse_retry_after("3600", default=1.0) == _S2_MAX_RETRY_DELAY_SECONDS
+    assert _parse_retry_after("999999", default=1.0) == _S2_MAX_RETRY_DELAY_SECONDS
+
+
+def test_parse_retry_after_caps_a_far_future_http_date():
+    from datetime import datetime, timedelta, timezone
+
+    future = datetime.now(timezone.utc) + timedelta(days=1)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    assert _parse_retry_after(http_date, default=1.0) == _S2_MAX_RETRY_DELAY_SECONDS
+
+
+def test_parse_retry_after_near_future_http_date_stays_approximately_correct():
+    from datetime import datetime, timedelta, timezone
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=10)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    wait = _parse_retry_after(http_date, default=1.0)
+    # Under the 30s cap, so it passes through; slack for execution time.
+    assert 8.0 <= wait <= 10.0
+
+
+def test_parse_retry_after_past_http_date_becomes_zero():
+    from datetime import datetime, timedelta, timezone
+
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    http_date = past.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    assert _parse_retry_after(http_date, default=5.0) == 0.0
+
+
+def test_parse_retry_after_missing_and_malformed_use_a_bounded_fallback():
+    assert _parse_retry_after(None, default=3.5) == 3.5
+    assert _parse_retry_after("not-a-date-or-number", default=3.5) == 3.5
+    # An over-large fallback is itself clamped.
+    assert _parse_retry_after(None, default=10_000.0) == _S2_MAX_RETRY_DELAY_SECONDS
+    assert _parse_retry_after("garbage", default=10_000.0) == _S2_MAX_RETRY_DELAY_SECONDS
+
+
+def test_parse_retry_after_non_finite_and_negative_never_yield_invalid_delays():
+    for raw in ("-30", "nan", "inf", "-inf", "infinity", "-infinity"):
+        wait = _parse_retry_after(raw, default=1.0)
+        assert math.isfinite(wait)
+        assert 0.0 <= wait <= _S2_MAX_RETRY_DELAY_SECONDS
+    for bad_default in (float("nan"), float("inf"), float("-inf"), -5.0):
+        wait = _parse_retry_after(None, default=bad_default)
+        assert math.isfinite(wait)
+        assert 0.0 <= wait <= _S2_MAX_RETRY_DELAY_SECONDS
+
+
+def test_search_semantic_scholar_429_then_success_sleeps_only_the_bounded_delay():
+    rate_limited = _fake_response(429, headers={"Retry-After": "3600"})
+    ok = _fake_response(200, {"data": []})
+    with patch("research_agent.ingestion.requests.get", side_effect=[rate_limited, ok]), \
+         patch("research_agent.ingestion.time.sleep") as mock_sleep:
+        result = search_semantic_scholar("test query", max_retries=3)
+    assert result == []
+    assert mock_sleep.call_count == 1
+    (slept,), _ = mock_sleep.call_args
+    assert slept == _S2_MAX_RETRY_DELAY_SECONDS
+
+
+def test_search_semantic_scholar_final_failed_attempt_does_not_sleep_afterward():
+    rate_limited = _fake_response(429, headers={"Retry-After": "1"})
+    with patch("research_agent.ingestion.requests.get", return_value=rate_limited), \
+         patch("research_agent.ingestion.time.sleep") as mock_sleep:
+        result = search_semantic_scholar("test query", max_retries=3)
+    assert result == []
+    # Sleeps after attempts 1 and 2 only, never after the last attempt.
+    assert mock_sleep.call_count == 2
+
+
+def test_search_semantic_scholar_records_one_child_call_per_http_attempt():
+    rate_limited = _fake_response(429, headers={})
+    ok = _fake_response(200, {"data": []})
+    with patch("research_agent.ingestion.requests.get", side_effect=[rate_limited, ok]), \
+         patch("research_agent.ingestion.time.sleep"), \
+         patch("research_agent.ingestion.telemetry.record_child_call") as mock_rec:
+        search_semantic_scholar("test query", max_retries=3)
+    assert mock_rec.call_count == 2
+    assert mock_rec.call_args_list[0].kwargs["outcome"] == "error"
+    assert mock_rec.call_args_list[0].kwargs["error_type"] == "RateLimited"
+    assert mock_rec.call_args_list[1].kwargs["outcome"] == "success"
+
+
 if __name__ == "__main__":
     test_clean_venue_accepts_plausible_venue_names()
     test_clean_venue_rejects_citation_dumps()
@@ -125,4 +220,14 @@ if __name__ == "__main__":
     test_parse_retry_after_falls_back_to_default_on_garbage()
     test_parse_retry_after_falls_back_to_default_when_missing()
     test_search_semantic_scholar_retry_after_date_header_does_not_crash()
+    test_parse_retry_after_small_numeric_delay_is_unchanged()
+    test_parse_retry_after_caps_a_huge_numeric_delay()
+    test_parse_retry_after_caps_a_far_future_http_date()
+    test_parse_retry_after_near_future_http_date_stays_approximately_correct()
+    test_parse_retry_after_past_http_date_becomes_zero()
+    test_parse_retry_after_missing_and_malformed_use_a_bounded_fallback()
+    test_parse_retry_after_non_finite_and_negative_never_yield_invalid_delays()
+    test_search_semantic_scholar_429_then_success_sleeps_only_the_bounded_delay()
+    test_search_semantic_scholar_final_failed_attempt_does_not_sleep_afterward()
+    test_search_semantic_scholar_records_one_child_call_per_http_attempt()
     print("All ingestion tests passed.")
