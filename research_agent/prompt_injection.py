@@ -70,9 +70,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 PATTERN_IDS: tuple[str, ...] = tuple(pattern_id for pattern_id, _ in _PATTERNS)
 
-# For redaction only: the same phrase bodies, compiled case-insensitively
-# so a matched span can be substituted in the ORIGINAL text without first
-# lower-casing (which would rewrite every non-matched character too).
+
 @dataclass(frozen=True)
 class InjectionMatch:
     detected: bool
