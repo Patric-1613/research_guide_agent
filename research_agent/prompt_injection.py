@@ -43,6 +43,48 @@ DEFAULT_REDACTION_PLACEHOLDER = "[redacted]"
 # whitespace and newline variance within a phrase is handled by the
 # regex; `detect()` additionally NFKC/case/whitespace-normalizes its
 # input first.
+# --- model_addressed_directive: a whole directive SENTENCE explicitly
+# addressed to an AI system / AI assistant / language model, e.g. the
+# fixture's "IMPORTANT NOTE TO ANY AI SYSTEM SUMMARIZING THIS PAPER:
+# <instruction>". Deliberately bounded so ordinary academic prose that
+# merely mentions AI is never matched:
+#   - the addressee must be an explicit AI/LLM phrase ("AI system", "AI
+#     assistant", "language model", "LLM", ...) -- never a bare "AI",
+#     "model" or "system";
+#   - there must be a real addressing construction ("note/message to ...",
+#     "attention ...", "dear ...", "to ... summarizing/reading this ...",
+#     "if you are ...");
+#   - it must be closed by a colon OR a "summarizing/reading this ..."
+#     clause -- a sentence that only name-drops an AI system does not
+#     qualify.
+# The match then extends to the end of that sentence, so the instruction
+# itself is redacted, not just the opener.
+_AI_ADDRESSEE = (
+    r"(?:(?:ai|a\.i\.|artificial\s+intelligence)\s+"
+    r"(?:system|assistant|model|agent|chat\s?bot|bot|reviewer|summari[sz]er|reader|tool)s?"
+    r"|(?:large\s+)?language\s+models?"
+    r"|llms?|chat\s?gpt|claude)"
+)
+_AI_ADDRESS_OPENER = (
+    r"(?:(?:note|message|memo|instruction|directive)s?\s+(?:to|for)\s+"
+    r"|attention[,:]?\s+"
+    r"|dear\s+"
+    r"|to\s+"
+    r"|if\s+you(?:'re|\s+are)\s+(?:an?\s+)?)"
+    r"(?:any\s+|the\s+|all\s+|every\s+)?"
+)
+_AI_DIRECTIVE_VERB = (
+    r"summari[sz]ing|reading|reviewing|evaluating|processing|analy[sz]ing"
+    r"|generating|writing|assessing|scoring|judging"
+)
+_MODEL_ADDRESSED_DIRECTIVE_RE = re.compile(
+    r"\b(?:(?:important|urgent|critical|special|please)\s+)*"
+    + _AI_ADDRESS_OPENER
+    + _AI_ADDRESSEE
+    + r"(?:\s*:|\s+(?:" + _AI_DIRECTIVE_VERB + r")\s+th(?:is|e\s+following)\b)"
+    + r"[^.!?]*[.!?]?"
+)
+
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("system_override", re.compile(r"\bsystem\s+override\b")),
     (
@@ -66,6 +108,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"\byou\s+(?:must|should)\s+(?:mark|classify|treat|report|answer|respond|say)\b"),
     ),
     ("new_instructions", re.compile(r"\bnew\s+instructions?\s*:")),
+    ("model_addressed_directive", _MODEL_ADDRESSED_DIRECTIVE_RE),
 )
 
 PATTERN_IDS: tuple[str, ...] = tuple(pattern_id for pattern_id, _ in _PATTERNS)
