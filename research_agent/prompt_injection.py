@@ -82,7 +82,10 @@ _MODEL_ADDRESSED_DIRECTIVE_RE = re.compile(
     + _AI_ADDRESS_OPENER
     + _AI_ADDRESSEE
     + r"(?:\s*:|\s+(?:" + _AI_DIRECTIVE_VERB + r")\s+th(?:is|e\s+following)\b)"
-    + r"[^.!?]*[.!?]?"
+    # Tail stays on ONE line: the canonical match itself never consumes a
+    # later line. redact_directive_sentences() still expands to the full
+    # sentence, but a bare redact() / detect() cannot over-reach.
+    + r"[^.!?\r\n]*[.!?]?"
 )
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -161,34 +164,12 @@ def _normalized_with_origin(text: str) -> tuple[str, list[int]]:
     return "".join(pieces), origin
 
 
-def redact(text: str, placeholder: str = DEFAULT_REDACTION_PLACEHOLDER) -> str:
-    """Replace each matched phrase span with `placeholder`, leaving every
-    other character of `text` exactly as supplied -- never whole-field
-    deletion, and never a Unicode rewrite of unmatched text.
-
-    Matches are located against a normalized view (so a full-width or
-    compatibility-character injection phrase is still caught), then mapped
-    back to spans of the ORIGINAL string; the result is rebuilt from the
-    original, substituting only those spans. Overlapping or touching
-    spans are merged so no text is duplicated or dropped. The
-    false-positive cost of a high-precision detector (losing one clause)
-    is far below the availability cost of discarding an entire
-    otherwise-good field over one matched span."""
-    if not text:
-        return text
-
-    normalized, origin = _normalized_with_origin(text)
-
-    spans: list[tuple[int, int]] = []
-    for _pattern_id, pattern in _PATTERNS:
-        for match in pattern.finditer(normalized):
-            n_start, n_end = match.start(), match.end()
-            if n_start == n_end:
-                continue
-            spans.append((origin[n_start], origin[n_end - 1] + 1))
-    if not spans:
-        return text
-
+def _merge_and_replace(text: str, spans: list[tuple[int, int]], placeholder: str) -> str:
+    """Given half-open spans into `text` (already mapped from the
+    normalized view), sort, merge overlapping/touching spans, and rebuild
+    `text` with each merged span replaced by `placeholder`. Every
+    character outside a span is emitted from the ORIGINAL string, so
+    unmatched text -- casing, whitespace, Unicode -- is preserved exactly."""
     spans.sort()
     merged: list[tuple[int, int]] = [spans[0]]
     for start, end in spans[1:]:
@@ -206,3 +187,97 @@ def redact(text: str, placeholder: str = DEFAULT_REDACTION_PLACEHOLDER) -> str:
         cursor = end
     out.append(text[cursor:])
     return "".join(out)
+
+
+def redact(text: str, placeholder: str = DEFAULT_REDACTION_PLACEHOLDER) -> str:
+    """Replace each matched phrase span with `placeholder`, leaving every
+    other character of `text` exactly as supplied -- never whole-field
+    deletion, and never a Unicode rewrite of unmatched text.
+
+    Matches are located against a normalized view (so a full-width or
+    compatibility-character injection phrase is still caught), then mapped
+    back to spans of the ORIGINAL string; the result is rebuilt from the
+    original, substituting only those spans. Overlapping or touching
+    spans are merged so no text is duplicated or dropped.
+
+    This replaces only the matched TRIGGER span. It is the right control
+    for chat-summary sanitisation (a model-generated summary, where the
+    availability cost of dropping a whole clause outweighs the residue of
+    a defanged trigger). For untrusted RETRIEVED source text fed to a
+    model, use `redact_directive_sentences()` instead -- it removes the
+    trigger's whole sentence, payload included."""
+    if not text:
+        return text
+
+    normalized, origin = _normalized_with_origin(text)
+
+    spans: list[tuple[int, int]] = []
+    for _pattern_id, pattern in _PATTERNS:
+        for match in pattern.finditer(normalized):
+            n_start, n_end = match.start(), match.end()
+            if n_start == n_end:
+                continue
+            spans.append((origin[n_start], origin[n_end - 1] + 1))
+    if not spans:
+        return text
+    return _merge_and_replace(text, spans, placeholder)
+
+
+_SENTENCE_BOUNDARY = frozenset(".!?\n\r")
+_SENTENCE_TERMINATOR = frozenset(".!?")
+
+
+def _containing_sentence(normalized: str, start: int, end: int) -> tuple[int, int]:
+    """Expand the match [start, end) to the sentence or line that contains
+    it. Left edge: just after the previous `.`/`!`/`?`/newline (or field
+    start), then past any leading spaces/tabs. Right edge: if the match
+    does not already end at a `.`/`!`/`?`, extend to the next such
+    terminator (included) or to the next newline (a hard boundary, never
+    crossed) or the field end -- so a directive with no punctuation still
+    cannot swallow the following line, and a match that already spans its
+    whole sentence does not reach into the next one."""
+    lo = start
+    while lo > 0 and normalized[lo - 1] not in _SENTENCE_BOUNDARY:
+        lo -= 1
+    while lo < start and normalized[lo] in " \t":
+        lo += 1
+
+    hi = end
+    if hi == 0 or normalized[hi - 1] not in _SENTENCE_TERMINATOR:
+        length = len(normalized)
+        while hi < length and normalized[hi] not in _SENTENCE_BOUNDARY:
+            hi += 1
+        if hi < length and normalized[hi] in _SENTENCE_TERMINATOR:
+            hi += 1
+    return lo, hi
+
+
+def redact_directive_sentences(
+    text: str, placeholder: str = DEFAULT_REDACTION_PLACEHOLDER
+) -> str:
+    """Like `redact()`, but replaces the ENTIRE sentence or line that
+    contains each canonical match -- trigger AND the actionable payload
+    after it -- so an injected instruction in retrieved source text leaves
+    no usable remainder in the provider message.
+
+    Uses the same canonical registry and the same normalized/origin-mapped
+    projection as `detect()`/`redact()`. Every unrelated sentence and
+    character is preserved exactly; expanded spans are merged
+    deterministically; sentence expansion stops at `.`/`!`/`?`, at a
+    newline, or at the field edge (see `_containing_sentence`)."""
+    if not text:
+        return text
+
+    normalized, origin = _normalized_with_origin(text)
+
+    spans: list[tuple[int, int]] = []
+    for _pattern_id, pattern in _PATTERNS:
+        for match in pattern.finditer(normalized):
+            n_start, n_end = match.start(), match.end()
+            if n_start == n_end:
+                continue
+            lo, hi = _containing_sentence(normalized, n_start, n_end)
+            spans.append((origin[lo], origin[hi - 1] + 1))
+    if not spans:
+        return text
+    return _merge_and_replace(text, spans, placeholder)
