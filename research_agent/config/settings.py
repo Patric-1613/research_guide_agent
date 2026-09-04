@@ -404,3 +404,127 @@ def get_cors_config() -> CorsConfig:
             "(localhost / 127.0.0.1 / ::1) when APP_ENV=production."
         )
     return CorsConfig(allowed_origins=(origin,))
+
+
+# --- Day 1 (public multi-user deployment foundation, see
+# docs/plans/public-multi-user-deployment-review.md): explicit AnyIO
+# sync-route thread-pool capacity ---
+#
+# Same "validated once, at startup, allowed to raise" discipline as
+# get_auth_config()/get_cors_config() above -- deliberately NOT part of
+# Settings/get_settings(), which must stay cheap and always succeed on
+# every request. This governs a process-wide resource (the one AnyIO
+# CapacityLimiter Starlette uses to dispatch every synchronous `def`
+# route handler -- effectively every route in this app except
+# GET /health as of this phase), so a malformed value must abort startup
+# rather than silently fall back to AnyIO's own implicit default (40) or
+# clamp to some other, unstated number.
+#
+# Identical in both APP_ENV values on purpose: unlike AUTH_ENABLED (a
+# security gate that must be strictly enforced in production and may be
+# left off in local/test), this is a pure resource-tuning knob with no
+# security implication -- there is no reason production should be
+# stricter than local, or vice versa, so both read the same env var, the
+# same default, and the same validation rule.
+DEFAULT_ANYIO_THREAD_LIMIT = 16
+
+# A deliberately conservative ceiling on the ceiling: exceeding this always
+# raises (never silently clamps) -- see get_thread_pool_config()'s own
+# docstring for why 128, and why an operator who genuinely needs more must
+# change this constant deliberately rather than override the check via an
+# arbitrarily large env value.
+MAX_ANYIO_THREAD_LIMIT = 128
+
+
+@dataclass(frozen=True)
+class ThreadPoolConfig:
+    """The validated outcome of ANYIO_THREAD_LIMIT -- returned only by
+    get_thread_pool_config() below. `limit` is always a positive integer
+    no greater than MAX_ANYIO_THREAD_LIMIT."""
+
+    limit: int
+
+
+def get_thread_pool_config() -> ThreadPoolConfig:
+    """ANYIO_THREAD_LIMIT: the ceiling on concurrent synchronous route
+    dispatch. `research_agent/api_app/app.py`'s `lifespan()` applies the
+    returned value to `anyio.to_thread.current_default_thread_limiter()`
+    exactly once, before the app starts serving requests.
+
+    Unset/empty falls back to `DEFAULT_ANYIO_THREAD_LIMIT` (16). A SET
+    value must be a plain positive integer no greater than
+    `MAX_ANYIO_THREAD_LIMIT` (128); anything else (non-integer, zero,
+    negative, or over the ceiling) raises `ValueError` and aborts startup
+    -- same fail-loud posture as `get_auth_config()`'s own env-var
+    validation, and for the same reason: an operator's typo (an extra
+    digit, a stray minus sign, a float) in a setting that controls a real
+    resource ceiling must never be silently reinterpreted as "use the
+    default" or silently clamped to a different, unstated number.
+
+    **Why 16, not AnyIO's own implicit default of 40.** Every route in
+    this app except `GET /health` is a synchronous `def` handler, so this
+    ceiling is effectively "how many requests can simultaneously be
+    blocked inside a possibly 60-second OpenAI call" (see
+    `UsagePolicy.provider_timeout_seconds`, `config/limits.py`) -- not a
+    generic web-server tuning knob. Each such in-flight request holds a
+    full deserialized session/prompt/response in memory; this project's
+    own deployment-sizing review
+    (`docs/plans/public-multi-user-deployment-review.md`) estimates
+    roughly 0.15-0.3 GiB per concurrent heavy request, against a measured
+    idle footprint of roughly 0.4-0.7 GiB (chromadb + onnxruntime +
+    pandas/pyarrow + ragas + the full LangChain/LangGraph stack +
+    reportlab/lxml -- this project's actual dependency set) on the plan's
+    target e2-standard-2 VM (8 GiB). At the implicit default of 40, a
+    genuine burst of 40 simultaneously-blocking requests could demand
+    roughly 40 * 0.3 =~ 12 GiB on top of the idle footprint -- enough to
+    OOM-kill the container well before any individual request's own
+    60-second provider timeout would even fire. 16 keeps the worst case
+    (16 * 0.3 + 0.7 =~ 5.5 GiB) comfortably inside 8 GiB while staying well
+    above the realistic concurrent-tester count for a small,
+    approval-gated beta (see the plan's Tier 1 scope) -- legitimate
+    traffic should never queue behind this ceiling; it exists to survive
+    an abusive or accidental burst, not to reflect expected steady load.
+    This is a conservative STARTING value, explicitly meant to be
+    revisited using the plan's own Day 7 load-test evidence, not a final
+    number (the same "measure, then decide" posture the plan's Correction
+    6 applies to every cost figure, applied here to a technical setting
+    instead).
+
+    **Scope note (not a limitation of this setting, a boundary of what it
+    is for).** This ceiling governs ONLY Starlette's dispatch of
+    synchronous route handlers via AnyIO's worker thread pool. It does
+    NOT bound the separate, per-request-nested `asyncio.run()`/
+    `asyncio.to_thread()` fan-out already used inside
+    `curation_loop.py`'s keyword-filter path and
+    `query_expansion.py`'s/`agent.py`'s provider fan-out -- each such call
+    creates and tears down its OWN throwaway event loop with its OWN
+    default `ThreadPoolExecutor`, entirely distinct from AnyIO's
+    `CapacityLimiter` (confirmed directly: nothing in `research_agent/`
+    imports `anyio.to_thread`/`run_in_threadpool` directly; every internal
+    fan-out path goes through `asyncio.run()` + `asyncio.to_thread()`
+    instead). That fan-out is already independently bounded by
+    `USAGE_PROVIDER_FAN_OUT_LIMIT` / `KEYWORD_FILTER_MAX_CONCURRENT_CALLS`
+    and by the one-expensive-action-per-session lease
+    (`research_agent/leases.py`). The two pools never share a token and
+    nothing in this codebase calls back into AnyIO's own limiter from
+    inside an already-dispatched worker thread, so there is no cross-pool
+    deadlock risk from that fan-out -- it is an independent, already-
+    governed resource dimension this setting does not additionally
+    constrain, not a gap in it.
+    """
+    raw = os.getenv("ANYIO_THREAD_LIMIT")
+    if raw is None or raw == "":
+        return ThreadPoolConfig(limit=DEFAULT_ANYIO_THREAD_LIMIT)
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"ANYIO_THREAD_LIMIT={raw!r} is not a valid integer") from None
+    if value <= 0:
+        raise ValueError(f"ANYIO_THREAD_LIMIT={value} must be a positive integer")
+    if value > MAX_ANYIO_THREAD_LIMIT:
+        raise ValueError(
+            f"ANYIO_THREAD_LIMIT={value} exceeds the conservative upper bound of "
+            f"{MAX_ANYIO_THREAD_LIMIT} -- if a real, load-tested need to go higher exists, "
+            "raise MAX_ANYIO_THREAD_LIMIT deliberately rather than overriding this check."
+        )
+    return ThreadPoolConfig(limit=value)

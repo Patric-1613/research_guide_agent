@@ -15,8 +15,10 @@ avoid ever having two live FastAPI instances (and two lifespans) around.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,13 +26,15 @@ from fastapi.responses import JSONResponse
 import research_agent.api as api
 from research_agent.api_app.static_frontend import mount_frontend
 from research_agent.auth_middleware import BasicAuthMiddleware
-from research_agent.config import get_auth_config, get_cors_config, get_usage_policy
+from research_agent.config import get_auth_config, get_cors_config, get_thread_pool_config, get_usage_policy
 from research_agent.provider_clients import default_async_openai_client
 from research_agent.request_limits import RequestBodyLimitMiddleware
 from research_agent.services.errors import ServiceError
 from research_agent.session_limits import SessionCapacityError
 from research_agent.telemetry import RequestTelemetryMiddleware, init_usage_db
 from research_agent.usage_guard import GUARD_REASON_HTTP_STATUS, GUARD_REASON_MESSAGE, UsageGuardRejection
+
+logger = logging.getLogger(__name__)
 
 
 async def _handle_usage_guard_rejection(request: Request, exc: UsageGuardRejection) -> JSONResponse:
@@ -85,6 +89,20 @@ async def _handle_session_capacity_error(request: Request, exc: SessionCapacityE
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Day 1 (public multi-user deployment foundation, see
+    # docs/plans/public-multi-user-deployment-review.md): the explicit
+    # AnyIO sync-route thread-pool ceiling -- read and validated first (a
+    # malformed ANYIO_THREAD_LIMIT aborts startup, same fail-loud posture
+    # api.init_db()/get_auth_config() already establish), then applied to
+    # the ONE default thread limiter this event loop will use for every
+    # synchronous `def` route dispatch from here on. Must run inside this
+    # coroutine (current_default_thread_limiter() needs a running event
+    # loop) and before `yield` (no request can be dispatched before this
+    # point). See get_thread_pool_config()'s own docstring for the exact
+    # value chosen and what this ceiling does/does not bound.
+    thread_pool_config = get_thread_pool_config()
+    anyio.to_thread.current_default_thread_limiter().total_tokens = thread_pool_config.limit
+    logger.info("anyio_thread_limit=%d", thread_pool_config.limit)
     # Schema creation/migration only needs to happen once, on a throwaway
     # connection — every request after this opens its own via get_db_connection
     # (a FastAPI dependency, safe for the multi-threaded request handling a
