@@ -608,11 +608,15 @@ class DatabaseConfig:
 
 def _redact_database_url(url: str) -> str:
     """scheme://user:***@host:port/dbname -- password replaced outright
-    (never partially shown, never length-revealing), everything else
-    (host/port/dbname, and the scheme, which also names the driver e.g.
-    postgresql+psycopg://) kept exactly as configured, since none of
-    that is a secret and all of it is useful for a human reading a log
-    line to confirm which database a process is actually pointed at.
+    (never partially shown, never length-revealing), host/port/dbname and
+    the scheme kept exactly as configured, since none of that is a secret
+    and all of it is useful for a human reading a log line to confirm
+    which database a process is actually pointed at. The query string is
+    dropped entirely -- libpq's URL form allows credentials there too
+    (`?password=...`, `?sslpassword=...`), so "reveal nothing from the
+    query" is the safe choice even though it also hides non-secret
+    options like `sslmode`.
+
     Falls back to a fixed, fully-opaque placeholder for anything this
     simple parse can't confidently handle -- never partially redacts and
     never raises; a redaction helper must fail toward "reveal nothing,"
@@ -623,9 +627,11 @@ def _redact_database_url(url: str) -> str:
         parts = urlsplit(url)
         if not parts.hostname:
             raise ValueError("no host")
-        host_part = parts.hostname
-        if parts.port:
-            host_part = f"{host_part}:{parts.port}"
+        # Re-bracket an IPv6 literal -- urlsplit strips the brackets from
+        # `parts.hostname`, so `[::1]:5432` would otherwise redact to the
+        # ambiguous/malformed `::1:5432`.
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        host_part = f"{host}:{parts.port}" if parts.port else host
         user_part = f"{parts.username}:***@" if parts.username else ""
         return f"{parts.scheme}://{user_part}{host_part}{parts.path}"
     except Exception:
@@ -648,11 +654,16 @@ def get_database_config() -> DatabaseConfig:
       silently run in a lesser-safe mode" posture as
       get_auth_config()'s own APP_ENV=production requirement.
     - set (either APP_ENV) -> validated for scheme only (must be
-      `postgresql://` or `postgresql+psycopg://` -- the two spellings
-      psycopg's own connection-string parser accepts); a malformed value
-      (unparseable, wrong scheme, no host) always raises, in either
-      APP_ENV, so a typo is caught at startup in local/dev too, not just
-      in production.
+      `postgresql://` or `postgres://` -- the two URI scheme designators
+      PostgreSQL/libpq itself documents as equivalent, and both of which
+      `psycopg.connect()` accepts). The SQLAlchemy dialect spelling
+      `postgresql+psycopg://` is deliberately REJECTED: it is not a libpq
+      scheme, `psycopg.connect()` raises `ProgrammingError` on it at
+      connection time, and that error echoes the whole connection string
+      (password included) -- far better to reject it here, at startup,
+      with a message that names no value. A malformed value (unparseable,
+      wrong scheme, no host) always raises, in either APP_ENV, so a typo
+      is caught at startup in local/dev too, not just in production.
 
     DATABASE_POOL_MIN_SIZE / DATABASE_POOL_MAX_SIZE: strict positive
     integers (same _positive_int-style parsing as
@@ -701,9 +712,11 @@ def get_database_config() -> DatabaseConfig:
         parts = urlsplit(url)
     except ValueError:
         raise RuntimeError("DATABASE_URL is not a parseable URL.") from None
-    if parts.scheme not in ("postgresql", "postgresql+psycopg"):
+    if parts.scheme not in ("postgresql", "postgres"):
         raise RuntimeError(
-            "DATABASE_URL must use the 'postgresql://' or 'postgresql+psycopg://' scheme."
+            "DATABASE_URL must use the 'postgresql://' or 'postgres://' scheme "
+            "(the SQLAlchemy-style 'postgresql+psycopg://' spelling is not a libpq scheme "
+            "and psycopg cannot connect with it)."
         )
     if not parts.hostname:
         raise RuntimeError("DATABASE_URL must include a host.")

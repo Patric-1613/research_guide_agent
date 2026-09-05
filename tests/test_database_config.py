@@ -72,6 +72,31 @@ def test_wrong_scheme_always_raises_regardless_of_app_env(bad_scheme):
             get_database_config()
 
 
+# --- Day 2 review, Finding A: scheme handling ---
+
+@pytest.mark.parametrize("scheme", ["postgresql", "postgres"])
+def test_both_official_libpq_uri_schemes_are_accepted(scheme):
+    """PostgreSQL's own docs: "The URI scheme designator can be either
+    postgresql:// or postgres://" -- and psycopg.connect() accepts both.
+    Rejecting `postgres://` (as a prior version did) would fail startup
+    for a deployment whose provider emits that spelling."""
+    with patch.dict(os.environ, {"APP_ENV": "local", "DATABASE_URL": f"{scheme}://u:p@h:5432/db"}, clear=False):
+        cfg = get_database_config()
+    assert cfg.configured is True
+    assert cfg.redacted_url == f"{scheme}://u:***@h:5432/db"
+
+
+def test_sqlalchemy_dialect_scheme_is_rejected():
+    """`postgresql+psycopg://` is a SQLAlchemy dialect prefix, not a
+    libpq scheme -- psycopg.connect() raises ProgrammingError on it at
+    connection time, and that error echoes the whole connection string
+    (password included). Rejecting it here, at startup, with a message
+    that names no value, is strictly safer than accepting it."""
+    with patch.dict(os.environ, {"APP_ENV": "local", "DATABASE_URL": "postgresql+psycopg://u:p@h/db"}, clear=False):
+        with pytest.raises(RuntimeError, match="not a libpq scheme"):
+            get_database_config()
+
+
 def test_url_with_no_host_raises():
     with patch.dict(os.environ, {"APP_ENV": "local", "DATABASE_URL": "postgresql:///dbname"}, clear=False):
         with pytest.raises(RuntimeError, match="host"):
@@ -158,3 +183,31 @@ def test_redact_url_with_no_credentials_omits_the_at_sign():
 def test_redact_malformed_url_falls_back_to_a_fixed_placeholder_never_raises():
     redacted = _redact_database_url("not a url at all :::")
     assert redacted == "<database url, redacted>"
+
+
+# --- Day 2 review, Finding C: IPv6 host redaction ---
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("postgresql://user:pw@[::1]:5432/db", "postgresql://user:***@[::1]:5432/db"),
+        ("postgresql://user:pw@[2001:db8::1]/db", "postgresql://user:***@[2001:db8::1]/db"),
+        ("postgres://user:pw@[fe80::1]:6543/db", "postgres://user:***@[fe80::1]:6543/db"),
+    ],
+)
+def test_redact_url_rebrackets_ipv6_hosts(url, expected):
+    """urlsplit strips the brackets from an IPv6 literal, so without
+    re-bracketing the redacted form would be the ambiguous/malformed
+    `::1:5432`. The password is redacted either way -- this is a
+    log-legibility fix, not a security one."""
+    assert _redact_database_url(url) == expected
+
+
+def test_redact_url_drops_query_parameters():
+    """libpq's URL form allows credentials in the query string too
+    (`?password=`), so the redactor drops the whole query -- even though
+    that also hides non-secret options like sslmode."""
+    redacted = _redact_database_url("postgresql://user:pw@host:5432/db?sslmode=require&password=other")
+    assert "other" not in redacted
+    assert "?" not in redacted
+    assert redacted == "postgresql://user:***@host:5432/db"
