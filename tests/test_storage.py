@@ -21,6 +21,7 @@ from research_agent.storage import (
     get_search,
     init_db,
     list_searches,
+    list_searches_by_owner,
     save_search,
     update_summary,
     update_web_summary,
@@ -321,6 +322,107 @@ def test_concurrent_requests_via_per_request_connections_do_not_corrupt_storage(
         assert {s.topic for s in results} == {f"topic-{i}" for i in range(n_threads)}
 
 
+# --- Day 2 (public multi-user deployment foundation, see
+# docs/plans/public-multi-user-deployment-review.md): additive owner_id
+# column -- Part G, test 15 ("legacy SQLite rows without owner_id still
+# deserialize correctly") ---
+
+def test_init_db_migrates_pre_existing_database_missing_owner_id_column():
+    """A database file created before Day 2 has a `searches` table with
+    no `owner_id` column at all (not even NULL-valued -- the column
+    itself is absent) -- init_db must add it (via ALTER TABLE) rather
+    than erroring on the next save_search/list_searches_by_owner call.
+    Same template as test_init_db_migrates_pre_existing_database_missing_
+    web_columns above, extended to also predate web_articles/web_summary
+    -- the oldest possible schema shape."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy.sqlite"
+        legacy_conn = sqlite3.connect(path)
+        legacy_conn.execute(
+            """
+            CREATE TABLE searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                paper_ids TEXT NOT NULL,
+                scores TEXT NOT NULL,
+                summary TEXT
+            )
+            """
+        )
+        # A row saved under the pre-Day-2 (and pre-round-2) schema --
+        # genuinely no owner_id value was ever written for it, not even
+        # NULL, since the column didn't exist at insert time.
+        legacy_conn.execute(
+            "INSERT INTO searches (topic, created_at, paper_ids, scores, summary) VALUES (?, ?, ?, ?, ?)",
+            ("legacy topic", "2020-01-01T00:00:00+00:00", '["p1"]', "[0.5]", None),
+        )
+        legacy_conn.commit()
+        legacy_conn.close()
+
+        conn = init_db(path)  # must not raise
+        results = list_searches(conn)
+        assert len(results) == 1
+        assert results[0].topic == "legacy topic"
+        assert results[0].owner_id is None
+
+        # The new column also fully supports the normal write path
+        # against this now-migrated database.
+        search_id, _ = save_search(conn, "new topic", ["p2"], [0.9], owner_id="owner-x")
+        saved = get_search(conn, search_id)
+        assert saved.owner_id == "owner-x"
+
+
+def test_save_search_without_owner_id_defaults_to_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        search_id, _ = save_search(conn, "topic", ["p1"], [0.5])
+        saved = get_search(conn, search_id)
+        assert saved.owner_id is None
+
+
+def test_save_search_persists_owner_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        search_id, _ = save_search(conn, "topic", ["p1"], [0.5], owner_id="owner-a")
+        saved = get_search(conn, search_id)
+        assert saved.owner_id == "owner-a"
+
+
+def test_list_searches_by_owner_returns_only_that_owners_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        id_a1, _ = save_search(conn, "a1", ["p1"], [0.5], owner_id="owner-a")
+        save_search(conn, "b1", ["p2"], [0.5], owner_id="owner-b")
+        id_a2, _ = save_search(conn, "a2", ["p3"], [0.5], owner_id="owner-a")
+        save_search(conn, "unowned", ["p4"], [0.5])  # owner_id=None
+
+        a_rows = list_searches_by_owner(conn, "owner-a")
+        assert [r.id for r in a_rows] == [id_a2, id_a1]  # newest first
+        assert all(r.owner_id == "owner-a" for r in a_rows)
+
+        b_rows = list_searches_by_owner(conn, "owner-b")
+        assert len(b_rows) == 1
+
+        none_rows = list_searches_by_owner(conn, "nonexistent-owner")
+        assert none_rows == []
+
+        # Unowned (owner_id IS NULL) rows never leak into any real
+        # owner's listing -- SQL's NULL != 'owner-a' semantics already
+        # guarantee this, confirmed here rather than only assumed.
+        all_a_and_b_ids = {r.id for r in a_rows} | {r.id for r in b_rows}
+        assert id_a1 in all_a_and_b_ids and id_a2 in all_a_and_b_ids
+
+
+def test_list_searches_by_owner_respects_limit():
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = init_db(Path(tmp) / "test.sqlite")
+        for i in range(5):
+            save_search(conn, f"t{i}", [f"p{i}"], [0.5], owner_id="owner-a")
+        limited = list_searches_by_owner(conn, "owner-a", limit=2)
+        assert len(limited) == 2
+
+
 if __name__ == "__main__":
     test_save_and_get_search_roundtrip()
     test_get_search_missing_id_returns_none()
@@ -341,4 +443,9 @@ if __name__ == "__main__":
     test_list_searches_query_plan_uses_the_created_at_index()
     test_get_db_connection_yields_working_connection_and_closes_it_after()
     test_concurrent_requests_via_per_request_connections_do_not_corrupt_storage()
+    test_init_db_migrates_pre_existing_database_missing_owner_id_column()
+    test_save_search_without_owner_id_defaults_to_none()
+    test_save_search_persists_owner_id()
+    test_list_searches_by_owner_returns_only_that_owners_rows()
+    test_list_searches_by_owner_respects_limit()
     print("All storage tests passed.")
