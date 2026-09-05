@@ -33,6 +33,7 @@ from research_agent.curation_ownership import (
     delete_owned_curation_session,
     get_owned_curation_state,
     get_owner_id_for_session,
+    list_owned_curation_sessions,
 )
 from research_agent.db.migrations import run_migrations
 from research_agent.db.ownership_repository import DuplicateFirebaseUidError, PostgresOwnershipRepository
@@ -195,6 +196,32 @@ def test_missing_checkpoint_state_is_never_returned_as_a_usable_session(repo, ch
     # the (incomplete) owner row -- these are two deliberately different
     # questions ("does anyone own this" vs. "is this a usable session").
     assert get_owner_id_for_session("orphan-session-no-cp", repo) == user.id
+
+
+def test_incomplete_owner_rows_are_excluded_from_the_coordinator_listing(repo, checkpointer):
+    """Day 2 review, Finding B: the raw repository listing returns
+    incomplete (checkpoint-write-failed) owner rows, but
+    list_owned_curation_sessions() cross-checks checkpoint existence and
+    excludes them -- so a Day-4 GET /curation/reviews built on the
+    coordinator never surfaces a phantom entry that 404s when opened."""
+    user = repo.create_user(firebase_uid="fb-listfilter", email="listfilter@example.com")
+
+    # One complete session (owner row + checkpoint).
+    complete_id = create_owned_curation_session(
+        owner_id=user.id, session=_make_session("complete"), topic="complete", display_title=None,
+        stage="curate", ownership_repo=repo, checkpointer=checkpointer,
+    )
+    # Two incomplete owner rows (owner row only, no checkpoint) -- exactly
+    # the aftermath of a checkpoint-write failure.
+    repo.create_owner_row(session_id="incomplete-1", owner_id=user.id, topic="x", display_title=None, stage="curate")
+    repo.create_owner_row(session_id="incomplete-2", owner_id=user.id, topic="y", display_title=None, stage="curate")
+
+    # The raw repository method sees all three.
+    assert {r.session_id for r in repo.list_owner_sessions(user.id)} == {complete_id, "incomplete-1", "incomplete-2"}
+
+    # The coordinator listing sees only the complete one.
+    filtered = list_owned_curation_sessions(user.id, repo, checkpointer)
+    assert [r.session_id for r in filtered] == [complete_id]
 
 
 def test_retry_after_a_failed_create_mints_a_new_session_id_never_reuses_the_failed_one(repo, checkpointer, monkeypatch):

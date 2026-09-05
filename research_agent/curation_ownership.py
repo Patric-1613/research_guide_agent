@@ -142,6 +142,39 @@ def get_owner_id_for_session(
     return row.owner_id if row is not None else None
 
 
+def list_owned_curation_sessions(
+    owner_id: uuid.UUID, ownership_repo: PostgresOwnershipRepository, checkpointer: BaseCheckpointSaver,
+    *, limit: int = 100,
+) -> list[CurationOwnerRecord]:
+    """The fail-closed LISTING path, the plural counterpart to
+    `get_owned_curation_state` above -- returns only this owner's
+    `curation_owners` rows that ALSO have a real checkpoint behind them.
+
+    `PostgresOwnershipRepository.list_owner_sessions` on its own returns
+    every `curation_owners` row for an owner, **incomplete ones
+    included** -- a row whose checkpoint write failed (the "fail-closed
+    incomplete" state from this module's own docstring) is a real row
+    until `scripts/reconcile_curation_ownership.py` sweeps it (default:
+    up to 1 hour later). A route/service layer that lists a user's
+    sessions must never surface those: they would render as "phantom"
+    entries that 404 the moment the user opens them (because
+    `get_owned_curation_state` correctly returns None for them). This
+    function is the one place that cross-check lives, so a Day-4
+    `GET /curation/reviews` wiring calls this rather than the raw
+    repository method and never has to re-derive the filter.
+
+    The cross-check is one `load_curation_session` per candidate row --
+    acceptable at a controlled beta's per-user session counts, and the
+    same per-row cost `research_agent.curation_session.list_curation_
+    sessions` already pays for its own listing.
+    """
+    candidate_rows = ownership_repo.list_owner_sessions(owner_id, limit=limit)
+    return [
+        row for row in candidate_rows
+        if load_curation_session(row.session_id, checkpointer) is not None
+    ]
+
+
 def get_owned_curation_state(
     session_id: str, ownership_repo: PostgresOwnershipRepository, checkpointer: BaseCheckpointSaver,
 ) -> tuple[CurationOwnerRecord, PaperPoolSession] | None:

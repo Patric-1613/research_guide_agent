@@ -172,7 +172,17 @@ class PostgresOwnershipRepository:
         """Newest-first, `id`-free stable tie-break: `session_id` itself
         (a uuid4 hex, so this is an arbitrary-but-deterministic
         tie-break, same role `storage.py`'s own `id DESC` tie-break
-        plays for same-second saves)."""
+        plays for same-second saves).
+
+        Returns EVERY `curation_owners` row for this owner, including a
+        "fail-closed incomplete" row whose checkpoint write failed (see
+        `research_agent/curation_ownership.py`'s module docstring). A
+        caller that must not surface incomplete rows -- any user-facing
+        session listing -- calls
+        `curation_ownership.list_owned_curation_sessions()` instead,
+        which cross-checks checkpoint existence; this raw method is the
+        building block that function and the reconciliation script are
+        built on, not something a route should call directly."""
         with self._conn.cursor() as cur:
             cur.execute(
                 f"SELECT {_OWNER_COLUMNS} FROM curation_owners "
