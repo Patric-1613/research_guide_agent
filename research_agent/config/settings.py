@@ -528,3 +528,187 @@ def get_thread_pool_config() -> ThreadPoolConfig:
             "raise MAX_ANYIO_THREAD_LIMIT deliberately rather than overriding this check."
         )
     return ThreadPoolConfig(limit=value)
+
+
+# --- Day 2 (public multi-user deployment foundation, see
+# docs/plans/public-multi-user-deployment-review.md): the production
+# PostgreSQL ownership-store contract ---
+#
+# Same "validated once, at startup, allowed to raise" discipline as
+# get_auth_config()/get_cors_config()/get_thread_pool_config() above.
+# This is the ONE place DATABASE_URL is ever read -- research_agent/db/
+# and research_agent/curation_ownership.py always go through
+# get_database_config(), never os.getenv("DATABASE_URL") directly, so
+# there is exactly one validation path and exactly one place a raw
+# connection string could ever be logged from (nowhere: see
+# DatabaseConfig.redacted_url below, the only representation any caller
+# is expected to log).
+#
+# **No silent production fallback to SQLite.** APP_ENV=production with
+# DATABASE_URL unset/invalid always raises -- there is no "just use
+# SQLite instead" path in production, mirroring get_auth_config()'s own
+# "no production auth-disable override" posture exactly. APP_ENV=local
+# (the default) never requires DATABASE_URL at all: local development
+# and the existing test suite keep today's zero-setup, SQLite-only
+# experience completely unchanged unless a developer explicitly opts in
+# by setting DATABASE_URL themselves (e.g. to point at a local Postgres
+# for Day 2-style development work).
+DEFAULT_DATABASE_POOL_MIN_SIZE = 1
+
+# Conservative on purpose: this app's own routes are entirely
+# synchronous `def` handlers dispatched through the AnyIO thread-pool
+# ceiling (see get_thread_pool_config() above) -- a small pool is
+# sufficient headroom for a controlled beta's realistic concurrent-owner-
+# lookup volume, and a small pool is also what keeps this compatible
+# with Cloud SQL Auth Proxy later (the proxy itself, plus Cloud SQL's own
+# small-tier connection ceilings, both favor a modest, explicit pool size
+# over an implicit/unbounded one).
+DEFAULT_DATABASE_POOL_MAX_SIZE = 5
+MAX_DATABASE_POOL_MAX_SIZE = 20
+
+
+@dataclass(frozen=True)
+class DatabaseConfig:
+    """The validated outcome of DATABASE_URL/DATABASE_POOL_MIN_SIZE/
+    DATABASE_POOL_MAX_SIZE -- returned only by get_database_config()
+    below. `configured=False` means no production Postgres is set up at
+    all (the local/test SQLite-only default); every other field is only
+    meaningful when `configured=True`.
+
+    `url` is intentionally the only field carrying the real connection
+    string (including its embedded password) -- it exists so a real
+    connection can actually be opened, not so it can be printed. Never
+    log, format into an error message, or otherwise surface `url` itself;
+    use `redacted_url` (or nothing at all) for any log/error/debug
+    output. This mirrors get_auth_config()'s own "never echo the
+    configured username/password value" discipline for AUTH_PASSWORD.
+
+    Defense in depth: `repr()`/`str()` of this object (dataclass's own
+    default `__repr__` would otherwise include every field, `url`
+    included) are overridden below to show `redacted_url` in `url`'s
+    place -- so an accidental `logger.info(config)`/an uncaught
+    exception's traceback printing a local variable never leaks the
+    password either, without every future caller having to remember to
+    reach for `.redacted_url` specifically.
+    """
+
+    configured: bool
+    url: str | None
+    pool_min_size: int
+    pool_max_size: int
+    redacted_url: str | None
+
+    def __repr__(self) -> str:
+        return (
+            f"DatabaseConfig(configured={self.configured!r}, url=<redacted, see redacted_url>, "
+            f"pool_min_size={self.pool_min_size!r}, pool_max_size={self.pool_max_size!r}, "
+            f"redacted_url={self.redacted_url!r})"
+        )
+
+
+def _redact_database_url(url: str) -> str:
+    """scheme://user:***@host:port/dbname -- password replaced outright
+    (never partially shown, never length-revealing), everything else
+    (host/port/dbname, and the scheme, which also names the driver e.g.
+    postgresql+psycopg://) kept exactly as configured, since none of
+    that is a secret and all of it is useful for a human reading a log
+    line to confirm which database a process is actually pointed at.
+    Falls back to a fixed, fully-opaque placeholder for anything this
+    simple parse can't confidently handle -- never partially redacts and
+    never raises; a redaction helper must fail toward "reveal nothing,"
+    not toward an exception that could bypass logging entirely."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        if not parts.hostname:
+            raise ValueError("no host")
+        host_part = parts.hostname
+        if parts.port:
+            host_part = f"{host_part}:{parts.port}"
+        user_part = f"{parts.username}:***@" if parts.username else ""
+        return f"{parts.scheme}://{user_part}{host_part}{parts.path}"
+    except Exception:
+        return "<database url, redacted>"
+
+
+def get_database_config() -> DatabaseConfig:
+    """DATABASE_URL: the production PostgreSQL connection string. Read
+    and validated exactly once, at application/script startup -- never
+    per-request, and never re-derived from a cached Settings instance
+    (see this module's own top-level docstring for why AUTH_ENABLED-style
+    settings are deliberately excluded from get_settings()/Settings).
+
+    - unset/empty + APP_ENV=local (the default) -> `configured=False`.
+      This is the current, unchanged local-dev/test SQLite-only
+      experience -- nothing in this codebase requires Postgres to be
+      present at all unless DATABASE_URL is explicitly set.
+    - unset/empty + APP_ENV=production -> **raises**. There is no
+      production fallback to SQLite -- same "refuse to boot rather than
+      silently run in a lesser-safe mode" posture as
+      get_auth_config()'s own APP_ENV=production requirement.
+    - set (either APP_ENV) -> validated for scheme only (must be
+      `postgresql://` or `postgresql+psycopg://` -- the two spellings
+      psycopg's own connection-string parser accepts); a malformed value
+      (unparseable, wrong scheme, no host) always raises, in either
+      APP_ENV, so a typo is caught at startup in local/dev too, not just
+      in production.
+
+    DATABASE_POOL_MIN_SIZE / DATABASE_POOL_MAX_SIZE: strict positive
+    integers (same _positive_int-style parsing as
+    get_thread_pool_config()'s ANYIO_THREAD_LIMIT), defaulting to 1/5.
+    `min_size` must not exceed `max_size`; `max_size` must not exceed
+    MAX_DATABASE_POOL_MAX_SIZE (20) -- exceeding either always raises,
+    never silently clamps, matching every other startup-validated
+    setting in this module. Both are read (and validated) even when
+    `configured=False`, so a malformed pool-size env var is caught at
+    startup regardless of whether Postgres is actually in use yet --
+    the same "a typo must never be silently ignored" posture as every
+    other check in this function.
+    """
+    app_env = _app_env()
+    raw_url = os.getenv("DATABASE_URL") or ""
+
+    pool_min_size = _positive_int("DATABASE_POOL_MIN_SIZE", DEFAULT_DATABASE_POOL_MIN_SIZE)
+    pool_max_size = _positive_int("DATABASE_POOL_MAX_SIZE", DEFAULT_DATABASE_POOL_MAX_SIZE)
+    if pool_max_size > MAX_DATABASE_POOL_MAX_SIZE:
+        raise ValueError(
+            f"DATABASE_POOL_MAX_SIZE={pool_max_size} exceeds the conservative upper bound of "
+            f"{MAX_DATABASE_POOL_MAX_SIZE}."
+        )
+    if pool_min_size > pool_max_size:
+        raise ValueError(
+            f"DATABASE_POOL_MIN_SIZE={pool_min_size} must not exceed "
+            f"DATABASE_POOL_MAX_SIZE={pool_max_size}."
+        )
+
+    if not raw_url.strip():
+        if app_env == "production":
+            raise RuntimeError(
+                "DATABASE_URL must be set when APP_ENV=production -- refusing to start an "
+                "unconfigured production instance. There is no production fallback to "
+                "SQLite; if Postgres is genuinely unreachable, fix DATABASE_URL rather than "
+                "unsetting it."
+            )
+        return DatabaseConfig(
+            configured=False, url=None, pool_min_size=pool_min_size, pool_max_size=pool_max_size, redacted_url=None,
+        )
+
+    from urllib.parse import urlsplit
+
+    url = raw_url.strip()
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        raise RuntimeError("DATABASE_URL is not a parseable URL.") from None
+    if parts.scheme not in ("postgresql", "postgresql+psycopg"):
+        raise RuntimeError(
+            "DATABASE_URL must use the 'postgresql://' or 'postgresql+psycopg://' scheme."
+        )
+    if not parts.hostname:
+        raise RuntimeError("DATABASE_URL must include a host.")
+
+    return DatabaseConfig(
+        configured=True, url=url, pool_min_size=pool_min_size, pool_max_size=pool_max_size,
+        redacted_url=_redact_database_url(url),
+    )
