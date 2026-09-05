@@ -369,9 +369,40 @@ deployment production-complete.
   by design (PR1's own constraint). SQLite's per-request-connection
   pattern and Chroma's local `PersistentClient` are not safe to run
   behind more than one worker or more than one instance without a real
-  redesign (a second Postgres/Chroma-server-mode/shared-storage
-  migration, all still out of scope) — this is a hard architectural
-  ceiling, not a tuning knob.
+  redesign (a second Chroma-server-mode/shared-storage migration, still
+  out of scope) — this is a hard architectural ceiling, not a tuning
+  knob.
+
+## Ownership store: local SQLite vs. production PostgreSQL
+
+The multi-user ownership store (the `users`, `curation_owners`, and
+`saved_searches` tables) has a two-backend split, defined by
+`research_agent/config/settings.py`'s `get_database_config()`:
+
+- **Local development and the test suite** run SQLite-only, exactly as
+  the rest of this app always has. `DATABASE_URL` unset ⇒
+  `DatabaseConfig.configured` is `False`; nothing requires PostgreSQL to
+  be present.
+- **Production** (`APP_ENV=production`) **requires** a valid
+  `DATABASE_URL` (`postgresql://` or `postgres://`) and refuses to start
+  without one — there is no silent fallback to SQLite, mirroring the
+  auth gate's own "no production disable override" posture. The
+  configured URL is never logged in full; only a password-redacted form
+  appears in any log line.
+- The PostgreSQL schema (`research_agent/db/migrations/`), its
+  connection pool (`research_agent/db/pool.py`), and the ownership /
+  saved-search repositories (`research_agent/db/`) exist, but are **not
+  wired into any request path, FastAPI dependency, or `lifespan()`
+  yet** — no route reads or writes them. Migrations run only when
+  invoked explicitly, never on app startup or per request.
+- LangGraph checkpoints (`qa_checkpoints.sqlite`), operational telemetry
+  (`usage_telemetry.sqlite`), and the rebuildable caches stay on SQLite
+  regardless of `DATABASE_URL`. Ownership rows in PostgreSQL are the
+  reachability source of truth for a curation session; the SQLite
+  checkpoint is secondary
+  (`research_agent/curation_ownership.py`), and
+  `scripts/reconcile_curation_ownership.py` reconciles cross-store
+  orphans.
 
 ## Related documents
 
