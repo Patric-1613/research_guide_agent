@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse, Response
 
 import research_agent.api as api
+from research_agent.api_app.access import require_curation_session_access
 from research_agent.api_app.errors import _upstream_error_guard
 from research_agent.api_app.schemas import CurationGenerateReportRequest, CurationRegenerateReportRequest, ReportOut
 from research_agent.services.curation_report_service import (
@@ -25,7 +26,11 @@ _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessing
 _PDF_MEDIA_TYPE = "application/pdf"
 
 
-@router.post("/curation/{session_id}/report", response_model=ReportOut)
+@router.post(
+    "/curation/{session_id}/report",
+    response_model=ReportOut,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report(
     session_id: str, req: CurationGenerateReportRequest = CurationGenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
@@ -36,7 +41,11 @@ def curation_report(
         )
 
 
-@router.post("/curation/{session_id}/report/regenerate", response_model=ReportOut)
+@router.post(
+    "/curation/{session_id}/report/regenerate",
+    response_model=ReportOut,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report_regenerate(
     session_id: str, req: CurationRegenerateReportRequest = CurationRegenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
@@ -55,7 +64,10 @@ def curation_report_regenerate(
 # synchronously (every provider call happens later, inside the streamed
 # generator body, which reports its own safe error events instead -- see
 # curation_report_streaming.py's own docstring).
-@router.post("/curation/{session_id}/report/stream")
+@router.post(
+    "/curation/{session_id}/report/stream",
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report_stream(
     session_id: str, req: CurationGenerateReportRequest = CurationGenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
@@ -63,7 +75,10 @@ def curation_report_stream(
     return stream_generate_report(session_id, req, cp)
 
 
-@router.post("/curation/{session_id}/report/regenerate/stream")
+@router.post(
+    "/curation/{session_id}/report/regenerate/stream",
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report_regenerate_stream(
     session_id: str, req: CurationRegenerateReportRequest = CurationRegenerateReportRequest(),
     cp=Depends(api.get_curation_checkpointer),
@@ -71,7 +86,10 @@ def curation_report_regenerate_stream(
     return stream_regenerate_report(session_id, req, cp)
 
 
-@router.get("/curation/{session_id}/report/export")
+@router.get(
+    "/curation/{session_id}/report/export",
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report_export(
     session_id: str, format: str = "markdown", cp=Depends(api.get_curation_checkpointer),
 ) -> Response:
@@ -106,7 +124,11 @@ def curation_report_export(
         return PlainTextResponse(content, media_type="text/markdown", headers=headers)
 
 
-@router.post("/curation/{session_id}/reports/{version_id}/activate", response_model=ReportOut)
+@router.post(
+    "/curation/{session_id}/reports/{version_id}/activate",
+    response_model=ReportOut,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_report_activate_version(
     session_id: str, version_id: str, cp=Depends(api.get_curation_checkpointer),
 ) -> ReportOut:

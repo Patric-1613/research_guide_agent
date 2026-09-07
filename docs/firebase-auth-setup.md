@@ -5,20 +5,17 @@ multi-user identity). This document is the manual setup a human must do
 in the Firebase / Google Cloud console — the application code creates no
 Firebase resources and invents no project ID.
 
-> **Do not deploy `AUTH_MODE=firebase` to any internet-reachable
-> environment yet.** In its current state the backend *authenticates* a
-> Firebase user and creates an internal `users` row (`approved = false`),
-> but it does **not** yet restrict product routes to approved users, and
-> it does **not** yet scope curation/library data to the signing-in
-> user. `require_approved_user` and per-user resource ownership are wired
-> onto the product routes in a later step (see
-> `docs/plans/public-multi-user-deployment-review.md`). Until that step
-> is complete, any signed-in Firebase account — approved or not — can
-> reach every curation and library route and would share one unpartitioned
-> workspace. `firebase` mode is safe to run only locally, against the
-> emulator, for development of the auth boundary itself. The supported
-> deployed configurations right now are `AUTH_MODE=basic` (single shared
-> credential) and, for local use only, `AUTH_MODE=disabled`.
+> **Backend authorization for `AUTH_MODE=firebase` is enforced**
+> (approval gate + per-user curation ownership + legacy-route lockout —
+> see [`architecture.md`](architecture.md#authorization-firebase-multi-user-mode)).
+> A public deployment still needs the remaining checkpoints from
+> `docs/plans/public-multi-user-deployment-review.md`: the Day-5 frontend
+> sign-in flow, and the GCP/Cloud SQL infrastructure. There is also no
+> self-service approval UI yet — a new account stays `approved = false`
+> until an operator flips the flag with SQL. `firebase` mode runs
+> correctly locally against the emulator today; the supported *deployed*
+> configurations remain `AUTH_MODE=basic` and (local only)
+> `AUTH_MODE=disabled` until those checkpoints land.
 
 Configuration contract: `research_agent/config/settings.py`'s
 `get_auth_config()`. Verification boundary:

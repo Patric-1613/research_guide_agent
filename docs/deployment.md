@@ -364,6 +364,17 @@ deployment production-complete.
 - **Monitoring and operational alerts** — nothing beyond the existing
   Langfuse tracing and the local `usage_telemetry.sqlite` table exists;
   no external alerting is wired up.
+- **Public multi-user (`AUTH_MODE=firebase`) remaining work** — the
+  backend authorization model is complete and enforced (approval gate,
+  per-user curation ownership, legacy-route lockout — see
+  `docs/architecture.md`, "Authorization"), but a public deployment still
+  needs: the frontend Firebase sign-in flow (no login UI exists yet); a
+  managed PostgreSQL instance (Cloud SQL) with `DATABASE_URL` injected as
+  a secret and migrations run at deploy time; a self-service or
+  operator-facing account-approval path (today `users.approved` is
+  flipped with SQL); and per-user *global* paid-usage caps (usage limits
+  today are per-session and deployment-wide). See
+  `docs/plans/public-multi-user-deployment-review.md`.
 - **SQLite/Chroma limitations for multi-worker or multi-instance
   deployment** — this package is explicitly single-process/single-worker
   by design (PR1's own constraint). SQLite's per-request-connection
@@ -391,10 +402,18 @@ The multi-user ownership store (the `users`, `curation_owners`, and
   appears in any log line.
 - The PostgreSQL schema (`research_agent/db/migrations/`), its
   connection pool (`research_agent/db/pool.py`), and the ownership /
-  saved-search repositories (`research_agent/db/`) exist, but are **not
-  wired into any request path, FastAPI dependency, or `lifespan()`
-  yet** — no route reads or writes them. Migrations run only when
-  invoked explicitly, never on app startup or per request.
+  saved-search repositories (`research_agent/db/`) are wired into the
+  request path **only when `AUTH_MODE=firebase`**: `lifespan()` opens
+  the pool, `FirebaseAuthMiddleware` + `research_agent/identity.py`
+  resolve each verified token to a `users` row, and
+  `research_agent/api_app/access.py` enforces approval and
+  `curation_owners` ownership on the product routes (see
+  `docs/architecture.md`, "Authorization"). In `basic`/`disabled` mode
+  none of this runs and no pool is opened. Migrations still run only when
+  invoked explicitly, never on app startup or per request. The
+  `saved_searches` PostgreSQL table and repository exist but are not yet
+  on any request path — the legacy `/search` and `/library` routes are
+  refused in `firebase` mode rather than served from a shared store.
 - LangGraph checkpoints (`qa_checkpoints.sqlite`), operational telemetry
   (`usage_telemetry.sqlite`), and the rebuildable caches stay on SQLite
   regardless of `DATABASE_URL`. Ownership rows in PostgreSQL are the

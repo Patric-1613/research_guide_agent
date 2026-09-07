@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 import research_agent.api as api
+from research_agent.api_app.access import require_curation_session_access
 from research_agent.api_app.errors import _upstream_error_guard
 from research_agent.api_app.schemas import (
     CurationChatAddToReportRequest,
@@ -23,7 +24,11 @@ from research_agent.services.curation_chat_service import (
 router = APIRouter()
 
 
-@router.post("/curation/{session_id}/chat", response_model=CurationChatResponse)
+@router.post(
+    "/curation/{session_id}/chat",
+    response_model=CurationChatResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(api.get_curation_checkpointer)) -> CurationChatResponse:
     with _upstream_error_guard("curation_chat"):
         return answer_curation_chat(session_id, req, cp)
@@ -37,7 +42,10 @@ def curation_chat_turn(session_id: str, req: CurationChatRequest, cp=Depends(api
 # LLM/external API synchronously (every provider call happens later,
 # inside the streamed generator body, which reports its own safe error
 # events instead -- see curation_chat_streaming.py's own docstring).
-@router.post("/curation/{session_id}/chat/stream")
+@router.post(
+    "/curation/{session_id}/chat/stream",
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_chat_turn_stream(session_id: str, req: CurationChatRequest, cp=Depends(api.get_curation_checkpointer)):
     return stream_answer_curation_chat(session_id, req, cp)
 
@@ -52,7 +60,11 @@ def curation_chat_turn_stream(session_id: str, req: CurationChatRequest, cp=Depe
 # being the one DELETE-with-body exception. No _upstream_error_guard: this
 # endpoint never calls an LLM/external API, same as curation_delete()
 # above it in spirit (curation_sessions.py's plain review-delete route).
-@router.post("/curation/{session_id}/chat/exchanges/delete", response_model=CurationChatDeleteResponse)
+@router.post(
+    "/curation/{session_id}/chat/exchanges/delete",
+    response_model=CurationChatDeleteResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_chat_delete_exchanges(
     session_id: str, req: CurationChatDeleteRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatDeleteResponse:
@@ -62,7 +74,11 @@ def curation_chat_delete_exchanges(
 # curation-chat-add-to-report Phase 4: same POST-not-DELETE-with-body
 # convention as the delete endpoint above. This one DOES call an LLM
 # (report regeneration) so it needs _upstream_error_guard, unlike delete.
-@router.post("/curation/{session_id}/chat/exchanges/add-to-report", response_model=CurationChatAddToReportResponse)
+@router.post(
+    "/curation/{session_id}/chat/exchanges/add-to-report",
+    response_model=CurationChatAddToReportResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_chat_add_to_report(
     session_id: str, req: CurationChatAddToReportRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatAddToReportResponse:
@@ -73,7 +89,11 @@ def curation_chat_add_to_report(
 # curation-chat-edit Phase 5: same POST-not-DELETE-with-body convention.
 # Calls chat_turn() (an LLM call) for the fresh answer, so needs
 # _upstream_error_guard, same as add-to-report above.
-@router.post("/curation/{session_id}/chat/exchanges/edit", response_model=CurationChatEditResponse)
+@router.post(
+    "/curation/{session_id}/chat/exchanges/edit",
+    response_model=CurationChatEditResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_chat_edit_exchange(
     session_id: str, req: CurationChatEditRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationChatEditResponse:

@@ -22,8 +22,16 @@ from research_agent.curation_session import delete_curation_session, list_curati
 from research_agent.report import get_active_report_version
 
 
-def list_reviews(cp) -> list[CurationReviewSummary]:
-    return [CurationReviewSummary(**s) for s in list_curation_sessions(cp)]
+def list_reviews(cp, *, owned_session_ids: set[str] | None = None) -> list[CurationReviewSummary]:
+    """`owned_session_ids`, when supplied (the firebase multi-user path),
+    restricts the listing to those sessions -- the caller passes the set
+    of session_ids the current user owns, and any checkpoint not in it is
+    dropped. None (basic/disabled) keeps the original every-session
+    behaviour."""
+    rows = list_curation_sessions(cp)
+    if owned_session_ids is not None:
+        rows = [r for r in rows if r["session_id"] in owned_session_ids]
+    return [CurationReviewSummary(**s) for s in rows]
 
 
 def get_state(session_id: str, cp) -> CurationStateResponse | None:

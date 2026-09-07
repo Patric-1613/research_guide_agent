@@ -49,7 +49,11 @@ def _frozen_lanes_from_request(submitted: list[SubmittedLane]) -> list[ResearchL
     return lanes
 
 
-def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
+def start_curation(req: CurationStartRequest, cp, *, session_id: str | None = None) -> CurationTurnResponse:
+    # `session_id`, when supplied, is a caller-minted id whose ownership
+    # row already exists (the firebase multi-user path -- see
+    # api_app/access.record_curation_ownership); otherwise one is minted
+    # here exactly as before. Nothing else about the flow changes.
     # Research Lanes (RL4): the feature-flag gate and full lane validation
     # run FIRST -- before guard_paid_action opens -- so a disabled feature
     # or an invalid lane set returns a clean 4xx with zero admission /
@@ -106,7 +110,7 @@ def start_curation(req: CurationStartRequest, cp) -> CurationTurnResponse:
         # keep using for the rest of this session's life.
         display_title = api.canonicalize_topic(req.topic, client=client)
 
-        session_id = uuid.uuid4().hex
+        session_id = session_id or uuid.uuid4().hex
         telemetry.set_action_subject("session", session_id)
         session = PaperPoolSession(
             topic=req.topic, display_title=display_title, reserve=ranked, target_count=req.target_count,

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 import research_agent.api as api
+from research_agent.api_app.access import require_curation_session_access
 from research_agent.api_app.errors import _upstream_error_guard
 from research_agent.api_app.schemas import (
     CurationSelectFromHistoryRequest,
@@ -12,14 +13,22 @@ from research_agent.services.curation_history_service import reopen_curation, se
 router = APIRouter()
 
 
-@router.post("/curation/{session_id}/select-from-history", response_model=CurationSelectFromHistoryResponse)
+@router.post(
+    "/curation/{session_id}/select-from-history",
+    response_model=CurationSelectFromHistoryResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_select_from_history(
     session_id: str, req: CurationSelectFromHistoryRequest, cp=Depends(api.get_curation_checkpointer),
 ) -> CurationSelectFromHistoryResponse:
     return select_from_history(session_id, req, cp)
 
 
-@router.post("/curation/{session_id}/reopen", response_model=CurationTurnResponse)
+@router.post(
+    "/curation/{session_id}/reopen",
+    response_model=CurationTurnResponse,
+    dependencies=[Depends(require_curation_session_access)],
+)
 def curation_reopen(session_id: str, cp=Depends(api.get_curation_checkpointer)) -> CurationTurnResponse:
     with _upstream_error_guard("curation_reopen"):
         return reopen_curation(session_id, cp)

@@ -8,13 +8,15 @@ becomes a clean 503 rather than a leaked stack trace; a ServiceError
 raised by the service is mapped to its HTTP response by the centralized
 handler in api_app/app.py.
 
-The Basic Auth middleware (outermost) already protects this route -- an
-unauthorized request is rejected before FastAPI resolves this handler at
-all; there is no route-specific auth here.
+An auth middleware (outermost) rejects an unauthenticated request before
+FastAPI resolves this handler. In firebase mode the route additionally
+requires an approved account (api_app/access.require_approved_access);
+in basic/disabled mode that dependency is a no-op.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from research_agent.api_app.access import require_approved_access
 from research_agent.api_app.errors import _upstream_error_guard
 from research_agent.api_app.schemas import (
     CurationCapabilitiesResponse,
@@ -27,7 +29,11 @@ from research_agent.services.lane_suggestion_service import suggest_lanes_for_to
 router = APIRouter()
 
 
-@router.get("/curation/capabilities", response_model=CurationCapabilitiesResponse)
+@router.get(
+    "/curation/capabilities",
+    response_model=CurationCapabilitiesResponse,
+    dependencies=[Depends(require_approved_access)],
+)
 def curation_capabilities() -> CurationCapabilitiesResponse:
     """Research Lanes (RL5): the smallest protected, zero-provider capability
     probe. No admission, telemetry, DB, or provider work -- just a strict
@@ -38,7 +44,11 @@ def curation_capabilities() -> CurationCapabilitiesResponse:
     return CurationCapabilitiesResponse(research_lanes_enabled=get_settings().research_lanes_enabled)
 
 
-@router.post("/curation/lanes/suggest", response_model=LaneSuggestResponse)
+@router.post(
+    "/curation/lanes/suggest",
+    response_model=LaneSuggestResponse,
+    dependencies=[Depends(require_approved_access)],
+)
 def curation_lanes_suggest(req: LaneSuggestRequest) -> LaneSuggestResponse:
     with _upstream_error_guard("curation_lane_suggest"):
         return suggest_lanes_for_topic(req)

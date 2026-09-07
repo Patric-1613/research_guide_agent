@@ -19,7 +19,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import anyio
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -188,6 +188,10 @@ def create_app() -> FastAPI:
         )
 
     app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
+    # The validated auth configuration, read once above, is stashed on the
+    # app so request-time dependencies (api_app/access.py) can branch on
+    # the mode without re-parsing the environment per request.
+    app.state.auth_config = auth_config
 
     # The React frontend may run as its own Vite dev-server process -- a
     # genuinely separate origin from this API -- so CORS is required for
@@ -279,25 +283,35 @@ def create_app() -> FastAPI:
 
     app.include_router(me_router)
 
+    # The legacy single-user search family reads and mutates the shared
+    # SQLite `searches` table by integer id with no per-user scoping, so
+    # in firebase mode every one of these routes is refused (403) rather
+    # than exposing one user's history to all -- see
+    # api_app/access.deny_when_multiuser and docs/architecture.md,
+    # "Authorization". In basic/disabled mode the dependency is a no-op.
+    from research_agent.api_app.access import deny_when_multiuser
+
+    _legacy_single_user = [Depends(deny_when_multiuser)]
+
     from research_agent.api_app.routers.search import router as search_router
 
-    app.include_router(search_router)
+    app.include_router(search_router, dependencies=_legacy_single_user)
 
     from research_agent.api_app.routers.summarize import router as summarize_router
 
-    app.include_router(summarize_router)
+    app.include_router(summarize_router, dependencies=_legacy_single_user)
 
     from research_agent.api_app.routers.chat import router as chat_router
 
-    app.include_router(chat_router)
+    app.include_router(chat_router, dependencies=_legacy_single_user)
 
     from research_agent.api_app.routers.export import router as export_router
 
-    app.include_router(export_router)
+    app.include_router(export_router, dependencies=_legacy_single_user)
 
     from research_agent.api_app.routers.library import router as library_router
 
-    app.include_router(library_router)
+    app.include_router(library_router, dependencies=_legacy_single_user)
 
     # =============================================================================
     # curation-api-and-ui Phase 6a: HTTP exposure for the curation/report/chat

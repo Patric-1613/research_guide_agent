@@ -3922,6 +3922,88 @@ document's own "Agent-path concurrency fixes" history (via the README) and
 `docs/deployment.md` for the complete write-up; no latency claim is made
 for this fix.
 
+## Authorization (Firebase multi-user mode)
+
+`AUTH_MODE` selects one of three deployments; authorization behaviour
+differs only in `firebase` mode.
+
+| Mode | Who gets in | Per-user scoping |
+| --- | --- | --- |
+| `disabled` (local dev only) | everyone | none — one shared workspace |
+| `basic` | anyone with the shared credential | none — one shared workspace |
+| `firebase` | a verified Firebase account that is `approved` and not `disabled` | every curation session is owned by exactly one user |
+
+**One boundary, `research_agent/api_app/access.py`.** Routers never read
+`AUTH_MODE`, never read `RequestIdentity` out of the ASGI scope, and
+never touch the ownership tables. They depend on:
+
+- `require_approved_access` — a product operation. In `firebase` mode the
+  request's verified identity (placed in the ASGI scope by
+  `FirebaseAuthMiddleware`) must be `approved`; an unapproved account
+  gets a generic `403` (`account_not_approved`). In `basic`/`disabled`
+  mode this is a pass-through — there is one user and nothing to approve.
+- `require_curation_session_access` — a session-scoped operation. In
+  `firebase` mode a `curation_owners` row for the path's `session_id`
+  must exist and be owned by this user. A row owned by someone else and
+  a row that does not exist are the **same** generic `404`
+  (`"session_id not found"`), so ownership is never disclosed —
+  a probe cannot tell "not yours" from "never existed". The check runs
+  as a FastAPI dependency, before the route body loads any checkpoint
+  content or opens any paid-action lease. `basic`/`disabled`:
+  pass-through.
+- `deny_when_multiuser` — attached to the legacy single-user search
+  family (`/search`, `/summarize`, `/chat`, `/export/{id}`, `/library`,
+  `/library/{id}`). Those read and mutate the shared SQLite `searches`
+  table by integer id with no per-user column semantics on the read
+  path, so in `firebase` mode they return `403`
+  (`unavailable_in_multiuser_mode`) rather than expose one user's search
+  history to everyone. They are unchanged in `basic`/`disabled` mode.
+
+**PostgreSQL is the ownership source of truth.** `curation_owners`
+(session_id → owner UUID) is authoritative for reachability; the
+SQLite/LangGraph checkpoint is secondary content. `/curation/start` in
+`firebase` mode mints the `session_id`, inserts its `curation_owners`
+row, then creates the checkpoint under that id — the same order
+`research_agent/curation_ownership.py`'s coordinator documents. If the
+checkpoint step then fails, the owner row is a "fail-closed incomplete"
+entry that `scripts/reconcile_curation_ownership.py` sweeps; the reverse
+(a checkpoint with no owner row) is unreachable through
+`require_curation_session_access` and is likewise reconciled — the
+system never surfaces a session without a confirmed owner. Deletion
+removes the owner row first (the session is unreachable the instant that
+commits), then the checkpoint.
+
+**`/me` is the one authenticated-but-not-approved route.** It uses
+`get_current_user`, not `require_approved_access`, so a pending account
+can read its own `{approved: false}` status and the frontend can render
+an "awaiting approval" screen. `/me` returns only safe profile fields —
+never `firebase_uid`, a token, or a raw provider claim. The internal
+`user_id` it returns is an opaque account handle, not an authorization
+input: every ownership decision derives the owner from the verified
+token server-side, never from a client-supplied value. No request schema
+accepts `owner_id`, `firebase_uid`, or `approved`; such fields in a body
+are ignored.
+
+**Fail closed.** If the auth configuration is unreadable, or the
+ownership database (pool missing, `PoolTimeout`, any `psycopg.Error`)
+cannot be consulted, a product operation returns a generic `503`
+(`identity_store_unavailable`) — never a fall-through to the route, and
+never a fallback to shared SQLite. Response bodies for `403`/`404`/`503`
+carry no credential, token, uid, email, or database detail.
+
+`403` vs privacy-preserving `404`: a `403` means "we know who you are and
+this class of operation is closed to you" (unapproved account; legacy
+route in multi-user mode). A `404` means "this specific resource is not
+yours to see" and is deliberately identical to a genuinely missing
+resource. A `503` means "we could not check" and is retryable.
+
+**Not yet built:** a self-service approval flow (an operator sets
+`users.approved` with SQL), roles beyond `approved`/`disabled`, and
+per-user *global* paid-usage caps (usage limits today are per-session
+and deployment-wide). Deploying `firebase` mode publicly still needs the
+frontend sign-in flow and the GCP/Cloud SQL infrastructure — see
+`docs/deployment.md` and `docs/plans/public-multi-user-deployment-review.md`.
+
 ## Target architecture
 
 The direction (see `specs/migration-plan.md` for the phased path there,
