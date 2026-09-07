@@ -17,8 +17,10 @@ for `AUTH_MODE=firebase`:
 - **Never logs a token, an email, a uid, or an Authorization header.**
   Every failure -- a missing/duplicate/malformed header, a bad
   signature, a wrong audience/issuer, an expired token, a disabled user
-  -- collapses to one identical generic 401. A database outage while
-  resolving the internal user is a 503 (still denied, route never runs).
+  -- collapses to one identical generic 401. An infrastructure failure
+  that makes verification impossible -- a database outage resolving the
+  internal user, or a failed fetch of Google's signing certificates --
+  is a 503 (still denied, route never runs), never a 401.
   No response body or log line is ever built from the request.
 - **CORS-readable failure responses.** Because this middleware is
   outermost, its 401/503 is emitted before `CORSMiddleware` runs -- so
@@ -46,7 +48,7 @@ import anyio
 
 from research_agent.auth_middleware import _cors_headers_for_401, _is_cors_preflight
 from research_agent.config.settings import AuthConfig
-from research_agent.firebase_auth import FirebaseTokenError
+from research_agent.firebase_auth import FirebaseTokenError, FirebaseVerifierUnavailable
 from research_agent.identity import IdentityDenied, IdentityUnavailable, RequestIdentity
 
 _PUBLIC_GET_PATHS = frozenset({"/health"})
@@ -122,7 +124,11 @@ class FirebaseAuthMiddleware:
         except (FirebaseTokenError, IdentityDenied):
             await _send_json_error(send, status=401, body=_UNAUTHORIZED_BODY, extra_headers=cors_headers)
             return
-        except IdentityUnavailable:
+        except (IdentityUnavailable, FirebaseVerifierUnavailable):
+            # Database outage OR signing-certificate fetch failure: in
+            # both cases we cannot verify, so we deny with 503 (not 401)
+            # -- infrastructure failure is never reported as a bad
+            # credential.
             await _send_json_error(send, status=503, body=_UNAVAILABLE_BODY, extra_headers=cors_headers)
             return
 

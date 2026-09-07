@@ -96,8 +96,11 @@ def resolve_request_identity(
 def build_firebase_authenticator(auth_config: AuthConfig) -> Callable[[str], RequestIdentity]:
     """Returns the one callable `FirebaseAuthMiddleware` invokes per
     request: `authenticate(token: str) -> RequestIdentity`, raising
-    `firebase_auth.FirebaseTokenError` / `IdentityDenied` /
-    `IdentityUnavailable`.
+    `firebase_auth.FirebaseTokenError` (bad token -> 401) /
+    `firebase_auth.FirebaseVerifierUnavailable` (cert fetch failed ->
+    503, propagated straight from `verify_firebase_id_token`) /
+    `IdentityDenied` (disabled -> 401) / `IdentityUnavailable`
+    (PostgreSQL down -> 503).
 
     The returned closure reads the connection pool from
     `research_agent.api_app.runtime._state["db_pool"]` at call time (the

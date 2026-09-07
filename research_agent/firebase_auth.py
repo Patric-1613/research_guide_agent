@@ -4,10 +4,13 @@ token verification boundary.
 
 This module does exactly ONE thing: turn an
 ``Authorization: Bearer <Firebase ID token>`` header value into a
-verified ``(firebase_uid, email, display_name)`` triple, or raise the
-single generic :class:`FirebaseTokenError`. It never touches the
-database, never mints an internal user, and never decides HTTP status
-codes -- that is :mod:`research_agent.identity` and the middleware.
+verified ``(firebase_uid, email, display_name)`` triple, or raise
+:class:`FirebaseTokenError` (the token is not valid -> 401) or
+:class:`FirebaseVerifierUnavailable` (the signing-certificate fetch
+failed, so validity is unknowable -> 503, same fail-closed posture as a
+database outage). It never touches the database, never mints an internal
+user, and never decides HTTP status codes -- that is
+:mod:`research_agent.identity` and the middleware.
 
 **Library.** Verification uses ``google.oauth2.id_token.verify_firebase_
 token`` from ``google-auth`` -- Google's own officially supported auth
@@ -70,12 +73,27 @@ _CLOCK_SKEW_SECONDS = 300
 
 
 class FirebaseTokenError(Exception):
-    """The ONE error every verification failure maps to. Deliberately
-    carries no structured detail: a caller (the middleware) turns any
-    instance of this into one identical generic 401, and its message is
-    never surfaced to a client or written to a log. Construct it with a
-    short internal-only reason string for test assertions; nothing in
-    production reads that string."""
+    """A token that is definitively NOT valid -- a bad/absent/duplicate
+    header, a bad signature, an unsupported algorithm, wrong audience or
+    issuer, expiry, a future issued-at, or no usable `sub`. The middleware
+    turns any instance of this into one identical generic 401, and its
+    message is never surfaced to a client or written to a log. Construct
+    it with a short internal-only reason string for test assertions;
+    nothing in production reads that string."""
+
+
+class FirebaseVerifierUnavailable(Exception):
+    """Verification could not be COMPLETED because an external dependency
+    -- Google's signing-certificate endpoint -- was unreachable or
+    errored. The token itself may well be valid; we simply cannot say.
+    The middleware maps this to 503, exactly like
+    `identity.IdentityUnavailable` (a PostgreSQL outage): the request is
+    denied and the route never runs, but this is infrastructure, not a
+    bad credential -- retrying later may succeed. This mirrors
+    `research_agent/admission.py`/`leases.py`'s own fail-closed
+    "storage_unavailable" posture: an inability to confirm safety is
+    never reported as "the caller is unauthorized". Carries no external
+    exception detail outward."""
 
 
 @dataclass(frozen=True)
@@ -182,16 +200,25 @@ def _get_cached_transport_request():
 
 def verify_firebase_id_token(token: str, config: AuthConfig) -> VerifiedFirebaseToken:
     """Verify a Firebase ID token string and return its trusted claims,
-    or raise `FirebaseTokenError` (the one generic failure). `config`
-    must be a `mode == "firebase"` AuthConfig (its `firebase_project_id`
-    is the required audience/issuer; `firebase_emulator_host`, if set,
-    switches to the unsigned-emulator path).
+    or raise. `config` must be a `mode == "firebase"` AuthConfig (its
+    `firebase_project_id` is the required audience/issuer;
+    `firebase_emulator_host`, if set, switches to the unsigned-emulator
+    path).
 
-    Every internal exception -- a google-auth `ValueError`, a `requests`
-    network error fetching certs, a `KeyError` on a missing claim -- is
-    caught and re-raised as `FirebaseTokenError` with an internal-only
-    reason. The original exception is never chained into a message a
-    caller could surface.
+    Two failure classes, deliberately kept apart:
+
+    * `FirebaseTokenError` -- the token is not valid (bad signature,
+      wrong project, expired, malformed, missing claim). A google-auth
+      `ValueError`/`MalformedError` or a `KeyError` on a claim lands
+      here. The middleware turns it into 401.
+    * `FirebaseVerifierUnavailable` -- verification could not run because
+      the signing-certificate fetch failed (network error, 5xx from
+      Google). The middleware turns it into 503, matching the
+      `IdentityUnavailable` (PostgreSQL down) path: an inability to
+      verify is infrastructure, not a rejected credential.
+
+    Neither exception's message is ever surfaced to a client or logged;
+    the original exception is never chained into it.
     """
     project_id = config.firebase_project_id
     assert project_id is not None  # guaranteed by get_auth_config for mode == "firebase"
@@ -206,7 +233,9 @@ def verify_firebase_id_token(token: str, config: AuthConfig) -> VerifiedFirebase
     # securetoken certs), aud, exp and iat; this module then adds iss +
     # sub.
     try:
+        import google.auth.exceptions as google_auth_exceptions
         import google.oauth2.id_token as google_id_token
+        import requests.exceptions as requests_exceptions
 
         claims = google_id_token.verify_firebase_token(
             token,
@@ -216,7 +245,16 @@ def verify_firebase_id_token(token: str, config: AuthConfig) -> VerifiedFirebase
         )
     except FirebaseTokenError:
         raise
-    except Exception as exc:  # noqa: BLE001 -- every verifier failure collapses to one generic error
+    except (google_auth_exceptions.TransportError, requests_exceptions.RequestException) as exc:
+        # The signing-certificate fetch itself failed -- we cannot say
+        # whether the token is good. Fail closed as "verifier down"
+        # (503), never as "bad credential" (401). `TransportError`
+        # extends `GoogleAuthError`, NOT `ValueError`, so this never
+        # shadows a genuine token-validity failure below.
+        raise FirebaseVerifierUnavailable(
+            f"signing-certificate fetch failed: {type(exc).__name__}"
+        ) from None
+    except Exception as exc:  # noqa: BLE001 -- every remaining verifier failure is a bad token
         raise FirebaseTokenError(f"token verification failed: {type(exc).__name__}") from None
 
     if not isinstance(claims, dict):

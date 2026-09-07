@@ -31,6 +31,7 @@ import research_agent.telemetry as telemetry
 from research_agent.config.settings import AuthConfig
 from research_agent.firebase_auth import (
     FirebaseTokenError,
+    FirebaseVerifierUnavailable,
     VerifiedFirebaseToken,
     extract_bearer_token,
     verify_firebase_id_token,
@@ -191,17 +192,46 @@ def test_real_path_rejects_bad_claims_even_when_signature_check_passed(overrides
         ValueError("Token signature is invalid"),      # bad signature / unsupported alg (Part G tests 5, 9)
         ValueError("Token has expired"),                # (Part G test 6)
         ValueError("Token has wrong audience"),         # (Part G test 7)
-        RuntimeError("Could not fetch certificates"),   # network failure fetching certs
+        RuntimeError("something unexpected in the verifier"),
         KeyError("kid"),
     ],
 )
-def test_real_path_maps_every_verifier_exception_to_generic_error(exc):
+def test_real_path_maps_every_bad_token_exception_to_generic_error(exc):
     with _mock_google_verify(raises=exc):
         with pytest.raises(FirebaseTokenError) as ei:
             verify_firebase_id_token("real.looking.token", _FIREBASE_CFG)
     # the generic error never carries the verifier's own message
     assert str(exc) not in str(ei.value)
     assert "signature" not in str(ei.value).lower()
+
+
+def _cert_fetch_failures():
+    """The exception types google-auth actually raises when the fetch of
+    Google's x509 signing certificates fails -- distinct from a bad
+    token. `TransportError` extends `GoogleAuthError`, not `ValueError`."""
+    import google.auth.exceptions as gae
+    import requests.exceptions as rex
+
+    return [
+        gae.TransportError("Could not fetch certificates at https://www.googleapis.com/... : 503"),
+        rex.ConnectionError("Failed to establish a new connection"),
+        rex.Timeout("Read timed out"),
+    ]
+
+
+@pytest.mark.parametrize("exc", _cert_fetch_failures())
+def test_real_path_signing_cert_outage_is_verifier_unavailable_not_bad_token(exc):
+    """Part C: a signing-certificate / network outage must NOT be
+    reported as an invalid user credential. It raises
+    `FirebaseVerifierUnavailable` (-> 503), never `FirebaseTokenError`
+    (-> 401)."""
+    with _mock_google_verify(raises=exc):
+        with pytest.raises(FirebaseVerifierUnavailable) as ei:
+            verify_firebase_id_token("real.looking.token", _FIREBASE_CFG)
+    assert not isinstance(ei.value, FirebaseTokenError)
+    # never leaks the endpoint URL or the verifier's own message
+    assert "googleapis.com" not in str(ei.value)
+    assert str(exc) not in str(ei.value)
 
 
 # --- resolve_request_identity + build_firebase_authenticator ---
@@ -295,6 +325,30 @@ def test_authenticator_propagates_identity_denied_not_masked_as_unavailable():
                 authenticate(_unsigned_jwt(_claims()))
         finally:
             _state.pop("db_pool", None)
+
+
+def test_authenticator_propagates_verifier_unavailable_without_touching_the_pool():
+    """Part C: when the signing-cert fetch fails, the closure raises
+    `FirebaseVerifierUnavailable` straight out of verification -- it never
+    reaches the DB pool, and it is not remapped to `IdentityUnavailable`
+    (both are 503, but keeping them distinct keeps the cause legible)."""
+    from research_agent.api_app.runtime import _state
+
+    class _PoolMustNotBeUsed:
+        def connection(self):
+            raise AssertionError("the pool must not be touched when verification itself failed")
+
+    _state["db_pool"] = _PoolMustNotBeUsed()
+    try:
+        with patch(
+            "research_agent.identity.verify_firebase_id_token",
+            side_effect=FirebaseVerifierUnavailable("cert fetch failed"),
+        ):
+            authenticate = build_firebase_authenticator(_EMULATOR_CFG)
+            with pytest.raises(FirebaseVerifierUnavailable):
+                authenticate(_unsigned_jwt(_claims()))
+    finally:
+        _state.pop("db_pool", None)
 
 
 # --- FirebaseAuthMiddleware integration (create_app, fake authenticator) ---
@@ -414,6 +468,21 @@ def test_database_unavailable_denies_access_with_503():
     assert r.status_code == 503
     assert r.json()["detail"]["reason_code"] == "identity_store_unavailable"
     assert "db down" not in r.text
+
+
+def test_signing_cert_outage_denies_with_503_not_401():
+    """Part C: a Google signing-certificate outage is infrastructure, not
+    a bad credential -- the middleware answers 503, identical in shape to
+    the database-outage response, and never 401."""
+    with _firebase_client(
+        authenticate=lambda t: (_ for _ in ()).throw(FirebaseVerifierUnavailable("cert endpoint 503")),
+    ) as client:
+        r = client.get("/me", headers={"Authorization": "Bearer good"})
+    assert r.status_code == 503
+    assert r.json()["detail"]["reason_code"] == "identity_store_unavailable"
+    assert "www-authenticate" not in r.headers
+    assert r.headers["cache-control"] == "no-store"
+    assert "cert" not in r.text
 
 
 def test_protected_route_is_unreachable_before_verification_and_makes_zero_provider_calls():
