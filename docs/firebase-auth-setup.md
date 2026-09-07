@@ -5,6 +5,21 @@ multi-user identity). This document is the manual setup a human must do
 in the Firebase / Google Cloud console — the application code creates no
 Firebase resources and invents no project ID.
 
+> **Do not deploy `AUTH_MODE=firebase` to any internet-reachable
+> environment yet.** In its current state the backend *authenticates* a
+> Firebase user and creates an internal `users` row (`approved = false`),
+> but it does **not** yet restrict product routes to approved users, and
+> it does **not** yet scope curation/library data to the signing-in
+> user. `require_approved_user` and per-user resource ownership are wired
+> onto the product routes in a later step (see
+> `docs/plans/public-multi-user-deployment-review.md`). Until that step
+> is complete, any signed-in Firebase account — approved or not — can
+> reach every curation and library route and would share one unpartitioned
+> workspace. `firebase` mode is safe to run only locally, against the
+> emulator, for development of the auth boundary itself. The supported
+> deployed configurations right now are `AUTH_MODE=basic` (single shared
+> credential) and, for local use only, `AUTH_MODE=disabled`.
+
 Configuration contract: `research_agent/config/settings.py`'s
 `get_auth_config()`. Verification boundary:
 `research_agent/firebase_auth.py`. Identity resolution and the
@@ -102,3 +117,39 @@ DATABASE_URL=postgresql://...          # the users table still lives in PostgreS
   separate administrative action (a later phase); `/me` works for an
   unapproved account so the frontend can render an "awaiting approval"
   state.
+
+## What verification does and does not check
+
+`research_agent/firebase_auth.py` verifies the ID token's RS256
+signature (against Google's public `securetoken@system` certificates),
+the issuer, the audience (`FIREBASE_PROJECT_ID`), expiry and issued-at
+(300 s clock skew), and a usable `sub`. Firebase *custom* tokens,
+session cookies and tokens minted for a different project are rejected
+by the issuer / signing-key check.
+
+**Token revocation is intentionally not checked.** Verifying whether a
+specific ID token has been revoked (password reset, "sign out of all
+sessions", explicit revocation) needs an Admin-SDK-style call against
+Google, which needs Application Default Credentials from the runtime's
+attached service account — deliberately out of scope for this phase.
+The compensating control is `users.disabled`: **every** request
+re-resolves the token to its internal `users` row and is denied if that
+row is `disabled` (identity is never cached between requests). So the
+operator's lever for immediately locking out a specific person is
+`UPDATE users SET disabled = true` — it takes effect on that account's
+very next request, regardless of how long their existing ID token
+remains otherwise valid (at most one hour). Revocation checking can be
+added later without changing this contract.
+
+## Failure modes
+
+- A **bad, expired, malformed, wrong-project or missing** token → `401`
+  with a single generic body. The verifier's own message is never
+  returned or logged.
+- A failure to **fetch Google's signing certificates** (network outage,
+  5xx from Google's cert endpoint) → `503`
+  (`reason_code: identity_store_unavailable`), identical in shape to a
+  PostgreSQL outage. An inability to *complete* verification is treated
+  as infrastructure unavailability, never as an invalid credential —
+  the same fail-closed posture the admission and lease stores use. The
+  request is still denied and the route never runs.
