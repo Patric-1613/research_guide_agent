@@ -42,7 +42,9 @@ that imports this module lazily.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -178,7 +180,7 @@ def get_settings() -> Settings:
     )
 
 
-# --- PR2B: single-user HTTP Basic Auth gate ---
+# --- PR2B / Day 3: the access-gate configuration ---
 #
 # Deliberately NOT a field on Settings/get_settings() above -- same
 # reasoning as get_keyword_filter_max_concurrent_calls's own separation
@@ -199,21 +201,53 @@ _VALID_APP_ENVS = ("local", "production")
 # there is only one validation path to reason about.
 MIN_AUTH_PASSWORD_LENGTH = 16
 
+AuthMode = Literal["disabled", "basic", "firebase"]
+_VALID_AUTH_MODES = ("disabled", "basic", "firebase")
+
+# Google Cloud / Firebase project IDs: 6-30 chars, lowercase letters,
+# digits, hyphens; must start with a letter; must not end with a hyphen.
+# Firebase project IDs follow the exact same rules as GCP project IDs.
+_FIREBASE_PROJECT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+
+# host:port -- the shape the Firebase Auth emulator advertises via
+# FIREBASE_AUTH_EMULATOR_HOST (e.g. "127.0.0.1:9099", "localhost:9099").
+_EMULATOR_HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+:\d{1,5}$")
+
 
 @dataclass(frozen=True)
 class AuthConfig:
     """The outcome of validating this deployment's access-gate
     configuration -- returned only by get_auth_config() below, never
-    constructed ad hoc elsewhere. `enabled=False` means
-    auth_middleware.BasicAuthMiddleware must pass every request straight
-    through unchecked (the current, unauthenticated local-dev/test
-    behavior, unchanged); `enabled=True` means username/password are both
-    present and already validated -- the middleware never re-validates
-    them itself."""
+    constructed ad hoc elsewhere.
 
-    enabled: bool
-    username: str | None
-    password: str | None
+    `mode` is authoritative:
+      - "disabled" -- both auth middlewares are complete no-op
+        passthroughs (the current, unauthenticated local-dev/test
+        behavior). Rejected when APP_ENV=production.
+      - "basic" -- the existing shared HTTP Basic Auth gate
+        (auth_middleware.BasicAuthMiddleware). `username`/`password` are
+        present and already validated.
+      - "firebase" -- public multi-user identity
+        (firebase_auth_middleware.FirebaseAuthMiddleware). Requires a
+        validated `firebase_project_id`; `firebase_emulator_host` is set
+        only outside production.
+
+    `enabled` is a backward-compat computed property, NOT a field:
+    auth_middleware.BasicAuthMiddleware predates AUTH_MODE and reads it
+    to decide whether to act. It is True only in "basic" mode -- in
+    "firebase"/"disabled" mode the Basic gate stays a passthrough and the
+    Firebase middleware (or nothing) does the work.
+    """
+
+    mode: AuthMode
+    username: str | None = None
+    password: str | None = None
+    firebase_project_id: str | None = None
+    firebase_emulator_host: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "basic"
 
 
 def _app_env() -> str:
@@ -232,71 +266,137 @@ def _app_env() -> str:
     return normalized
 
 
+def _resolve_auth_mode() -> AuthMode:
+    """The deterministic AUTH_MODE / legacy-AUTH_ENABLED transition.
+
+    - Both AUTH_MODE and AUTH_ENABLED set (to any non-empty value) ->
+      **raise**. There is no "compatible combination" -- AUTH_ENABLED is
+      the legacy variable and is fully superseded by AUTH_MODE; a
+      deployment that sets AUTH_MODE must remove AUTH_ENABLED entirely.
+    - AUTH_MODE set -> it wins; must be one of 'disabled'/'basic'/
+      'firebase', else raise.
+    - AUTH_MODE unset -> derive from the legacy variable so every
+      existing deployment and test keeps working unchanged:
+      AUTH_ENABLED=true -> 'basic'; anything else -> 'disabled'.
+    """
+    raw_mode = os.getenv("AUTH_MODE")
+    raw_enabled = os.getenv("AUTH_ENABLED")
+    mode_set = raw_mode is not None and raw_mode.strip() != ""
+    enabled_set = raw_enabled is not None and raw_enabled.strip() != ""
+
+    if mode_set and enabled_set:
+        raise RuntimeError(
+            "AUTH_MODE and AUTH_ENABLED must not both be set -- AUTH_ENABLED is the "
+            "legacy variable, superseded by AUTH_MODE. Remove AUTH_ENABLED and keep "
+            "only AUTH_MODE."
+        )
+
+    if mode_set:
+        mode = raw_mode.strip().lower()
+        if mode not in _VALID_AUTH_MODES:
+            raise ValueError(
+                f"AUTH_MODE={raw_mode!r} is not valid (use 'disabled', 'basic', or 'firebase')."
+            )
+        return mode  # type: ignore[return-value]
+
+    return "basic" if _strict_bool("AUTH_ENABLED", False) else "disabled"
+
+
 def get_auth_config() -> AuthConfig:
     """Validates and returns this process's access-gate configuration.
-    Called exactly once, from api_app/app.py's create_app() -- see this
-    module's own note above for why. Raises RuntimeError/ValueError (never
-    returns a partially-valid config) on any of:
+    Called exactly once, from api_app/app.py's create_app(). Raises
+    RuntimeError/ValueError (never returns a partially-valid config) on
+    any misconfiguration; the message names which requirement was unmet
+    and NEVER the configured secret value (a password, a full token, an
+    Authorization header).
 
-    - APP_ENV set to something other than 'local'/'production'
-    - APP_ENV=production with AUTH_ENABLED not true -- there is
-      deliberately NO override for this: disabling the gate is never a
-      valid production configuration, and this function does not accept
-      one. A production rollback means restoring a previous known-good
-      image/commit (or otherwise fixing the credentials), never flipping
-      auth off.
-    - AUTH_ENABLED=true (in either APP_ENV) with AUTH_USERNAME empty
-    - AUTH_ENABLED=true (in either APP_ENV) with AUTH_USERNAME containing
-      ':' -- ambiguous under RFC 7617's own username/password delimiter;
-      AUTH_PASSWORD may still contain ':' (see the check's own comment)
-    - AUTH_ENABLED=true (in either APP_ENV) with AUTH_PASSWORD missing or
-      shorter than MIN_AUTH_PASSWORD_LENGTH
+    Mode selection: see _resolve_auth_mode() above (AUTH_MODE, or the
+    legacy AUTH_ENABLED fallback).
 
-    AUTH_ENABLED=false with APP_ENV=local (the default with no env vars
-    set at all) returns AuthConfig(enabled=False, ...) -- the exact
-    current, unauthenticated local-dev/test behavior, unchanged.
+    Universal rules (every mode):
+    - APP_ENV must be 'local' or 'production'.
+    - APP_ENV=production + effective mode 'disabled' -> raise. There is
+      deliberately NO override: disabling auth is never a valid
+      production configuration. A production rollback restores a
+      known-good image/commit, it never flips auth off.
+    - FIREBASE_AUTH_EMULATOR_HOST set + APP_ENV=production -> raise,
+      regardless of mode -- the emulator issues unsigned tokens; it must
+      never be reachable from a production process.
 
-    Never includes the actual configured username/password value in any
-    raised message -- only which requirement was unmet.
+    mode='basic': AUTH_USERNAME (non-empty, no ':') and AUTH_PASSWORD
+    (>= MIN_AUTH_PASSWORD_LENGTH) are required and validated exactly as
+    before this change.
+
+    mode='firebase': FIREBASE_PROJECT_ID is required and must match the
+    Google Cloud / Firebase project-ID format. FIREBASE_AUTH_EMULATOR_HOST
+    is optional and only outside production; when set it must be
+    'host:port'. NO service-account key path or key-file setting is read
+    anywhere -- token verification needs only the project ID plus
+    Google's public certificates, and any Admin-SDK-style call uses
+    Application Default Credentials.
+
+    mode='disabled' (the default with no auth env vars set at all, in
+    APP_ENV=local): AuthConfig(mode='disabled') -- both auth middlewares
+    are no-op passthroughs, the exact current unauthenticated local/test
+    behavior.
     """
     app_env = _app_env()
-    enabled = _strict_bool("AUTH_ENABLED", False)
+    mode = _resolve_auth_mode()
 
-    if app_env == "production" and not enabled:
+    if app_env == "production" and mode == "disabled":
         raise RuntimeError(
-            "AUTH_ENABLED must be true when APP_ENV=production -- refusing to "
-            "start an unauthenticated production instance. There is no "
-            "production auth-disable override; if the gate is broken, restore "
-            "a previous known-good image/commit instead of disabling it."
+            "authentication must not be disabled when APP_ENV=production -- refusing to "
+            "start an unauthenticated production instance. There is no production "
+            "auth-disable override; if the gate is broken, restore a previous "
+            "known-good image/commit instead of disabling it."
         )
 
-    if not enabled:
-        return AuthConfig(enabled=False, username=None, password=None)
-
-    username = os.getenv("AUTH_USERNAME") or ""
-    if not username:
-        raise RuntimeError("AUTH_USERNAME must be set (non-empty) when AUTH_ENABLED=true.")
-    # PR2B.1: ':' is the wire-format delimiter between the username and
-    # password fields of a decoded Basic-Auth header (RFC 7617) -- a
-    # configured username containing one is not a value any standard
-    # Basic-Auth client can address unambiguously (a colon typed into a
-    # username field is indistinguishable, on the wire, from the same
-    # colon marking the username/password boundary). Rejected here,
-    # at startup, rather than left to surface as a confusing runtime
-    # auth failure. Passwords may still contain ':' -- auth_middleware.py's
-    # _parse_basic_credentials only ever splits on the FIRST colon, so a
-    # colon anywhere in the password is unambiguous.
-    if ":" in username:
-        raise RuntimeError("AUTH_USERNAME must not contain ':' when AUTH_ENABLED=true.")
-
-    password = os.getenv("AUTH_PASSWORD") or ""
-    if len(password) < MIN_AUTH_PASSWORD_LENGTH:
+    raw_emulator_host = os.getenv("FIREBASE_AUTH_EMULATOR_HOST")
+    emulator_host = raw_emulator_host.strip() if raw_emulator_host and raw_emulator_host.strip() else None
+    if emulator_host is not None and app_env == "production":
         raise RuntimeError(
-            f"AUTH_PASSWORD must be set and at least {MIN_AUTH_PASSWORD_LENGTH} "
-            "characters when AUTH_ENABLED=true."
+            "FIREBASE_AUTH_EMULATOR_HOST must not be set when APP_ENV=production -- the "
+            "Firebase Auth emulator issues unsigned tokens and is a local-development "
+            "tool only."
         )
 
-    return AuthConfig(enabled=True, username=username, password=password)
+    if mode == "disabled":
+        return AuthConfig(mode="disabled")
+
+    if mode == "basic":
+        username = os.getenv("AUTH_USERNAME") or ""
+        if not username:
+            raise RuntimeError("AUTH_USERNAME must be set (non-empty) when the auth mode is 'basic'.")
+        # PR2B.1: ':' is the wire-format delimiter between the username and
+        # password fields of a decoded Basic-Auth header (RFC 7617) -- a
+        # configured username containing one is not a value any standard
+        # Basic-Auth client can address unambiguously. Rejected here at
+        # startup. Passwords may still contain ':' (auth_middleware.py's
+        # _parse_basic_credentials only splits on the FIRST colon).
+        if ":" in username:
+            raise RuntimeError("AUTH_USERNAME must not contain ':' when the auth mode is 'basic'.")
+        password = os.getenv("AUTH_PASSWORD") or ""
+        if len(password) < MIN_AUTH_PASSWORD_LENGTH:
+            raise RuntimeError(
+                f"AUTH_PASSWORD must be set and at least {MIN_AUTH_PASSWORD_LENGTH} "
+                "characters when the auth mode is 'basic'."
+            )
+        return AuthConfig(mode="basic", username=username, password=password)
+
+    # mode == "firebase"
+    project_id = (os.getenv("FIREBASE_PROJECT_ID") or "").strip()
+    if not project_id:
+        raise RuntimeError("FIREBASE_PROJECT_ID must be set when AUTH_MODE=firebase.")
+    if not _FIREBASE_PROJECT_ID_RE.fullmatch(project_id):
+        raise RuntimeError(
+            "FIREBASE_PROJECT_ID is not a valid Google Cloud / Firebase project ID "
+            "(6-30 lowercase letters, digits and hyphens; must start with a letter)."
+        )
+    if emulator_host is not None and not _EMULATOR_HOST_RE.fullmatch(emulator_host):
+        raise RuntimeError("FIREBASE_AUTH_EMULATOR_HOST must be of the form 'host:port'.")
+    return AuthConfig(
+        mode="firebase", firebase_project_id=project_id, firebase_emulator_host=emulator_host,
+    )
 
 
 # --- FRONTEND_ORIGIN / credentialed CORS contract ---

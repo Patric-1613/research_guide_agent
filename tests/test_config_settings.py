@@ -237,7 +237,7 @@ def test_get_auth_config_disabled_by_default_in_local_mode():
     """No env vars set at all -- the exact current, unauthenticated
     local-dev/test state -- must return a disabled config, never raise."""
     with patch.dict(os.environ, {}, clear=True):
-        assert get_auth_config() == AuthConfig(enabled=False, username=None, password=None)
+        assert get_auth_config() == AuthConfig(mode="disabled")
 
 
 def test_get_auth_config_app_env_defaults_to_local():
@@ -264,7 +264,7 @@ def test_get_auth_config_production_without_auth_enabled_raises():
             get_auth_config()
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
-            assert "AUTH_ENABLED" in str(exc)
+            assert "must not be disabled when APP_ENV=production" in str(exc)
 
 
 def test_get_auth_config_production_with_auth_enabled_explicitly_false_still_raises():
@@ -276,12 +276,12 @@ def test_get_auth_config_production_with_auth_enabled_explicitly_false_still_rai
             get_auth_config()
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
-            assert "AUTH_ENABLED" in str(exc)
+            assert "must not be disabled when APP_ENV=production" in str(exc)
 
 
 def test_get_auth_config_production_with_valid_credentials_succeeds():
     with patch.dict(os.environ, {"APP_ENV": "production", **_VALID_AUTH_ENV}, clear=True):
-        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3curePlatformSecret!")
+        assert get_auth_config() == AuthConfig(mode="basic", username="alice", password="s3curePlatformSecret!")
 
 
 def test_get_auth_config_enabled_missing_username_raises():
@@ -325,7 +325,7 @@ def test_get_auth_config_username_with_colon_error_never_includes_actual_usernam
 def test_get_auth_config_password_with_colon_is_accepted():
     env = {"AUTH_ENABLED": "true", "AUTH_USERNAME": "alice", "AUTH_PASSWORD": "s3cure:Platform:Secret!"}
     with patch.dict(os.environ, env, clear=True):
-        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3cure:Platform:Secret!")
+        assert get_auth_config() == AuthConfig(mode="basic", username="alice", password="s3cure:Platform:Secret!")
 
 
 def test_get_auth_config_enabled_missing_password_raises():
@@ -368,7 +368,7 @@ def test_get_auth_config_local_mode_enabled_still_validates_credentials():
         except RuntimeError:
             pass
     with patch.dict(os.environ, {"APP_ENV": "local", **_VALID_AUTH_ENV}, clear=True):
-        assert get_auth_config() == AuthConfig(enabled=True, username="alice", password="s3curePlatformSecret!")
+        assert get_auth_config() == AuthConfig(mode="basic", username="alice", password="s3curePlatformSecret!")
 
 
 def test_get_auth_config_error_messages_never_include_the_actual_secret_values():

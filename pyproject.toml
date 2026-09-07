@@ -26,6 +26,8 @@ dependencies = [
     "reportlab==5.0.0",
     "yake==0.7.3",
     "psycopg[binary,pool]==3.3.5",
+    "google-auth==2.57.1",
+    "cachecontrol==0.14.4",
 ]
 
 [dependency-groups]

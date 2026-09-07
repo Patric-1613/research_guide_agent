@@ -45,8 +45,8 @@ from research_agent.config.settings import AuthConfig
 from research_agent.qa import sqlite_checkpointer
 from research_agent.storage import init_db as real_init_db
 
-ENABLED = AuthConfig(enabled=True, username="alice", password="s3curePlatformSecret!")
-DISABLED = AuthConfig(enabled=False, username=None, password=None)
+ENABLED = AuthConfig(mode="basic", username="alice", password="s3curePlatformSecret!")
+DISABLED = AuthConfig(mode="disabled")
 
 
 # --- ASGI-level unit tests ---
@@ -228,7 +228,7 @@ def test_password_containing_colon_authenticates_successfully():
     credentials only ever splits the decoded header on the FIRST colon,
     so a colon anywhere in the password is unambiguous end-to-end."""
     app = _RecordingApp()
-    config_with_colon_password = AuthConfig(enabled=True, username="alice", password="s3cure:Platform:Secret!")
+    config_with_colon_password = AuthConfig(mode="basic", username="alice", password="s3cure:Platform:Secret!")
     mw = BasicAuthMiddleware(app, auth_config=config_with_colon_password)
 
     sent = _run(mw, _http_scope(headers=[(b"authorization", _basic_header("alice", "s3cure:Platform:Secret!"))]))
