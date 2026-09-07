@@ -104,8 +104,12 @@ def test_get_current_schema_version_is_none_before_any_migration(bare_conn):
 @pg_only
 def test_run_migrations_applies_and_records_version(bare_conn):
     applied = run_migrations(bare_conn)
-    assert applied == [1]
-    assert get_current_schema_version(bare_conn) == 1
+    # The real migrations dir grows over time; assert the runner's
+    # mechanics, not a fixed count: at least migration 1 is applied, in
+    # ascending order, and the recorded version tracks the highest.
+    assert applied and applied[0] == 1
+    assert applied == sorted(applied)
+    assert get_current_schema_version(bare_conn) == max(applied)
     with bare_conn.cursor() as cur:
         cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name")
         tables = {r[0] for r in cur.fetchall()}
@@ -119,9 +123,9 @@ def test_run_migrations_is_repeatable_and_idempotent(bare_conn):
     new."""
     first = run_migrations(bare_conn)
     second = run_migrations(bare_conn)
-    assert first == [1]
+    assert first and first[0] == 1
     assert second == []
-    assert get_current_schema_version(bare_conn) == 1
+    assert get_current_schema_version(bare_conn) == max(first)
 
 
 @pg_only

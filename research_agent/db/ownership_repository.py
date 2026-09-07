@@ -43,7 +43,7 @@ class DuplicateFirebaseUidError(Exception):
 class UserRecord:
     id: uuid.UUID
     firebase_uid: str
-    email: str
+    email: str | None  # nullable as of migration 0002 -- mutable metadata, never the ownership key
     display_name: str | None
     approved: bool
     disabled: bool
@@ -130,6 +130,57 @@ class PostgresOwnershipRepository:
             cur.execute(f"SELECT {_USER_COLUMNS} FROM users WHERE id = %s", (user_id,))
             row = cur.fetchone()
         return _row_to_user(row) if row else None
+
+    def sync_user_from_identity(
+        self, *, firebase_uid: str, email: str | None, display_name: str | None,
+    ) -> UserRecord:
+        """Day 3: the one call the identity layer makes on every verified
+        Firebase request. Returns the internal user row, creating it on a
+        first-ever sign-in (`approved=False, disabled=False`) or updating
+        only its mutable `email`/`display_name` metadata on a later
+        sign-in whose token carries different values. The internal `id`
+        (the ownership key) is NEVER changed once assigned, and
+        `approved`/`disabled` are never touched here.
+
+        Race-safe: two concurrent first sign-ins for the same
+        `firebase_uid` both reach the `INSERT ... ON CONFLICT
+        (firebase_uid) DO UPDATE` below; one inserts, the other's insert
+        conflicts and updates -- both return the same, single row with
+        the same `id`. The unconditional `updated_at = now()` on the
+        conflict branch is deliberate: it makes the statement a valid
+        UPSERT for the concurrent-insert case without a second round
+        trip.
+
+        The plain read-first path (return the existing row unchanged when
+        nothing changed) keeps the common case -- a returning, unchanged
+        user -- a single indexed SELECT with no write.
+        """
+        existing = self.get_user_by_firebase_uid(firebase_uid)
+        if existing is not None:
+            if existing.email == email and existing.display_name == display_name:
+                return existing
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE users SET email = %s, display_name = %s, updated_at = now() "
+                    f"WHERE id = %s RETURNING {_USER_COLUMNS}",
+                    (email, display_name, existing.id),
+                )
+                row = cur.fetchone()
+            self._conn.commit()
+            return _row_to_user(row)
+
+        user_id = uuid.uuid4()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO users (id, firebase_uid, email, display_name) VALUES (%s, %s, %s, %s) "
+                f"ON CONFLICT (firebase_uid) DO UPDATE SET "
+                f"email = EXCLUDED.email, display_name = EXCLUDED.display_name, updated_at = now() "
+                f"RETURNING {_USER_COLUMNS}",
+                (user_id, firebase_uid, email, display_name),
+            )
+            row = cur.fetchone()
+        self._conn.commit()
+        return _row_to_user(row)
 
     # --- curation_owners --------------------------------------------
 

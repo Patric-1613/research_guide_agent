@@ -26,7 +26,16 @@ from fastapi.responses import JSONResponse
 import research_agent.api as api
 from research_agent.api_app.static_frontend import mount_frontend
 from research_agent.auth_middleware import BasicAuthMiddleware
-from research_agent.config import get_auth_config, get_cors_config, get_thread_pool_config, get_usage_policy
+from research_agent.config import (
+    get_auth_config,
+    get_cors_config,
+    get_database_config,
+    get_thread_pool_config,
+    get_usage_policy,
+)
+from research_agent.db.pool import build_connection_pool
+from research_agent.firebase_auth_middleware import FirebaseAuthMiddleware
+from research_agent.identity import build_firebase_authenticator
 from research_agent.provider_clients import default_async_openai_client
 from research_agent.request_limits import RequestBodyLimitMiddleware
 from research_agent.services.errors import ServiceError
@@ -127,7 +136,24 @@ async def lifespan(app: FastAPI):
     # client above, unchanged.
     api._state["async_client"] = default_async_openai_client()
     api._state["collection"] = api.get_chroma_collection()
-    yield
+    # Day 3: in AUTH_MODE=firebase the identity middleware resolves every
+    # verified token to an internal user row in PostgreSQL, so it needs a
+    # connection pool. Created here (not in create_app()) so it opens at
+    # startup and closes cleanly at shutdown; the pool sizing/URL come
+    # only from get_database_config(). Migrations are NOT run here -- they
+    # run explicitly at deploy time (see research_agent/db/migrations.py).
+    # In basic/disabled mode no pool is created and _state has no
+    # "db_pool" key at all.
+    db_pool = None
+    if get_auth_config().mode == "firebase":
+        db_pool = build_connection_pool(get_database_config())
+        api._state["db_pool"] = db_pool
+    try:
+        yield
+    finally:
+        if db_pool is not None:
+            api._state.pop("db_pool", None)
+            db_pool.close()
 
 
 def create_app() -> FastAPI:
@@ -147,6 +173,19 @@ def create_app() -> FastAPI:
     # 401 (emitted before CORSMiddleware runs) can carry the matching
     # credentialed-CORS headers.
     cors_config = get_cors_config()
+
+    # Day 3: AUTH_MODE=firebase keeps its user table in PostgreSQL, so
+    # DATABASE_URL must be configured. Cross-checked here so a firebase
+    # deployment with no database refuses to start, rather than 503-ing
+    # every request at runtime. Deliberately NOT called in basic/disabled
+    # mode: those deployments do not use the ownership store, and a
+    # pre-Day-3 basic-auth production deployment must keep booting with no
+    # DATABASE_URL set.
+    if auth_config.mode == "firebase" and not get_database_config().configured:
+        raise RuntimeError(
+            "AUTH_MODE=firebase requires DATABASE_URL to be configured -- the users table "
+            "lives in PostgreSQL. Set DATABASE_URL (see get_database_config)."
+        )
 
     app = FastAPI(title="Research Paper Summarizer API", lifespan=lifespan)
 
@@ -201,6 +240,23 @@ def create_app() -> FastAPI:
         BasicAuthMiddleware, auth_config=auth_config, allowed_origins=cors_config.allowed_origins,
     )
 
+    # Day 3: the Firebase identity gate, added LAST so it is the true
+    # outermost layer (add_middleware = most-recently-added-runs-first).
+    # A complete no-op passthrough unless auth_config.mode == "firebase",
+    # so basic/disabled deployments are byte-identical to before Day 3;
+    # only one of {BasicAuthMiddleware, FirebaseAuthMiddleware} is ever
+    # active. Handed the same validated origin list as BasicAuth and CORS
+    # so its own pre-CORS 401/503 carries the matching credentialed-CORS
+    # headers. `authenticate` is built unconditionally (cheap; imports
+    # nothing heavy in non-firebase mode) and reads the db_pool lazily
+    # from _state at request time.
+    app.add_middleware(
+        FirebaseAuthMiddleware,
+        auth_config=auth_config,
+        allowed_origins=cors_config.allowed_origins,
+        authenticate=build_firebase_authenticator(auth_config),
+    )
+
     # One centralized handler for every service-layer ServiceError,
     # instead of an identical try/except in each router. Same convention
     # as the two guard/capacity handlers below.
@@ -217,6 +273,11 @@ def create_app() -> FastAPI:
     from research_agent.api_app.routers.health import router as health_router
 
     app.include_router(health_router)
+
+    # Day 3: GET /me -- the authenticated account's own safe profile.
+    from research_agent.api_app.routers.me import router as me_router
+
+    app.include_router(me_router)
 
     from research_agent.api_app.routers.search import router as search_router
 
@@ -301,7 +362,7 @@ def create_app() -> FastAPI:
     # internal post-include_router() route representation -- see that
     # module's own docstring.
     mount_frontend(app, [
-        health_router, search_router, summarize_router, chat_router, export_router, library_router,
+        health_router, me_router, search_router, summarize_router, chat_router, export_router, library_router,
         curation_core_router, curation_lanes_router, curation_sessions_router, curation_history_router,
         curation_reports_router, curation_chat_router,
     ])
