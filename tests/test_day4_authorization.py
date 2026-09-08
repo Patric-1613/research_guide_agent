@@ -276,6 +276,46 @@ def test_owner_b_cannot_touch_owner_a_session_and_gets_the_same_404_as_missing()
         assert client.get(f"/curation/{sid}", headers={"Authorization": "Bearer a"}).status_code == 200
 
 
+def test_rejected_session_request_never_opens_the_checkpointer_or_a_paid_action():
+    """Hard tripwire (Part E.6/E.7): for a non-owner, every session verb --
+    reads, mutations, and both streams -- is refused before the
+    checkpointer is even opened and before guard_paid_action runs. The
+    ownership dependency resolves ahead of get_curation_checkpointer, so
+    no checkpoint connection, no StreamingResponse, no lease."""
+    with _firebase_app() as client:
+        _register("a", owner_id=_OWNER_A, approved=True)
+        _register("b", owner_id=_OWNER_B, approved=True)
+        sid = _start_a_curation(client, "a")
+
+        def _cp_tripwire():
+            raise AssertionError("checkpointer must not be opened for a rejected request")
+            yield  # pragma: no cover
+
+        client.app.dependency_overrides[api.get_curation_checkpointer] = _cp_tripwire
+        with patch("research_agent.usage_guard.guard_paid_action",
+                   side_effect=AssertionError("guard_paid_action must not run")):
+            hb = {"Authorization": "Bearer b"}
+            for method, path, body in [
+                ("get", f"/curation/{sid}", None),
+                ("post", f"/curation/{sid}/picks", {"picked_paper_ids": []}),
+                ("post", f"/curation/{sid}/select-from-history", {"turn_index": 0}),
+                ("post", f"/curation/{sid}/reopen", None),
+                ("post", f"/curation/{sid}/chat", {"message": "x"}),
+                ("post", f"/curation/{sid}/chat/stream", {"message": "x"}),
+                ("post", f"/curation/{sid}/chat/exchanges/delete", {"exchange_indices": [0]}),
+                ("post", f"/curation/{sid}/report", {}),
+                ("post", f"/curation/{sid}/report/regenerate", {}),
+                ("post", f"/curation/{sid}/report/stream", {}),
+                ("post", f"/curation/{sid}/report/regenerate/stream", {}),
+                ("get", f"/curation/{sid}/report/export", None),
+                ("post", f"/curation/{sid}/reports/v1/activate", None),
+                ("delete", f"/curation/{sid}", None),
+            ]:
+                r = _call(client, method, path, hb, body)
+                assert r.status_code == 404, (path, r.status_code)
+                assert r.json()["detail"] == "session_id not found"
+
+
 def test_cross_owner_mutation_and_stream_make_zero_provider_and_paid_action_work():
     with _firebase_app() as client:
         _register("a", owner_id=_OWNER_A, approved=True)
