@@ -2,14 +2,15 @@
 
 **Status:** architecture reference. This document was written as a
 read-only review; the Tier 1 controlled-beta schedule in section I has
-since begun. **Days 1–4 are implemented and merged to `main`** (Day 1
+since begun. **Days 1–5 are implemented and merged to `main`** (Day 1
 foundation; Day 2 Postgres ownership schema + coordinator; Day 3 Firebase
 identity, token verification, `/me`; Day 4 approval + per-user curation
-ownership enforcement). **Day 5 (frontend auth states) is the next
+ownership enforcement; Day 5 the frontend Google sign-in + approval-gate
+experience). **Day 6 (infrastructure provisioning) is the next
 checkpoint.** No GCP provisioning or deployment has occurred, and
-`AUTH_MODE=firebase` is not enabled in any real environment. The
-authorization model as built is described in `docs/architecture.md`,
-"Authorization (Firebase multi-user mode)".
+`AUTH_MODE=firebase` / `VITE_AUTH_MODE=firebase` are not enabled in any
+real environment. The authorization model as built is described in
+`docs/architecture.md`, "Authorization (Firebase multi-user mode)".
 
 This is the continuation of a two-part review. Part 1 (sections A–H) was
 delivered in conversation and is not reproduced here in full — only a
@@ -326,7 +327,25 @@ the full sense; not Tier 2 or Tier 3.
   itemized by route; the tripwire test's assertion output showing zero
   provider calls on a rejected request.
 
-### Day 5 — Frontend auth states
+### Day 5 — Frontend auth states — ✅ complete
+- **As built (differs from the sketch below):** `VITE_AUTH_MODE`
+  (`disabled`/`basic`/`firebase`, unset → disabled) mirrors the backend
+  `AUTH_MODE`; the Firebase SDK (`firebase@^12.18.0`, `firebase/app` +
+  `firebase/auth`) loads only in `firebase` mode as its own lazy chunk.
+  `src/lib/auth/` owns the state machine (`initializing` → `signed-out` →
+  `checking` → `awaiting-approval` / `approved` / `denied` / `error`); an
+  `<AuthGate>` renders the app **only** after `GET /me` confirms
+  `approved` — not a redirect. The Bearer token is attached to *every*
+  transport (ordinary calls, both SSE streams, **and** the report-export
+  download, which became an authenticated blob fetch — a plain
+  `<a href>` cannot carry the header), fetched fresh per request so
+  Firebase refreshes it. Persistence is **in-memory only** (no token in
+  `localStorage`/`sessionStorage`/IndexedDB) — a documented bounded-beta
+  tradeoff: a page reload returns to the sign-in screen. A `401` moves
+  the session to an honest expired state and never silently retries.
+  Full write-up: `docs/architecture.md` "Authorization (Firebase
+  multi-user mode) — frontend", `frontend/README.md`. Commits `d71a7be`,
+  `18d9aff`.
 - **Objective:** Firebase JS SDK, a Google sign-in screen, token attachment
   in the shared fetch wrapper, 401 handling (redirect to sign-in), sign-out,
   and gating `CurationWorkspacePage` on an authenticated state.
@@ -346,6 +365,16 @@ the full sense; not Tier 2 or Tier 3.
   `npm run build` output.
 
 ### Day 6 — Infrastructure provisioning
+- **Prerequisite discovered in the Day 5 review — the Dockerfile is NOT
+  unchanged.** `vite build` inlines `import.meta.env.VITE_*` at build
+  time, and the current `frontend-builder` stage receives none of them
+  (`.dockerignore` excludes `.env*`), so it always builds `disabled`
+  mode. Day 6 must add `ARG`/`ENV` for `VITE_API_BASE_URL`,
+  `VITE_AUTH_MODE`, and `VITE_FIREBASE_{API_KEY,AUTH_DOMAIN,PROJECT_ID,
+  APP_ID}` to that stage, before `RUN npm run build`, and pass them via
+  `docker build --build-arg …` from the deploy config. These are public
+  values, so their presence in image build metadata is acceptable.
+  Runtime env injection cannot change an already-built static bundle.
 - **Objective:** provision the VM (dedicated non-default service account per
   Correction 2, with exactly the listed IAM roles), Cloud SQL instance,
   persistent disk + swap, HTTPS (Caddy/nginx + Let's Encrypt on the VM,
@@ -359,7 +388,8 @@ the full sense; not Tier 2 or Tier 3.
   run one backup drill (Cloud SQL automated backup + `scripts/
   data_backup.py` for the VM's `/app/data`) and one rollback drill (deploy a
   dummy image, roll back to the prior digest).
-- **Files/modules:** infra-only — Dockerfile unchanged, a new deployment
+- **Files/modules:** the Dockerfile `frontend-builder` stage gains the
+  `VITE_*` build ARGs (above); otherwise infra-only — a new deployment
   runbook doc, systemd unit or `docker-compose.yml` referencing the image
   digest.
 - **Tests:** none new in-repo; operational verification only.

@@ -365,16 +365,32 @@ deployment production-complete.
   Langfuse tracing and the local `usage_telemetry.sqlite` table exists;
   no external alerting is wired up.
 - **Public multi-user (`AUTH_MODE=firebase`) remaining work** — the
-  backend authorization model is complete and enforced (approval gate,
-  per-user curation ownership, legacy-route lockout — see
-  `docs/architecture.md`, "Authorization"), but a public deployment still
-  needs: the frontend Firebase sign-in flow (no login UI exists yet); a
-  managed PostgreSQL instance (Cloud SQL) with `DATABASE_URL` injected as
-  a secret and migrations run at deploy time; a self-service or
-  operator-facing account-approval path (today `users.approved` is
-  flipped with SQL); and per-user *global* paid-usage caps (usage limits
-  today are per-session and deployment-wide). See
+  backend authorization model and the frontend sign-in experience are
+  both implemented (backend: approval gate, per-user curation ownership,
+  legacy-route lockout; frontend: Google sign-in, `/me` approval gate,
+  in-memory ID token, authenticated calls/streams/downloads — see
+  `docs/architecture.md`, "Authorization (Firebase multi-user mode)"). A
+  public deployment still needs: **the Docker frontend build stage to
+  receive the `VITE_*` values** (below); a managed PostgreSQL instance
+  (Cloud SQL) with `DATABASE_URL` injected as a secret and migrations run
+  at deploy time; a self-service or operator-facing account-approval path
+  (today `users.approved` is flipped with SQL); and per-user *global*
+  paid-usage caps (usage limits today are per-session and
+  deployment-wide). See
   `docs/plans/public-multi-user-deployment-review.md`.
+- **Docker frontend build must receive `VITE_*` values (Day 6).**
+  `vite build` inlines `import.meta.env.VITE_*` **at build time**; the
+  current `Dockerfile` `frontend-builder` stage receives none (the
+  `.dockerignore` excludes `.env*`), so an image built today always runs
+  the frontend in `VITE_AUTH_MODE=disabled`. To ship a `firebase`-mode
+  image, add `ARG` + `ENV` for `VITE_API_BASE_URL`, `VITE_AUTH_MODE`, and
+  `VITE_FIREBASE_{API_KEY,AUTH_DOMAIN,PROJECT_ID,APP_ID}` to that stage
+  before `RUN npm run build`, and pass them with
+  `docker build --build-arg …` from the deploy configuration. These are
+  public client-side values, so their appearance in image build metadata
+  is acceptable. **Runtime environment injection cannot change an
+  already-built static bundle** — the mode is fixed when the image is
+  built.
 - **SQLite/Chroma limitations for multi-worker or multi-instance
   deployment** — this package is explicitly single-process/single-worker
   by design (PR1's own constraint). SQLite's per-request-connection

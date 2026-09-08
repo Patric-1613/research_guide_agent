@@ -5,17 +5,20 @@ multi-user identity). This document is the manual setup a human must do
 in the Firebase / Google Cloud console — the application code creates no
 Firebase resources and invents no project ID.
 
-> **Backend authorization for `AUTH_MODE=firebase` is enforced**
-> (approval gate + per-user curation ownership + legacy-route lockout —
-> see [`architecture.md`](architecture.md#authorization-firebase-multi-user-mode)).
-> A public deployment still needs the remaining checkpoints from
-> `docs/plans/public-multi-user-deployment-review.md`: the frontend
-> sign-in flow, and the GCP/Cloud SQL infrastructure. There is also no
-> self-service approval UI yet — a new account stays `approved = false`
-> until an operator flips the flag with SQL. `firebase` mode runs
-> correctly locally against the emulator today; the supported *deployed*
-> configurations remain `AUTH_MODE=basic` and (local only)
-> `AUTH_MODE=disabled` until that work lands.
+> **Backend authorization and the frontend sign-in experience for
+> `firebase` mode are both implemented** (backend: approval gate +
+> per-user curation ownership + legacy-route lockout — see
+> [`architecture.md`](architecture.md#authorization-firebase-multi-user-mode);
+> frontend: Google sign-in, `/me` approval gate, in-memory token,
+> authenticated calls/streams/downloads — see the "Frontend" subsection
+> there and `frontend/README.md`). A public deployment still needs the
+> GCP/Cloud SQL infrastructure and the Docker `VITE_*` build-arg wiring
+> (`docs/deployment.md`, `docs/plans/public-multi-user-deployment-review.md`
+> Day 6). There is also no self-service approval UI — a new account stays
+> `approved = false` until an operator flips the flag with SQL.
+> `firebase` mode runs correctly locally against the emulator today; the
+> supported *deployed* configurations remain `AUTH_MODE=basic` and (local
+> only) `AUTH_MODE=disabled` until that work lands.
 
 Configuration contract: `research_agent/config/settings.py`'s
 `get_auth_config()`. Verification boundary:
@@ -67,12 +70,39 @@ downloaded key file.
    "Your apps" → add a Web app if none exists → copy the config object
    (`apiKey`, `authDomain`, `projectId`, `appId`, …). These are **public
    client-side values** (they ship in the browser bundle by design) and
-   are consumed by the Day-5 frontend, not by this backend. The backend
+   are consumed by the frontend (below), not by this backend. The backend
    needs only `projectId`, set as `FIREBASE_PROJECT_ID`.
 
 5. **Do not download a service-account key.** Project settings → Service
    accounts has a "Generate new private key" button — never use it for
    this deployment.
+
+## What the frontend needs
+
+The React app selects its behaviour with **`VITE_AUTH_MODE`**
+(`disabled` | `basic` | `firebase`, unset → `disabled`), which **must
+match** the backend's `AUTH_MODE`. In `firebase` mode it also needs the
+step-4 web config, as `VITE_*` variables (`frontend/.env.example`):
+
+| Variable | From the web config object | Required |
+| --- | --- | --- |
+| `VITE_FIREBASE_API_KEY` | `apiKey` | yes |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `authDomain` | yes |
+| `VITE_FIREBASE_PROJECT_ID` | `projectId` | yes — **must equal the backend `FIREBASE_PROJECT_ID`** |
+| `VITE_FIREBASE_APP_ID` | `appId` | optional (auth doesn't need it) |
+
+These are **public client-side values**, not a service-account secret —
+they ship in the browser bundle by design. The app throws a clear
+startup error naming any required value that is missing. A
+frontend/backend project-ID mismatch is not silently wrong: sign-in
+succeeds but every ID token is rejected by the backend (`401`), and the
+user lands on a "can't access this app" screen.
+
+**`VITE_*` values are inlined by `vite build` at build time**, not read
+at container runtime — so a Docker image must receive them as build
+arguments in the frontend build stage (see `docs/deployment.md`; this is
+a Day-6 task, not yet wired). Full frontend behaviour: `frontend/README.md`
+and `docs/architecture.md`'s "Authorization … — Frontend" subsection.
 
 ## Local development without a real Firebase project
 

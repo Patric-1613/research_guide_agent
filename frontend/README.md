@@ -54,7 +54,16 @@ In `firebase` mode the `VITE_FIREBASE_*` values in `.env.example` are
 **required** — the app throws a clear startup error naming any that are
 missing. They are public client-side values (from the Firebase console's
 Web app config), not secrets. `VITE_FIREBASE_PROJECT_ID` must equal the
-backend's `FIREBASE_PROJECT_ID`.
+backend's `FIREBASE_PROJECT_ID` (a mismatch = every token rejected with
+`401`, and the user lands on a "can't access this app" screen). Because
+`vite build` inlines these at build time, a Docker image must receive
+them as build args (see `docs/deployment.md` — a Day-6 task).
+
+User flow in `firebase` mode: **Continue with Google** (popup) → the app
+calls `GET /me` → an **Awaiting approval** screen while `approved` is
+false (with *Check again* / *Sign out*) → the normal app once approved,
+with an account / sign-out menu in the header. An operator approves an
+account with `UPDATE users SET approved = true …`.
 
 Token handling: the Firebase ID token is attached as
 `Authorization: Bearer <token>` to every API call, both SSE streams, and
@@ -69,7 +78,12 @@ never silently retried.
 
 ```
 src/
-  App.tsx                        thin entrypoint — renders CurationWorkspacePage
+  App.tsx                        thin entrypoint — <AuthProvider><AuthGate><CurationWorkspacePage/>
+  lib/auth/                      VITE_AUTH_MODE contract, the Firebase-mode
+                                  state machine (lazy chunk), the token/401
+                                  bridge to lib/api/ (firebase mode only)
+  components/Auth/               AuthGate (renders the app only once approved)
+                                  + the account / sign-out header menu
   pages/CurationWorkspacePage.tsx  the app's one page: workspace-mode state,
                                   top-level layout, URL-param mode sync
                                   (no client-side router — a single-view SPA

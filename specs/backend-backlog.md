@@ -3653,6 +3653,37 @@ today, cross-referenced to where each item is already tracked in detail:
   a real fix is pagination or a higher/removed cap. Not scheduled, no
   owner assigned. `research_agent/api_app/routers/curation_sessions.py`,
   `research_agent/db/ownership_repository.py`.
+- **Frontend `firebase` mode: a deploy-time config error has an inert
+  "Sign out" action.** When `VITE_AUTH_MODE=firebase` but a required
+  `VITE_FIREBASE_*` value is missing (or `VITE_AUTH_MODE` is an invalid
+  string), `src/lib/auth/AuthProvider.tsx` renders the `error` screen
+  with a message naming the problem, but its "Sign out" button is the
+  no-op from the non-Firebase context value. This is a build/deploy
+  misconfiguration, not a user-recoverable state — fixing the env and
+  rebuilding is the recovery, and the message states what is wrong — but
+  a "Reload" affordance or a disabled button would read more honestly.
+  Not scheduled. `frontend/src/lib/auth/AuthProvider.tsx`,
+  `frontend/src/components/Auth/AuthGate.tsx`.
+- **Frontend `firebase` mode: mid-session removal of approval shows an
+  error banner, not the awaiting-approval screen.** A `403
+  account_not_approved` from a *product* route (an admin un-approves an
+  account that is currently signed in and using the app) surfaces only
+  as the shared error banner; it does not move the user to the
+  awaiting-approval screen the way a `403` from `GET /me` does. It
+  correctly does **not** sign the user out. Rare (un-approval mid-session
+  is an unusual admin action) and safe (the request fails, no data
+  leaks). A fix would re-run the `/me` check on a product `403`. Not
+  scheduled. `frontend/src/lib/api/client.ts`,
+  `frontend/src/lib/auth/FirebaseAuthProvider.tsx`.
+- **`nanoid@3.3.16` transitive advisory (frontend build tool).**
+  `npm audit` reports high-severity `GHSA-2v37-7h3g-55p8` (nanoid
+  `<3.3.18`, "custom generators can loop indefinitely when size is
+  zero") against `nanoid@3.3.16`, pulled in transitively by
+  `vite → postcss`. Pre-existing on `main` (the Day-5 `firebase` install
+  did not add or change it). Not a runtime path in this app. Fix is a
+  bounded, separate build-tooling dependency bump (`npm audit fix` or a
+  `postcss`/`vite` update, re-run the frontend suite + build). Not
+  scheduled. `frontend/package-lock.json`.
 
 ## 4. Explicitly deferred platform work
 

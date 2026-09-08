@@ -4003,8 +4003,60 @@ resource. A `503` means "we could not check" and is retryable.
 `users.approved` with SQL), roles beyond `approved`/`disabled`, and
 per-user *global* paid-usage caps (usage limits today are per-session
 and deployment-wide). Deploying `firebase` mode publicly still needs the
-frontend sign-in flow and the GCP/Cloud SQL infrastructure — see
-`docs/deployment.md` and `docs/plans/public-multi-user-deployment-review.md`.
+GCP/Cloud SQL infrastructure — see `docs/deployment.md` and
+`docs/plans/public-multi-user-deployment-review.md`.
+
+### Frontend (`VITE_AUTH_MODE`)
+
+The React app has its own three-mode selector, `VITE_AUTH_MODE`
+(`disabled` | `basic` | `firebase`, unset → `disabled`), which **must
+match** the backend's `AUTH_MODE`. In `disabled`/`basic` mode the
+frontend is byte-identical to before this arc: no sign-in UI, no
+`Authorization` header, `credentials: 'include'` retained, and the
+Firebase SDK (`firebase@^12.18.0`) is not in the running bundle. Public
+`VITE_FIREBASE_*` config and env-var details: `frontend/README.md`.
+Setup: `docs/firebase-auth-setup.md`.
+
+In `firebase` mode:
+
+- **`src/lib/auth/`** owns everything. `AuthProvider` is a mode switch;
+  the real logic (`FirebaseAuthProvider`) is a lazy chunk so
+  `firebase/*` loads only here. `firebase.ts` creates one Firebase app +
+  `Auth` with **`inMemoryPersistence`** set at `initializeAuth` time.
+  `authBridge.ts` is the seam to the framework-agnostic transport layer
+  (`lib/api/*`): the provider registers a token getter + a 401 handler
+  on mount and clears them on unmount.
+- **State machine:** `initializing → signed-out → checking → {approved |
+  awaiting-approval | denied | error}`. `signIn()` is a Google popup
+  (`signInWithPopup`; a closed popup is not an error). `onIdTokenChanged`
+  drives re-checks; a same-uid hourly token refresh does not re-hit
+  `/me`. Every `GET /me` check carries a monotonic sequence number and
+  the signing-in uid, so a slow response for one user can never publish
+  after sign-out or after a different user signs in.
+- **`<AuthGate>`** renders `<CurationWorkspacePage>` **only** for
+  `approved` (or `not-required`). A signed-out or unapproved user never
+  mounts a product hook, so no `/curation/*` call fires — there is no
+  flash of application content, including during the lazy-chunk load.
+  Unapproved users see an "awaiting approval" screen (safe account
+  fields + *Check again* + *Sign out*); a small account / sign-out menu
+  sits in the header once approved.
+- **Token handling:** the ID token is fetched fresh (`getIdToken()`,
+  which refreshes an expiring token) for **every** transport —
+  `client.ts` `request()`, `chatStream.ts`, `reportStream.ts`, and the
+  report-export download (an authenticated `fetch` → blob → transient
+  object URL, because a plain `<a href>` cannot send the header). It is
+  never written to `localStorage`, `sessionStorage`, IndexedDB, a URL,
+  the DOM, a log, or an error message. **In-memory persistence means a
+  page reload returns to the sign-in screen** — a deliberate
+  bounded-beta tradeoff (Google normally re-establishes the session in
+  one click), not persistent login.
+- **Errors:** a `401` calls the 401 handler (the session re-verifies →
+  `denied`/`signed-out`) and the originating request still rejects — a
+  non-idempotent request is **never** silently retried. `403`/`404`/
+  `503` surface as ordinary in-app errors and do **not** sign the user
+  out. A frontend/backend project-ID mismatch fails safely: sign-in
+  succeeds, `/me` returns `401`, the user lands on the `denied` screen
+  with no partial access.
 
 ## Target architecture
 
