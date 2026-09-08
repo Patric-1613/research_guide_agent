@@ -9,13 +9,13 @@ Firebase resources and invents no project ID.
 > (approval gate + per-user curation ownership + legacy-route lockout —
 > see [`architecture.md`](architecture.md#authorization-firebase-multi-user-mode)).
 > A public deployment still needs the remaining checkpoints from
-> `docs/plans/public-multi-user-deployment-review.md`: the Day-5 frontend
+> `docs/plans/public-multi-user-deployment-review.md`: the frontend
 > sign-in flow, and the GCP/Cloud SQL infrastructure. There is also no
 > self-service approval UI yet — a new account stays `approved = false`
 > until an operator flips the flag with SQL. `firebase` mode runs
 > correctly locally against the emulator today; the supported *deployed*
 > configurations remain `AUTH_MODE=basic` and (local only)
-> `AUTH_MODE=disabled` until those checkpoints land.
+> `AUTH_MODE=disabled` until that work lands.
 
 Configuration contract: `research_agent/config/settings.py`'s
 `get_auth_config()`. Verification boundary:
@@ -111,9 +111,37 @@ DATABASE_URL=postgresql://...          # the users table still lives in PostgreS
 - Run migrations (`research_agent/db/migrations/`) against that database
   before starting the app — they never run automatically on startup.
 - New accounts are created with `approved = false`. Approval is a
-  separate administrative action (a later phase); `/me` works for an
-  unapproved account so the frontend can render an "awaiting approval"
-  state.
+  separate administrative action (an operator runs
+  `UPDATE users SET approved = true WHERE …`); there is no approval UI
+  yet. `/me` works for an unapproved account so the frontend can render
+  an "awaiting approval" state.
+
+## Authorization
+
+Full detail: `docs/architecture.md`, "Authorization (Firebase
+multi-user mode)". In `firebase` mode:
+
+- **Product routes require an approved account.** An authenticated but
+  unapproved (or `disabled`) account gets a generic `403` on every
+  curation/report/lane route. `GET /me` is the deliberate exception — it
+  works for any authenticated account so the frontend can show its
+  status.
+- **Curation sessions are scoped to their PostgreSQL owner.** Every
+  `/curation/{session_id}` route (reads, mutations, both chat streams,
+  both report streams, export, activate, delete) checks the
+  `curation_owners` row against the caller's internal user id first. A
+  session owned by someone else and one that does not exist return the
+  **same** generic `404` — ownership is never disclosed. The check runs
+  before the checkpointer is opened, before any stream, lease, or
+  provider call.
+- **`GET /curation/reviews` returns only the caller's own sessions.**
+- **The legacy shared search family** (`/search`, `/library`,
+  `/summarize`, `/chat`, `/export`) is **unavailable** (`403`) in
+  `firebase` mode — it has no per-user scoping.
+- Configuration or ownership-database failure → generic `503`, never a
+  fall-through and never a fallback to shared storage.
+- `basic` and `disabled` modes are unaffected: none of the above runs,
+  and the single shared workspace behaves exactly as before.
 
 ## What verification does and does not check
 

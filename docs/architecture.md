@@ -3948,9 +3948,11 @@ never touch the ownership tables. They depend on:
   a row that does not exist are the **same** generic `404`
   (`"session_id not found"`), so ownership is never disclosed —
   a probe cannot tell "not yours" from "never existed". The check runs
-  as a FastAPI dependency, before the route body loads any checkpoint
-  content or opens any paid-action lease. `basic`/`disabled`:
-  pass-through.
+  as a FastAPI dependency, so it resolves before the route body — before
+  the checkpointer connection is opened, before any checkpoint content is
+  read, before a `StreamingResponse` is constructed, before a
+  paid-action lease is opened, and before any provider call.
+  `basic`/`disabled`: pass-through.
 - `deny_when_multiuser` — attached to the legacy single-user search
   family (`/search`, `/summarize`, `/chat`, `/export/{id}`, `/library`,
   `/library/{id}`). Those read and mutate the shared SQLite `searches`

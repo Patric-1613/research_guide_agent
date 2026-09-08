@@ -3628,6 +3628,31 @@ today, cross-referenced to where each item is already tracked in detail:
   make the card a non-`<button>` clickable region, or move the delete
   button out as a sibling). Not scheduled, no owner assigned.
   `frontend/src/components/ReviewsList/ReviewCard.tsx`.
+- **Firebase curation creation can leave a fail-closed incomplete
+  ownership row on a client input error.** `POST /curation/start` in
+  `firebase` mode inserts the `curation_owners` row before
+  `start_curation` runs its own request validation (research-lanes
+  feature-flag gate, lane-shape check), so a `400` from invalid lane
+  input leaves a `curation_owners` row with no checkpoint behind it.
+  This is the same "fail-closed incomplete" state a mid-creation
+  checkpoint-write failure already produces: the owner still gets `404`
+  (no checkpoint), a non-owner gets `404` (ownership mismatch), it never
+  appears in `/curation/reviews` (that listing intersects owner rows
+  with real checkpoints), and `scripts/reconcile_curation_ownership.py`
+  reclaims it after its safety window. Not a security or correctness
+  bug — hygiene only. The fix (validate lane input before recording
+  ownership) touches the curation-start service flow; not scheduled, no
+  owner assigned. See `docs/architecture.md`, "Authorization
+  (Firebase multi-user mode)".
+- **`/curation/reviews` ownership listing is capped at 500 sessions.**
+  The `firebase`-mode listing calls
+  `PostgresOwnershipRepository.list_owner_sessions(owner_id, limit=500)`;
+  a user who accumulates more than 500 curation sessions would have the
+  oldest silently omitted from their own review list. Acceptable for the
+  bounded controlled beta (no user is expected to approach that count);
+  a real fix is pagination or a higher/removed cap. Not scheduled, no
+  owner assigned. `research_agent/api_app/routers/curation_sessions.py`,
+  `research_agent/db/ownership_repository.py`.
 
 ## 4. Explicitly deferred platform work
 

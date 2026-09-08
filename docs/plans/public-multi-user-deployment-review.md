@@ -1,8 +1,15 @@
 # Public Multi-User Deployment — Architecture Review (Part 2)
 
-**Status:** read-only review document. Nothing in this file has been implemented,
-provisioned, deployed, or pushed. No production behavior was changed to produce
-it.
+**Status:** architecture reference. This document was written as a
+read-only review; the Tier 1 controlled-beta schedule in section I has
+since begun. **Days 1–4 are implemented and merged to `main`** (Day 1
+foundation; Day 2 Postgres ownership schema + coordinator; Day 3 Firebase
+identity, token verification, `/me`; Day 4 approval + per-user curation
+ownership enforcement). **Day 5 (frontend auth states) is the next
+checkpoint.** No GCP provisioning or deployment has occurred, and
+`AUTH_MODE=firebase` is not enabled in any real environment. The
+authorization model as built is described in `docs/architecture.md`,
+"Authorization (Firebase multi-user mode)".
 
 This is the continuation of a two-part review. Part 1 (sections A–H) was
 delivered in conversation and is not reproduced here in full — only a
@@ -225,7 +232,7 @@ SQLite checkpoints, one VM + Cloud SQL, **approval-gated** — a mentor can
 register but needs approval before using paid features; not self-service in
 the full sense; not Tier 2 or Tier 3.
 
-### Day 1 — Freeze, safety rails, identity decision
+### Day 1 — Freeze, safety rails, identity decision — ✅ complete
 - **Objective:** freeze scope to this document; push the 5 local H5 commits;
   stand up one Firebase project (linked to the target GCP project) with only
   the Google provider enabled; fix the two cheap concurrency risks already
@@ -245,7 +252,7 @@ the full sense; not Tier 2 or Tier 3.
   enabled providers (Google only); a passing test run transcript; the manual
   `/health`-not-starved check's timing output.
 
-### Day 2 — Postgres ownership schema + creation/deletion consistency (Correction 4)
+### Day 2 — Postgres ownership schema + creation/deletion consistency (Correction 4) — ✅ complete
 - **Objective:** create `users`, `curation_owners`, `searches.owner_id` in
   Postgres (local/dev instance for now — no GCP provisioning yet); implement
   the create-first/delete-first ordering and the fail-closed 404 rule from
@@ -268,7 +275,7 @@ the full sense; not Tier 2 or Tier 3.
   name; a manual run of `scripts/reconcile_curation_ownership.py` against a
   seeded orphan of each class, showing exactly the intended rows removed.
 
-### Day 3 — Identity middleware + token verification
+### Day 3 — Identity middleware + token verification — ✅ complete
 - **Objective:** verify Firebase ID tokens with no service-account key
   (Correction 2): implement `IdentityMiddleware` (Bearer header, not a
   cookie) using either `google-auth`'s JWKS verification or
@@ -290,7 +297,18 @@ the full sense; not Tier 2 or Tier 3.
   token (Firebase Auth emulator or a real test account token, no paid call
   involved).
 
-### Day 4 — Ownership enforcement across every route
+### Day 4 — Ownership enforcement across every route — ✅ complete
+- **As built (deviation from the sketch below):** enforcement lives in one
+  dependency module, `research_agent/api_app/access.py`
+  (`require_approved_access`, `require_curation_session_access`,
+  `deny_when_multiuser`), not inline in each router. `GET /curation/reviews`
+  is filtered by caller as planned. The legacy `/search` / `/library` /
+  `/summarize` / `/chat` / `/export` family is **refused (403) in firebase
+  mode** rather than filtered — the shared SQLite `searches` table is keyed
+  by integer id with no per-user read path, and the Postgres saved-search
+  repository has no by-id read yet; making that chain owner-aware is its own
+  later task. Unapproved accounts get `403` on product routes; `/me`
+  stays available to them. See `docs/architecture.md`, "Authorization".
 - **Objective:** wire the Part F permission matrix into every listed route:
   owner lookup before checkpointer/Chroma access, **404** (never 403) on
   mismatch or on the Correction-4 "owner row exists, checkpoint doesn't"
