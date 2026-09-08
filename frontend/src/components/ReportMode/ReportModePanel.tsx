@@ -30,6 +30,10 @@ interface ReportModePanelProps {
   // instead of a single direct link. Always exports the active
   // version; there's no per-version export UI here.
   exportUrls: Record<ReportExportFormat, string>
+  // Day 5: in firebase mode the parent passes an authenticated blob
+  // download (the plain <a href download> below cannot carry the Bearer
+  // token). Absent in disabled/basic mode, where the link works as-is.
+  onExportDownload?: (format: ReportExportFormat) => void | Promise<void>
   // Usage Protection M4.3B: streaming lifecycle -- owned by
   // useCurationSession, passed straight through. onGenerateReport/
   // onRegenerateReport above are unchanged in shape (CurationWorkspace
@@ -283,7 +287,7 @@ const GENERATION_REASON_LABELS: Record<string, string> = {
 // backend but never rendered. This panel is the first place it's
 // actually shown.
 export function ReportModePanel({
-  state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportUrls,
+  state, disabled, onGenerateReport, onRegenerateReport, onActivateReportVersion, exportUrls, onExportDownload,
   reportStreamActive, reportStreamOperation, reportStreamPhase, reportStreamPhaseHistory, reportStreamStopping,
   reportStreamError, reportStreamSyncFailed, reportStreamCompletionNotice, onCancelReportStream, onRetryReportSync,
 }: ReportModePanelProps) {
@@ -424,7 +428,7 @@ export function ReportModePanel({
               Regenerate
             </button>
           )}
-          <ExportMenu urls={exportUrls} disabled={disabled} />
+          <ExportMenu urls={exportUrls} disabled={disabled} onDownload={onExportDownload} />
         </div>
       </div>
       {reportStreamError && <ReportStreamErrorNotice message={reportStreamError} />}
@@ -596,8 +600,17 @@ const EXPORT_FORMAT_OPTIONS: { value: ReportExportFormat; label: string }[] = [
 // an already-open menu if `disabled` flips true out from under it
 // (e.g. a fast-fired Regenerate click), so a stale open menu can never
 // outlive the disabled state that should have suppressed it.
-function ExportMenu({ urls, disabled }: { urls: Record<ReportExportFormat, string>; disabled: boolean }) {
+function ExportMenu({
+  urls,
+  disabled,
+  onDownload,
+}: {
+  urls: Record<ReportExportFormat, string>
+  disabled: boolean
+  onDownload?: (format: ReportExportFormat) => void | Promise<void>
+}) {
   const [open, setOpen] = useState(false)
+  const [downloading, setDownloading] = useState<ReportExportFormat | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -642,19 +655,44 @@ function ExportMenu({ urls, disabled }: { urls: Record<ReportExportFormat, strin
           role="menu"
           className="absolute right-0 z-10 mt-1 w-32 rounded-md border border-border bg-panel py-1 text-xs shadow-lg"
         >
-          {EXPORT_FORMAT_OPTIONS.map((option) => (
-            <a
-              key={option.value}
-              role="menuitem"
-              data-testid={`export-menu-option-${option.value}`}
-              href={urls[option.value]}
-              download
-              onClick={() => setOpen(false)}
-              className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt"
-            >
-              {option.label}
-            </a>
-          ))}
+          {EXPORT_FORMAT_OPTIONS.map((option) =>
+            onDownload ? (
+              // Day 5 (firebase mode): a button, not a link -- the parent
+              // fetches the export with the Bearer token and triggers the
+              // download from the blob.
+              <button
+                key={option.value}
+                type="button"
+                role="menuitem"
+                data-testid={`export-menu-option-${option.value}`}
+                disabled={downloading !== null}
+                onClick={async () => {
+                  setDownloading(option.value)
+                  try {
+                    await onDownload(option.value)
+                    setOpen(false)
+                  } finally {
+                    setDownloading(null)
+                  }
+                }}
+                className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt disabled:opacity-50"
+              >
+                {downloading === option.value ? `${option.label}…` : option.label}
+              </button>
+            ) : (
+              <a
+                key={option.value}
+                role="menuitem"
+                data-testid={`export-menu-option-${option.value}`}
+                href={urls[option.value]}
+                download
+                onClick={() => setOpen(false)}
+                className="block w-full px-3 py-1.5 text-left text-text-secondary hover:bg-panel-alt"
+              >
+                {option.label}
+              </a>
+            ),
+          )}
         </div>
       )}
     </div>

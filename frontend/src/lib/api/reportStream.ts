@@ -27,7 +27,8 @@
 // Sequencing is a report-domain state-machine concern, owned by
 // useCurationSession.ts, not this transport adapter.
 
-import { baseUrl, throwApiErrorIfNotOk } from './client'
+import { baseUrl, throwApiErrorIfNotOkWithAuth } from './client'
+import { getAuthHeaders } from '../auth/authBridge'
 import { SSEDecoder } from './sseDecoder'
 import type {
   CurationGenerateReportRequest,
@@ -89,11 +90,14 @@ async function* streamReportOperation(
   req: CurationGenerateReportRequest | CurationRegenerateReportRequest,
   options: { signal: AbortSignal },
 ): AsyncGenerator<ReportStreamServerEvent> {
+  // Day 5: `{}` in disabled/basic mode; the Bearer ID token in firebase
+  // mode -- same contract as lib/api/client.ts's request().
+  const authHeaders = await getAuthHeaders()
   const response = await fetch(`${baseUrl()}${path}`, {
     method: 'POST',
     // Same credentialed-CORS contract as lib/api/client.ts's request().
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify(req),
     signal: options.signal,
   })
@@ -103,7 +107,7 @@ async function* streamReportOperation(
   // is constructed -- so this is the exact same non-2xx-to-ApiError
   // mapping every other endpoint in this app already gets, never a
   // special case for these two.
-  await throwApiErrorIfNotOk(response)
+  await throwApiErrorIfNotOkWithAuth(response)
 
   if (!response.body) {
     throw new ReportStreamTransportError('The server response had no body to stream.')

@@ -410,6 +410,18 @@ export interface CurationReviewSummary {
   has_chat: boolean
 }
 
+// Day 5: GET /me's response (research_agent/api_app/routers/me.py's
+// MeResponse). Only safe account fields -- never a token, firebase_uid,
+// or raw provider claim. `user_id` is an opaque account handle, not an
+// authorization input.
+export interface MeResponse {
+  user_id: string
+  email: string | null
+  display_name: string | null
+  approved: boolean
+  disabled: boolean
+}
+
 export interface CurationStartRequest {
   topic: string
   target_count?: number

@@ -39,6 +39,32 @@ module load time), defaulting to `http://localhost:8000` if unset. Copy
 cp .env.example .env
 ```
 
+## Authentication (`VITE_AUTH_MODE`)
+
+The frontend's auth mode must match the backend's `AUTH_MODE`
+(`research_agent/config/settings.py`):
+
+| `VITE_AUTH_MODE` | Backend `AUTH_MODE` | Frontend behaviour |
+| --- | --- | --- |
+| unset / `disabled` | `disabled` | No sign-in. The current local-dev default; Firebase is never loaded. |
+| `basic` | `basic` (or legacy `AUTH_ENABLED=true`) | No sign-in UI; the browser replays HTTP Basic-Auth credentials. Firebase is never loaded. |
+| `firebase` | `firebase` | Google sign-in required. The app calls `GET /me`, shows an **"Awaiting approval"** screen until the account is approved (an operator runs `UPDATE users SET approved = true`), then renders the app with a small account / sign-out control in the header. |
+
+In `firebase` mode the `VITE_FIREBASE_*` values in `.env.example` are
+**required** — the app throws a clear startup error naming any that are
+missing. They are public client-side values (from the Firebase console's
+Web app config), not secrets. `VITE_FIREBASE_PROJECT_ID` must equal the
+backend's `FIREBASE_PROJECT_ID`.
+
+Token handling: the Firebase ID token is attached as
+`Authorization: Bearer <token>` to every API call, both SSE streams, and
+the report-export download, and is refreshed automatically by the Firebase
+SDK. It is held **in memory only** — never in `localStorage`,
+`sessionStorage`, or IndexedDB — so a page reload returns to the sign-in
+screen (Google normally re-establishes the session in one click). A `401`
+surfaces an honest "session expired" state; non-idempotent requests are
+never silently retried.
+
 ## Structure
 
 ```

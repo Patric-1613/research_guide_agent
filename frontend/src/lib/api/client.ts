@@ -23,6 +23,7 @@ import type {
   ReportTemplate,
 } from '../../types'
 import { ApiError } from '../../types'
+import { getAuthHeaders, notifyUnauthorized } from '../auth/authBridge'
 
 // PR3: strips any trailing slash(es) from an explicitly configured
 // VITE_API_BASE_URL so `${baseUrl()}${path}` (every call site below,
@@ -87,7 +88,27 @@ export async function throwApiErrorIfNotOk(response: Response): Promise<void> {
   throw new ApiError(response.status, body, response.headers.get('Retry-After'))
 }
 
+// Day 5: in firebase mode a 401 means the ID token was missing/expired/
+// rejected. Tell the auth layer so it can surface an honest
+// "session expired -- please sign in again" state -- then re-raise the
+// same ApiError so the originating action still fails visibly. This is
+// never a silent retry of a non-idempotent request. A no-op in
+// disabled/basic mode (nothing is registered on the bridge).
+export async function throwApiErrorIfNotOkWithAuth(response: Response): Promise<void> {
+  try {
+    await throwApiErrorIfNotOk(response)
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) notifyUnauthorized()
+    throw err
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Day 5: `getAuthHeaders()` is `{}` in disabled/basic mode, so this
+  // request is byte-identical to before. In firebase mode it is
+  // `{ Authorization: 'Bearer <fresh ID token>' }` (Firebase refreshes
+  // an expiring token as part of the getter).
+  const authHeaders = await getAuthHeaders()
   const response = await fetch(`${baseUrl()}${path}`, {
     ...init,
     // Send the browser's stored Basic-Auth credentials on every
@@ -96,9 +117,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // and harmless for the same-origin case. Paired with the backend's
     // allow_credentials=True + explicit allow_origins (never "*").
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...init?.headers, ...authHeaders },
   })
-  await throwApiErrorIfNotOk(response)
+  await throwApiErrorIfNotOkWithAuth(response)
   return response.json() as Promise<T>
 }
 
@@ -209,4 +230,41 @@ export const curationApi = {
   // authoritative check; the frontend just hides the action otherwise.
   reopen: (sessionId: string): Promise<CurationTurnResponse> =>
     postJson(`/curation/${sessionId}/reopen`, {}),
+}
+
+// Day 5: a report-export download that carries the Firebase ID token.
+// The plain `<a href download>` in ExportMenu cannot set an Authorization
+// header, so in firebase mode the export is fetched with auth, turned
+// into a blob, and handed to a transient object-URL link. In
+// disabled/basic mode ExportMenu keeps its plain link (browser
+// credential replay / same-origin), and this is never called.
+export async function downloadReportExport(
+  sessionId: string,
+  format: ReportExportFormat,
+): Promise<void> {
+  const authHeaders = await getAuthHeaders()
+  const response = await fetch(
+    `${baseUrl()}/curation/${sessionId}/report/export?format=${format}`,
+    { method: 'GET', credentials: 'include', headers: authHeaders },
+  )
+  await throwApiErrorIfNotOkWithAuth(response)
+
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
+  const fallbackExt = format === 'markdown' ? 'md' : format
+  const filename = match ? decodeURIComponent(match[1]) : `report.${fallbackExt}`
+
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = filename
+    link.rel = 'noopener'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
 }

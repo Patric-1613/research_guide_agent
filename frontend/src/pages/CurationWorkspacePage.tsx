@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useCurationSession } from '../hooks/useCurationSession'
-import { curationApi } from '../lib/api/client'
+import { curationApi, downloadReportExport } from '../lib/api/client'
+import { isFirebaseMode } from '../lib/auth/config'
 import { AppHeader } from '../components/AppHeader/AppHeader'
 import { ReviewsList } from '../components/ReviewsList/ReviewsList'
 import { TopicHeader } from '../components/TurnFeed/TopicHeader'
@@ -453,6 +454,11 @@ export default function CurationWorkspacePage() {
                         pdf: curationApi.getReportExportUrl(state.session_id, 'pdf'),
                         docx: curationApi.getReportExportUrl(state.session_id, 'docx'),
                       }}
+                      onExportDownload={
+                        isFirebaseMode()
+                          ? (format) => downloadReportExport(state.session_id, format)
+                          : undefined
+                      }
                       reportStreamActive={reportStreamActive}
                       reportStreamOperation={reportStreamOperation}
                       reportStreamPhase={reportStreamPhase}
