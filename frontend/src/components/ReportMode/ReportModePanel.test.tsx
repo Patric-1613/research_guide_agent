@@ -967,6 +967,36 @@ describe('ReportModePanel -- report-quality Phase R5C.3: Export menu', () => {
 
     expect(screen.queryByTestId('export-menu')).not.toBeInTheDocument()
   })
+
+  // Day 5: in firebase mode the parent passes onExportDownload, and the
+  // menu options must be <button>s that call it -- NOT <a href> links to
+  // the protected export URL (which cannot carry the Bearer token).
+  it('when onExportDownload is provided (firebase mode) the options are buttons with no href, and call the handler', async () => {
+    const user = userEvent.setup()
+    const onExportDownload = vi.fn().mockResolvedValue(undefined)
+    render(
+      <ReportModePanel
+        state={baseState({ report: reportStub() })} disabled={false}
+        onGenerateReport={vi.fn()} onRegenerateReport={vi.fn()} onActivateReportVersion={vi.fn()}
+        exportUrls={EXPORT_URLS} onExportDownload={onExportDownload}
+        reportStreamActive={false} reportStreamOperation={null} reportStreamPhase={null}
+        reportStreamStopping={false} reportStreamError={null} reportStreamSyncFailed={false}
+        onCancelReportStream={vi.fn()} onRetryReportSync={vi.fn()}
+      />,
+    )
+    await user.click(screen.getByTestId('export-menu-trigger'))
+
+    for (const format of ['markdown', 'pdf', 'docx'] as const) {
+      const option = screen.getByTestId(`export-menu-option-${format}`)
+      expect(option.tagName).toBe('BUTTON')
+      expect(option).not.toHaveAttribute('href')
+    }
+
+    await user.click(screen.getByTestId('export-menu-option-pdf'))
+    expect(onExportDownload).toHaveBeenCalledWith('pdf')
+    // no protected <a href> anywhere in the menu
+    expect(document.querySelector(`a[href="${EXPORT_URLS.pdf}"]`)).toBeNull()
+  })
 })
 
 describe('ReportModePanel -- Usage Protection M4.3B: report-generation progress streaming UI', () => {

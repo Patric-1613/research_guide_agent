@@ -82,6 +82,20 @@ describe('AuthGate', () => {
     expect(screen.queryByTestId('app')).not.toBeInTheDocument()
   })
 
+  it('awaiting-approval renders a long email without truncating it away, and lets it wrap', () => {
+    const longEmail = 'a-really-quite-long-local-part.with.dots@a-long-subdomain.example-corp.co.uk'
+    renderGate(
+      ctx({
+        status: 'awaiting-approval',
+        account: { user_id: 'u', email: longEmail, display_name: null, approved: false, disabled: false },
+      }),
+    )
+    const dd = screen.getByText(longEmail)
+    expect(dd.tagName).toBe('DD')
+    // it must be allowed to wrap inside the fixed-width card, not overflow it
+    expect(dd.className).toContain('break-all')
+  })
+
   it('awaiting-approval "Check again" calls checkAgain', async () => {
     const checkAgain = vi.fn()
     renderGate(ctx({ status: 'awaiting-approval', checkAgain }))

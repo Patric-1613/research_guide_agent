@@ -69,15 +69,15 @@ function AccountLines({ email, displayName }: { email: string | null; displayNam
   return (
     <dl className="mb-4 space-y-1 text-xs">
       {displayName && (
-        <div className="flex gap-2">
-          <dt className="text-text-muted">Name</dt>
-          <dd className="text-text-secondary">{displayName}</dd>
+        <div className="flex min-w-0 gap-2">
+          <dt className="shrink-0 text-text-muted">Name</dt>
+          <dd className="min-w-0 break-all text-text-secondary">{displayName}</dd>
         </div>
       )}
       {email && (
-        <div className="flex gap-2">
-          <dt className="text-text-muted">Email</dt>
-          <dd className="text-text-secondary">{email}</dd>
+        <div className="flex min-w-0 gap-2">
+          <dt className="shrink-0 text-text-muted">Email</dt>
+          <dd className="min-w-0 break-all text-text-secondary">{email}</dd>
         </div>
       )}
     </dl>

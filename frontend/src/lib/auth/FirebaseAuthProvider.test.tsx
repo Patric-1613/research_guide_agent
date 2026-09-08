@@ -298,6 +298,38 @@ describe('FirebaseAuthProvider', () => {
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('denied'))
   })
 
+  it('clears the auth bridge on unmount, so later requests carry no token', async () => {
+    fetchMe.mockResolvedValue(me({ approved: true }))
+    h.state.getIdTokenImpl = async () => 'tok-while-mounted'
+    const { unmount } = renderProvider()
+    await act(async () => { h.setUser('user-a') })
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('approved'))
+    expect(await getAuthHeaders()).toEqual({ Authorization: 'Bearer tok-while-mounted' })
+
+    unmount()
+
+    expect(await getAuthHeaders()).toEqual({})
+    // and a stray 401 after unmount does not throw or resurrect anything
+    expect(() => notifyUnauthorized()).not.toThrow()
+  })
+
+  it('a remount re-registers a working bridge (register -> clear -> register is sequential and consistent)', async () => {
+    fetchMe.mockResolvedValue(me({ approved: true }))
+    const first = renderProvider()
+    await act(async () => { h.setUser('user-a') })
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('approved'))
+    first.unmount()
+    expect(await getAuthHeaders()).toEqual({})
+
+    h.state.currentUser = null
+    h.state.listeners.clear()
+    h.state.getIdTokenImpl = async () => 'tok-after-remount'
+    renderProvider()
+    await act(async () => { h.setUser('user-a') })
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('approved'))
+    expect(await getAuthHeaders()).toEqual({ Authorization: 'Bearer tok-after-remount' })
+  })
+
   it('never writes the ID token to localStorage, sessionStorage, or the DOM', async () => {
     fetchMe.mockResolvedValue(me({ approved: true }))
     h.state.getIdTokenImpl = async () => 'SECRET-ID-TOKEN-VALUE'
